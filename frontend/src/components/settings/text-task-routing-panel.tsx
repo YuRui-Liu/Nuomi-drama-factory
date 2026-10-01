@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { ModelCombobox } from "@/components/settings/model-combobox";
+import { useSettingsSnapshot } from "@/components/settings/settings-draft-context";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   TASK_REASONING_EFFORTS,
@@ -45,15 +46,19 @@ export function TextTaskRoutingPanel({ open }: { open: boolean }) {
   const [routes, setRoutes] = useState<Record<string, AgentTaskRoute>>({});
   // 按运行时记忆模型与推理强度：切换 runtime 时先存下当前行的值，再用目标 runtime 的记忆值填充。
   const [presets, setPresets] = useState<Record<string, RuntimePreset>>({});
+  const { dirty, markSaved } = useSettingsSnapshot("task-routing", { routes, presets });
 
   // 按运行时索引模型下拉清单；后端 models.json 或内置默认。
   const modelCatalog = modelsQuery.data?.data ?? { codex: [], workbuddy: [], model_api: [], deepseek_harness: [] };
 
   useEffect(() => {
     const data = query.data?.data;
-    if (!data?.roles) return;
-    setRoutes(Object.fromEntries(data.roles.map((item) => [item.id, item.route])));
-    setPresets(data.runtime_presets ?? {});
+    if (!data?.roles || dirty) return;
+    const nextRoutes = Object.fromEntries(data.roles.map((item) => [item.id, item.route]));
+    const nextPresets = data.runtime_presets ?? {};
+    setRoutes(nextRoutes);
+    setPresets(nextPresets);
+    markSaved({ routes: nextRoutes, presets: nextPresets });
   }, [query.data]);
 
   const patchRoute = (id: string, patch: Partial<AgentTaskRoute>) => {
@@ -87,6 +92,7 @@ export function TextTaskRoutingPanel({ open }: { open: boolean }) {
   const handleSave = async () => {
     try {
       await save.mutateAsync({ routes, runtime_presets: presets });
+      markSaved({ routes, presets });
       toast.success("任务运行时路由已保存；新建任务将使用新配置");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));

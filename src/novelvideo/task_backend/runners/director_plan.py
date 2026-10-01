@@ -141,6 +141,14 @@ async def _build_director_plan_input(
     expected_snapshot_id = str(payload.get("style_snapshot_id") or "").strip()
     if expected_snapshot_id and snapshot.snapshot_id != expected_snapshot_id:
         raise DirectorPlanTaskError("STYLE_SNAPSHOT_CONFLICT")
+    studio_direction = {}
+    if isinstance(payload.get("studio_config"), dict):
+        from novelvideo.creative_studios.director import director_snapshot
+        submitted = payload["studio_config"]
+        studio_direction["studio_config"] = director_snapshot(
+            submitted.get("preferences", {}), str(submitted.get("document_id", "")),
+            int(submitted.get("document_revision", 0)),
+        )
     return DirectorPlanInput(
         episode=episode,
         source_script_hash=str(source.content_hash),
@@ -154,6 +162,7 @@ async def _build_director_plan_input(
             "snapshot_id": snapshot.snapshot_id,
             "style_hash": snapshot.style_hash,
             "projection": snapshot.projections.director,
+            **studio_direction,
         },
         project_style_snapshot_id=snapshot.snapshot_id,
         project_style_snapshot=snapshot,
@@ -332,6 +341,15 @@ def _validation_report(revision: Any) -> dict[str, Any]:
 async def _run_director_plan(
     envelope: dict[str, Any], ctx: ProjectContext
 ) -> dict[str, Any]:
+    if isinstance((envelope.get("payload") or {}).get("studio_config"), dict):
+        from novelvideo.creative_studios.director import run_studio_once
+        return await run_studio_once(envelope, ctx, "plan", _execute_director_plan)
+    return await _execute_director_plan(envelope, ctx)
+
+
+async def _execute_director_plan(
+    envelope: dict[str, Any], ctx: ProjectContext
+) -> dict[str, Any]:
     payload = dict(envelope.get("payload") or {})
     episode = int(payload["episode"])
     scope = str(envelope.get("scope") or f"revision:{payload['source_revision']}")
@@ -399,3 +417,11 @@ def run_director_plan(
 register_project_task_runner(
     "director_plan", run_director_plan, text_task_role="director_plan"
 )
+
+
+def run_director_studio_adaptation(envelope: dict[str, Any], ctx: ProjectContext):
+    from novelvideo.creative_studios.director import run_adaptation
+    return asyncio.run(await_envelope_with_cancel_watch(run_adaptation(envelope, ctx), envelope, task_type="director_studio_adaptation"))
+
+
+register_project_task_runner("director_studio_adaptation", run_director_studio_adaptation, text_task_role="director_plan")

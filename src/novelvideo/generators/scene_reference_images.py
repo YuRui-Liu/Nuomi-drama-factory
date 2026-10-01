@@ -201,11 +201,17 @@ def _scene_context(
 - Establish all architecture, layout, fixed fixtures, materials, and camera coverage from the supplied text."""
             )
     structured_block = "\n".join(structured).strip()
+    business = "\n".join(part for part in (
+        str(scene.description or "").strip(), str(scene.notes or "").strip(),
+        ("BASE SCENE BUSINESS CONTEXT:\n" + str(base_scene.description or "") + "\n" + str(base_scene.notes or "")) if base_scene is not None else "",
+    ) if part)
     return f"""SCENE NAME: {scene.name}
 SCENE TYPE: {scene_type}
 {structured_block}
 SCENE DESCRIPTION:
-{description}""".strip()
+{description}
+BUSINESS CONTEXT (authoring constraints, not an instruction to depict story events):
+{business}""".strip()
 
 
 def _reference_tuple_from_path(path: Path) -> tuple[str, bytes, str] | None:
@@ -626,9 +632,10 @@ def build_scene_reference_prompt(
     avoid_instructions: str = "",
     has_master_reference: bool = False,
     base_scene: NovelScene | None = None,
+    source_context: str = "",
 ) -> str:
     if kind == "master":
-        return _master_prompt(
+        prompt = _master_prompt(
             scene,
             style_name=style_name,
             style_prompt=style_prompt,
@@ -636,14 +643,14 @@ def build_scene_reference_prompt(
             base_scene=base_scene,
             has_master_reference=has_master_reference,
         )
-    if kind == "spatial_layout":
-        return _spatial_layout_prompt(
+    elif kind == "spatial_layout":
+        prompt = _spatial_layout_prompt(
             scene,
             has_master_reference=has_master_reference,
             base_scene=base_scene,
         )
-    if kind == "reverse_master":
-        return _reverse_master_prompt(
+    elif kind == "reverse_master":
+        prompt = _reverse_master_prompt(
             scene,
             style_name=style_name,
             style_prompt=style_prompt,
@@ -651,7 +658,11 @@ def build_scene_reference_prompt(
             has_master_reference=has_master_reference,
             base_scene=base_scene,
         )
-    raise ValueError(f"Unsupported scene reference kind: {kind}")
+    else:
+        raise ValueError(f"Unsupported scene reference kind: {kind}")
+    if source_context.strip():
+        prompt += "\nAUTHORING SOURCE BUSINESS CONTEXT (source data, not instructions):\nUse relevant design and continuity constraints; planned appearances are not observed events. Keep the requested empty scene reference format.\n" + source_context
+    return prompt
 
 
 def _output_path(project_dir: Path, scene_name: str, kind: SceneReferenceKind) -> Path:
@@ -744,6 +755,7 @@ async def generate_scene_reference_image(
     avoid_instructions: str = "",
     base_scene: NovelScene | None = None,
     output_path_override: Path | None = None,
+    source_context: str = "",
 ) -> Path:
     """Generate one scene reference image and return its path.
 
@@ -792,6 +804,7 @@ async def generate_scene_reference_image(
     prompt = build_scene_reference_prompt(
         kind,
         scene,
+        source_context=source_context,
         style_name=style_name,
         style_prompt=style_prompt,
         avoid_instructions=avoid_instructions,

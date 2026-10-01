@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+from collections.abc import Mapping
 from pathlib import Path
 import re
 import shutil
@@ -34,6 +36,13 @@ from novelvideo.text_task_runtime.settings import load_global_routes, runtime_pr
 # value must match dsh's built-in route name verbatim or headless cannot start.
 DSH_PROVIDER = "deepseek-official"
 DSH_RUNTIME = "deepseek_harness"
+
+# dsh refuses to start when the route's reasoning effort is not implemented by the
+# selected model (``dsh: UNSUPPORTED_REASONING_EFFORT: ...``). The effort is an
+# optimisation, so the runtime retries once without it.
+_UNSUPPORTED_EFFORT_CODE = "UNSUPPORTED_REASONING_EFFORT"
+
+_LOG = logging.getLogger(__name__)
 
 # dsh 的结构化错误行：``dsh: MISSING_CREDENTIAL: no API key for ...``。
 # 只认大写错误码，因为 stderr 同时承载推理流（``dsh: reasoning: ...``）等自由文本。
@@ -122,6 +131,80 @@ def _settings_scalar(value: str) -> str:
     if value != value.strip() or re.search(r":\s", value):
         return json.dumps(value, ensure_ascii=False)
     return value
+
+
+# dsh boots a *coding agent*: the headless profile mounts bash/fs/subagent tools
+# and a coding persona. Nuomi only ever asks it for structured JSON, so those
+# tools are pure risk — the H3 episode prompt optimizer spent 52 bash, 26 grep
+# and 22 read calls over 598s exploring the repository instead of answering, was
+# killed by DSH_EXEC_TIMEOUT_SECONDS, and the group then failed with "produced no
+# plan for segment(s) ...". WorkBuddy already passes `--tools ''` for the same
+# reason; this patch is the dsh equivalent.
+DSH_TOOL_FREE_PATCH = """\
+# Written by Nuomi. Disables every model-facing tool so a structured text task
+# cannot turn into an agentic exploration loop. Regenerated on each call.
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-todo
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-web
+  disabled: true
+"""
+
+DSH_TOOL_FREE_PATCH_NAME = "nuomi-structured-tools-off.patch.yml"
+
+
+def _write_tool_free_patch(home: Path) -> Path:
+    """Atomically materialise the tool-free overlay consumed by ``--patch``."""
+
+    home.mkdir(parents=True, exist_ok=True)
+    target = home / DSH_TOOL_FREE_PATCH_NAME
+    if target.is_file():
+        try:
+            if target.read_text(encoding="utf-8") == DSH_TOOL_FREE_PATCH:
+                return target
+        except OSError:
+            pass
+    handle, temporary = tempfile.mkstemp(
+        prefix="tools-off-", suffix=".yaml.tmp", dir=str(home)
+    )
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(DSH_TOOL_FREE_PATCH)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+    return target
 
 
 def _write_settings_document(home: Path, *, model: str, effort: str | None) -> Path:
@@ -249,7 +332,58 @@ class DeepSeekHarnessStructuredRuntime:
         model, effort = _resolve_default_model(self.snapshot)
         home = harness_home()
         try:
+            return await self._run_once(
+                home=home,
+                model=model,
+                effort=effort,
+                timeout=timeout,
+                prompt=prompt,
+                output_type=output_type,
+                system_prompt=system_prompt,
+                validation_context=validation_context,
+            )
+        except KnowledgeRuntimeError as exc:
+            # A reasoning effort the routed model does not implement is a
+            # configuration mistake, not a broken task: dsh exits before doing
+            # any work. Retry once without the effort so one unsupported preset
+            # cannot take down every text task in the pipeline.
+            if (
+                getattr(exc, "dsh_code", "") != _UNSUPPORTED_EFFORT_CODE
+                or effort is None
+            ):
+                raise
+            _LOG.warning(
+                "dsh rejected reasoning effort %r for model %r; retrying with the "
+                "model default",
+                effort,
+                model,
+            )
+            return await self._run_once(
+                home=home,
+                model=model,
+                effort=None,
+                timeout=timeout,
+                prompt=prompt,
+                output_type=output_type,
+                system_prompt=system_prompt,
+                validation_context=validation_context,
+            )
+
+    async def _run_once(
+        self,
+        *,
+        home: Path,
+        model: str,
+        effort: str | None,
+        timeout: int,
+        prompt,
+        output_type,
+        system_prompt: str,
+        validation_context,
+    ):
+        try:
             _write_settings_document(home, model=model, effort=effort)
+            tool_free_patch = _write_tool_free_patch(home)
         except OSError:
             raise KnowledgeRuntimeError(
                 "DeepSeek Harness 无法准备 DSH_HOME，请检查目录写入权限。",
@@ -261,7 +395,14 @@ class DeepSeekHarnessStructuredRuntime:
             request += "\nReturn only JSON matching this schema:\n" + json.dumps(
                 schema, ensure_ascii=False
             )
-        argv = [dsh_command(), "--profile", "headless", request]
+        argv = [
+            dsh_command(),
+            "--profile",
+            "headless",
+            "--patch",
+            str(tool_free_patch),
+            request,
+        ]
         env = build_codex_process_env(environ={**os.environ, "DSH_HOME": str(home)})
         with tempfile.TemporaryDirectory(prefix="nuomi-dsh-") as cwd:
             try:
@@ -285,6 +426,16 @@ class DeepSeekHarnessStructuredRuntime:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(), timeout=timeout
                 )
+            except TimeoutError:
+                # Keep the TimeoutError type: callers classify OSError (which
+                # TimeoutError subclasses) as a non-blocking quality failure on
+                # purpose. Carry the budget in the message so the downstream
+                # "optimizer failure: ..." diagnostic names the real limit.
+                await terminate_process_tree(process)
+                raise TimeoutError(
+                    f"DeepSeek Harness 调用超时（{timeout} 秒），模型未在预算内返回；"
+                    "如属正常的长任务请调大 DSH_EXEC_TIMEOUT_SECONDS。"
+                ) from None
             except BaseException:
                 await terminate_process_tree(process)
                 raise
@@ -295,15 +446,20 @@ class DeepSeekHarnessStructuredRuntime:
             extracted = _dsh_error_from_stderr(stderr)
             if extracted is None:
                 detail = "（未能从 dsh 输出中解析出具体原因）"
+                dsh_code = ""
             else:
-                code, message = extracted
-                detail = f"（dsh 报错 {code}: {message}）"
-            raise KnowledgeRuntimeError(
+                dsh_code, message = extracted
+                detail = f"（dsh 报错 {dsh_code}: {message}）"
+            error = KnowledgeRuntimeError(
                 f"DeepSeek Harness 执行失败，退出码 {process.returncode}{detail}。"
                 "请确认后端进程可访问凭据：设置 DEEPSEEK_API_KEY，"
                 "或将其写入 Nuomi 专属 $DSH_HOME 的 .credentials.yaml。",
                 code="DSH_EXEC_FAILED",
             )
+            # The caller needs dsh's own code to distinguish a rejected option
+            # (retryable without that option) from a real execution failure.
+            error.dsh_code = dsh_code
+            raise error
         try:
             text = stdout.decode("utf-8").strip()
             if output_type is str:
@@ -313,8 +469,38 @@ class DeepSeekHarnessStructuredRuntime:
             if text.startswith("```") and text.endswith("```") and "\n" in text:
                 text = text.split("\n", 1)[1].rsplit("```", 1)[0]
             return output_type.model_validate_json(text, context=validation_context)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as exc:
+            detail = _validation_detail(exc)
             raise KnowledgeRuntimeError(
-                "DeepSeek Harness 未返回符合要求的结构化结果。",
+                "DeepSeek Harness 未返回符合要求的结构化结果。"
+                + (f"（{detail}）" if detail else ""),
                 code="DSH_OUTPUT_INVALID",
             ) from None
+
+
+def _validation_detail(exc: BaseException) -> str:
+    """Structural schema detail (field + rule) for a rejected payload.
+
+    Without it the operator sees only "未返回符合要求的结构化结果" and the caller's
+    retry can tell the model nothing actionable, so a payload that is valid JSON
+    but violates a cross-field rule (``ref2va requires reference_summary``) can
+    never be corrected. Only ``loc``/``msg`` are reported: pydantic's ``input``
+    and the JSON decoder's snippet echo the model's raw output, which this
+    runtime never exposes.
+    """
+
+    errors = getattr(exc, "errors", None)
+    if not callable(errors):
+        return ""
+    try:
+        items = errors()
+    except Exception:
+        return ""
+    parts: list[str] = []
+    for item in items[:5]:
+        if not isinstance(item, Mapping):
+            continue
+        location = ".".join(str(part) for part in item.get("loc") or ())
+        message = " ".join(str(item.get("msg") or "").split())
+        parts.append(f"{location}: {message}".strip(": ") if location else message)
+    return "；".join(part for part in parts if part)[:400]

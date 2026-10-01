@@ -167,7 +167,9 @@ def test_production_preflight_rejects_missing_and_mismatched_blocking():
     assert "cinematography_missing" in production_direction_errors(shot(cinematography=None))
     value = shot(asset_requirements=[{"kind": "character_identity", "entity_key": "other"}])
     assert "blocking_subject_mismatch" in production_direction_errors(value)
-    assert production_direction_errors(shot()) == ()
+    assert production_direction_errors(shot(asset_requirements=[
+        {"kind": "character_identity", "entity_key": "lin"}])) == ()
+    assert "blocking_subject_mismatch" in production_direction_errors(shot(asset_requirements=()))
 
 
 def test_production_preflight_rejects_fabricated_plan_sources():

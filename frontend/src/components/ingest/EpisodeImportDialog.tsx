@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { BackendStatusError } from "@/lib/api-errors";
 import {
   useCommitEpisodeImport,
@@ -54,7 +55,7 @@ function reducer(state: State, action: Action): State {
             ...file,
             action: file.status === "new" ? "import" as const : null,
             editedEpisodeNumber: file.episode_number?.toString() ?? "",
-            editableEpisodeNumber: file.status === "needs_episode_number" || file.warnings?.includes("批次内部集号重复") === true,
+            editableEpisodeNumber: file.status !== "invalid",
             batchDuplicate: file.warnings?.includes("批次内部集号重复") === true,
           }))
           .sort((a, b) =>
@@ -126,6 +127,10 @@ export function EpisodeImportDialog({
   const commitMutation = useCommitEpisodeImport(project);
   const [state, dispatch] = useReducer(reducer, initialState);
   const [error, setError] = useState<string | null>(null);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [sourceMode, setSourceMode] = useState<"files" | "text">("files");
+  const [text, setText] = useState("");
+  const [leavePrompt, setLeavePrompt] = useState(false);
   const { t } = useTranslation();
   const existingEpisodes = useMemo(
     () => new Set(existingEpisodeNumbers),
@@ -136,6 +141,9 @@ export function EpisodeImportDialog({
     if (!open) {
       dispatch({ type: "reset" });
       setError(null);
+      setStep(1);
+      setText("");
+      setLeavePrompt(false);
     }
   }, [open]);
 
@@ -152,15 +160,23 @@ export function EpisodeImportDialog({
     [state.items],
   );
 
-  async function handleFiles(files: FileList | null) {
+  async function handleFiles(files: FileList | File[] | null) {
     if (!files?.length) return;
     setError(null);
     try {
       const response = await previewMutation.mutateAsync(Array.from(files));
       dispatch({ type: "preview", preview: response.data });
+      setStep(2);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("ingest.episodeImport.errors.previewFailed"));
     }
+  }
+
+  function requestClose(next: boolean) {
+    if (next) return onOpenChange(true);
+    if (commitMutation.isPending || previewMutation.isPending) return;
+    if (state.preview || text.trim()) setLeavePrompt(true);
+    else onOpenChange(false);
   }
 
   async function handleSubmit() {
@@ -221,17 +237,22 @@ export function EpisodeImportDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl sm:max-w-4xl">
+    <Dialog open={open} onOpenChange={requestClose}>
+      <DialogContent className="max-h-[90dvh] max-w-4xl overflow-y-auto sm:max-w-4xl">
         <DialogHeader>
           <DialogTitle>{t("ingest.episodeImport.title")}</DialogTitle>
         </DialogHeader>
+        <ol className="flex gap-4 border-b pb-4 text-sm" aria-label="导入步骤">
+          {["选择内容", "检查分集与冲突", "确认导入"].map((label, index) => <li key={label} aria-current={step === index + 1 ? "step" : undefined} className={step === index + 1 ? "font-semibold text-primary" : "text-muted-foreground"}>{index + 1}. {label}</li>)}
+        </ol>
 
         <p className="text-sm text-muted-foreground">
           {t("ingest.episodeImport.intentHint")}
         </p>
 
-        <label className="block text-sm font-medium">
+        {step === 1 && <>
+        <div className="flex gap-2"><Button variant={sourceMode === "files" ? "default" : "outline"} onClick={() => setSourceMode("files")}>选择文件</Button><Button variant={sourceMode === "text" ? "default" : "outline"} onClick={() => setSourceMode("text")}>粘贴正文</Button></div>
+        {sourceMode === "files" ? <label className="block text-sm font-medium">
           {t("ingest.episodeImport.selectFiles")}
           <Input
             className="mt-2"
@@ -241,18 +262,21 @@ export function EpisodeImportDialog({
             disabled={previewMutation.isPending || commitMutation.isPending}
             onChange={(event) => void handleFiles(event.currentTarget.files)}
           />
-        </label>
+        </label> : <label className="space-y-2 text-sm">分集剧本正文<Textarea value={text} onChange={(event) => setText(event.target.value)} className="min-h-48" placeholder="请保留第 1 集、第 2 集等分集标题" /><Button disabled={!text.trim() || previewMutation.isPending} onClick={() => void handleFiles([new File([text], "粘贴剧本.txt", { type: "text/plain" })])}>检查导入内容</Button></label>}
+        {previewMutation.isPending && <p role="status" className="text-sm text-muted-foreground">正在检查文件…</p>}
+        {state.preview && <Button variant="outline" onClick={() => setStep(2)}>继续检查已有结果</Button>}
+        </>}
 
         {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
 
-        {conflicts.length > 1 && (
+        {step === 2 && conflicts.length > 1 && (
           <div className="flex gap-2">
             {conflicts.some((item) => !item.batchDuplicate) && <Button type="button" variant="outline" onClick={() => dispatch({ type: "batch", value: "overwrite" })}>{t("ingest.episodeImport.overwriteAll")}</Button>}
             <Button type="button" variant="outline" onClick={() => dispatch({ type: "batch", value: "skip" })}>{t("ingest.episodeImport.skipAll")}</Button>
           </div>
         )}
 
-        {state.items.length > 0 && (
+        {step === 2 && state.items.length > 0 && (
           <div className="max-h-[50vh] space-y-2 overflow-y-auto">
             {state.items.map((item) => (
               <div key={item.file_id} data-testid="episode-import-row" className="grid grid-cols-[minmax(0,1fr)_7rem_minmax(0,1fr)_auto] items-center gap-3 rounded-md border p-3">
@@ -302,13 +326,22 @@ export function EpisodeImportDialog({
           </div>
         )}
 
-        {hasDuplicate && <p role="alert" className="text-sm text-destructive">{t("ingest.episodeImport.duplicate")}</p>}
+        {step === 2 && hasDuplicate && <p role="alert" className="text-sm text-destructive">{t("ingest.episodeImport.duplicate")}</p>}
+
+        {step === 3 && <section className="space-y-4 rounded-lg border p-5">
+          <h3 className="font-semibold">本次提交范围</h3>
+          <p>新增 {validItems.filter((item) => item.action === "import").length} 集 · 覆盖 {validItems.filter((item) => item.action === "overwrite").length} 集 · 跳过 {validItems.filter((item) => item.action === "skip").length} 集</p>
+          {state.items.some((item) => item.status === "invalid") && <p className="text-sm text-destructive">解析失败的文件不会提交，请返回检查后单独修正。</p>}
+          {validItems.some((item) => item.action === "overwrite") && <p className="text-sm text-amber-500">覆盖将替换对应集的源文；已有下游内容会标记为待复核。</p>}
+          <p className="text-sm text-muted-foreground">按原文解析和校对，使用当前项目配置。提交后可在任务中心查看进度。</p>
+        </section>}
+        {leavePrompt && <div role="alert" className="space-y-3 rounded-lg border border-amber-500/30 p-4"><p>当前导入内容尚未提交。关闭会丢弃本次预检。</p><div className="flex gap-2"><Button variant="outline" onClick={() => setLeavePrompt(false)}>继续编辑</Button><Button variant="destructive" onClick={() => onOpenChange(false)}>放弃并关闭</Button></div></div>}
 
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>{t("common.cancel")}</Button>
-          <Button type="button" disabled={!canSubmit || commitMutation.isPending} onClick={() => void handleSubmit()}>
-            {commitMutation.isPending ? t("ingest.episodeImport.submitting") : t("ingest.episodeImport.confirm")}
-          </Button>
+          <Button type="button" variant="outline" disabled={commitMutation.isPending || previewMutation.isPending} onClick={() => requestClose(false)}>{t("common.cancel")}</Button>
+          {step > 1 && <Button type="button" variant="outline" disabled={commitMutation.isPending} onClick={() => setStep(step === 3 ? 2 : 1)}>{step === 3 ? "返回检查" : "返回选择"}</Button>}
+          {step === 2 && <Button type="button" disabled={!canSubmit} onClick={() => setStep(3)}>{t("ingest.episodeImport.confirm")}</Button>}
+          {step === 3 && <Button type="button" disabled={!canSubmit || commitMutation.isPending} onClick={() => void handleSubmit()}>{commitMutation.isPending ? t("ingest.episodeImport.submitting") : "提交导入"}</Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>

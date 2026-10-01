@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import i18next from "i18next";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +14,7 @@ import { PropsPanel } from "@/components/assets/props-panel";
 const runtimeState = vi.hoisted(() => ({ isCeRuntime: true }));
 const toastErrorMock = vi.hoisted(() => vi.fn());
 const mutation = vi.hoisted(() => () => ({ mutateAsync: vi.fn(), isPending: false }));
+vi.mock("@/features/script-creation/prop-extraction-dialog", () => ({ PropExtractionDialog: ({ project }: { project: string }) => <div role="dialog">提取项目：{project}</div> }));
 
 vi.mock("@/lib/runtime-config", () => ({
   isCeRuntime: () => runtimeState.isCeRuntime,
@@ -185,6 +186,11 @@ function renderPanel() {
 }
 
 describe("PropsPanel CE generation credit gating", () => {
+  it("opens extraction from the creation prop table without uploading a file", async () => {
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "从创作道具表提取" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("提取项目：demo");
+  });
   beforeEach(() => {
     runtimeState.isCeRuntime = true;
     toastErrorMock.mockClear();
@@ -193,7 +199,9 @@ describe("PropsPanel CE generation credit gating", () => {
   it("hides single and batch prop reference costs without credit styling or credit errors", async () => {
     const { container } = renderPanel();
 
-    expect(await screen.findByText("Moon Fan")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "选择道具 Moon Fan" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("tab", { name: "参考与属性" })).toHaveAttribute("aria-selected", "true");
+    expect(container.querySelector('[data-asset-id="Moon Fan"] [data-slot="card-title"]')).toHaveTextContent("Moon Fan");
     expect(screen.getByRole("button", { name: "Batch generate refs" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Generate reference" })).toBeInTheDocument();
 

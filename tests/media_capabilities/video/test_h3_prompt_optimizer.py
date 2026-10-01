@@ -8,6 +8,9 @@ from pydantic_ai import PromptedOutput
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 
 import novelvideo.media_capabilities.video.h3_prompt_optimizer as h3_prompt_optimizer
+from novelvideo.media_capabilities.video.h3_prompt_profile import (
+    H3_PROMPT_PROFILE_VERSION,
+)
 from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
     H3PromptContext,
     H3PromptOptimizationError,
@@ -159,7 +162,7 @@ def test_production_optimizer_uses_prompted_output_without_tool_choice(
     assert isinstance(captured["output_type"], PromptedOutput)
     assert captured["output_type"].outputs is H3DirectorPlan
     assert captured["model"] is model
-    assert captured["retries"] == {"tools": 1, "output": 3}
+    assert captured["retries"] == {"tools": 0, "output": 0}
     h3_prompt_optimizer.create_h3_prompt_optimizer(
         cache_dir=tmp_path, director_model_factory=lambda: model, model_settings={},
         storyboard_grounded=True,
@@ -177,7 +180,7 @@ async def test_optimizer_renders_typed_content_with_fixed_fl2va_structure(tmp_pa
 
     assert isinstance(result, H3PromptOptimizationResult)
     assert result.cache_hit is False
-    assert result.format_version == 7
+    assert result.format_version == 8
     assert result.plan.mode is H3Mode.FL2VA
     assert result.quality_report.passed is True
     assert "Picture 2 (from Shot 1) aligns with the 5.00-second mark" in result.prompt
@@ -199,8 +202,8 @@ async def test_optimizer_caches_complete_result_by_segment_input_hash(tmp_path):
     assert second.cache_hit is True
     snapshot = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
     assert snapshot["prompt_profile_id"] == "minimax-h3-director"
-    assert snapshot["prompt_profile_version"] == 15
-    assert snapshot["compiler_version"] == 4
+    assert snapshot["prompt_profile_version"] == H3_PROMPT_PROFILE_VERSION
+    assert snapshot["compiler_version"] == 5
 
 
 @pytest.mark.asyncio
@@ -214,12 +217,12 @@ async def test_optimizer_quality_failure_raises_before_writing_cache(tmp_path):
     )
     agent = FakeAgent(plan.model_copy(update={"shots": (shot,)}))
 
-    with pytest.raises(H3PromptQualityError, match="vague_action"):
-        await H3PromptOptimizer(agent, tmp_path).optimize_segment(
-            _segment(), _context(), H3Mode.I2VA
-        )
-
-    assert list(tmp_path.iterdir()) == []
+    result = await H3PromptOptimizer(agent, tmp_path).optimize_segment(
+        _segment(), _context(), H3Mode.I2VA
+    )
+    assert result.quality_report.passed
+    assert "vague_action" in result.quality_report.codes
+    assert len(agent.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -254,9 +257,8 @@ async def test_optimizer_feeds_quality_report_back_to_director_then_succeeds(tmp
     ).optimize_segment(_segment(), _context(), H3Mode.I2VA)
 
     assert result.quality_report.passed is True
-    assert len(agent.tasks) == 2
-    assert "vague_action" in agent.tasks[1]
-    assert "shots.0.actions.1" in agent.tasks[1]
+    assert len(agent.tasks) == 1
+    assert "vague_action" in result.quality_report.codes
     assert len(list(tmp_path.glob("*.json"))) == 1
 
 
@@ -271,13 +273,13 @@ async def test_optimizer_rejects_after_quality_revision_budget_is_exhausted(tmp_
     )
 
     agent = FakeAgent(plan.model_copy(update={"shots": (shot,)}))
-    with pytest.raises(H3PromptQualityError, match="vague_action"):
+    with pytest.raises(H3PromptQualityError, match="duration_frame_mismatch"):
         await H3PromptOptimizer(
             agent, tmp_path, quality_revisions=2
-        ).optimize_segment(_segment(), _context(), H3Mode.I2VA)
+        ).optimize_segment(_segment().model_copy(update={"duration_seconds": 6}), _context(), H3Mode.I2VA)
 
-    assert len(agent.calls) == 3
-    assert list(tmp_path.iterdir()) == []
+    assert len(agent.calls) == 2
+    assert list(tmp_path.glob("*.json")) == []
 
 
 @pytest.mark.asyncio
@@ -290,7 +292,7 @@ async def test_optimizer_failure_raises_and_never_returns_or_caches_draft(tmp_pa
     with pytest.raises(H3PromptOptimizationError, match="provider unavailable"):
         await optimizer.optimize_segment(_segment(), _context(), H3Mode.I2VA)
 
-    assert list(tmp_path.iterdir()) == []
+    assert list(tmp_path.glob("*.json")) == []
 
 
 @pytest.mark.asyncio
@@ -414,7 +416,7 @@ async def test_typed_output_validation_is_wrapped_and_not_cached(tmp_path):
     agent = FakeAgent({"integrated_multimodal_description": "缺少音频字段"})
     with pytest.raises(H3PromptOptimizationError, match="typed director plan"):
         await H3PromptOptimizer(agent, tmp_path).optimize_segment(_segment(), _context(), H3Mode.I2VA)
-    assert list(tmp_path.iterdir()) == []
+    assert list(tmp_path.glob("*.json")) == []
 
 
 @pytest.mark.asyncio
@@ -424,7 +426,7 @@ async def test_dialogue_intent_without_dialogue_fails_closed_before_agent_call(t
     with pytest.raises(H3PromptOptimizationError, match="dialogue"):
         await H3PromptOptimizer(agent, tmp_path).optimize_segment(segment, _context(), H3Mode.I2VA)
     assert agent.calls == []
-    assert list(tmp_path.iterdir()) == []
+    assert list(tmp_path.glob("*.json")) == []
 
 
 @pytest.mark.asyncio
@@ -437,7 +439,7 @@ async def test_explicit_dialogue_required_with_all_cue_fields_empty_fails_closed
         await H3PromptOptimizer(agent, tmp_path).optimize_segment(segment, context, H3Mode.I2VA)
 
     assert agent.calls == []
-    assert list(tmp_path.iterdir()) == []
+    assert list(tmp_path.glob("*.json")) == []
 
 
 @pytest.mark.asyncio
@@ -520,8 +522,8 @@ def test_h3_task_contains_versioned_director_rules_and_context():
     assert "target=references" in task
     assert "target=props" in task
     assert "moving entity" in task and "ACTION" in task and "PHYSICS" in task
-    assert "active character or a visible held prop" in task
-    assert "explicitly name every moving entity" in task
+    assert "operated fixed mechanism" in task
+    assert "compiler derives the PHYSICS inventory" in task
     assert (
         "If no real tags are supplied, active_references must be empty."
         in h3_prompt_optimizer.H3_DIRECTOR_SYSTEM_PROMPT
@@ -530,7 +532,7 @@ def test_h3_task_contains_versioned_director_rules_and_context():
     assert "target=characters" in h3_prompt_optimizer.H3_DIRECTOR_SYSTEM_PROMPT
     assert "ACTION" in h3_prompt_optimizer.H3_DIRECTOR_SYSTEM_PROMPT
     assert "PHYSICS" in h3_prompt_optimizer.H3_DIRECTOR_SYSTEM_PROMPT
-    assert "active character or a visible held prop" in (
+    assert "operated fixed mechanisms" in (
         h3_prompt_optimizer.H3_DIRECTOR_SYSTEM_PROMPT
     )
     assert '<lighting_facts_json>{"primary_source":"window"}</lighting_facts_json>' in task
@@ -766,9 +768,8 @@ async def test_optimizer_repairs_unscoped_boundary_lock_before_compilation(tmp_p
     result = await H3PromptOptimizer(agent, tmp_path, quality_revisions=1).optimize_segment(
         _segment(), _context(), H3Mode.I2VA
     )
-    assert len(agent.calls) == 2
-    assert "global_state_scope" in agent.calls[1]
-    assert "frame 0 state:" not in result.prompt
+    assert len(agent.calls) == 1
+    assert "global_state_scope" in result.quality_report.codes
 
 
 def test_compile_and_gate_rejects_a_malformed_compiler_wire(monkeypatch):
@@ -851,7 +852,8 @@ async def test_optimizer_quality_revision_fills_empty_rigid_fields_without_overw
         RevisingAgent(), tmp_path, quality_revisions=1
     ).optimize_segment(_segment(), _context(), H3Mode.I2VA)
 
-    assert result.plan.rigid_prompt.physics.statements
+    assert not result.plan.rigid_prompt.physics.statements
+    assert "physics_required" in result.quality_report.codes
     assert result.plan.rigid_prompt.lighting.origin == "frame-right window"
 
 
@@ -937,7 +939,7 @@ async def test_lighting_repair_replaces_only_rejected_field_and_rechecks_facts(t
 
 
 @pytest.mark.asyncio
-async def test_optimizer_cannot_overwrite_nonempty_rigid_fact_during_quality_revision(
+async def test_optimizer_can_repair_explicitly_rejected_style_against_context(
     tmp_path,
 ):
     invalid = _director_plan()
@@ -956,12 +958,11 @@ async def test_optimizer_cannot_overwrite_nonempty_rigid_fact_during_quality_rev
         async def run(self, _task):
             return SimpleNamespace(output=self.outputs.pop(0))
 
-    with pytest.raises(H3PromptQualityError, match="style_prefix_mismatch"):
-        await H3PromptOptimizer(
-            RevisingAgent(), tmp_path, quality_revisions=1
-        ).optimize_segment(_segment(), _context(), H3Mode.I2VA)
-
-    assert list(tmp_path.iterdir()) == []
+    result = await H3PromptOptimizer(
+        RevisingAgent(), tmp_path, quality_revisions=1
+    ).optimize_segment(_segment(), _context(), H3Mode.I2VA)
+    assert result.plan.rigid_prompt.style_prefix == _context().style_prefix
+    assert result.quality_report.passed
 
 
 @pytest.mark.parametrize(
@@ -1070,6 +1071,94 @@ def _director_plan(
         music="No music. SFX only.",
         rigid_prompt=_rigid_prompt(total_frames),
     )
+
+
+def test_character_repair_replaces_rejected_cast_only():
+    from novelvideo.media_capabilities.video.h3_prompt_optimizer import merge_repaired_rigid_prompt
+    from novelvideo.media_capabilities.video.h3_prompt_quality import H3PromptQualityReport, H3PromptQualityIssue
+    original = _rigid_prompt(120)
+    candidate = original.model_copy(update={"scene_context": original.scene_context.model_copy(update={
+        "active_characters": ("lin", "mei"), "exact_character_count": 2,
+        "summary": "Unrequested replacement",
+    })})
+    report = H3PromptQualityReport(passed=False, issues=(H3PromptQualityIssue(
+        code="character_count_mismatch", message="mismatch", field="rigid_prompt.scene_context"),))
+    merged = merge_repaired_rigid_prompt(original, candidate, report)
+    assert merged.scene_context.active_characters == ("lin", "mei")
+    assert merged.scene_context.exact_character_count == 2
+    assert merged.scene_context.summary == original.scene_context.summary
+    untouched = merge_repaired_rigid_prompt(original, candidate, H3PromptQualityReport(passed=True))
+    assert untouched.scene_context == original.scene_context
+
+
+def test_repair_replaces_rejected_positive_count_instead_of_restoring_old_error():
+    from novelvideo.media_capabilities.video.h3_prompt_optimizer import merge_repaired_rigid_prompt
+    from novelvideo.media_capabilities.video.h3_prompt_quality import H3PromptQualityReport, H3PromptQualityIssue
+    original = _rigid_prompt(120)
+    rejected = original.positive_constraints[0].model_copy(update={"target": "props", "count": 1})
+    original = original.model_copy(update={"positive_constraints": (*original.positive_constraints, rejected)})
+    replacement = rejected.model_copy(update={"count": 2, "assertion": "Keep exactly two visible held props."})
+    candidate = original.model_copy(update={"positive_constraints": (replacement,)})
+    report = H3PromptQualityReport(passed=False, issues=(H3PromptQualityIssue(
+        code="positive_constraint_count_mismatch", message="props count must equal 2",
+        field="rigid_prompt.positive_constraints.props"),))
+    merged = merge_repaired_rigid_prompt(original, candidate, report)
+    assert tuple(c for c in merged.positive_constraints if c.target == "props") == (replacement,)
+    assert tuple(c for c in merged.positive_constraints if c.target != "props") == original.positive_constraints[:-1]
+
+
+@pytest.mark.parametrize("field,code", [
+    ("character_acting", "character_acting_missing"),
+    ("spatial_blocking", "first_frame_character_mismatch"),
+])
+def test_character_repair_replaces_only_rejected_character_sections(field, code):
+    from novelvideo.media_capabilities.video.h3_prompt_optimizer import merge_repaired_rigid_prompt
+    from novelvideo.media_capabilities.video.h3_prompt_quality import H3PromptQualityReport, H3PromptQualityIssue
+    original = _rigid_prompt(120)
+    if field == "character_acting":
+        replacement = (original.character_acting[0].model_copy(update={"character_id": "mei"}),)
+        path = "rigid_prompt.character_acting"
+    else:
+        block = original.spatial_blocking[0]
+        replacement = (block.model_copy(update={"subjects": (
+            block.subjects[0].model_copy(update={"character_id": "mei"}),)}),)
+        path = f"rigid_prompt.spatial_blocking.{block.shot_id}.subjects"
+    candidate = original.model_copy(update={field: replacement})
+    report = H3PromptQualityReport(passed=False, issues=(H3PromptQualityIssue(
+        code=code, message="mismatch", field=path),))
+    merged = merge_repaired_rigid_prompt(original, candidate, report)
+    assert getattr(merged, field) == replacement
+    assert merged.scene_context == original.scene_context
+
+
+@pytest.mark.parametrize("speaker,text,restored", [("林默", "别过来", True), ("别人", "别过来", False), ("林默", "改词", False)])
+def test_source_tone_is_restored_only_for_exact_ordered_dialogue(speaker, text, restored):
+    segment = H3DirectorSegment.model_validate({**_segment().model_dump(),
+        "dialogue_lines": [{"speaker": "林默", "text": "别过来", "tone": "低声"}]})
+    plan = _director_plan(speaker=speaker, dialogue=text)
+    normalized = h3_prompt_optimizer.normalize_h3_source_tones(plan, segment)
+    assert (normalized.shots[0].dialogue[0].delivery == "低声") is restored
+    assert normalized.shots[0].dialogue[0].text == text
+    assert normalized.shots[0].dialogue[0].speaker == speaker
+    if restored:
+        result = h3_prompt_optimizer.compile_and_gate_h3_plan(
+            plan, segment=segment, context=_context(), mode=H3Mode.I2VA, input_hash="a" * 64)
+        assert result.plan.shots[0].dialogue[0].delivery == "低声"
+
+
+def test_repair_rebinds_shot_sections_when_shot_structure_changes():
+    from novelvideo.media_capabilities.video.h3_prompt_optimizer import merge_repaired_rigid_prompt
+    from novelvideo.media_capabilities.video.h3_prompt_quality import H3PromptQualityReport
+    candidate = _rigid_prompt(120)
+    original = candidate.model_copy(update={
+        "spatial_blocking": (*candidate.spatial_blocking, candidate.spatial_blocking[0].model_copy(update={"shot_id": "2"})),
+        "optics": (*candidate.optics, candidate.optics[0].model_copy(update={"shot_id": "2"})),
+    })
+    merged = merge_repaired_rigid_prompt(original, candidate, H3PromptQualityReport(passed=True), shot_structure_changed=True)
+    assert merged.spatial_blocking == candidate.spatial_blocking
+    assert merged.optics == candidate.optics
+    assert merged.scene_context == original.scene_context
+    assert merged.lighting == original.lighting
 
 
 def _rigid_prompt(total_frames: int) -> H3RigidPromptPlan:

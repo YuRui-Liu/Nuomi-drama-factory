@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Elastic-2.0
+import { createPortal } from "react-dom";
 import { Video } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -131,7 +132,8 @@ export interface GroupVideoReferenceState {
   onManage?: () => void;
 }
 
-export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, inputs, plan, planSaving = false, workflowSynchronized = true, taskStatus = "pending", inherited = true, available = true, unavailableReason, models, modelSaving = false, reference, onModelChange, onModeChange, onPlanSave, onGenerate }: {
+export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, inputs, plan, planSaving = false, workflowSynchronized = true, taskStatus = "pending", inherited = true, available = true, unavailableReason, models, modelSaving = false, reference, onModelChange, onModeChange, onPlanSave, onGenerate, controlsTarget }: {
+  controlsTarget?: HTMLElement | null;
   modelId: string; mode: VideoModelMode; hasFirstFrame: boolean; hasLastFrame: boolean;
   inputs?: NonNullable<NarrativeGroup["video_inputs"]>;
   plan?: NarrativeGroup["video_plan"];
@@ -180,6 +182,7 @@ export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, in
   const referenceBlocked = Boolean(reference?.required && (
     reference.loading || reference.error || reference.dirty || !reference.valid
   ));
+  const controls = <div className="flex flex-wrap items-center gap-2">{models && onModelChange ? <ProjectVideoModelSelect value={modelId} models={models} saving={modelSaving} disabled={editingDisabled} onChange={onModelChange} /> : null}<H3VideoModeSelect value={mode} availability={modeAvailabilities} disabled={editingDisabled || modelSaving || !onModeChange} onChange={(nextMode) => onModeChange?.(nextMode)} />{reference?.required ? <><span className="text-xs text-muted-foreground">{t("narrativeVideoReferences.selectedCount", { count: reference.count, max: reference.max })}</span><Button type="button" size="sm" variant="outline" onClick={reference.onManage}>{t("narrativeVideoReferences.manage")}</Button></> : null}<span className="text-xs text-muted-foreground">{taskStatusLabel[taskStatus]}</span><Button type="button" size="sm" disabled={!selectedMode.available || !onGenerate || planChanged || planSaving || !workflowSynchronized || referenceBlocked || taskStatus === "queued" || taskStatus === "running"} onClick={() => onGenerate?.({ video_model: modelId, h3_mode: mode })}>生成组合视频</Button></div>;
   return (
     <section className="rounded-xl border border-white/10 bg-white/[0.025] p-4" data-stage="video">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -187,7 +190,7 @@ export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, in
           <Video className="size-4 text-primary" />
           <div><h3 className="text-sm font-semibold">视频生成</h3><p className="text-xs text-muted-foreground">{label} · {modeLabel} · {inherited ? "继承项目默认" : "本次临时覆盖"}</p></div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">{models && onModelChange ? <ProjectVideoModelSelect value={modelId} models={models} saving={modelSaving} disabled={editingDisabled} onChange={onModelChange} /> : null}<H3VideoModeSelect value={mode} availability={modeAvailabilities} disabled={editingDisabled || modelSaving || !onModeChange} onChange={(nextMode) => onModeChange?.(nextMode)} />{reference?.required ? <><span className="text-xs text-muted-foreground">{t("narrativeVideoReferences.selectedCount", { count: reference.count, max: reference.max })}</span><Button type="button" size="sm" variant="outline" onClick={reference.onManage}>{t("narrativeVideoReferences.manage")}</Button></> : null}<span className="text-xs text-muted-foreground">{taskStatusLabel[taskStatus]}</span><Button type="button" size="sm" disabled={!selectedMode.available || !onGenerate || planChanged || planSaving || !workflowSynchronized || referenceBlocked || taskStatus === "queued" || taskStatus === "running"} onClick={() => onGenerate?.({ video_model: modelId, h3_mode: mode })}>生成组合视频</Button></div>
+        {controlsTarget ? createPortal(controls, controlsTarget) : controls}
       </div>
       {!available && <p className="mt-2 text-xs text-destructive">{unavailableReason || "模型尚未配置"}</p>}
       {planChanged && <p className="mt-2 text-xs text-muted-foreground">请先保存视频方案</p>}

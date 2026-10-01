@@ -3,6 +3,7 @@ from __future__ import annotations
 import unicodedata
 import re
 from collections.abc import Sequence
+from typing import Any
 
 from .models import (
     CharacterDesignProposal,
@@ -52,6 +53,37 @@ _CELEBRITY_REFERENCE_TERMS = (
     "影星",
     "网红",
     "同款",
+)
+# The comparison pattern cannot tell a person from a noun, so anatomy talk such
+# as 「鼻端像猪」「头骨像鹿」 must be excluded explicitly.
+_ANIMAL_COMPARISON_NOUNS = (
+    "兽",
+    "鸟",
+    "禽",
+    "猫",
+    "犬",
+    "狗",
+    "鹿",
+    "马",
+    "牛",
+    "羊",
+    "狼",
+    "狐",
+    "蛇",
+    "龙",
+    "鱼",
+    "虫",
+    "鼠",
+    "兔",
+    "虎",
+    "豹",
+    "熊",
+    "猿",
+    "猴",
+    "猪",
+    "象",
+    "禽鸟",
+    "驮兽",
 )
 _GENERIC_BEAUTY_TERMS = (
     "漂亮",
@@ -111,6 +143,194 @@ _ASYMMETRY_SEMANTICS = {
     "断眉": "brow_gap",
     "凹": "dimple",
 }
+
+HUMAN_SPECIES = {"人", "人类", "human", "homo sapiens"}
+UNKNOWN_SPECIES = {"", "unknown", "未知"}
+
+
+def is_nonhuman_species(value: str | None) -> bool:
+    """A species only counts as non-human when it is named and unambiguous."""
+
+    return str(value or "").strip().casefold() not in HUMAN_SPECIES | UNKNOWN_SPECIES
+
+
+# Sources do not always name a 物种 field: 「假鹿蜀」's only sourced anatomy fact
+# is `build=瘦小驮兽，头裹白绢且尾巴染红`. A pure species-field lookup then
+# classifies a beast as human and demands human face/hair diversity from three
+# beast heads. These compounds describe the subject's own body, not its clothes.
+_CREATURE_ANATOMY_TERMS = (
+    "驮兽",
+    "妖兽",
+    "神兽",
+    "灵兽",
+    "魔兽",
+    "野兽",
+    "猛兽",
+    "巨兽",
+    "海兽",
+    "兽类",
+    "兽形",
+    "兽面",
+    "兽首",
+    "兽体",
+    "兽足",
+    "四足",
+    "猛禽",
+    "鸟类",
+    "蛇类",
+    "龙形",
+    "兽皮",
+    "羽毛",
+    "鳞片",
+    "蹄",
+    "爪",
+)
+_ANATOMY_FACT_FIELDS = frozenset(
+    {"species", "build", "appearance", "body_type", "face"}
+)
+
+
+def facts_imply_creature_anatomy(facts: Sequence[Any]) -> bool:
+    """True when a sourced anatomy fact describes a non-human body."""
+
+    for fact in facts:
+        if getattr(fact, "field", None) not in _ANATOMY_FACT_FIELDS:
+            continue
+        value = str(getattr(fact, "value", "") or "")
+        if any(term in value for term in _CREATURE_ANATOMY_TERMS):
+            return True
+    return False
+
+
+# A creature's silhouette is carried by head anatomy, coat, build and individual
+# marks. The human vocabularies below collapse distinct animals onto the same
+# tokens (every muzzle becomes "nose"), which made structurally different
+# creature directions look identical; these add the organ *and* the modifier.
+_NONHUMAN_HEAD_SEMANTICS = {
+    "角": "horn",
+    "犄": "horn",
+    "喙": "beak",
+    "吻": "muzzle",
+    "口吻": "muzzle",
+    "颅": "skull",
+    "头骨": "skull",
+    "头顶": "crown",
+    "额": "brow_ridge",
+    "眉弓": "brow_ridge",
+    "颧": "cheekbone",
+    "颌": "jaw",
+    "颚": "jaw",
+    "下巴": "chin",
+    "耳": "ear",
+    "眼": "eye",
+    "瞳": "pupil",
+    "鼻": "nose",
+    "鼻孔": "nostril",
+    "唇": "lip",
+    "嘴": "mouth",
+    "齿": "teeth",
+    "颈": "neck",
+    "须": "whisker",
+    "窄": "narrow",
+    "宽": "broad",
+    "长": "long",
+    "短": "short",
+    "圆": "round",
+    "方": "square",
+    "楔": "wedge",
+    "弧": "arched",
+    "拱": "arched",
+    "椭圆": "oval",
+    "细长": "slender",
+    "厚": "thick",
+    "薄": "thin",
+    "直立": "upright",
+    "低垂": "drooping",
+    "后折": "folded",
+    "侧置": "lateral",
+    "突出": "protruding",
+    "内收": "receding",
+    "外凸": "bulging",
+    "扁平": "flat",
+    "外旋": "outward",
+    "外展": "abducted",
+}
+_NONHUMAN_COAT_SEMANTICS = {
+    "毛": "fur",
+    "鬃": "mane",
+    "绒": "down",
+    "羽": "feather",
+    "鳞": "scale",
+    "皮": "skin",
+    "纹理": "texture",
+    "斑": "marking",
+    "纹": "marking",
+    "白绢": "cloth_wrap",
+    "绢": "cloth_wrap",
+    "染红": "dyed_red",
+    "染料": "dye",
+    "额毛": "forehead_tuft",
+    "颈脊": "neck_ridge",
+    "旋": "whorl",
+    "稀": "sparse",
+    "浓密": "dense",
+    "倒向": "swept",
+    "短": "short",
+    "长": "long",
+    "厚": "thick",
+    "薄": "thin",
+}
+_NONHUMAN_BUILD_SEMANTICS = {
+    "瘦": "lean",
+    "瘦小": "petite",
+    "纤细": "slender",
+    "细瘦": "thin",
+    "粗壮": "stout",
+    "矮壮": "stocky",
+    "高大": "tall",
+    "长腿": "long_leg",
+    "短腿": "short_leg",
+    "窄胸": "narrow_chest",
+    "宽胸": "broad_chest",
+    "肋": "ribbed",
+    "腹线": "belly_line",
+    "四肢": "limbs",
+    "躯干": "torso",
+    "尾": "tail",
+    "蹄": "hoof",
+    "爪": "claw",
+    "翼": "wing",
+    "关节": "jointed",
+    "轻型": "light",
+    "重型": "heavy",
+    "驮兽": "pack_beast",
+}
+_NONHUMAN_MARK_SEMANTICS = {
+    "左": "left",
+    "右": "right",
+    "高": "high",
+    "低": "low",
+    "偏": "offset",
+    "耳": "ear",
+    "眼": "eye",
+    "鼻": "nose",
+    "尾": "tail",
+    "肢": "limb",
+    "外旋": "outward",
+    "外展": "abducted",
+    "内折": "folded",
+    "断": "broken",
+    "印": "mark",
+    "痕": "mark",
+    "疤": "scar",
+    "斑": "patch",
+    "凹": "dent",
+    "抽动": "twitch",
+    "白绢": "cloth_wrap",
+    "染红": "dyed_red",
+    "敏感": "sensitive",
+}
+
 _CELEBRITY_COMPARISON_PATTERN = re.compile(
     r"(?:像|神似|仿照|参考)\s*(?:明星|名人|演员|艺人|影星|网红)?\s*[\u3400-\u9fff·]{2,8}"
 )
@@ -174,6 +394,27 @@ def _semantic_signature(value: str, vocabulary: dict[str, str]) -> str:
     )
 
 
+def rendered_visual_text(proposal: CharacterDesignProposal) -> str:
+    """Only the fields that become image instructions.
+
+    ``title``/``rationale`` explain the design; they are never sent to the image
+    model, so they must not be judged as visual constraints.
+    """
+
+    return "\n".join(
+        [
+            proposal.face_shape or "",
+            *proposal.facial_features,
+            proposal.hair_style or "",
+            proposal.body_type or "",
+            *proposal.distinctive_features,
+            *proposal.identity_anchors,
+            proposal.asymmetry_detail,
+            *proposal.outfit_states.values(),
+        ]
+    )
+
+
 def _all_proposal_text(proposal: CharacterDesignProposal) -> str:
     values = [
         proposal.title,
@@ -234,21 +475,53 @@ def assess_design_proposal(
     positive_text = re.sub(r"(?:不要|不得|避免|无|没有)(?:任何)?(?:" + "|".join(_GENERIC_BEAUTY_TERMS) + r")", "", proposal_text)
     if _contains_any(positive_text, _GENERIC_BEAUTY_TERMS) and not sourced_beauty:
         issues.append("generic_beauty:forbidden")
-    if _contains_any(
-        positive_text, _CELEBRITY_REFERENCE_TERMS
-    ) or _CELEBRITY_COMPARISON_PATTERN.search(positive_text):
+    # Explicit celebrity words are banned wherever they appear, but the loose
+    # `像/参考 + <bare noun>` comparison only counts as a likeness instruction
+    # where it reaches the image — judging `rationale` prose flagged
+    # 「像鹿蜀但不是鹿蜀」 as a celebrity reference.
+    if _contains_any(proposal_text, _CELEBRITY_REFERENCE_TERMS) or _celebrity_comparison(
+        rendered_visual_text(proposal)
+    ):
         issues.append("celebrity_reference:forbidden")
 
     return proposal.model_copy(update={"quality_issues": issues})
 
 
-def _structure_signature(proposal: CharacterDesignProposal) -> tuple[str, str, str, str]:
+def _celebrity_comparison(text: str) -> bool:
+    """True for a person likeness, not for "鼻端像猪" style anatomy talk."""
+
+    for match in _CELEBRITY_COMPARISON_PATTERN.finditer(text):
+        if _contains_any(match.group(), _ANIMAL_COMPARISON_NOUNS):
+            continue
+        return True
+    return False
+
+
+def _structure_signature(
+    proposal: CharacterDesignProposal, *, nonhuman: bool = False
+) -> tuple[str, str, str, str]:
     face_text = str(proposal.face_shape or "")
     facial_text = "|".join(proposal.facial_features)
     hair_text = str(proposal.hair_style or "")
     individual_text = "|".join(
         [proposal.asymmetry_detail, *proposal.distinctive_features]
     )
+    if nonhuman:
+        # Head anatomy, coat/covering, build and individual marks are the four
+        # axes that actually separate one creature design from another. Human
+        # face/hair vocabulary is not an anatomical requirement here.
+        head_text = "|".join([face_text, facial_text]).strip("|")
+        body_text = str(proposal.body_type or "")
+        return (
+            _semantic_signature(head_text, _NONHUMAN_HEAD_SEMANTICS)
+            or _normalize(head_text),
+            _semantic_signature(hair_text, _NONHUMAN_COAT_SEMANTICS)
+            or _normalize(hair_text),
+            _semantic_signature(body_text, _NONHUMAN_BUILD_SEMANTICS)
+            or _normalize(body_text),
+            _semantic_signature(individual_text, _NONHUMAN_MARK_SEMANTICS)
+            or _normalize(individual_text),
+        )
     return (
         _semantic_signature(face_text, _FACE_SEMANTICS) or _normalize(face_text),
         _semantic_signature(facial_text, _FACIAL_SEMANTICS)
@@ -266,8 +539,14 @@ def _structure_signature(proposal: CharacterDesignProposal) -> tuple[str, str, s
 def _structures_collide(
     left: CharacterDesignProposal,
     right: CharacterDesignProposal,
+    *,
+    nonhuman: bool = False,
 ) -> bool:
-    pairs = zip(_structure_signature(left), _structure_signature(right), strict=True)
+    pairs = zip(
+        _structure_signature(left, nonhuman=nonhuman),
+        _structure_signature(right, nonhuman=nonhuman),
+        strict=True,
+    )
     shared = 0
     for left_value, right_value in pairs:
         left_tokens = {token for token in left_value.split("|") if token}
@@ -290,14 +569,33 @@ def _append_issue(
     return proposal.model_copy(update={"quality_issues": [*proposal.quality_issues, issue]})
 
 
+def nonhuman_from_profile(profile: CharacterNarrativeProfile | None) -> bool:
+    """Derive non-human anatomy from a profile's sourced species/anatomy facts."""
+
+    if profile is None:
+        return False
+    facts = profile.visual_constraints()
+    values = {
+        str(fact.value or "").strip().casefold()
+        for fact in facts
+        if fact.field == "species" and str(fact.value or "").strip()
+    }
+    if values:
+        return len(values) == 1 and is_nonhuman_species(next(iter(values)))
+    return facts_imply_creature_anatomy(facts)
+
+
 def validate_design_proposals(
     proposals: Sequence[CharacterDesignProposal],
     *,
     existing_proposals: Sequence[CharacterDesignProposal] = (),
     profile: CharacterNarrativeProfile | None = None,
+    nonhuman: bool | None = None,
 ) -> list[CharacterDesignProposal]:
     """Validate one three-direction set and annotate structural collisions."""
 
+    if nonhuman is None:
+        nonhuman = nonhuman_from_profile(profile)
     reviewed = [assess_design_proposal(proposal, profile=profile) for proposal in proposals]
     if len(reviewed) != 3:
         raise ProposalSetShapeError(
@@ -311,7 +609,7 @@ def validate_design_proposals(
     for left_index, left in enumerate(reviewed):
         for right_index in range(left_index + 1, len(reviewed)):
             right = reviewed[right_index]
-            if not _structures_collide(left, right):
+            if not _structures_collide(left, right, nonhuman=nonhuman):
                 continue
             reviewed[left_index] = _append_issue(
                 reviewed[left_index], f"structure_collision:{right.proposal_id}"
@@ -323,7 +621,7 @@ def validate_design_proposals(
 
     for index, proposal in enumerate(reviewed):
         for existing in existing_proposals:
-            if _structures_collide(proposal, existing):
+            if _structures_collide(proposal, existing, nonhuman=nonhuman):
                 reviewed[index] = _append_issue(
                     reviewed[index], f"roster_collision:{existing.proposal_id}"
                 )

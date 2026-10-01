@@ -63,7 +63,15 @@ def test_segment_task_freezes_actual_episode_pack_consumer():
     assert task_methods('narrative_group_video_segment') == [('video_director', 'h3_episode_pack')]
 
 
-def test_freeze_survives_activation_and_cache_uses_content(tmp_path):
+def test_rewrite_scope_accepts_frozen_document_kind_method():
+    from novelvideo.agent_teams.runtime import task_methods, method_scope, current_method
+    assert ('writer', 'people') in task_methods('script_creation_rewrite')
+    with method_scope([snapshot(subtask_id='people')], project_id='p', task_type='script_creation_rewrite'):
+        assert current_method('writer', 'people').resolved_method.prompt == 'method'
+
+
+@pytest.mark.parametrize('task_type', ['script_creation_generation', 'script_creation_rewrite'])
+def test_freeze_survives_activation_and_cache_uses_content(tmp_path, task_type):
     from novelvideo.agent_teams.runtime import freeze_task_methods, method_scope, current_method, method_cache_dir
     from novelvideo.agent_teams.service import AgentTeamService
     from novelvideo.agent_teams.store import AgentTeamStore
@@ -72,14 +80,14 @@ def test_freeze_survives_activation_and_cache_uses_content(tmp_path):
     service = AgentTeamService(AgentTeamStore(tmp_path / 'agent-team.db'), None, 'u', connected_subtasks)
     draft = service.save_draft('p', {'overrides': {'writer': {'brief': {'prompt': 'first'}}}}, 0)
     service.activate('p', draft['draft_revision'], 0)
-    frozen = freeze_task_methods(ctx, 'script_creation_generation', {'run_id': 'r'}, AgentTaskRoute())
+    frozen = freeze_task_methods(ctx, task_type, {'run_id': 'r'}, AgentTaskRoute())
     assert len(frozen) == 7
     draft = service.save_draft('p', {'overrides': {'writer': {'brief': {'prompt': 'second'}}}}, 1)
     service.activate('p', draft['draft_revision'], 1)
     with method_scope(frozen, project_id='p'):
         assert current_method('writer', 'brief').resolved_method.prompt == 'first'
         first = method_cache_dir(tmp_path, 'writer', 'brief')
-    changed = freeze_task_methods(ctx, 'script_creation_generation', {'run_id': 'r'}, AgentTaskRoute())
+    changed = freeze_task_methods(ctx, task_type, {'run_id': 'r'}, AgentTaskRoute())
     with method_scope(changed, project_id='p'):
         assert method_cache_dir(tmp_path, 'writer', 'brief') != first
 

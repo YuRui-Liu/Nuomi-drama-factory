@@ -48,6 +48,12 @@ from novelvideo.api.routes import (  # noqa: E402
     character_casting,
     chat,
     config,
+    creative_studios,
+    studio_director,
+    studio_character,
+    studio_previs,
+    studio_previs_planning,
+    studio_intro,
     content,
     director_plans,
     episode_imports,
@@ -80,6 +86,8 @@ from novelvideo.api.routes import (  # noqa: E402
 )
 
 api_router = APIRouter(prefix="/api/v1")
+from .routes import music_desk
+api_router.include_router(music_desk.router, tags=["music"])
 api_router.include_router(character_casting.router, tags=['characters'])
 
 OPENAPI_TAGS = [
@@ -114,6 +122,10 @@ if not runtime_env.is_ce_effective():
 api_router.include_router(config.router, tags=["config"])
 api_router.include_router(chat.router, tags=["chat"])
 api_router.include_router(projects.router, tags=["projects"])
+from .routes import agent_teams
+from .routes import agent_team_trials
+api_router.include_router(agent_team_trials.router, tags=["agent-team-trials"])
+api_router.include_router(agent_teams.router, tags=["agent-teams"])
 api_router.include_router(project_costs.router, tags=["costs"])
 api_router.include_router(project_costs.settings_router, tags=["costs"])
 api_router.include_router(ingest.router, tags=["ingest"])
@@ -127,6 +139,12 @@ api_router.include_router(scenes.router, tags=["scenes"])
 api_router.include_router(props.router, tags=["props"])
 api_router.include_router(episodes.router, tags=["episodes"])
 api_router.include_router(director_plans.router, tags=["director-plans"])
+api_router.include_router(studio_director.router, tags=["creative-studios"])
+api_router.include_router(studio_character.router, tags=["creative-studios"])
+api_router.include_router(studio_previs.router, tags=["creative-studios"])
+api_router.include_router(studio_previs_planning.router, tags=["creative-studios"])
+api_router.include_router(studio_intro.router, tags=["creative-studios"])
+api_router.include_router(creative_studios.router, tags=["creative-studios"])
 api_router.include_router(episode_imports.router, tags=["episode-imports"])
 api_router.include_router(scripts.router, tags=["scripts"])
 api_router.include_router(script_creation.router, tags=["script-creation"])

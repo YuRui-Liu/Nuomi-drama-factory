@@ -4,6 +4,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def current_identity_facts(monkeypatch):
+    from novelvideo.api.routes import identity_qc as api
+    monkeypatch.setattr(api, "_current_identity_facts", AsyncMock(return_value={"expected_appearance": "四足", "nonhuman_species": "狸"}))
+
+
 @pytest.mark.asyncio
 async def test_recheck_endpoint_reuses_pass_without_enqueue(monkeypatch):
     from novelvideo.api.routes import identity_qc as api
@@ -87,6 +93,8 @@ async def test_recheck_enqueues_frozen_route(monkeypatch):
     assert payload["agent_route_override"]["model"] == route.model
     assert payload["qc_route"]["source"] == "global"
     assert payload["style_family"] == "2d"
+    assert payload["expected_appearance"] == "四足"
+    assert payload["nonhuman_species"] == "狸"
 
 
 @pytest.mark.asyncio
@@ -105,3 +113,20 @@ async def test_runner_uses_frozen_style_family(monkeypatch):
                                  SimpleNamespace(output_dir="unused"))
     assert result == "report"
     assert assessment.call_args.kwargs["style_family"] is IdentitySheetStyleFamily.TWO_D
+
+
+@pytest.mark.asyncio
+async def test_recheck_cache_changes_with_current_facts(monkeypatch):
+    from novelvideo.api.routes import identity_qc as api
+    monkeypatch.setattr(api, "resolve_project_scope", AsyncMock(return_value=SimpleNamespace(ctx=object())))
+    monkeypatch.setattr(api, "prepare_recheck", lambda *a, **k: {"image_sha256": "unchanged"})
+    monkeypatch.setattr(api, "_route_and_style", lambda c: (object(), "anime", "policy", "2d"))
+    seen = []
+    def cached(ctx, target, fingerprint):
+        seen.append(fingerprint)
+        return {"qc_passed": True}
+    monkeypatch.setattr(api, "recheck_cache", cached)
+    for appearance, species in [("四足", "狸"), ("四足白尾", "狸"), ("四足白尾", "狼")]:
+        monkeypatch.setattr(api, "_current_identity_facts", AsyncMock(return_value={"expected_appearance": appearance, "nonhuman_species": species}))
+        await api.recheck_identity("p", "n", "i", "v", api.IdentityRecheckRequest(), {})
+    assert len(set(seen)) == 3

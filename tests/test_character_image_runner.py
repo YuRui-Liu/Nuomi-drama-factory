@@ -314,6 +314,28 @@ def test_portrait_prompt_does_not_infer_gender_or_human_identity(raw_gender):
     assert "Do not infer or assign gender, sex, or a human species" in prompt
 
 
+@pytest.mark.parametrize("raw_gender", ["", None, "中性", "未知", "非人类", "robot"])
+@pytest.mark.parametrize("details", [
+    "非人形狸兽，灰褐兽毛、颈背短鬣，无衣饰",
+    "人类中性角色，短发，已确认灰色交领服装",
+    "机械面罩，无人类皮肤",
+])
+def test_neutral_portrait_does_not_invent_human_anatomy_or_apparel(raw_gender, details):
+    from novelvideo.task_backend.runners.character_image import _build_face_portrait_prompt
+
+    prompt = _build_face_portrait_prompt(
+        face_details=details, gender=raw_gender, ethnicity="Chinese", style="3D 国漫",
+    )
+
+    assert "upper-shoulder outline" not in prompt
+    assert "collar confined" not in prompt
+    assert "complete hair, both ears" not in prompt
+    assert "Do not invent clothing, collars, neckwear, or accessories" in prompt
+    assert "only when explicitly present in the confirmed identity details" in prompt
+    assert "Do not infer species from unspecified gender" in prompt
+    assert details in prompt
+
+
 def test_portrait_prompt_uses_square_head_neck_and_upper_shoulder_framing():
     from novelvideo.task_backend.runners.character_image import (
         _build_face_portrait_prompt,
@@ -393,6 +415,12 @@ async def test_identity_portrait_uses_character_gender_face_only_and_square_outp
         async def update_character_identity(self, *args, **kwargs):
             captured["updated_identity"] = (args, kwargs)
 
+    monkeypatch.setattr(
+        "novelvideo.character_visual.casting_recovery.update_identity_portrait_reference",
+        lambda output_dir, state_dir, name, identity_id, portrait: captured.update(
+            updated_identity=((name, identity_id), {"portrait_image": portrait})
+        ),
+    )
     monkeypatch.setattr(character_image, "_generate_grsai_image", fake_grsai_image)
 
     output = await character_image._generate_identity_portrait(

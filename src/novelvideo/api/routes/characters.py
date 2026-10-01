@@ -5,11 +5,12 @@ import logging
 import os
 import re
 import shutil
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("novelvideo.api.characters")
@@ -17,6 +18,8 @@ logger = logging.getLogger("novelvideo.api.characters")
 from novelvideo.api.asset_metadata import newest_updated_at, tree_updated_at
 from novelvideo.api.auth import get_api_user
 from novelvideo.api.routes.identity_qc import router as identity_qc_router
+from novelvideo.api.routes.voice_candidates import router as voice_candidates_router
+from novelvideo.api.routes.voice_acceptance import router as voice_acceptance_router
 from novelvideo.api.deps import (
     get_media_capability_store,
     get_media_credential_store,
@@ -117,6 +120,8 @@ from novelvideo.sqlite_store import SQLiteStore
 
 router = APIRouter()
 router.include_router(identity_qc_router)
+router.include_router(voice_candidates_router)
+router.include_router(voice_acceptance_router)
 
 CHARACTER_IMAGE_SELECTION_CONFIG_KEY = "character_image_selection"
 ASSET_IMAGE_SELECTION_CONFIG_KEYS = {
@@ -156,6 +161,49 @@ async def _resolve_character_project(
         resolved.output_dir,
         store,
     )
+
+
+@contextmanager
+def _legacy_portrait_write(ctx, project_dir, name, identity_id=None, *, target=None):
+    from novelvideo.production_workflow import production_workflow_project_lock
+    from novelvideo.character_visual.casting_recovery import (
+        assert_legacy_portrait_mutation_allowed, assert_casting_path_mutation_allowed,
+    )
+
+    state_dir = Path(ctx.state_dir) if ctx is not None else project_dir / "_state"
+    with production_workflow_project_lock(state_dir):
+        try:
+            assert_legacy_portrait_mutation_allowed(project_dir, state_dir, name, identity_id)
+            if target is not None:
+                assert_casting_path_mutation_allowed(project_dir, state_dir, target)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        yield state_dir
+
+
+@contextmanager
+def _character_asset_write(ctx, project_dir, target):
+    from novelvideo.production_workflow import production_workflow_project_lock
+    from novelvideo.character_visual.casting_recovery import assert_casting_path_mutation_allowed
+
+    state_dir = Path(ctx.state_dir) if ctx is not None else project_dir / "_state"
+    with production_workflow_project_lock(state_dir):
+        try:
+            assert_casting_path_mutation_allowed(project_dir, state_dir, target)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        yield
+
+
+def _save_identity_portrait_reference(project_dir, state_dir, name, identity_id, target):
+    from novelvideo.character_visual.casting_recovery import update_identity_portrait_reference
+
+    update_identity_portrait_reference(project_dir, state_dir, name, identity_id, str(target))
+
+
+async def _refresh_portrait_store(store):
+    if hasattr(store, "load_graph_state"):
+        await store.load_graph_state()
 
 
 def _image_model_options(store, credentials) -> dict[str, str]:
@@ -510,6 +558,7 @@ def _voice_samples_payload(
 def _character_voice_fields(ctx: ProjectContext, project_dir: Path, character) -> dict:
     rel_path = getattr(character, "reference_audio_path", "") or ""
     return {
+        "voice_facts": character.voice_facts.model_dump(mode="json"),
         "reference_audio_path": rel_path,
         "reference_audio_url": _voice_sample_url(
             ctx=ctx,
@@ -1068,21 +1117,31 @@ async def restore_character_asset_history(
 
     if kind == "portrait":
         before_backups = set(target.parent.glob(f"{target.stem}_*{target.suffix}"))
-        target = commit_character_portrait_current(
-            state_dir=Path(ctx.state_dir) if ctx is not None else project_dir / "_state",
-            project_dir=project_dir,
-            character_name=name,
-            image_bytes=source.read_bytes(),
-            actor=str(getattr(ctx, "requester_username", "") or username),
-            origin=AssetOrigin.UPLOADED,
-        )
+        with _legacy_portrait_write(ctx, project_dir, name, target=target) as state_dir:
+            target = commit_character_portrait_current(
+                state_dir=state_dir,
+                project_dir=project_dir,
+                character_name=name,
+                image_bytes=source.read_bytes(),
+                actor=str(getattr(ctx, "requester_username", "") or username),
+                origin=AssetOrigin.UPLOADED,
+            )
         new_backups = set(target.parent.glob(f"{target.stem}_*{target.suffix}"))
         backup = max(new_backups - before_backups, default=None)
+    elif kind == "identity_portrait":
+        with _legacy_portrait_write(ctx, project_dir, name, identity_id, target=target) as state_dir:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            backup = _backup_character_asset(target)
+            shutil.copy2(source, target)
+            _save_identity_portrait_reference(project_dir, state_dir, name, identity_id, target)
+        await _refresh_portrait_store(store)
     else:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        backup = _backup_character_asset(target)
-        shutil.copy2(source, target)
-    await _sync_restored_identity_asset(store, name, identity, kind, target)
+        with _character_asset_write(ctx, project_dir, target):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            backup = _backup_character_asset(target)
+            shutil.copy2(source, target)
+    if kind != "identity_portrait":
+        await _sync_restored_identity_asset(store, name, identity, kind, target)
 
     return {
         "ok": True,
@@ -1113,6 +1172,8 @@ async def update_character(
         return {"ok": False, "error": f"Character '{name}' not found"}
 
     updates = body.model_dump(exclude_none=True)
+    if "voice_facts" in updates:
+        updates["voice_facts"]["provenance"] = "human"
     requested_name = None
     if "name" in updates:
         requested_name = str(updates.pop("name") or "").strip()
@@ -1187,7 +1248,7 @@ async def get_character_visual_workspace(
     character = store.get_character(name)
     if character is None:
         return JSONResponse(status_code=404, content={"ok": False, "error": "Character not found"})
-    visual_store = CharacterVisualWorkspaceStore(project_dir)
+    visual_store = CharacterVisualWorkspaceStore(project_dir, state_dir=getattr(_ctx, "state_dir", None))
     workspace = visual_store.get(name) or _default_character_visual_workspace(character)
     return {"ok": True, "data": workspace.model_dump(mode="json")}
 
@@ -1206,8 +1267,10 @@ async def update_character_visual_workspace(
     character = store.get_character(name)
     if character is None:
         return JSONResponse(status_code=404, content={"ok": False, "error": "Character not found"})
-    visual_store = CharacterVisualWorkspaceStore(project_dir)
+    visual_store = CharacterVisualWorkspaceStore(project_dir, state_dir=getattr(_ctx, "state_dir", None))
     current = visual_store.get(name) or _default_character_visual_workspace(character)
+    if current.casting_revision or current.identity_casting_revisions or current.casting_limitation_reasons:
+        return JSONResponse(status_code=409, content={"ok": False, "error": "CHARACTER_CASTING_REQUIRED: use casting draft and explicit adoption"})
     patch = body.model_dump(exclude_none=True)
     payload = current.model_dump(mode="json")
     payload.update(patch)
@@ -1280,8 +1343,10 @@ async def confirm_character_visual_bible(
     )
     if store.get_character(name) is None:
         return JSONResponse(status_code=404, content={"ok": False, "error": "Character not found"})
-    visual_store = CharacterVisualWorkspaceStore(project_dir)
+    visual_store = CharacterVisualWorkspaceStore(project_dir, state_dir=getattr(_ctx, "state_dir", None))
     workspace = visual_store.get(name)
+    if workspace and (workspace.casting_revision or workspace.identity_casting_revisions or workspace.casting_limitation_reasons):
+        return JSONResponse(status_code=409, content={"ok": False, "error": "CHARACTER_CASTING_REQUIRED: use explicit casting adoption"})
     if workspace is None or workspace.visual_bible is None:
         return JSONResponse(
             status_code=409,
@@ -1358,14 +1423,16 @@ async def list_character_voice_samples(
     character = store.get_character(name)
     if character is None:
         return {"ok": False, "error": f"Character '{name}' not found"}
-    return {
-        "ok": True,
-        "data": _voice_samples_payload(
-            ctx=ctx,
-            project_dir=project_dir,
-            character=character,
-        ),
-    }
+    data = _voice_samples_payload(ctx=ctx, project_dir=project_dir, character=character)
+    data["voice_facts"] = character.voice_facts.model_dump(mode="json")
+    data["candidates"] = []
+    if getattr(store, "db_path", None):
+        from novelvideo.api.routes.voice_candidates import candidate_view
+        from novelvideo.media_capabilities.tts.candidate_store import VoiceCandidateStore
+
+        candidates = VoiceCandidateStore(store.db_path, project_dir)
+        data["candidates"] = [candidate_view(ctx, candidates, row) for row in candidates.list(character.name)]
+    return {"ok": True, "data": data}
 
 
 @router.post("/projects/{project}/characters/{name}/voice-samples/{slot}/upload")
@@ -1482,40 +1549,30 @@ async def design_character_voice_sample(
     if character is None:
         return JSONResponse(status_code=404, content={"ok": False, "error": f"角色不存在: {name}"})
 
-    from novelvideo.media_capabilities.tts.voice_prompt import (
-        compile_character_voice_description,
+    from novelvideo.media_capabilities.tts.character_voice import (
+        prepare_character_voice_request,
     )
 
     try:
-        description = compile_character_voice_description(
-            gender=str(getattr(character, "gender", "") or ""),
-            age_group=str(getattr(character, "age_group", "") or ""),
-            role=str(getattr(character, "role", "") or ""),
-            raw_description=(
-                body.voice_description.strip()
-                or str(getattr(character, "description", "") or "")
-            ),
+        payload = prepare_character_voice_request(
+            character, slot=slot, voice_description=body.voice_description,
+            audition_text=body.audition_text, language=body.language,
+            voice_spec=body.voice_spec,
+            db_path=getattr(store, 'db_path', None),
         )
     except ValueError as exc:
         return JSONResponse(status_code=422, content={"ok": False, "error": str(exc)})
-    audition_text = body.audition_text.strip() or (
-        f"我是{name}。这件事没那么简单，你真的想清楚了吗？"
-    )
-
     scope = f"character:{name}:voice:{slot}"
+    from uuid import uuid4
+
+    payload["request_id"] = uuid4().hex
     queued = await get_task_backend().enqueue_project_task(
         ctx,
         task_type="character_voice_design",
         queue_kind="default",
         episode=0,
         scope=scope,
-        payload={
-            "character_name": name,
-            "slot": slot,
-            "voice_description": description,
-            "audition_text": audition_text,
-            "language": body.language.strip() or "Chinese",
-        },
+        payload=payload,
     )
     return {
         "ok": True,
@@ -1636,6 +1693,8 @@ async def add_identity(
         identity_name=body.identity_name,
         age_group=body.age_group,
         appearance_details=body.appearance_details,
+        face_prompt=body.face_prompt,
+        body_type=body.body_type,
         source="api",
     )
 
@@ -1648,6 +1707,8 @@ async def add_identity(
             "identity_name": body.identity_name,
             "age_group": body.age_group,
             "appearance_details": body.appearance_details,
+            "face_prompt": body.face_prompt,
+            "body_type": body.body_type,
         },
     }
 
@@ -1673,6 +1734,9 @@ async def update_identity(
     if not updates:
         return {"ok": True, "data": {"message": "No fields to update"}}
 
+    # Explicitly edited visual designs must not be treated as planner suggestions.
+    if any(key in updates for key in ('appearance_details', 'face_prompt', 'body_type')):
+        updates['source'] = 'user_created'
     await store.update_character_identity(name, identity_id, **updates)
 
     return {
@@ -1714,6 +1778,8 @@ async def generate_single_portrait_async(
         await _resolve_character_project(project, user)
     )
 
+    with _legacy_portrait_write(ctx, project_dir, name):
+        pass
     config = load_project_config(username, project_name)
     scope = f"character:{name}:portrait"
     style = body.style or config.get("visual_style", "chinese_period_drama")
@@ -1772,6 +1838,8 @@ async def generate_single_portrait(
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
+    with _legacy_portrait_write(ctx, project_dir, name):
+        pass
     proj_config = load_project_config(username, project_name)
     style = body.style or proj_config.get("visual_style", "chinese_period_drama")
 
@@ -1790,13 +1858,12 @@ async def generate_single_portrait(
     if not paths:
         return {"ok": False, "error": "Portrait generation failed"}
 
-    final_path = commit_character_portrait_current(
-        state_dir=Path(ctx.state_dir) if ctx is not None else project_dir / "_state",
-        project_dir=project_dir,
-        character_name=safe_name,
-        image_bytes=Path(paths[0]).read_bytes(),
-        actor=str(getattr(ctx, "requester_username", "") or username),
-    )
+    with _legacy_portrait_write(ctx, project_dir, name) as state_dir:
+        final_path = commit_character_portrait_current(
+            state_dir=state_dir, project_dir=project_dir, character_name=safe_name,
+            image_bytes=Path(paths[0]).read_bytes(),
+            actor=str(getattr(ctx, "requester_username", "") or username),
+        )
 
     portrait_url = _asset_url(ctx, project_dir, final_path)
 
@@ -1825,14 +1892,13 @@ async def upload_portrait(
         return {"ok": False, "error": str(exc)}
 
     content = await file.read()
-    portrait_path = commit_character_portrait_current(
-        state_dir=Path(ctx.state_dir) if ctx is not None else project_dir / "_state",
-        project_dir=project_dir,
-        character_name=safe_name,
-        image_bytes=content,
-        actor=str(getattr(ctx, "requester_username", "") or username),
-        origin=AssetOrigin.UPLOADED,
-    )
+    with _legacy_portrait_write(ctx, project_dir, name) as state_dir:
+        portrait_path = commit_character_portrait_current(
+            state_dir=state_dir, project_dir=project_dir, character_name=safe_name,
+            image_bytes=content,
+            actor=str(getattr(ctx, "requester_username", "") or username),
+            origin=AssetOrigin.UPLOADED,
+        )
 
     portrait_url = _asset_url(ctx, project_dir, portrait_path)
 
@@ -1866,8 +1932,9 @@ async def upload_identity_image(
     identities_dir.mkdir(parents=True, exist_ok=True)
 
     img_path = identities_dir / f"{identity_name}.png"
-    _backup_character_asset(img_path)
-    img.save(str(img_path), format="PNG")
+    with _character_asset_write(ctx, project_dir, img_path):
+        _backup_character_asset(img_path)
+        img.save(str(img_path), format="PNG")
 
     image_url = _asset_url(ctx, project_dir, img_path)
 
@@ -1884,7 +1951,10 @@ async def delete_identity_image(
     _ctx, _username, _project_name, _project_dir, _output_dir, store = (
         await _resolve_character_project(project, user)
     )
-    deleted = await store.delete_identity_image(name, identity_id)
+    try:
+        deleted = await store.delete_identity_image(name, identity_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
     return {"ok": True, "data": {"deleted": deleted}}
 
 
@@ -1956,9 +2026,10 @@ async def delete_identity_costume(
         if path in seen:
             continue
         seen.add(path)
-        if path.exists():
-            path.unlink()
-            deleted = True
+        with _character_asset_write(ctx, project_dir, path):
+            if path.exists():
+                path.unlink()
+                deleted = True
 
     await store.update_character_identity(name, identity_id, costume_image="")
     if hasattr(identity, "costume_image"):
@@ -1988,15 +2059,15 @@ async def upload_identity_portrait(
 
     content = await file.read()
     img = Image.open(io.BytesIO(content)).convert("RGB")
-    safe_name = _safe_asset_name(identity.identity_name)
-    identities_dir = project_dir / "assets" / "characters" / name / "identities"
-    identities_dir.mkdir(parents=True, exist_ok=True)
-    target = identities_dir / f"{name}_{safe_name}_portrait.png"
-    if target.exists():
-        backup = identities_dir / f"{name}_{safe_name}_portrait_{datetime.now():%Y%m%d%H%M%S}.png"
-        shutil.copy(target, backup)
-    img.save(str(target), format="PNG")
-    await store.update_character_identity(name, identity_id, portrait_image=str(target))
+    from novelvideo.utils.path_resolver import canonical_identity_portrait_path
+
+    target = canonical_identity_portrait_path(project_dir, name, identity.identity_name)
+    with _legacy_portrait_write(ctx, project_dir, name, identity_id, target=target) as state_dir:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _backup_character_asset(target)
+        img.save(str(target), format="PNG")
+        _save_identity_portrait_reference(project_dir, state_dir, name, identity_id, target)
+    await _refresh_portrait_store(store)
     return {
         "ok": True,
         "data": {"portrait_image_url": _asset_url(ctx, project_dir, target)},
@@ -2023,6 +2094,8 @@ async def generate_identity_portrait_async(
     if identity is None:
         return {"ok": False, "error": f"Identity '{identity_id}' not found"}
 
+    with _legacy_portrait_write(ctx, project_dir, name, identity_id):
+        pass
     config = load_project_config(username, project_name)
     scope = f"character:{name}:identity_portrait:{identity.identity_name}"
     style = body.style or config.get("visual_style", "chinese_period_drama")
@@ -2083,13 +2156,15 @@ async def generate_identity_portrait(
     if not getattr(identity, "face_prompt", ""):
         return {"ok": False, "error": "该身份无 face_prompt，无需独立 Portrait"}
 
+    with _legacy_portrait_write(ctx, project_dir, name, identity_id):
+        pass
     from novelvideo.generators import generate_character_reference_unified
+    from novelvideo.utils.path_resolver import canonical_identity_portrait_path
 
     config = load_project_config(username, project_name)
-    safe_name = _safe_asset_name(identity.identity_name)
     identities_dir = project_dir / "assets" / "characters" / name / "identities"
     identities_dir.mkdir(parents=True, exist_ok=True)
-    target = identities_dir / f"{name}_{safe_name}_portrait.png"
+    target = canonical_identity_portrait_path(project_dir, name, identity.identity_name)
     tmp_dir = identities_dir / f".tmp_identity_portrait_{datetime.now():%Y%m%d%H%M%S%f}"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -2109,13 +2184,11 @@ async def generate_identity_portrait(
         )
         if not paths:
             return {"ok": False, "error": "身份 Portrait 生成失败"}
-        if target.exists():
-            backup = (
-                identities_dir / f"{name}_{safe_name}_portrait_{datetime.now():%Y%m%d%H%M%S}.png"
-            )
-            shutil.copy(target, backup)
-        shutil.copy(paths[0], target)
-        await store.update_character_identity(name, identity_id, portrait_image=str(target))
+        with _legacy_portrait_write(ctx, project_dir, name, identity_id, target=target) as state_dir:
+            _backup_character_asset(target)
+            shutil.copy(paths[0], target)
+            _save_identity_portrait_reference(project_dir, state_dir, name, identity_id, target)
+        await _refresh_portrait_store(store)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -2225,6 +2298,7 @@ async def generate_identity_image(
 ):
     """基于角色肖像生成身份参考图（Identity Locking）。"""
     from novelvideo.generators.image_generator import generate_identity_image_unified
+    from novelvideo.character_visual.species import confirmed_nonhuman_species
 
     logger.info(
         "[%s] generate_identity_image: %s/%s, model=%s", project, name, identity_id, body.model
@@ -2282,11 +2356,15 @@ async def generate_identity_image(
 
     face_override = getattr(identity, "face_prompt", "") or ""
     identity_scope = f"character:{name}:identity:{identity.identity_name}"
-    if is_age_variant:
+    from novelvideo.character_visual.identity_constraints import effective_identity_appearance
+    effective_appearance = effective_identity_appearance(project_dir, character, identity)
+    is_face_variant = is_age_variant or bool(face_override.strip()) or has_identity_portrait
+    if is_face_variant:
         if not has_identity_portrait:
+            label = "年龄变体" if is_age_variant else "面部变体"
             return {
                 "ok": False,
-                "error": "年龄变体必须先生成或上传 Identity Portrait",
+                "error": f"{label}必须先生成或上传 Identity Portrait",
             }
         combined_prompt = (
             ""
@@ -2321,6 +2399,7 @@ async def generate_identity_image(
             usage_scope=identity_scope,
             identity_name=identity.identity_name,
             structured=True,
+            nonhuman_species=confirmed_nonhuman_species(character),
         )
     else:
         portrait_path = compute_portrait_path(project_dir, name)
@@ -2333,7 +2412,7 @@ async def generate_identity_image(
 
         result = await generate_identity_image_unified(
             character_name=name,
-            identity_prompt="" if has_costume_image else identity.appearance_details,
+            identity_prompt="" if has_costume_image else effective_appearance,
             reference_image_path=str(portrait_path),
             output_path=str(output_path),
             character_tag=getattr(identity, "character_tag", ""),
@@ -2346,6 +2425,7 @@ async def generate_identity_image(
             usage_scope=identity_scope,
             identity_name=identity.identity_name,
             structured=True,
+            nonhuman_species=confirmed_nonhuman_species(character),
         )
 
     if isinstance(result, bool):
@@ -2363,6 +2443,8 @@ async def generate_identity_image(
     try:
         quality_report = await assess_identity_sheet_quality(
             image_data=output_path.read_bytes(),
+            expected_appearance=effective_appearance,
+            nonhuman_species=confirmed_nonhuman_species(character),
             style=body.style or proj_config.get("visual_style") or "",
             project_dir=str(project_dir),
         )
@@ -2391,6 +2473,12 @@ async def generate_identity_image(
     state_dir = Path(ctx.state_dir) if ctx is not None else project_dir / "_state"
     promote_path: Path | None = None
     with production_workflow_project_lock(state_dir):
+        from novelvideo.character_visual.casting_recovery import assert_casting_path_mutation_allowed
+
+        try:
+            assert_casting_path_mutation_allowed(project_dir, state_dir, canonical_path)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
         if quality_report.passed:
             promote_path = identities_dir / f".{safe_identity_name}.{attempt_id}.promote.png"
             shutil.copy2(output_path, promote_path)

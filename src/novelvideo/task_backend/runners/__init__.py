@@ -6,7 +6,9 @@ Importing this package registers every built-in project task runner.
 from importlib import import_module
 
 from novelvideo.task_backend.runners import (  # noqa: F401
+    agent_team_trial,
     audio,
+    music,
     character_image,
     character_qc,
     character_casting_review,
@@ -23,6 +25,7 @@ from novelvideo.task_backend.runners import (  # noqa: F401
     narrative_group_video,
     narrative_group_video_compose,
     prop_reference,
+    previs_plan,
     render,
     scene_reference,
     screenplay_semantics,

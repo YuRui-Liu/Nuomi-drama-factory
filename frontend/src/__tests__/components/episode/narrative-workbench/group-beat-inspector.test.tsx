@@ -45,10 +45,7 @@ describe("GroupBeatInspector", () => {
     expect(screen.getAllByAltText("Beat 1 渲染格位")).toHaveLength(2);
   });
 
-  // Shot-plan projects store a shot id in `beat_id`, which the legacy numeric Beat
-  // repair page cannot address. The inspector must offer a group-level action
-  // instead of a button that can only produce a dead-end warning.
-  it("offers a whole-group render regeneration when beat_id is a shot id", () => {
+  it("never falls back to whole-group rendering for a shot id", () => {
     const regenerate = vi.fn();
     render(
       <GroupBeatInspector
@@ -70,13 +67,13 @@ describe("GroupBeatInspector", () => {
     );
 
     expect(screen.queryByRole("button", { name: "单 Beat 修复" })).toBeNull();
-    const button = screen.getByRole("button", { name: "重新生成该组（实图）" });
+    const button = screen.queryByRole("button", { name: "重新生成该组（实图）" });
     expect(screen.queryByRole("button", { name: "重新生成该组（草图）" })).toBeNull();
-    fireEvent.click(button);
-    expect(regenerate).toHaveBeenCalledWith("render");
+    expect(button).toBeNull();
+    expect(regenerate).not.toHaveBeenCalled();
   });
 
-  it("points the whole-group regeneration at the sketch stage when only sketch assets exist", () => {
+  it("never falls back to whole-group regeneration for a sketch cell", () => {
     const regenerate = vi.fn();
     render(
       <GroupBeatInspector
@@ -99,10 +96,10 @@ describe("GroupBeatInspector", () => {
     );
 
     expect(screen.queryByRole("button", { name: "单 Beat 修复" })).toBeNull();
-    const button = screen.getByRole("button", { name: "重新生成该组（草图）" });
+    const button = screen.queryByRole("button", { name: "重新生成该组（草图）" });
     expect(screen.queryByRole("button", { name: "重新生成该组（实图）" })).toBeNull();
-    fireEvent.click(button);
-    expect(regenerate).toHaveBeenCalledWith("sketch");
+    expect(button).toBeNull();
+    expect(regenerate).not.toHaveBeenCalled();
   });
 
   it("renders no action button when neither a beat repair nor a regeneration is available", () => {

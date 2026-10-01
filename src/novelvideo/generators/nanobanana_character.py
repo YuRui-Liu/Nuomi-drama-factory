@@ -78,6 +78,7 @@ def build_character_state_sheet_prompt(
     medium: str = "the configured project visual style",
     project_style: str | None = None,
     project_dir: str | Path | None = None,
+    nonhuman_species: str = "",
 ) -> str:
     """Compatibility wrapper for the shared Identity Sheet v3 prompt contract."""
     return build_identity_sheet_v3_prompt(
@@ -85,6 +86,7 @@ def build_character_state_sheet_prompt(
         character_tag=character_tag,
         appearance=appearance,
         project_style=project_style or medium,
+        nonhuman_species=nonhuman_species,
         style_instructions=style_instructions,
         avoid_instructions=avoid_instructions,
         ethnicity=ethnicity,
@@ -445,6 +447,7 @@ class NanoBananaCharacterGenerator:
         usage_task_type: str = "identity_image",
         usage_scope: str = "",
         identity_name: str = "",
+        nonhuman_species: str = "",
     ) -> CharacterReferenceResult:
         """基于角色基准图生成身份参考图（Identity Locking）。
 
@@ -519,6 +522,7 @@ class NanoBananaCharacterGenerator:
                 avoid_instructions=negative_keywords,
                 ethnicity=ethnicity,
                 has_costume_reference=has_costume_ref,
+                nonhuman_species=nonhuman_species,
                 medium=medium,
                 project_style=style,
                 project_dir=project_dir or None,

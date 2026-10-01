@@ -134,6 +134,7 @@ class CharacterVisualWorkspaceStore:
                             "identity_selected_proposal_ids": existing.identity_selected_proposal_ids,
                             "identity_visual_bibles": existing.identity_visual_bibles,
                             "casting_limitation_reasons": existing.casting_limitation_reasons,
+                            "casting_design_budgets": existing.casting_design_budgets,
                         }
                     )
                 payload[workspace.character_id] = workspace.model_dump(mode="json")

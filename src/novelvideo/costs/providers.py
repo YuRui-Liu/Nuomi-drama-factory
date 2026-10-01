@@ -6,10 +6,20 @@ import logging
 from uuid import uuid4
 
 from .context import CostContext, cost_context, resolve_cost_context
-from .models import CostAttempt
+from .models import CostAttempt, pricing_decimal
 from .service import Observation, get_cost_service
 
 logger = logging.getLogger(__name__)
+
+
+def runninghub_credit_usage(coins):
+    """Explicit task coins are credits, never implicitly yuan or output counts."""
+    if isinstance(coins, bool) or not isinstance(coins, (str, int, float)):
+        return {}
+    try:
+        return {'credit': str(pricing_decimal(str(coins)))}
+    except ValueError:
+        return {}
 
 
 @contextmanager
@@ -87,7 +97,7 @@ class ProviderCapture:
         if attempt is not None:
             self._after_send(lambda: self.service.mark_submission_unknown(attempt.attempt_id))
 
-    def observe(self, external_id, status):
+    def observe(self, external_id, status, *, usage=None, usage_source=None):
         context = self.resolve()
         if context is None:
             return
@@ -111,7 +121,7 @@ class ProviderCapture:
             state = {'queued': 'pending'}.get(status, status)
             if state not in {'pending', 'running', 'succeeded', 'failed', 'cancelled', 'unknown'}:
                 state = 'unknown'
-            facts = Observation(execution_status=state)
+            facts = Observation(execution_status=state, usage=usage or {}, usage_source=usage_source)
             event_id = 'poll:' + sha256(facts.model_dump_json().encode()).hexdigest()
             self.service.observe(attempt.attempt_id, event_id, facts)
         self._after_send(apply)

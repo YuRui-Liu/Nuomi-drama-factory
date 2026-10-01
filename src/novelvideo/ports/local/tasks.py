@@ -6,6 +6,7 @@ import asyncio
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
+from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
 import logging
@@ -132,17 +133,30 @@ class InlineTaskBackend:
         require_project_home_node(ctx, operation="enqueue project task")
         self._bind_cancellation_store(ctx)
         manager = get_task_manager()
-        payload = payload or {}
+        payload = deepcopy(payload or {})
         lane_name = normalize_queue_kind(queue_kind)
         _ensure_builtin_runners_registered()
         registration = get_project_task_runner_registration(task_type)
+        from novelvideo.agent_teams.runtime import (
+            freeze_task_methods, task_methods, method_scope,
+            load_generation_methods, bind_generation_methods,
+        )
+        generation_run_id = payload.get('run_id') if task_type == 'script_creation_generation' and scope == f"run:{payload.get('run_id')}" else None
+        old_metadata = await asyncio.to_thread(load_generation_methods, ctx, generation_run_id) if generation_run_id else None
+        if generation_run_id and old_metadata is None:
+            previous = await asyncio.to_thread(manager.get_task_for_project, ctx, task_type, episode, beat_num=beat_num, scope=scope)
+            old_metadata = (previous.metadata or {}) if previous is not None else None
         agent_route_snapshot: dict[str, Any] | None = None
         if registration is not None and registration.text_task_role is not None:
-            snapshot = resolve_configured_agent_task_route(
-                ctx=ctx,
-                task_role=registration.text_task_role,
-                task_override=payload.get("agent_route_override"),
-            )
+            if old_metadata and old_metadata.get('agent_route_snapshot'):
+                from novelvideo.text_task_runtime.models import AgentTaskRouteSnapshot
+                snapshot = AgentTaskRouteSnapshot.model_validate(old_metadata['agent_route_snapshot'])
+            else:
+                snapshot = resolve_configured_agent_task_route(
+                    ctx=ctx,
+                    task_role=registration.text_task_role,
+                    task_override=payload.get("agent_route_override"),
+                )
             agent_route_snapshot = snapshot.model_dump(mode="json")
         metadata = {
             "backend": "inline",
@@ -152,11 +166,37 @@ class InlineTaskBackend:
         }
         if agent_route_snapshot is not None:
             metadata["agent_route_snapshot"] = agent_route_snapshot
+        previous_methods = None
+        # Generation run IDs are immutable logical operations; retry uses the
+        # same run, whereas rebase/new generation allocates a fresh run ID.
+        if generation_run_id:
+            if old_metadata is not None:
+                previous_methods = deepcopy(old_metadata.get("agent_team_snapshots", []))
+                if old_metadata.get("agent_route_snapshot"):
+                    agent_route_snapshot = deepcopy(old_metadata["agent_route_snapshot"])
+                    metadata["agent_route_snapshot"] = agent_route_snapshot
+        method_snapshots = previous_methods if previous_methods is not None else (
+            freeze_task_methods(ctx, task_type, payload, snapshot) if agent_route_snapshot is not None else [])
+        if generation_run_id:
+            durable = await asyncio.to_thread(bind_generation_methods, ctx, generation_run_id, {
+                "agent_team_snapshots": method_snapshots, "agent_route_snapshot": agent_route_snapshot,
+            })
+            method_snapshots = durable['agent_team_snapshots']
+            agent_route_snapshot = durable['agent_route_snapshot']
+            if agent_route_snapshot is not None:
+                metadata['agent_route_snapshot'] = agent_route_snapshot
+        with method_scope(method_snapshots, project_id=ctx.project_id, task_type=task_type):
+            pass
+        if task_methods(task_type):
+            metadata["agent_team_snapshots"] = method_snapshots
         project_lane_limit = project_lane_effective_active_limit(
             lane_name,
             eligible_user_count=1,
         )
-        state, reserved = manager.reserve_task_for_project(
+        # Task state shares data.db with aiosqlite asset transactions. Waiting
+        # for its write lock on the event loop prevents the owner from committing
+        # and also starves lease heartbeats. Keep synchronous DB work off-loop.
+        state, reserved = await asyncio.to_thread(manager.reserve_task_for_project,
             ctx,
             task_type,
             episode,
@@ -175,7 +215,7 @@ class InlineTaskBackend:
                 celery_id=None,
             )
 
-        manager.update_progress_for_project(
+        await asyncio.to_thread(manager.update_progress_for_project,
             ctx,
             task_type,
             episode,
@@ -187,7 +227,7 @@ class InlineTaskBackend:
             status="queued",
             expected_task_id=state.task_id,
         )
-        if not manager.claim_task_lease(
+        if not await asyncio.to_thread(manager.claim_task_lease,
             ctx,
             state.task_id,
             self._execution_owner_id,
@@ -206,6 +246,8 @@ class InlineTaskBackend:
         }
         if agent_route_snapshot is not None:
             envelope["agent_route_snapshot"] = agent_route_snapshot
+        if task_methods(task_type):
+            envelope["agent_team_snapshots"] = method_snapshots
         self._submit_lane_job(
             _InlineLaneJob(
                 envelope=envelope,
@@ -283,7 +325,7 @@ class InlineTaskBackend:
             while lane.queued:
                 for job in tuple(lane.queued):
                     try:
-                        state = job.manager.get_task_for_project(
+                        state = await asyncio.to_thread(job.manager.get_task_for_project,
                             job.ctx,
                             str(job.envelope["task_type"]),
                             int(job.envelope.get("episode") or 0),
@@ -308,7 +350,7 @@ class InlineTaskBackend:
                             scope=job.envelope.get("scope"),
                         )
                         if cancel_requested:
-                            cancelled = job.manager.update_progress_for_project(
+                            cancelled = await asyncio.to_thread(job.manager.update_progress_for_project,
                                 job.ctx,
                                 str(job.envelope["task_type"]),
                                 int(job.envelope.get("episode") or 0),
@@ -327,14 +369,14 @@ class InlineTaskBackend:
                                 task_id=job.run_task_id,
                             )
                             if cancelled is False:
-                                job.manager.expire_task_leases(job.ctx)
+                                await asyncio.to_thread(job.manager.expire_task_leases,job.ctx)
                             continue
                         lane_owned = self._lease_store.heartbeat(
                             owner_id=self._execution_owner_id,
                             task_id=job.run_task_id,
                             lease_seconds=self._lease_seconds,
                         )
-                        task_owned = job.manager.heartbeat_task_lease(
+                        task_owned = await asyncio.to_thread(job.manager.heartbeat_task_lease,
                             job.ctx,
                             job.run_task_id,
                             self._execution_owner_id,
@@ -358,7 +400,7 @@ class InlineTaskBackend:
                                 task_id=job.run_task_id,
                             )
                         with contextlib.suppress(Exception):
-                            job.manager.expire_task_leases(job.ctx)
+                            await asyncio.to_thread(job.manager.expire_task_leases,job.ctx)
                         continue
                     if task_owned and lane_owned:
                         job.lease_deadline_monotonic = time.monotonic() + self._lease_seconds
@@ -369,7 +411,7 @@ class InlineTaskBackend:
                             task_id=job.run_task_id,
                         )
                     if task_owned:
-                        job.manager.fail_task_for_project(
+                        await asyncio.to_thread(job.manager.fail_task_for_project,
                             job.ctx,
                             str(job.envelope["task_type"]),
                             int(job.envelope.get("episode") or 0),
@@ -381,7 +423,7 @@ class InlineTaskBackend:
                             expected_execution_owner_id=self._execution_owner_id,
                         )
                     else:
-                        job.manager.expire_task_leases(job.ctx)
+                        await asyncio.to_thread(job.manager.expire_task_leases,job.ctx)
                     if not (task_owned and lane_owned):
                         with contextlib.suppress(ValueError):
                             lane.queued.remove(job)
@@ -490,7 +532,7 @@ class InlineTaskBackend:
                     task_id=job.run_task_id,
                 )
             with contextlib.suppress(Exception):
-                job.manager.fail_task_for_project(
+                await asyncio.to_thread(job.manager.fail_task_for_project,
                     job.ctx,
                     str(job.envelope["task_type"]),
                     int(job.envelope.get("episode") or 0),
@@ -505,7 +547,7 @@ class InlineTaskBackend:
                     expected_execution_owner_id=self._execution_owner_id,
                 )
             with contextlib.suppress(Exception):
-                job.manager.expire_task_leases(job.ctx)
+                await asyncio.to_thread(job.manager.expire_task_leases,job.ctx)
             return
         if not (lane_owned and task_owned):
             if lane_owned:
@@ -514,7 +556,7 @@ class InlineTaskBackend:
                     task_id=job.run_task_id,
                 )
             if task_owned:
-                job.manager.fail_task_for_project(
+                await asyncio.to_thread(job.manager.fail_task_for_project,
                     job.ctx,
                     str(job.envelope["task_type"]),
                     int(job.envelope.get("episode") or 0),
@@ -526,7 +568,7 @@ class InlineTaskBackend:
                     expected_execution_owner_id=self._execution_owner_id,
                 )
             else:
-                job.manager.expire_task_leases(job.ctx)
+                await asyncio.to_thread(job.manager.expire_task_leases,job.ctx)
             return
         job.lease_deadline_monotonic = time.monotonic() + self._lease_seconds
         run_envelope = {
@@ -669,7 +711,7 @@ class InlineTaskBackend:
         )
         removed_locally = self._remove_queued_task(task_state.task_id)
         manager = get_task_manager()
-        current = manager.get_task_for_project(
+        current = await asyncio.to_thread(manager.get_task_for_project,
             ctx,
             task_state.task_type,
             task_state.episode,
@@ -682,7 +724,7 @@ class InlineTaskBackend:
         if current is not None and (
             current.status == "queued" or removed_locally or not current.execution_owner_id
         ):
-            manager.update_progress_for_project(
+            await asyncio.to_thread(manager.update_progress_for_project,
                 ctx,
                 task_state.task_type,
                 task_state.episode,

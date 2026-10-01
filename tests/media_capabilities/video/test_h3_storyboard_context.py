@@ -80,7 +80,7 @@ async def test_pydantic_agent_gets_binary_content_not_custom_keyword():
     assert received[0][1].data == image.image.data
 
 
-def test_conflict_cannot_publish_plan_and_unknown_image_is_rejected():
+def test_conflict_can_publish_plan_and_unknown_image_is_rejected():
     from novelvideo.media_capabilities.video.h3_storyboard_context import (
         StoryboardPromptDecision, require_storyboard_plan, StoryboardPromptBlocked,
     )
@@ -92,9 +92,9 @@ def test_conflict_cannot_publish_plan_and_unknown_image_is_rejected():
                        unknowns=("exact focal length is not visible",))
     conflict = dict(image_label=image.label, shot_id=image.shot_id, field="framing",
                     observed="wide", required="medium at start")
-    with pytest.raises(ValueError):
-        StoryboardPromptDecision(status="conflict", observations=[observation],
-                                 conflicts=[conflict], plan=_plan())
+    advisory = StoryboardPromptDecision(status="conflict", observations=[observation],
+                                       conflicts=[conflict], plan=_plan())
+    assert require_storyboard_plan(advisory, (image,)) == advisory.plan
     blocked = StoryboardPromptDecision(status="conflict", observations=[observation],
                                       conflicts=[conflict], plan=None)
     with pytest.raises(StoryboardPromptBlocked) as caught:
@@ -108,7 +108,7 @@ def test_conflict_cannot_publish_plan_and_unknown_image_is_rejected():
     assert require_storyboard_plan(good, (image,)) == good.plan
 
 
-def test_ready_without_verified_starting_facts_cannot_publish():
+def test_ready_without_verified_starting_facts_retains_uncertainty():
     from novelvideo.media_capabilities.video.h3_storyboard_context import (
         StoryboardPromptDecision, StoryboardPromptBlocked, require_storyboard_plan,
     )
@@ -118,10 +118,8 @@ def test_ready_without_verified_starting_facts_cannot_publish():
     decision = StoryboardPromptDecision(status="ready", conflicts=[], plan=_plan(),
         observations=[dict(image_label=image.label, framing="unknown", orientation="unknown",
                            spatial_relations="unknown", unknowns=["starting framing cannot be determined"])])
-    with pytest.raises(StoryboardPromptBlocked) as caught:
-        require_storyboard_plan(decision, (image,))
-    assert caught.value.evidence["status"] == "unavailable"
-    assert caught.value.evidence["transport_called"] is False
+    assert require_storyboard_plan(decision, (image,)) == decision.plan
+    assert decision.required_starting_facts_status == "indeterminate"
 
 
 def test_visual_cache_key_includes_roles_and_runtime():
@@ -153,6 +151,7 @@ def test_storyboard_replay_requires_same_source_images_policy_and_valid_observat
                    storyboard_images=[image.identity()], storyboard_decision=decision)
     assert storyboard_replay_matches(summary, (image,), "selected")
     assert not storyboard_replay_matches({}, (image,), "selected")
+    assert not storyboard_replay_matches(None, (image,), "selected")
     assert not storyboard_replay_matches(summary, (image,), "different")
     assert not storyboard_replay_matches({**summary, "storyboard_policy_version": -1}, (image,), "selected")
     assert not storyboard_replay_matches({**summary, "storyboard_decision": {

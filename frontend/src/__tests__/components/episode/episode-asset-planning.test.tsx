@@ -74,6 +74,15 @@ function renderPlanning(props: Partial<Parameters<typeof EpisodeAssetPlanning>[0
 }
 
 describe("EpisodeAssetPlanning", () => {
+  it.each(["scenes", "props"] as const)("keeps %s planning visible but prevents submission without an active plan", async (selectedCategory) => {
+    const onPlanScenes = vi.fn(), onPlanProps = vi.fn();
+    renderPlanning({ selectedCategory, planningBlocked: true, onPlanScenes, onPlanProps });
+    const button = screen.getByRole("button", { name: selectedCategory === "scenes" ? "规划场景" : "规划道具" });
+    expect(button).toBeDisabled();
+    await userEvent.setup().click(button);
+    expect(onPlanScenes).not.toHaveBeenCalled();
+    expect(onPlanProps).not.toHaveBeenCalled();
+  });
   it("shows the scenes panel with items and replan action", async () => {
     const user = userEvent.setup();
     const onPlanScenes = vi.fn();

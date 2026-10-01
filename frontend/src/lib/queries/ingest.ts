@@ -64,6 +64,9 @@ export interface KnowledgeGraphEdge {
 }
 
 export interface KnowledgeGraphSnapshot {
+  revision?: string;
+  editable?: boolean;
+  edit_semantics?: string;
   nodes: KnowledgeGraphNode[];
   edges: KnowledgeGraphEdge[];
   total_nodes: number;

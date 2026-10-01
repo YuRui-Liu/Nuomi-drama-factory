@@ -13,9 +13,9 @@ import type { Beat, Episode } from "@/types/episode";
 /**
  * Client-side cross-asset reference index.
  *
- * The backend does not (yet) expose `GET /assets/{type}/{id}/references`, so we
- * derive "which beats use this asset" on the FE from data already present on
- * each beat:
+ * Detail surfaces use the backend aggregate endpoint, including active
+ * narrative groups and episode bindings. The legacy full-project index below
+ * derives beat references on the FE from data already present on each beat:
  *   - identities → `beat.detected_identities` (matched by `identity_id`)
  *   - props      → `beat.detected_props` (sketch color-bound) UNION the
  *                  `[[prop]]` markers inside `beat.visual_description`
@@ -30,9 +30,7 @@ import type { Beat, Episode } from "@/types/episode";
  *
  * Matching caveat: identity matching is exact (`detected_identities` carries
  * `identity_id`). Prop/scene ids are assumed to equal the asset `name`; if the
- * backend later diverges (slug vs name), swap the key builders below. Once the
- * backend ships a references endpoint, replace the aggregation here and keep
- * the public shape.
+ * backend later diverges (slug vs name), swap the key builders below.
  */
 
 export type AssetRefType = "identity" | "scene" | "prop";
@@ -44,7 +42,10 @@ export interface AssetRef {
 
 export interface BeatReference {
   episode: number;
-  beatNumber: number;
+  beatNumber?: number;
+  groupId?: string;
+  groupOrdinal?: number;
+  binding?: boolean;
 }
 
 /** Identities + props that share a beat with a given scene. */
@@ -62,7 +63,7 @@ export interface AssetReferences {
 }
 
 interface AssetReferencesPayload {
-  usages: Record<string, { episode: number; beat_number: number }[]>;
+  usages: Record<string, { episode: number; beat_number?: number; group_id?: string; group_ordinal?: number; binding?: boolean }[]>;
   scene_co_occurrence: Record<
     string,
     { identities: string[]; props: string[] }
@@ -138,7 +139,9 @@ export function useAssetReferences(
         key,
         list.map((ref) => ({
           episode: ref.episode,
-          beatNumber: ref.beat_number,
+          ...(ref.beat_number != null ? { beatNumber: ref.beat_number } : {}),
+          ...(ref.group_id ? { groupId: ref.group_id, groupOrdinal: ref.group_ordinal } : {}),
+          ...(ref.binding ? { binding: true } : {}),
         })),
       );
     }

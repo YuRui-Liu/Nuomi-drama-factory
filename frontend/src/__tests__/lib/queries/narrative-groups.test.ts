@@ -29,6 +29,7 @@ import {
   narrativeGroupRevisionPath,
   narrativeGroupRollbackPath,
   useNarrativeGroupAction,
+  useNarrativeGroups,
   useNarrativeGroupReferences,
   useNarrativeGroupVideoReferencePreview,
   useGenerateNarrativeGroupVideo,
@@ -204,6 +205,25 @@ describe("narrative group query contract", () => {
 });
 
 const server = setupServer();
+
+it("refreshes a running video to its terminal result without a page reload", async () => {
+  let reads = 0;
+  server.use(http.get("http://localhost:3000/api/v1/projects/demo/episodes/2/narrative-groups", () => {
+    reads += 1;
+    return HttpResponse.json({ ok: true, data: [{ id: "ng-1", stages: {
+      render: { status: "completed" }, sketch: { status: "pending" },
+      video: { status: reads === 1 ? "running" : "failed", error: reads === 1 ? "" : "planning rejected" },
+    } }] });
+  }));
+  const view = renderHook(() => useNarrativeGroups("demo", 2), { wrapper });
+  const status = () => {
+    const response = view.result.current.data;
+    return response?.ok ? response.data[0].stages.video.status : undefined;
+  };
+  await waitFor(() => expect(status()).toBe("running"));
+  await waitFor(() => expect(status()).toBe("failed"), { timeout: 3500 });
+  view.unmount();
+});
 
 beforeAll(() => server.listen());
 afterEach(() => server.resetHandlers());

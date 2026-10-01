@@ -5,8 +5,11 @@ import { FileUp, Loader2, Package, Plus, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
+import "@/components/assets/asset-workspace.css";
+import { resolveMediaUrl } from "@/lib/media-url";
 import { AssetHeaderActions } from "@/components/assets/asset-header-actions-slot";
 import { AssetImportDialog } from "@/components/assets/asset-import-dialog";
+import { PropExtractionDialog } from "@/features/script-creation/prop-extraction-dialog";
 import { CharacterImageSourceSelect } from "@/components/assets/character-image-source-select";
 import { PropAssetCard } from "@/components/assets/prop-asset-card";
 import { PropReferenceVersions } from "@/components/assets/prop-reference-versions";
@@ -242,6 +245,7 @@ function PropDialog({
 }
 
 function PropAssetCardController({
+  view = "reference",
   project,
   prop,
   imageSourceSelection,
@@ -249,6 +253,7 @@ function PropAssetCardController({
   onEdit,
   onDelete,
 }: {
+  view?: string;
   project: string;
   prop: PropAsset;
   imageSourceSelection: string;
@@ -309,7 +314,8 @@ function PropAssetCardController({
 
   return (
     <div className="space-y-3">
-      <PropAssetCard
+      <div hidden={view !== "reference"}><PropAssetCard
+        workspace
         prop={prop}
         generating={generateReference.isPending || refTask.started}
         uploading={uploadReference.isPending}
@@ -321,14 +327,14 @@ function PropAssetCardController({
         onGenerateReference={handleGenerate}
         onUploadReference={handleUpload}
         onOpenFreezone={handleOpenFreezone}
-      />
-      {prop.reference_path ? (
+      /></div>
+      {view === "history" && (prop.reference_path ? (
         <PropReferenceVersions
           project={project}
           propName={prop.name}
           legacyAssetPath={prop.reference_path}
         />
-      ) : null}
+      ) : <p className="rounded-lg border p-6 text-sm text-muted-foreground">此道具尚无参考版本，生成或上传后可在这里检查与采用。</p>)}
     </div>
   );
 }
@@ -342,9 +348,13 @@ export function PropsPanel({
 }) {
   const { t } = useTranslation();
   const props = useProps(project);
+  const [selectedName, setSelectedName] = useState<string | null>(focusId ?? null);
+  const [detailView, setDetailView] = useState("reference");
+  useEffect(() => { if (focusId) setSelectedName(focusId); }, [focusId]);
   const createProp = useCreateProp(project);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [extractOpen, setExtractOpen] = useState(false);
   const [editing, setEditing] = useState<PropAsset | null>(null);
   const updateProp = useUpdateProp(project, editing?.name ?? "");
   const deleteProp = useDeleteProp(project);
@@ -442,6 +452,7 @@ export function PropsPanel({
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
       <AssetHeaderActions>
+        <Button variant="outline" size="sm" onClick={() => setExtractOpen(true)} className={SUBTLE_HEADER_ACTION_BUTTON_CLASS}>从创作道具表提取</Button>
         <CharacterImageSourceSelect project={project} kind="prop" />
         <HeaderRefreshButton
           label={t("common.refresh")}
@@ -501,12 +512,13 @@ export function PropsPanel({
       {importOpen ? (
         <AssetImportDialog project={project} assetType="prop" open onOpenChange={setImportOpen} />
       ) : null}
+      {extractOpen && <PropExtractionDialog project={project} onClose={() => setExtractOpen(false)} onImported={() => { void props.refetch(); }} />}
       {refIndex.isError ? (
         <p role="alert" className="px-6 pt-3 text-xs text-destructive">
           {t("assets.common.referenceLoadFailed", { defaultValue: "引用加载失败" })}
         </p>
       ) : null}
-      <div className="min-h-0 flex-1 overflow-auto p-6">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-4">
         {showBatchTask && (
           <div className="mb-4 overflow-hidden rounded-lg border border-border/70">
             <StageProgressPanel
@@ -572,25 +584,22 @@ export function PropsPanel({
             {t("assets.common.noMatch")}
           </div>
         ) : (
-          <div
-            ref={gridRef}
-            className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"
-          >
-            {items.map((prop) => (
-              <div key={prop.name} data-asset-id={prop.name}>
-                <PropAssetCardController
-                  project={project}
-                  prop={prop}
-                  imageSourceSelection={imageSourceSelection}
-                  referenceCount={refIndex.isError ? undefined : refIndex.referencesFor("prop", prop.name).length}
-                  onEdit={() => {
-                    setEditing(prop);
-                    setDialogOpen(true);
-                  }}
-                  onDelete={() => handleDelete(prop)}
-                />
+          <div ref={gridRef} className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)] gap-5 max-md:grid-cols-[160px_minmax(0,1fr)]">
+            <aside aria-label="道具列表" className="space-y-2 overflow-y-auto border-r pr-4">
+              {items.map(prop => <button key={prop.name} type="button" aria-label={`选择道具 ${prop.name}`} aria-pressed={(items.some(item => item.name === selectedName) ? selectedName : items[0]?.name) === prop.name} onClick={() => { setSelectedName(prop.name); setDetailView("reference"); }} className="flex w-full items-center gap-3 rounded-lg border border-transparent p-3 text-left aria-pressed:border-primary/60 aria-pressed:bg-primary/5">
+                {resolveMediaUrl(prop.reference_url) ? <img src={resolveMediaUrl(prop.reference_url)!} alt="" className="size-12 rounded object-cover" /> : <Package className="size-12 rounded bg-muted p-3 text-muted-foreground" />}
+                <span className="min-w-0"><strong className="block truncate text-sm">{prop.name}</strong><small className="text-muted-foreground">{prop.owner || "未绑定角色"} · {prop.reference_url ? "已有参考" : "缺少参考"}</small></span>
+              </button>)}
+            </aside>
+            <main className="min-w-0 overflow-y-auto pr-1">
+              <div role="tablist" aria-label="道具工作区" className="asset-workspace-tabs mb-5">
+                {[["reference","参考与属性"],["references","引用关系"],["history","历史"]].map(([value,label]) => <button type="button" role="tab" aria-selected={detailView === value} key={value} onClick={() => setDetailView(value)}>{label}</button>)}
               </div>
-            ))}
+              {items.filter(prop => prop.name === (items.some(item => item.name === selectedName) ? selectedName : items[0]?.name)).map(prop => <div key={prop.name} data-asset-id={prop.name}>
+                <PropAssetCardController project={project} prop={prop} view={detailView} imageSourceSelection={imageSourceSelection} referenceCount={refIndex.isError ? undefined : refIndex.referencesFor("prop", prop.name).length} onEdit={() => { setEditing(prop); setDialogOpen(true); }} onDelete={() => handleDelete(prop)} />
+                {detailView === "references" && <section className="rounded-lg border bg-card p-5"><h3 className="mb-4 font-semibold">{prop.name} · 剧情引用</h3><AssetBeatReferences project={project} references={refIndex.referencesFor("prop", prop.name)} /></section>}
+              </div>)}
+            </main>
           </div>
         )}
       </div>

@@ -85,7 +85,8 @@ async def test_generation_preserves_split_quality_flags(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_versioned_execute_persists_source_and_preserves_selection(tmp_path, monkeypatch):
+@pytest.mark.parametrize("task_key", ["task_id", "__run_task_id"])
+async def test_versioned_execute_persists_source_and_preserves_selection(tmp_path, monkeypatch, task_key):
     from dataclasses import replace
     from novelvideo.narrative_groups.service import group_beats, save_groups, load_groups
 
@@ -104,7 +105,7 @@ async def test_versioned_execute_persists_source_and_preserves_selection(tmp_pat
         return {"grid_asset": str(path)}
 
     monkeypatch.setattr(narrative_group, "_generate_grid", generate)
-    first = await narrative_group._execute({"task_id": "task-a", "episode": 1, "payload": payload},
+    first = await narrative_group._execute({task_key: "task-a", "episode": 1, "payload": payload},
         SimpleNamespace(output_dir=tmp_path), split_only=False)
     render = load_groups(tmp_path, 1)[0].stages["render"]
     assert first["storyboard_source"]["generation_id"] == "task-a"

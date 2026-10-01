@@ -12,6 +12,7 @@
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 import re
 from typing import Optional, Callable, TYPE_CHECKING
 
@@ -923,6 +924,18 @@ class IdentityPlanner:
                 on_log(f"[EP{episode.number:03d}] AI 筛选出场角色失败: {e}")
             raise RuntimeError(f"Pass 0 出场角色筛选失败: {e}") from e
 
+    def _character_authoring_context(self, char) -> str:
+        from novelvideo.script_creation.asset_context import load_asset_authoring_context
+        store = getattr(self.cognee_store, 'sqlite_store', self.cognee_store)
+        path = getattr(store, 'db_path', None)
+        context = load_asset_authoring_context(path, 'character', char.name) if isinstance(path, (str, Path)) else []
+        if not context and getattr(char, 'description', ''):
+            context = [{'kind': 'authoring_context', 'text': char.description}]
+        if not context:
+            return ''
+        return ('作者业务设定（用于身份与造型设计；未来计划不代表已发生剧情，不作为原文事实）：\n'
+            + json.dumps(context, ensure_ascii=False))
+
     def _build_character_info(self, characters: list[str]) -> str:
         """构建角色基础信息 + 已有身份信息文本。"""
         lines = []
@@ -931,6 +944,7 @@ class IdentityPlanner:
             char = self.cognee_store.get_character(resolved)
             if char:
                 lines.append(f"### {char.name}")
+                lines.append(self._character_authoring_context(char))
                 base_attrs = []
                 if char.gender:
                     base_attrs.append(f"性别: {char.gender}")
@@ -1592,11 +1606,14 @@ class IdentityPlanner:
         """用 AI 生成身份的服装造型描述（含可选面部描述）。"""
         # 获取角色已有造型作为参考（不发送 face_prompt 避免触发安全过滤）
         char = self.cognee_store.get_character(character_name)
+        from novelvideo.character_visual.identity_constraints import adopted_identity_bible, bible_constraints
+        adopted = adopted_identity_bible(getattr(self.cognee_store, 'project_dir', None), character_name)
         base_info = ""
         default_info = ""
         if char:
             # 角色默认面部、年龄段、体型——AI 需要对比判断是否需要覆盖
             default_parts = []
+            default_parts.append(self._character_authoring_context(char))
             if char.face_prompt:
                 default_parts.append(f"默认面部特征: {char.face_prompt}")
             if char.age_group:
@@ -1620,12 +1637,14 @@ class IdentityPlanner:
         if planned_age_group:
             planned_age_info = f"该身份在前一规划阶段已确定年龄段: {planned_age_group}\n"
 
+        adopted_info = ('已采用定角约束（普通服装身份必须保持，不能自主重新设计发型/脸部/体型；明确年龄变体另行设计）：\n'
+            + bible_constraints(adopted)) if adopted else ''
         task = f"""为虚构影视角色「{character_name}」的「{visual_state}」造型设计服装方案。
 
-{default_info}{base_info}{planned_age_info}
+{default_info}{base_info}{planned_age_info}{adopted_info}
 剧情背景: {reason}
 
-请设计 50-80 字的服装造型方案（款式、面料、配饰、发型，不含人物外貌和表情）。
+请设计 50-80 字的服装造型方案（款式、面料、配饰，不自主设计发型，不含人物外貌和表情）。
 
 ⚠️ face_description、age_group、body_type 判断规则：
 - 如果上面已经给出“已确定年龄段”，输出时应与该年龄段保持一致

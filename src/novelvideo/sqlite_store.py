@@ -136,7 +136,8 @@ CREATE TABLE IF NOT EXISTS characters (
     is_main           INTEGER DEFAULT 0,
     extraction_locked INTEGER NOT NULL DEFAULT 0,
     gender            TEXT DEFAULT '',
-    age_group         TEXT DEFAULT 'youth',
+    age_group         TEXT DEFAULT '',
+    voice_facts_json  TEXT DEFAULT '{}',
     body_type         TEXT DEFAULT '',
     fish_voice_id     TEXT DEFAULT '',
     description       TEXT DEFAULT '',
@@ -579,6 +580,10 @@ class SQLiteStore:
                 raise StoreClosedError(self.project_dir)
             self._db = await aiosqlite.connect(self.db_path)
             self._db.row_factory = aiosqlite.Row
+            from novelvideo.character_voice_facts import merge_voice_facts_json, merge_voice_age
+
+            await self._db.create_function("merge_voice_facts", 2, merge_voice_facts_json)
+            await self._db.create_function("merge_voice_age", 4, merge_voice_age)
             await configure_sqlite_connection_async(self._db)
             await self._db.executescript(SQLITE_SCHEMA_SQL)
             await self._ensure_episode_planning_columns(self._db)
@@ -660,6 +665,7 @@ class SQLiteStore:
         )
 
         char_columns = {
+            "voice_facts_json": "TEXT DEFAULT '{}'",
             "reference_audio_path": "TEXT DEFAULT ''",
             "reference_audio_sha256": "TEXT DEFAULT ''",
             "reference_audio_updated_at": "TEXT DEFAULT ''",
@@ -967,8 +973,8 @@ class SQLiteStore:
                            gender, age_group, body_type, fish_voice_id, description,
                            face_prompt, appearance_details, identities_json,
                            reference_audio_path, reference_audio_sha256,
-                           reference_audio_updated_at, voice_samples_by_age_group_json)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           reference_audio_updated_at, voice_samples_by_age_group_json, voice_facts_json)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             character.name,
                             json.dumps(character.aliases, ensure_ascii=False),
@@ -987,6 +993,7 @@ class SQLiteStore:
                             character.reference_audio_sha256,
                             character.reference_audio_updated_at,
                             character.voice_samples_by_age_group_json,
+                            character.voice_facts_json,
                         ),
                     )
                 cursor = await db.execute(
@@ -1482,7 +1489,7 @@ class SQLiteStore:
         """Atomically apply a server-side preview using fill-only SQL expressions."""
         db = await self._ensure_db()
         model_columns = {
-            "character": ("characters", {"aliases": "aliases_json", "role": "role", "gender": "gender", "age_group": "age_group", "body_type": "body_type", "description": "description"}),
+            "character": ("characters", {"aliases": "aliases_json", "role": "role", "gender": "gender", "age_group": "age_group", "body_type": "body_type", "description": "description", "voice_facts": "voice_facts_json"}),
             "scene": ("scenes", {"aliases": "aliases_json", "scene_type": "scene_type", "time_of_day": "time_of_day", "environment_prompt": "environment_prompt", "description": "description", "notes": "notes"}),
             "prop": ("props", {"aliases": "aliases_json", "prop_type": "prop_type", "visual_prompt": "visual_prompt", "description": "description", "owner": "owner", "notes": "notes"}),
         }
@@ -1523,14 +1530,22 @@ class SQLiteStore:
                 current = matches[0] if matches else None
                 target_name = current["name"] if current else candidate.name
                 values = {key: value for key, value in candidate.fields.items() if key in allowed}
-                serialized = {key: json.dumps(value, ensure_ascii=False) if key == "aliases" else value for key, value in values.items()}
+                if "voice_facts" in values:
+                    from novelvideo.character_voice_facts import VoiceFacts
+
+                    values["voice_facts"] = VoiceFacts.model_validate(values["voice_facts"]).model_dump(mode="json")
+                serialized = {key: json.dumps(value, ensure_ascii=False) if key in {"aliases", "voice_facts"} else value for key, value in values.items()}
                 created = False
                 if current is None:
                     columns = ["name"] + [allowed[key] for key in serialized]
+                    insert_values = [target_name, *serialized.values()]
+                    if asset_type == "character" and "age_group" not in serialized:
+                        columns.append("age_group")
+                        insert_values.append("")
                     placeholders = ", ".join("?" for _ in columns)
                     cursor = await db.execute(
                         f"INSERT OR IGNORE INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
-                        [target_name, *serialized.values()],
+                        insert_values,
                     )
                     created = (cursor.rowcount or 0) > 0
                 # Always follow with conditional updates: INSERT OR IGNORE may have lost a race.
@@ -1541,8 +1556,10 @@ class SQLiteStore:
                     empty_params: list[object] = []
                     if key == "aliases":
                         empty_clause = f"({empty_clause} OR {column} = '[]')"
+                    if key == "voice_facts":
+                        empty_clause = f"({empty_clause} OR {column} = '{{}}')"
                     technical_default = {
-                        "character": {"age_group": "youth"},
+                        "character": {"age_group": ""},
                         "scene": {"scene_type": "interior"},
                         "prop": {"prop_type": "object"},
                     }.get(asset_type, {}).get(key)
@@ -1774,20 +1791,38 @@ class SQLiteStore:
             console.print(f"[red]更新角色字段失败: {e}[/red]")
             return False
 
+    async def _merge_stored_voice_facts(self, db, character: NovelCharacter) -> None:
+        from novelvideo.character_voice_facts import VoiceFacts, merge_voice_facts
+
+        async with db.execute(
+            "SELECT voice_facts_json, age_group FROM characters WHERE name = ?", (character.name,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is not None:
+            if not character.age_group:
+                character.age_group = row["age_group"] or ""
+            character.voice_facts = merge_voice_facts(
+                VoiceFacts.model_validate_json(row["voice_facts_json"] or "{}"),
+                character.voice_facts,
+            )
+
     async def add_character(self, character: NovelCharacter) -> None:
         db = await self._ensure_db()
+        incoming_voice_facts_json = character.voice_facts_json
+        await self._merge_stored_voice_facts(db, character)
         await db.execute(
             """INSERT INTO characters (name, aliases_json, role, is_main, extraction_locked,
                gender, age_group,
                body_type, fish_voice_id, description, face_prompt, appearance_details, identities_json,
                reference_audio_path, reference_audio_sha256, reference_audio_updated_at,
-               voice_samples_by_age_group_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               voice_samples_by_age_group_json, voice_facts_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(name) DO UPDATE SET
                aliases_json=excluded.aliases_json, role=excluded.role,
                is_main=excluded.is_main, extraction_locked=excluded.extraction_locked,
                gender=excluded.gender,
-               age_group=excluded.age_group, body_type=excluded.body_type,
+               age_group=merge_voice_age(characters.voice_facts_json, excluded.voice_facts_json,
+                   characters.age_group, excluded.age_group), body_type=excluded.body_type,
                fish_voice_id=excluded.fish_voice_id, description=excluded.description,
                face_prompt=excluded.face_prompt, appearance_details=excluded.appearance_details,
                identities_json=excluded.identities_json,
@@ -1795,6 +1830,7 @@ class SQLiteStore:
                reference_audio_sha256=excluded.reference_audio_sha256,
                reference_audio_updated_at=excluded.reference_audio_updated_at,
                voice_samples_by_age_group_json=excluded.voice_samples_by_age_group_json,
+               voice_facts_json=merge_voice_facts(characters.voice_facts_json, excluded.voice_facts_json),
                updated_at=datetime('now')""",
             (
                 character.name,
@@ -1814,9 +1850,15 @@ class SQLiteStore:
                 character.reference_audio_sha256,
                 character.reference_audio_updated_at,
                 character.voice_samples_by_age_group_json,
+                incoming_voice_facts_json,
             ),
         )
         await db.commit()
+        async with db.execute("SELECT voice_facts_json,age_group FROM characters WHERE name=?", (character.name,)) as cursor:
+            row = await cursor.fetchone()
+        if row is not None:
+            character.voice_facts_json = row["voice_facts_json"]
+            character.age_group = row["age_group"] or ""
         self._characters[character.name] = character
         updated_alias_index = {k: v for k, v in self._alias_index.items() if v != character.name}
         self._alias_index.clear()
@@ -2110,7 +2152,7 @@ class SQLiteStore:
         return NovelScene(
             name=row["name"],
             aliases=json.loads(row["aliases_json"] or "[]"),
-            scene_type=row["scene_type"] or "interior",
+            scene_type=row["scene_type"] if row["scene_type"] is not None else "interior",
             base_scene_id=(row["base_scene_id"] if "base_scene_id" in row.keys() else "") or "",
             variant_id=(row["variant_id"] if "variant_id" in row.keys() else "") or "",
             time_of_day=(row["time_of_day"] if "time_of_day" in row.keys() else "") or "",
@@ -2378,10 +2420,15 @@ class SQLiteStore:
             console.print(f"[yellow]身份 {identity_id} 没有图片[/yellow]")
             return False
         image_file = Path(image_path)
-        if image_file.exists():
-            image_file.unlink()
-            console.print(f"[green]已删除图片文件: {image_path}[/green]")
-            return True
+        from novelvideo.production_workflow import production_workflow_project_lock
+        from novelvideo.character_visual.casting_recovery import assert_casting_path_mutation_allowed
+
+        with production_workflow_project_lock(self.state_dir):
+            assert_casting_path_mutation_allowed(self.project_dir, self.state_dir, image_file)
+            if image_file.exists():
+                image_file.unlink()
+                console.print(f"[green]已删除图片文件: {image_path}[/green]")
+                return True
         console.print(f"[yellow]图片文件不存在: {image_path}[/yellow]")
         return False
 
@@ -2543,7 +2590,8 @@ class SQLiteStore:
                     row["extraction_locked"] if "extraction_locked" in row.keys() else 0
                 ),
                 gender=row["gender"] or "",
-                age_group=row["age_group"] if "age_group" in row.keys() else "youth",
+                age_group=(row["age_group"] or "") if "age_group" in row.keys() else "",
+                voice_facts_json=(row["voice_facts_json"] or "{}") if "voice_facts_json" in row.keys() else "{}",
                 body_type=row["body_type"] or "",
                 fish_voice_id=row["fish_voice_id"] if "fish_voice_id" in row.keys() else "",
                 description=row["description"] or "",
@@ -3593,7 +3641,7 @@ class SQLiteStore:
             preserved = sorted(existing_names - candidate_names)
             for character in characters:
                 async with db.execute(
-                    "SELECT extraction_locked FROM characters WHERE name = ?",
+                    "SELECT extraction_locked, voice_facts_json FROM characters WHERE name = ?",
                     (character.name,),
                 ) as cursor:
                     existing = await cursor.fetchone()
@@ -3605,8 +3653,8 @@ class SQLiteStore:
                     await db.execute(
                         "INSERT INTO characters "
                         "(name, aliases_json, role, is_main, extraction_locked, gender, "
-                        "age_group, body_type, description, face_prompt) "
-                        "VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
+                        "age_group, body_type, description, face_prompt, voice_facts_json) "
+                        "VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
                         (
                             character.name,
                             json.dumps(character.aliases, ensure_ascii=False),
@@ -3617,12 +3665,27 @@ class SQLiteStore:
                             character.body_type,
                             character.description,
                             character.face_prompt,
+                            character.voice_facts_json,
                         ),
                     )
                     added.append(character.name)
                 else:
                     assignments: list[str] = []
                     values: list[Any] = []
+                    from novelvideo.character_voice_facts import VoiceFacts, merge_voice_facts
+
+                    voice_facts = merge_voice_facts(
+                        VoiceFacts.model_validate_json(existing["voice_facts_json"] or "{}"),
+                        character.voice_facts,
+                    )
+                    if voice_facts != VoiceFacts.model_validate_json(existing["voice_facts_json"] or "{}"):
+                        assignments.append("voice_facts_json = ?")
+                        values.append(voice_facts.model_dump_json())
+                    if voice_facts.age_group or any(
+                        conflict.startswith("age_group:") for conflict in voice_facts.conflicts
+                    ):
+                        assignments.append("age_group = ?")
+                        values.append(voice_facts.age_group)
                     if character.aliases:
                         assignments.append("aliases_json = ?")
                         values.append(json.dumps(character.aliases, ensure_ascii=False))
@@ -3727,19 +3790,24 @@ class SQLiteStore:
         try:
             await db.execute("BEGIN IMMEDIATE")
             for character in characters:
+                incoming_voice_facts_json = character.voice_facts_json
                 clause = "DO NOTHING" if skip_existing else (
                     "DO UPDATE SET aliases_json=excluded.aliases_json, role=excluded.role, "
                     "is_main=excluded.is_main, extraction_locked=excluded.extraction_locked, "
-                    "gender=excluded.gender, age_group=excluded.age_group, "
+                    "gender=excluded.gender, age_group=merge_voice_age(characters.voice_facts_json, "
+                    "excluded.voice_facts_json, characters.age_group, excluded.age_group), "
                     "body_type=excluded.body_type, description=excluded.description, "
                     "face_prompt=excluded.face_prompt, appearance_details=excluded.appearance_details, "
+                    "voice_facts_json=merge_voice_facts(characters.voice_facts_json, excluded.voice_facts_json), "
                     "updated_at=datetime('now')"
                 )
+                if not skip_existing:
+                    await self._merge_stored_voice_facts(db, character)
                 cursor = await db.execute(
                     "INSERT INTO characters "
                     "(name, aliases_json, role, is_main, extraction_locked, gender, age_group, body_type, "
-                    "description, face_prompt, appearance_details, identities_json) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "description, face_prompt, appearance_details, identities_json, voice_facts_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                     f"ON CONFLICT(name) {clause}",
                     (
                         character.name,
@@ -3754,6 +3822,7 @@ class SQLiteStore:
                         character.face_prompt,
                         character.appearance_details,
                         character.identities_json,
+                        incoming_voice_facts_json,
                     ),
                 )
                 if (cursor.rowcount or 0) > 0:

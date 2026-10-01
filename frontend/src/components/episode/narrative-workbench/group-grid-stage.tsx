@@ -53,6 +53,6 @@ export function GroupGridStage({ title, stage, state, onAction }: { title: strin
         <Button size="sm" variant="outline" disabled={state.status === "queued" || state.status === "running"} onClick={() => onAction(stage, "regenerate")}>整组重新生成</Button>
       </div>
     </div>
-    {state.grid_asset && <img className="mt-3 max-h-64 rounded-lg object-contain" src={state.grid_asset} alt={`${title}多宫格`} />}
+    {state.grid_asset ? <a href={state.grid_asset} target="_blank" rel="noreferrer" className="mt-3 flex min-h-40 items-center justify-center rounded-lg bg-black/50" title="打开完整多宫格"><img className="max-h-[min(38vh,360px)] w-full rounded-lg object-contain" src={state.grid_asset} alt={`${title}多宫格`} /></a> : <div className="mt-3 flex min-h-44 items-center justify-center rounded-lg border border-dashed border-white/10 bg-black/20 text-xs text-muted-foreground">{['queued','running'].includes(state.status) ? '多宫格正在生成，完成后会显示在这里' : '检查参考与参数后生成本组多宫格'}</div>}
   </section>;
 }

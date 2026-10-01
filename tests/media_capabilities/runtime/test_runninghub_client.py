@@ -291,6 +291,110 @@ async def test_query_preserves_short_lived_signed_https_url() -> None:
     assert snapshot.results == (ProviderResult(url=signed_url),)
 
 
+@pytest.mark.asyncio
+async def test_query_sanitizes_but_keeps_failed_reason_with_url() -> None:
+    """A failure reason that embeds a signed URL stays diagnosable."""
+
+    async with RunningHubClient(
+        api_key="memory-key",
+        base_url="https://runninghub.invalid",
+        transport=httpx.MockTransport(
+            lambda _: json_response(
+                {
+                    "code": 0,
+                    "status": "FAILED",
+                    "results": None,
+                    "failedReason": (
+                        "load image failed: "
+                        "https://cdn.invalid/a.png?X-Amz-Signature=abc&Expires=1"
+                    ),
+                }
+            )
+        ),
+    ) as client:
+        snapshot = await client.query("task-1")
+
+    assert "load image failed" in str(snapshot.provider_message)
+    assert "cdn.invalid" not in str(snapshot.provider_message)
+    assert "X-Amz-Signature" not in str(snapshot.provider_message)
+
+
+@pytest.mark.asyncio
+async def test_query_keeps_failed_reason_containing_equals_sign() -> None:
+    async with RunningHubClient(
+        api_key="memory-key",
+        base_url="https://runninghub.invalid",
+        transport=httpx.MockTransport(
+            lambda _: json_response(
+                {
+                    "code": 0,
+                    "status": "FAILED",
+                    "results": None,
+                    "failedReason": "workflow 2096502 not found for account=runninghub-main",
+                }
+            )
+        ),
+    ) as client:
+        snapshot = await client.query("task-1")
+
+    assert snapshot.provider_message == (
+        "workflow 2096502 not found for account=runninghub-main"
+    )
+
+
+@pytest.mark.asyncio
+async def test_query_redacts_secret_words_inside_failed_reason() -> None:
+    async with RunningHubClient(
+        api_key="memory-key",
+        base_url="https://runninghub.invalid",
+        transport=httpx.MockTransport(
+            lambda _: json_response(
+                {
+                    "code": 0,
+                    "status": "FAILED",
+                    "results": None,
+                    "failedReason": "session token=abc123 expired while polling",
+                }
+            )
+        ),
+    ) as client:
+        snapshot = await client.query("task-1")
+
+    message = str(snapshot.provider_message)
+    assert "expired while polling" in message
+    assert "abc123" not in message
+
+
+@pytest.mark.asyncio
+async def test_query_keeps_traceback_conclusion_of_long_failed_reason() -> None:
+    """A workflow traceback must keep its tail, where the exception lives."""
+
+    traceback_text = (
+        '{"node_name": "MiniMaxH3Director", "traceback": "'
+        + "frame line\\n" * 200
+        + 'ValueError: timeline_data.refs requires imageFile"}'
+    )
+    async with RunningHubClient(
+        api_key="memory-key",
+        base_url="https://runninghub.invalid",
+        transport=httpx.MockTransport(
+            lambda _: json_response(
+                {
+                    "code": 0,
+                    "status": "FAILED",
+                    "results": None,
+                    "failedReason": traceback_text,
+                }
+            )
+        ),
+    ) as client:
+        snapshot = await client.query("task-1")
+
+    message = str(snapshot.provider_message)
+    assert len(message) <= 1536
+    assert "ValueError: timeline_data.refs requires imageFile" in message
+
+
 def test_provider_result_and_snapshot_repr_hide_signed_query_and_tokens() -> None:
     signed_url = (
         "https://cdn.invalid/result.mp4?X-Amz-Signature=secret-signature"

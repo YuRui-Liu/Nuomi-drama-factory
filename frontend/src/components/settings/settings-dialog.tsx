@@ -34,9 +34,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { KnowledgeRuntimeSection } from "@/components/settings/knowledge-runtime-section";
+import { SettingsDraftProvider } from "@/components/settings/settings-draft-context";
 import { TextRuntimePanel } from "@/components/settings/text-runtime-panel";
 import {
   useKnowledgeRuntimeStatus,
@@ -87,10 +87,31 @@ const MEDIA_STORAGE_PROVIDERS: MediaStorageProvider[] = ["aliyun_oss", "cloudina
 // Codex 本地桥接暂时隐藏（保留组件代码，后端就绪后改回 true 即可恢复）。
 const SHOW_CODEX_BRIDGE = false;
 
+export function getSettingsConnectionState(
+  query: { isPending?: boolean; isLoading?: boolean; isError?: boolean },
+  configured: boolean,
+  optional = false,
+): "loading" | "error" | "ready" | "missing" | "optional" {
+  if (query.isError) return "error";
+  if (query.isPending || query.isLoading) return "loading";
+  return configured ? "ready" : optional ? "optional" : "missing";
+}
+
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const { t } = useTranslation();
   const [page, setPage] = useState<"runtime" | "models" | "storage">("runtime");
-  const statusQuery = useModelGatewayConfig(open && page !== "runtime");
+  const [hasUnsaved, setHasUnsaved] = useState(false);
+  const [confirmClose, setConfirmClose] = useState(false);
+  const requestClose = (next: boolean) => {
+    if (!next && hasUnsaved) setConfirmClose(true);
+    else onOpenChange(next);
+  };
+  const [visitedPages, setVisitedPages] = useState<Set<string>>(() => new Set(["runtime"]));
+  const selectPage = (next: "runtime" | "models" | "storage") => {
+    setVisitedPages((previous) => new Set([...previous, next]));
+    setPage(next);
+  };
+  const statusQuery = useModelGatewayConfig(open);
   const runtimeStatus = useKnowledgeRuntimeStatus(open);
   const mediaProviders = useMediaProviderAccounts(open);
   const settingsStatus = statusQuery.data?.data;
@@ -105,16 +126,22 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const productionConfigured =
     configuredProviderTypes.has("grsai") && configuredProviderTypes.has("runninghub");
 
-  const pageStatus = (configured: boolean, label: string) => {
-    if (statusQuery.isLoading) {
+  const runtimeState = getSettingsConnectionState(runtimeStatus, runtimeConfigured);
+  const providersState = getSettingsConnectionState(mediaProviders, productionConfigured);
+  const gatewayState = getSettingsConnectionState(statusQuery, modelConfigured, true);
+  const storageState = getSettingsConnectionState(statusQuery, mediaStorageConfigured);
+  const connectionLabels = { loading: "正在检查", error: "读取失败", ready: "已配置", missing: "待配置", optional: "可选" };
+  const pageStatus = (state: ReturnType<typeof getSettingsConnectionState>, label: string) => {
+    if (state === "loading") {
       return (
         <Loader2
           className="absolute top-1 right-1 size-3 animate-spin text-muted-foreground sm:static sm:ml-auto sm:size-3.5"
-          aria-hidden
+          aria-label={`${label}：正在检查`}
         />
       );
     }
-    if (configured) {
+    if (state === "optional") return <span className="ml-auto text-[10px] text-muted-foreground">可选</span>;
+    if (state === "ready") {
       return (
         <span
           className="absolute top-1 right-1 size-2 shrink-0 rounded-full bg-emerald-400 sm:static sm:ml-auto"
@@ -126,30 +153,33 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     return (
       <AlertTriangle
         className="absolute top-1 right-1 size-3.5 shrink-0 text-amber-400 sm:static sm:ml-auto sm:size-4"
-        aria-label={t("settings.statusNotConfigured", { page: label })}
+        aria-label={`${label}：${connectionLabels[state]}`}
       />
     );
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <SettingsDraftProvider onDirtyChange={setHasUnsaved}>
+    <Dialog open={open} onOpenChange={requestClose}>
       <DialogContent
         showCloseButton
-        className="flex h-[min(82vh,760px)] max-w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden rounded-lg border border-border bg-black p-0 ring-0 sm:max-w-[1120px]"
+        className="flex h-[min(88dvh,860px)] max-h-[calc(100dvh-2rem)] max-w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden rounded-lg border border-border bg-black p-0 ring-0 sm:max-w-[1120px]"
       >
-        <DialogHeader className="border-b border-border px-5 py-4">
+        <DialogHeader className="shrink-0 border-b border-border px-5 py-4">
           <DialogTitle>{t("settings.title")}</DialogTitle>
+          <p className="text-xs leading-relaxed text-muted-foreground">全局连接 · 管理运行时、媒体服务和存储，供各项目使用。模型、画幅与制作参数请在项目工作台中调整。</p>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1">
           <nav
             aria-label={t("settings.navigationLabel")}
-            className="flex w-14 shrink-0 flex-col gap-1 border-r border-border px-2 py-4 sm:w-44 sm:px-3"
+            className="flex min-h-0 w-14 shrink-0 flex-col gap-1 overflow-y-auto border-r border-border px-2 py-4 sm:w-44 sm:px-3"
           >
             <button
               type="button"
+              aria-label="运行时与媒体"
               aria-current={page === "runtime" ? "page" : undefined}
-              onClick={() => setPage("runtime")}
+              onClick={() => selectPage("runtime")}
               className={cn(
                 "relative flex h-10 items-center justify-center gap-2 rounded-md px-2 text-sm font-medium transition-colors sm:justify-start sm:px-3",
                 page === "runtime"
@@ -160,14 +190,15 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
               <Cpu className="size-4" aria-hidden />
               <span className="hidden sm:inline">运行时与媒体</span>
               {pageStatus(
-                runtimeConfigured && productionConfigured,
+                runtimeState === "error" || providersState === "error" ? "error" : runtimeState === "loading" || providersState === "loading" ? "loading" : runtimeConfigured && productionConfigured ? "ready" : "missing",
                 "运行时与媒体",
               )}
             </button>
             <button
               type="button"
+              aria-label="兼容网关（可选）"
               aria-current={page === "models" ? "page" : undefined}
-              onClick={() => setPage("models")}
+              onClick={() => selectPage("models")}
               className={cn(
                 "relative flex h-10 items-center justify-center gap-2 rounded-md px-2 text-sm font-medium transition-colors sm:justify-start sm:px-3",
                 page === "models"
@@ -177,12 +208,13 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             >
               <Cpu className="size-4" aria-hidden />
               <span className="hidden sm:inline">兼容网关</span>
-              {pageStatus(modelConfigured, t("settings.pages.models"))}
+              {pageStatus(gatewayState, "兼容网关")}
             </button>
             <button
               type="button"
+              aria-label={t("settings.pages.storage")}
               aria-current={page === "storage" ? "page" : undefined}
-              onClick={() => setPage("storage")}
+              onClick={() => selectPage("storage")}
               className={cn(
                 "relative flex h-10 items-center justify-center gap-2 rounded-md px-2 text-sm font-medium transition-colors sm:justify-start sm:px-3",
                 page === "storage"
@@ -192,39 +224,61 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             >
               <HardDrive className="size-4" aria-hidden />
               <span className="hidden sm:inline">{t("settings.pages.storage")}</span>
-              {pageStatus(mediaStorageConfigured, t("settings.pages.storage"))}
+              {pageStatus(storageState, t("settings.pages.storage"))}
             </button>
           </nav>
 
-          {page === "runtime" ? (
-            <div className="min-w-0 flex-1">
-              <ScrollArea className="h-full [&_[data-slot=scroll-area-scrollbar]]:!w-1 [&_[data-slot=scroll-area-scrollbar]]:!border-l-0 [&_[data-slot=scroll-area-scrollbar]]:!p-0">
+          {visitedPages.has("runtime") && (
+            <div hidden={page !== "runtime"} className="min-h-0 min-w-0 flex-1 overflow-hidden">
+              <div aria-label="运行时与媒体设置内容" className="h-full overflow-y-auto overscroll-contain pb-6 [scrollbar-gutter:stable]">
+                <div className="mx-5 mt-5 grid gap-2 rounded-lg border border-border bg-muted/20 p-3 text-xs" aria-label="连接检查">
+                  <p className="font-medium">制作前检查</p>
+                  <p>运行时：{connectionLabels[runtimeState]}{runtimeState === "missing" ? "，请在下方检查运行时连接与任务路由。" : ""}</p>
+                  <p>媒体服务：{connectionLabels[providersState]}{providersState === "missing" ? `，待配置 ${[!configuredProviderTypes.has("grsai") && "GRSAI", !configuredProviderTypes.has("runninghub") && "RunningHub"].filter(Boolean).join("、")}。请在下方媒体生产服务中配置。` : ""}</p>
+                  {runtimeState === "error" || providersState === "error" ? <Button variant="outline" size="sm" className="w-fit" onClick={() => { void runtimeStatus.refetch(); void mediaProviders.refetch(); }}>重新检查运行时与媒体</Button> : null}
+                  <button type="button" onClick={() => selectPage("storage")} className="w-fit text-left text-primary hover:underline">媒体存储：{connectionLabels[storageState]} → 查看存储配置</button>
+                  <p className="text-muted-foreground">兼容网关为可选连接，仅在所选功能使用网关时配置。</p>
+                </div>
                 <KnowledgeRuntimeSection open={open && page === "runtime"} />
-              </ScrollArea>
+              </div>
             </div>
-          ) : page === "models" ? (
-            <div className="min-w-0 flex-1">
-            <ScrollArea className="h-full [&_[data-slot=scroll-area-scrollbar]]:!w-1 [&_[data-slot=scroll-area-scrollbar]]:!border-l-0 [&_[data-slot=scroll-area-scrollbar]]:!p-0">
+          )}
+          {visitedPages.has("models") && (
+            <div hidden={page !== "models"} className="min-h-0 min-w-0 flex-1 overflow-hidden">
+            <div aria-label="兼容网关设置内容" className="h-full overflow-y-auto overscroll-contain pb-6 [scrollbar-gutter:stable]">
               <ModelConfigSection open={open && page === "models"} />
               {SHOW_CODEX_BRIDGE && <CodexBridgeSection />}
-            </ScrollArea>
             </div>
-          ) : (
-            <div className="min-w-0 flex-1">
-            <ScrollArea className="h-full [&_[data-slot=scroll-area-scrollbar]]:!w-1 [&_[data-slot=scroll-area-scrollbar]]:!border-l-0 [&_[data-slot=scroll-area-scrollbar]]:!p-0">
+            </div>
+          )}
+          {visitedPages.has("storage") && (
+            <div hidden={page !== "storage"} className="min-h-0 min-w-0 flex-1 overflow-hidden">
+            <div aria-label="媒体存储设置内容" className="h-full overflow-y-auto overscroll-contain pb-6 [scrollbar-gutter:stable]">
               <MediaStorageSection />
-            </ScrollArea>
+            </div>
             </div>
           )}
         </div>
 
-        <div className="flex justify-end border-t border-border px-5 py-3.5">
+        <div className="flex shrink-0 items-center justify-between border-t border-border px-5 py-3.5">
+          <p className="text-xs text-muted-foreground">{hasUnsaved ? "有未保存的修改，请在对应区域保存" : "各区域独立保存"}</p>
           <DialogClose render={<Button variant="outline" size="sm" />}>
             {t("settings.close")}
           </DialogClose>
         </div>
       </DialogContent>
     </Dialog>
+    <Dialog open={open && confirmClose} onOpenChange={setConfirmClose}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>还有未保存的设置</DialogTitle></DialogHeader>
+        <p className="text-sm text-muted-foreground">关闭会丢弃未保存的表单修改。返回对应区域保存后再关闭。</p>
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={() => setConfirmClose(false)}>继续编辑</Button>
+          <Button onClick={() => { setConfirmClose(false); onOpenChange(false); }}>放弃修改并关闭</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+    </SettingsDraftProvider>
   );
 }
 
@@ -323,24 +377,23 @@ function ModelConfigSection({ open }: { open: boolean }) {
   // root username are deployment details, not user-editable model settings.
   const customDatabase: NewApiDatabaseConfigInput | undefined = undefined;
 
+  if (configQuery.isError || configQuery.isPending) {
+    return <ConnectionRequestState failed={configQuery.isError} label="兼容网关" retry={() => { void configQuery.refetch(); }} />;
+  }
+
   return (
     <section className="px-5 py-5">
       <div className="flex items-center gap-2">
         <span
           className={cn(
             "size-1.5 rounded-full",
-            modelGatewayMissing ? "bg-amber-400" : "bg-emerald-400",
+            modelGatewayMissing ? "bg-muted-foreground" : "bg-emerald-400",
           )}
         />
         <h3 className="font-heading text-sm font-medium text-foreground">
           {t("settings.modelConfig.title")}
         </h3>
-        {modelGatewayMissing ? (
-          <AlertTriangle
-            className="size-3.5 text-amber-400"
-            aria-label={t("settings.modelConfig.gatewayWarningIconLabel")}
-          />
-        ) : null}
+        <span className="text-xs text-muted-foreground">可选连接</span>
         {config ? (
           <span className="ml-1 rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
             {t("settings.modelConfig.effectiveBadge", {
@@ -359,7 +412,7 @@ function ModelConfigSection({ open }: { open: boolean }) {
       {modelGatewayMissing ? (
         <div className="mt-3 flex gap-2 rounded-md border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-100">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-amber-300" aria-hidden />
-          <p>{t("settings.modelConfig.gatewayNotConfiguredImpact")}</p>
+          <p>兼容网关尚未配置。仅当所选功能通过网关调用模型时需要配置；运行时与直连媒体服务可独立使用。</p>
         </div>
       ) : null}
 
@@ -2211,6 +2264,14 @@ function FeatureModelRow({
   );
 }
 
+function ConnectionRequestState({ failed, label, retry }: { failed: boolean; label: string; retry: () => void }) {
+  return <div role="status" className="m-5 space-y-3 rounded-lg border border-border bg-muted/20 p-5">
+    <p className="text-sm font-medium">{label} · {failed ? "读取失败" : "正在检查配置"}</p>
+    <p className="text-xs text-muted-foreground">{failed ? "暂时无法读取已保存的配置，请重试。" : "读取完成后展示当前连接与可编辑配置。"}</p>
+    {failed ? <Button variant="outline" size="sm" onClick={retry}>重新加载{label}</Button> : <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
+  </div>;
+}
+
 function MediaStorageSection() {
   const { t } = useTranslation();
   const configQuery = useModelGatewayConfig(true);
@@ -2309,6 +2370,10 @@ function MediaStorageSection() {
       toast.error(await getRequestErrorMessage(error, t("settings.mediaStorage.saveFailed")));
     }
   };
+
+  if (configQuery.isError || configQuery.isPending) {
+    return <ConnectionRequestState failed={configQuery.isError} label="媒体存储" retry={() => { void configQuery.refetch(); }} />;
+  }
 
   return (
     <section className="px-5 py-5">

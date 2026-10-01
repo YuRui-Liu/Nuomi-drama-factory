@@ -45,6 +45,22 @@ class Runtime:
             for label in context['ordered_frames']], 'issues': []}
 
 
+@pytest.mark.parametrize('error_name', ['TaskCancelled', 'TaskTimedOut', 'TaskLeaseLost'])
+async def test_reference_review_propagates_task_control(frozen, tmp_path, error_name):
+    from novelvideo.task_backend import cancel
+    from novelvideo.shot_continuity.production_review import review_reference_inputs
+
+    error_type = getattr(cancel, error_name)
+
+    class StoppedRuntime(Runtime):
+        async def run_structured(self, **kwargs):
+            raise error_type()
+
+    with pytest.raises(error_type):
+        await review_reference_inputs([segment()], {'s1': shot()}, frozen,
+                                      StoppedRuntime(), tmp_path / 'cache')
+
+
 async def test_reference_reviews_use_frozen_bytes_and_boundary_context(frozen, tmp_path):
     from novelvideo.shot_continuity.production_review import review_reference_inputs
     runtime = Runtime()

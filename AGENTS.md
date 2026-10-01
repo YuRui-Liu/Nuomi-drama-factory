@@ -1,5 +1,9 @@
 # Repository Guidelines
 
+## Production Workflow
+
+For episode production, continuation, Ref video generation, or failed-batch recovery, read `skills/nuomi-production/SKILL.md` first and use `novelvideo.production_cli` (`nuomi`). Production units are narrative groups: group storyboard images → group videos → episode composition. Read saved concurrency settings; do not invent a lower limit. Do not replace this workflow with shot/segment loops or direct-provider scripts. Report blocked groups and repair the supported entry point instead of bypassing it. Keep verification proportional: generation result, obvious story omissions, and final playback; no unsolicited ASR or repeated paid quality passes.
+
 ## Project Structure & Module Organization
 
 This repository contains the SuperTale Community Edition backend and video pipeline. Python source lives under `src/novelvideo/`, with major areas such as `api/` for FastAPI routes, `task_backend/` for job execution, `generators/` for media generation, `verification/` for quality gates, `ports/` for interface boundaries, and `assets/` for bundled media. Tests live in `tests/`, with contract tests in `tests/contract/` and port-focused tests in `tests/ports/`. Operational scripts are in `scripts/`, documentation in `docs/`, examples in `examples/`, and compliance artifacts in `docs/compliance/`, `LICENSES/`, and `sbom.spdx.json`.

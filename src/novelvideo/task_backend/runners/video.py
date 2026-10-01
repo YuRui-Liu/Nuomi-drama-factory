@@ -73,9 +73,8 @@ def director_composition_snapshot(
         group = by_id[group_id]
         stage = group.stages.get("video")
         if (group.director_revision_id != active.revision_id
-            or getattr(stage, "status", "") != "completed"
-            or getattr(stage, "needs_regeneration", False)):
-            raise ValueError(f"DIRECTOR_COMPOSITION_INCOMPLETE: {group_id} 视频未完成或已过期")
+            or getattr(stage, "status", "") != "completed"):
+            raise ValueError(f"DIRECTOR_COMPOSITION_INCOMPLETE: {group_id} 视频未完成或不属于当前规划")
         video_sources.append({
             "group_id": group_id,
             "revision": getattr(stage, "revision", 0),
@@ -114,8 +113,8 @@ def resolve_episode_composition_sources(
         director_composition_snapshot(root, episode, groups=groups)
     for group in sorted(groups, key=lambda item: int(getattr(item, "ordinal", 0))):
         stage = getattr(group, "stages", {}).get("video")
-        if strict_audio and getattr(stage, "needs_regeneration", False):
-            raise RuntimeError("narrative group video is stale; regenerate before composition")
+        # Input changes are advisory: compose the retained completed video and
+        # its original manifest without pretending it used the latest inputs.
         manifest_name = str(getattr(stage, "manifest_asset", "") or "").strip()
         if getattr(stage, "status", "") != "completed":
             continue
@@ -901,7 +900,7 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
                             f"[0:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[{label}]"
                         )
                     else:
-                        tts = paths.audio(entry.segment.beat_number)
+                        tts = Path(entry.external_audio_path) if entry.external_audio_path else paths.audio(entry.segment.beat_number)
                         if not tts.exists():
                             raise RuntimeError(
                                 f"Beat {entry.segment.beat_number} requires TTS for external_tts"

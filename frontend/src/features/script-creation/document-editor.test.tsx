@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { DraftManager } from "./draft-manager";
 import { headingsForMarkdown } from "./document-tree";
+import { defaultSettings, encodeBriefSettings } from "./settings";
 import type { ScriptDocument } from "./types";
 
 const mocks = vi.hoisted(() => ({ get: vi.fn() }));
@@ -21,6 +22,59 @@ function document(revision: string, markdown: string): ScriptDocument {
 const conflict = () => Object.assign(new Error("revision conflict"), { status: 409 });
 
 describe("DocumentEditor conflict comparison", () => {
+  it("renders saved brief settings into empty sections without replacing authored content or modifying source", async () => {
+    const markdown = encodeBriefSettings({ ...defaultSettings(), idea: "主角名字不要套路。\n末日丧尸生存", audience: ["大众向", "烧脑推理"], genrePrimary: "末世丧尸生存", episodeCount: 60, style: ["3D国风动画"] }, "# 创作简报\n\n## 故事想法\n\n## 目标观众\n\n## 创作边界\n\n不要用旁白解释谜底。");
+    const manager = new DraftManager(vi.fn());
+    manager.load({ ...document("r1", markdown), kind: "brief", title: "创作简报" });
+    const { container } = render(<DocumentEditor project="demo" draft={manager.get("one")!} manager={manager} onSelection={() => {}} />);
+    expect(container).toHaveTextContent("末日丧尸生存");
+    expect(container).toHaveTextContent("大众向、烧脑推理");
+    expect(container).toHaveTextContent("60 集");
+    expect(container).toHaveTextContent("3D国风动画");
+    expect(container).toHaveTextContent("不要用旁白解释谜底。");
+    expect(container).not.toHaveTextContent("nuomi-script-settings");
+    expect(screen.getAllByRole("heading", { name: "创作简报" })).toHaveLength(1);
+    expect(screen.getByRole("heading", { name: "故事想法" })).toHaveAttribute("id", "heading-one-" + headingsForMarkdown(markdown)[0].anchor);
+    await userEvent.setup().click(screen.getByRole("button", { name: "编辑 Markdown" }));
+    expect(screen.getByRole("textbox")).toHaveValue(markdown);
+    expect(manager.get("one")!.status).toBe("saved");
+    manager.dispose();
+  });
+  it("renders Chinese field labels next to body text in nested lists while preserving escaped markers", () => {
+    const markdown = "- **类型与作用：**推理主角\n  - **起点：**寻找妹妹\n\n\\*\\*示例：\\*\\*原样显示\n\n`**代码：**原样显示`";
+    const manager = new DraftManager(vi.fn());
+    manager.load(document("r1", markdown));
+    const { container } = render(<DocumentEditor project="demo" draft={manager.get("one")!} manager={manager} onSelection={() => {}} />);
+    expect(screen.getByText("类型与作用：").tagName).toBe("STRONG");
+    expect(screen.getByText("起点：").tagName).toBe("STRONG");
+    expect(screen.getByText("**示例：**原样显示")).toBeInTheDocument();
+    expect(container.querySelector("code")).toHaveTextContent("**代码：**原样显示");
+    manager.dispose();
+  });
+
+  it("previews readable document structure without exposing settings or changing the source", async () => {
+    const user = userEvent.setup();
+    const markdown = '<!-- nuomi-script-settings\n{"idea":"内部配置"}\n-->\n\n# 人物小传\n\n## 岑砚\n\n**类型与作用： **推理主角\n**性格： **克制\n\n- 寻找妹妹\n- 核验线索\n\n> 不轻信答案\n\n| 人物 | 目标 |\n| --- | --- |\n| 岑砚 | 寻人 |\n\n```text\n**原样代码： **不格式化\n```';
+    const manager = new DraftManager(vi.fn());
+    manager.load(document("r1", markdown));
+    const { container } = render(<DocumentEditor project="demo" draft={manager.get("one")!} manager={manager} onSelection={() => {}} />);
+    expect(container).not.toHaveTextContent("nuomi-script-settings");
+    expect(container).not.toHaveTextContent("内部配置");
+    expect(screen.getByText("类型与作用：").tagName).toBe("STRONG");
+    expect(screen.getByText("性格：").tagName).toBe("STRONG");
+    expect(container.querySelector("br")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(container.querySelector("blockquote")).toHaveTextContent("不轻信答案");
+    expect(container.querySelector("pre code")).toHaveTextContent("**原样代码： **不格式化");
+    const anchor = headingsForMarkdown(markdown)[0].anchor;
+    expect(screen.getByRole("heading", { name: "岑砚" })).toHaveAttribute("id", "heading-one-" + anchor);
+    await user.click(screen.getByRole("button", { name: "编辑 Markdown" }));
+    expect(screen.getByRole("textbox", { name: "文档 Markdown" })).toHaveValue(markdown);
+    expect(manager.get("one")!.status).toBe("saved");
+    manager.dispose();
+  });
+
   it("opens and selects exact codepoint evidence on navigation", async () => {
     const manager = new DraftManager(vi.fn());
     manager.load(document("r1", "甲😀证据乙"));

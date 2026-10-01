@@ -88,6 +88,15 @@ def test_same_filename_candidates_have_distinct_file_ids():
     assert first.source_filename == second.source_filename == "episode.md"
 
 
+def test_split_xyq_scene_headers_preserves_episode_boundaries():
+    first = "第一集 1-1\n场景：水箱区 夜\n人物：甲\n△接水。\n第一集 1-2\n场景：广播间 夜\n人物：甲\n甲：别关。\n"
+    second = "第二集 2-1\n场景：站台 日\n人物：甲\n△出门。\n第二集 2-2\n场景：街道 日\n人物：甲\n△停步。"
+    assert [item.content for item in episode_sources.split_episode_candidates("E1.md", first)] == [first]
+    result = episode_sources.split_episode_candidates("collection.md", first + second)
+    assert [item.episode_number for item in result] == [1, 2]
+    assert [item.content for item in result] == [first, second]
+
+
 def test_split_episode_candidates_supports_chinese_and_english_heading_boundaries():
     content = (
         "# 第十二集失踪\n"

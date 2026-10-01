@@ -171,7 +171,7 @@ def test_age_in_rationale_does_not_preserve_age_in_rendered_details():
 
 
 @pytest.mark.asyncio
-async def test_new_unsourced_response_requires_reason_and_decisions_but_legacy_reuse_is_allowed():
+async def test_new_unsourced_response_keeps_advisories_without_repair_and_legacy_reuse_is_allowed():
     from novelvideo.character_design_stage import design_merged_characters
     from novelvideo.structured_extraction import MergedCharacter
     from tests.test_character_build_stages import proposals
@@ -187,12 +187,12 @@ async def test_new_unsourced_response_requires_reason_and_decisions_but_legacy_r
     agent = Agent()
     fresh = MergedCharacter(name="甲")
     await design_merged_characters([fresh], agent=agent)
-    assert not fresh.design_accepted
-    assert agent.calls == 2
+    assert fresh.design_accepted
+    assert agent.calls == 1
     existing = MergedCharacter(name="乙")
     await design_merged_characters([existing], agent=agent, existing_designs={"乙": legacy})
     assert existing.design_accepted
-    assert agent.calls == 2
+    assert agent.calls == 1
 
 
 def test_persistence_keeps_strict_issues_for_fresh_unsourced_proposals():

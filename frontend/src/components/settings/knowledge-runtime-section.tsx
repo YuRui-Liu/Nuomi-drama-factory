@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, Cpu, Image, Loader2, RefreshCw, Server, TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -22,6 +22,7 @@ import {
 import { cn } from "@/lib/utils";
 import { TextTaskRoutingPanel } from "@/components/settings/text-task-routing-panel";
 import { TaskConcurrencyCard } from "@/components/settings/task-concurrency-card";
+import { useSettingsSnapshot } from "@/components/settings/settings-draft-context";
 
 function StatusPill({ ready, children }: { ready: boolean; children: React.ReactNode }) {
   return (
@@ -47,13 +48,17 @@ export function KnowledgeRuntimeSection({ open }: { open: boolean }) {
   const models = useOllamaModels(baseUrl, open);
   const saveRuntime = useSaveKnowledgeRuntimeSettings();
   const recognizeCodex = useRecognizeCodex();
+  const { dirty: runtimeDirty, markSaved: markRuntimeSaved } = useSettingsSnapshot("ollama", { baseUrl, model, batchSize });
+  const runtimeDirtyRef = useRef(runtimeDirty);
+  runtimeDirtyRef.current = runtimeDirty;
 
   useEffect(() => {
-    if (!runtime) return;
+    if (!runtime || runtimeDirtyRef.current) return;
     setBaseUrl(runtime.ollama.baseUrl);
     setModel(runtime.ollama.model);
     setBatchSize(runtime.ollama.batchSize);
-  }, [runtime]);
+    markRuntimeSaved({ baseUrl: runtime.ollama.baseUrl, model: runtime.ollama.model, batchSize: runtime.ollama.batchSize });
+  }, [runtime?.ollama.baseUrl, runtime?.ollama.model, runtime?.ollama.batchSize, markRuntimeSaved]);
 
   const modelNames = useMemo(
     () => (models.data ?? []).map((item) => item.name || item.model || "").filter(Boolean),
@@ -65,8 +70,10 @@ export function KnowledgeRuntimeSection({ open }: { open: boolean }) {
       toast.error(t("settings.runtime.ollamaMissing", { defaultValue: "请先填写 Ollama 地址并选择 Embedding 模型" }));
       return;
     }
+    const submitted = { baseUrl, model, batchSize };
     try {
-      await saveRuntime.mutateAsync({ baseUrl: baseUrl.trim(), model, batchSize });
+      await saveRuntime.mutateAsync({ ...submitted, baseUrl: submitted.baseUrl.trim() });
+      markRuntimeSaved(submitted);
       toast.success(t("settings.runtime.ollamaSaved", { defaultValue: "Ollama 测试通过，配置已保存" }));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
@@ -79,7 +86,7 @@ export function KnowledgeRuntimeSection({ open }: { open: boolean }) {
         <div>
           <h3 className="font-heading text-base font-medium">运行时与媒体</h3>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            文本与规划任务按下方路由选择 Codex 或模型 API；向量使用本地 Ollama，媒体生产仍由 GRSAI 与 RunningHub 执行。
+            文本与规划任务按下方路由选择 Codex、WorkBuddy 或模型 API；向量使用本地 Ollama，媒体生产仍由 GRSAI 与 RunningHub 执行。
           </p>
         </div>
         <StatusPill ready={runtime?.ready === true}>
@@ -239,19 +246,30 @@ function MediaProviderCard({ open, kind, icon, account }: { open: boolean; kind:
     tts_indextts2_voice_clone: "",
   });
   const [videoRefMaxImages, setVideoRefMaxImages] = useState("5");
+  const { dirty: accountDirty, markSaved: markAccountSaved } = useSettingsSnapshot(`media-${kind}`, { baseUrl, apiKey, concurrency, grsaiModel });
+  const { dirty: workflowsDirty, markSaved: markWorkflowsSaved } = useSettingsSnapshot(`workflows-${kind}`, { workflowIds, videoRefMaxImages });
+  const accountDirtyRef = useRef(accountDirty);
+  accountDirtyRef.current = accountDirty;
+  const workflowsDirtyRef = useRef(workflowsDirty);
+  workflowsDirtyRef.current = workflowsDirty;
+  const workflowDataKey = JSON.stringify(workflows.data);
 
   useEffect(() => {
-    if (!account) return;
+    if (!account || accountDirtyRef.current) return;
     setBaseUrl(account.base_url ?? "");
     setConcurrency(account.max_concurrency);
-    if (account.model) setGrsaiModel(account.model);
-  }, [account]);
+    setGrsaiModel(account.model || "gpt-image-2");
+    markAccountSaved({ baseUrl: account.base_url ?? "", apiKey: "", concurrency: account.max_concurrency, grsaiModel: account.model || "gpt-image-2" });
+  }, [account?.base_url, account?.max_concurrency, account?.model, markAccountSaved]);
 
   useEffect(() => {
-    if (!workflows.data) return;
-    setWorkflowIds((current) => ({ ...current, ...workflows.data }));
-    setVideoRefMaxImages(String(workflows.data.video_minimax_h3_ref_max_images ?? 5));
-  }, [workflows.data]);
+    if (!workflows.data || workflowsDirtyRef.current) return;
+    const next = { ...workflowIds, ...workflows.data };
+    const maxImages = String(workflows.data.video_minimax_h3_ref_max_images ?? 5);
+    setWorkflowIds(next);
+    setVideoRefMaxImages(maxImages);
+    markWorkflowsSaved({ workflowIds: next, videoRefMaxImages: maxImages });
+  }, [workflowDataKey, markWorkflowsSaved]);
 
   const setWorkflowId = (
     key: Exclude<keyof RunningHubWorkflowSettings, "video_minimax_h3_ref_max_images">,
@@ -279,6 +297,8 @@ function MediaProviderCard({ open, kind, icon, account }: { open: boolean; kind:
       }));
       return;
     }
+    const submittedAccount = { baseUrl, apiKey, concurrency, grsaiModel };
+    const submittedWorkflows = { workflowIds, videoRefMaxImages };
     try {
       await save.mutateAsync({
         id: `${kind}-main`,
@@ -293,7 +313,9 @@ function MediaProviderCard({ open, kind, icon, account }: { open: boolean; kind:
         poll_concurrency: Math.max(concurrency, isRunningHub ? 10 : 4),
         queue_limit: isRunningHub ? 100 : 50,
       });
-      setApiKey("");
+      setApiKey((current) => current === submittedAccount.apiKey ? "" : current);
+      markAccountSaved({ ...submittedAccount, apiKey: "" });
+      markWorkflowsSaved(submittedWorkflows);
       toast.success(`${isRunningHub ? "RunningHub" : "GRSAI"} 配置已保存`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));

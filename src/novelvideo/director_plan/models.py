@@ -409,11 +409,17 @@ class UpdateShot(FrozenModel):
     camera_motion: str | None = None
     cinematography: ShotCinematography | None = None
     dialogue_source_ids: tuple[str, ...] | None = None
+    asset_requirements: tuple[AssetRequirement, ...] | None = None
     duration_seconds: float | None = Field(default=None, gt=0, le=15)
 
 
+class UpdateShots(FrozenModel):
+    kind: Literal["update_shots"] = "update_shots"
+    updates: tuple[UpdateShot, ...] = Field(min_length=1, max_length=100)
+
+
 DirectorEdit = Annotated[
-    SplitGroup | MergeAdjacentGroups | MoveShot | ReorderGroups | UpdateShot,
+    SplitGroup | MergeAdjacentGroups | MoveShot | ReorderGroups | UpdateShot | UpdateShots,
     Field(discriminator="kind"),
 ]
 

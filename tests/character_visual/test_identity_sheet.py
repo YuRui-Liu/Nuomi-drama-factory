@@ -607,6 +607,7 @@ async def test_identity_generation_preserves_provider_canvas_once(
     async def fake_generate(**kwargs):
         nonlocal calls
         calls += 1
+        assert "NONHUMAN ANATOMY: 狸状异兽" in kwargs["prompt"]
         _provider_candidate(Path(kwargs["output_path"]))
         return b"candidate"
 
@@ -629,6 +630,7 @@ async def test_identity_generation_preserves_provider_canvas_once(
         reference_image_path=str(portrait),
         output_path=str(output),
         style="anime_2d",
+        nonhuman_species="狸状异兽",
     )
 
     assert result.success is True

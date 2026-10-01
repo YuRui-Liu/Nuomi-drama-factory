@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 from pydantic_ai import PromptedOutput
 
 import novelvideo.director_plan.planner as planner_module
@@ -21,6 +22,11 @@ from novelvideo.director_plan.prompts import (
     build_episode_prompt,
     build_group_repair_prompt,
 )
+
+
+def test_director_draft_rejects_empty_groups_before_runtime_accepts_output():
+    with pytest.raises(ValidationError):
+        DirectorPlanDraft.model_validate({"groups": []})
 
 
 def span(id: str, ordinal: int, text: str = "text") -> SourceSpan:

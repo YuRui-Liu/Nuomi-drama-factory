@@ -115,6 +115,9 @@ def resolve_voice_reference_status(
         if not status.speaker.startswith(char_name):
             continue
         status.character_name = char_name
+        facts = getattr(character, "voice_facts", None)
+        if facts is not None and (facts.vocalization_mode in {"nonverbal", "none"} or facts.conflicts):
+            return status
         identity = next(
             (
                 item

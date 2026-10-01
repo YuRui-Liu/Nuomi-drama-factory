@@ -19,6 +19,8 @@ async def _assess(envelope, ctx):
     image = read_recheck_image(ctx, payload["target"])
     return await await_envelope_with_cancel_watch(
         assess_identity_sheet_quality(image_data=image, style=payload["style"],
+                                      expected_appearance=payload.get("expected_appearance", ""),
+                                      nonhuman_species=payload.get("nonhuman_species", ""),
                                       style_family=IdentitySheetStyleFamily(payload["style_family"]),
                                       project_dir=ctx.output_dir, runtime=runtime),
         envelope, task_type="identity_sheet_qc",

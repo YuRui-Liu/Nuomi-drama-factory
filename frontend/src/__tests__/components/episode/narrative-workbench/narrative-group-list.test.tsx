@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { NarrativeGroupList } from "@/components/episode/narrative-workbench/narrative-group-list";
@@ -23,6 +23,26 @@ function group(overrides: Partial<NarrativeGroup>): NarrativeGroup {
 }
 
 describe("NarrativeGroupList", () => {
+  it("counts production shots rather than source lines and labels the fallback honestly", () => {
+    const { rerender } = render(<NarrativeGroupList groups={[group({ beat_ids: ["line-7", "line-8", "line-9"], shot_ids: ["shot-01-01", "shot-01-02"] })]} selectedId="group-1" onSelect={vi.fn()} />);
+    expect(screen.getByText("2 个镜头")).toBeInTheDocument();
+    expect(screen.queryByText("3 个镜头")).not.toBeInTheDocument();
+    rerender(<NarrativeGroupList groups={[group({ beat_ids: ["line-7", "line-8", "line-9"] })]} selectedId="group-1" onSelect={vi.fn()} />);
+    expect(screen.getByText("3 个来源片段")).toBeInTheDocument();
+  });
+  it("shows production progress and keeps selection accessible", () => {
+    const select = vi.fn();
+    const ready = group({ id: "ready", stages: {
+      sketch: { status: "pending", revision: 0 },
+      render: { status: "completed", revision: 1 },
+      video: { status: "completed", revision: 1 },
+    } });
+    render(<NarrativeGroupList groups={[group({}), ready]} selectedId="group-1" onSelect={select} />);
+    expect(screen.getByText("视频完成 1 / 2")).toBeInTheDocument();
+    expect(screen.getByText("待制作分镜").closest("button")).toHaveAttribute("aria-current", "true");
+    fireEvent.click(screen.getByText("视频已完成"));
+    expect(select).toHaveBeenCalledWith("ready");
+  });
   it("shows a readable objective while keeping source span ids secondary", () => {
     render(
       <NarrativeGroupList

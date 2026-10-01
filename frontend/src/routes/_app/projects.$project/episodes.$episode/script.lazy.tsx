@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { createLazyFileRoute, Link } from "@tanstack/react-router";
+import { createLazyFileRoute, Link, useRouterState, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
@@ -20,6 +20,8 @@ import { useCharacters } from "@/lib/queries/characters";
 import { useProject } from "@/lib/queries/projects";
 import { useGenerateRewrite } from "@/lib/queries/scripts";
 import { useDirectorPlans } from "@/lib/queries/director-plans";
+import { AssetPlanningPrerequisite, assetPlanningBlockReason } from "@/components/episode/asset-planning-prerequisite";
+import { AssetPlanningFailure, type PlanningAssetKind } from "@/components/episode/asset-planning-failure";
 import { useTaskController } from "@/hooks/use-task-controller";
 import { queryKeys } from "@/lib/query-keys";
 import {
@@ -41,7 +43,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { EpisodeSourceEditor } from "@/components/episode/episode-source-editor";
-import { EpisodeHealthSummary } from "@/components/episode/health-bar";
+import { DirectorReviewWorkbench } from "@/components/episode/director-review";
 import { ScriptBeatPreview } from "@/components/episode/script-beat-preview";
 import { ScreenplayWorkbench } from "@/components/episode/screenplay-workbench";
 import { Button } from "@/components/ui/button";
@@ -72,8 +74,22 @@ function clampRewriteNumber(value: number, min: number, max: number) {
 
 function ScriptTabContent() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [planningErrors, setPlanningErrors] = useState<Partial<Record<PlanningAssetKind, string>>>({});
+  const reportPlanningError = (kind: PlanningAssetKind, cause: unknown) => {
+    const error = backendErrorToastMessage(cause, t);
+    setPlanningErrors((previous) => ({ ...previous, [kind]: error }));
+    toast.error(error);
+  };
   const { project, episode } = Route.useParams();
   const epNum = parseInt(episode, 10);
+  const scriptHash = useRouterState({ select: (state) => state.location.hash });
+  const [workspace, setWorkspace] = useState<"source" | "semantics" | "review" | "assets">(() => scriptHash.replace(/^#/, "") === "script-assets" ? "assets" : scriptHash.replace(/^#/, "") === "script-source" ? "source" : "semantics");
+  useEffect(() => {
+    const target = scriptHash.replace(/^#/, "");
+    if (target === "script-assets") setWorkspace("assets");
+    else if (target === "script-source") setWorkspace("source");
+  }, [scriptHash, project, epNum]);
   const creationDocument = new URLSearchParams(window.location.search).get("creationDocument");
   const queryClient = useQueryClient();
   const { data: episodeRes } = useEpisodeDetail(project, epNum);
@@ -83,6 +99,7 @@ function ScriptTabContent() {
     epNum,
   );
   const directorPlans = useDirectorPlans(project, epNum);
+  const planningBlocked = assetPlanningBlockReason(directorPlans);
   const { data: charactersRes } = useCharacters(project);
   const updateEpisode = useUpdateEpisode(project);
   const planIdentities = usePlanIdentities(project);
@@ -326,23 +343,27 @@ function ScriptTabContent() {
   };
 
   const handlePlanIdentities = async () => {
+    if (planningBlocked) { toast.warning(planningBlocked); return; }
+    setPlanningErrors((previous) => ({ ...previous, character: "" }));
     try {
       const res = await planIdentities.mutateAsync(epNum);
       if (res.ok === false) {
-        toast.error(backendErrorToastMessage(res.error, t));
+        reportPlanningError("character", res.error);
         return;
       }
       identityTask.start({ scope: res.scope });
     } catch (err) {
-      toast.error(backendErrorToastMessage(err, t));
+      reportPlanningError("character", err);
     }
   };
 
   const handlePlanScenes = async () => {
+    if (planningBlocked) { toast.warning(planningBlocked); return; }
+    setPlanningErrors((previous) => ({ ...previous, scene: "" }));
     try {
       const res = await planScenes.mutateAsync(epNum);
       if (res.ok === false) {
-        toast.error(backendErrorToastMessage(res.error, t));
+        reportPlanningError("scene", res.error);
         return;
       }
       // CE 走同步规划，直接返回结果；EE 只是入队，交给任务控制器跟进行中状态。
@@ -354,15 +375,17 @@ function ScriptTabContent() {
       }
       sceneTask.start({ scope: res.scope });
     } catch (err) {
-      toast.error(backendErrorToastMessage(err, t));
+      reportPlanningError("scene", err);
     }
   };
 
   const handlePlanProps = async () => {
+    if (planningBlocked) { toast.warning(planningBlocked); return; }
+    setPlanningErrors((previous) => ({ ...previous, prop: "" }));
     try {
       const res = await planProps.mutateAsync(epNum);
       if (res.ok === false) {
-        toast.error(backendErrorToastMessage(res.error, t));
+        reportPlanningError("prop", res.error);
         return;
       }
       if (isPlanEpisodeAssetsResult(res)) {
@@ -373,7 +396,7 @@ function ScriptTabContent() {
       }
       propTask.start({ scope: res.scope });
     } catch (err) {
-      toast.error(backendErrorToastMessage(err, t));
+      reportPlanningError("prop", err);
     }
   };
 
@@ -381,19 +404,9 @@ function ScriptTabContent() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background">
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-border/30 px-5 py-3 text-xs">
+      {(creationDocument || isNarratedProject) && <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-border/30 px-5 py-2 text-xs">
         {creationDocument && <a className="text-primary underline" href={`/projects/${encodeURIComponent(project)}/creation?document=${encodeURIComponent(creationDocument)}`}>返回创作文档</a>}
-        <EpisodeHealthSummary
-          project={project}
-          episode={epNum}
-          className="pr-1"
-        />
-        <div className="inline-flex h-7 items-center gap-2 text-muted-foreground">
-          <span className="text-[11px]">{t("episode.script.modeLabel")}</span>
-          <span className="text-[11px] text-foreground/68">
-            专业剧本语义模式
-          </span>
-        </div>
+        <span className="text-muted-foreground">叙事组脚本 · 读取原文 → 校对场次 → 审核与激活镜头方案</span>
 
         <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
           {isNarratedProject && (
@@ -501,15 +514,63 @@ function ScriptTabContent() {
             </>
           )}
         </div>
-      </div>
+      </div>}
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="px-5 pt-5">
-          <ScreenplayWorkbench project={project} episode={epNum} />
-        </div>
-        <div className="grid min-h-0 gap-5 px-5 pb-5 pt-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-          <div className="min-w-0 space-y-5">
-            <section>
+      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[188px_minmax(0,1fr)]">
+        <aside aria-label="脚本制作步骤" className="flex gap-2 overflow-x-auto border-b border-white/10 bg-white/[0.015] p-3 lg:block lg:overflow-y-auto lg:border-r lg:border-b-0">
+          <h2 className="mb-3 hidden text-sm font-semibold lg:block">场次校对与镜头规划</h2>
+          {([["source","读取本集原文"],["semantics","解析与校对"],["review","审核镜头方案"],["assets","核对本集资产"]] as const).map(([key,label],index) => <button key={key} type="button" aria-current={workspace === key ? "step" : undefined} className={`mb-2 flex w-full shrink-0 items-center gap-2 rounded-md border px-3 py-2.5 text-left text-xs lg:shrink ${workspace === key ? "border-primary/40 bg-primary/10 text-primary" : "border-transparent text-muted-foreground hover:bg-white/5"}`} onClick={() => setWorkspace(key)}><span className="opacity-60">{index + 1}</span>{label}</button>)}
+          <div className="mt-5 hidden space-y-3 border-t border-white/10 pt-4 text-xs lg:block">
+            <p className="text-muted-foreground">本集来源</p><p>{sourceTextForEditor?.trim().split(/\r?\n/).filter(Boolean).length ?? 0} 行原文 · {identityIds.length} 个人物身份</p>
+            <p className="text-muted-foreground">镜头方案</p><p>{directorPlan ? `${directorPlan.groups.length} 个叙事组 · ${directorShotCount} 个镜头` : "尚未生成"}</p>
+            <p className="text-muted-foreground leading-6">候选方案需审核并激活后才会用于分镜生图。旧媒体和历史版本保留。</p>
+            <Button size="sm" variant="outline" className="w-full" nativeButton={false} render={<Link to="/projects/$project/episodes/$episode/beats" params={{project,episode}} search={{sub:"render"} as never} />}>进入分镜生图 →</Button>
+          </div>
+        </aside>
+        <div className="min-h-0 min-w-0 overflow-hidden">
+          <section hidden={workspace !== "source"} aria-label="本集原文工作区" className="h-full overflow-y-auto p-4"><div id="script-source" className="order-1 scroll-mt-4">
+            <p className="mb-3 text-xs text-muted-foreground">先保存剧本修改，再重新解析场次并校对。镜头方案以已确认的校对版本为准。</p>
+            <EpisodeSourceEditor
+              rawContent={rawContent}
+              sourceText={sourceTextForEditor}
+              saving={updateEpisode.isPending}
+              onSave={handleSourceSave}
+              labels={{
+                rawLabel: t("episode.script.rawLabel"),
+                rawActionLabel: t("episode.script.rawActionLabel"),
+                noRawText: t("episode.script.noRawText"),
+                sourceLabel: t(
+                  isNarratedProject
+                    ? "episode.script.sourceTextLabelNarrated"
+                    : "episode.script.sourceTextLabelDrama",
+                ),
+                sourceMeta: (count) =>
+                  t("episode.script.sourceTextMeta", { count }),
+                sourcePlaceholder: t(
+                  isNarratedProject
+                    ? "episode.script.sourceTextPlaceholderNarrated"
+                    : "episode.script.sourceTextPlaceholderDrama",
+                ),
+                linePreviewLabel: t("episode.script.linePreviewLabel"),
+                lineCount: (count) => t("episode.script.lineCount", { count }),
+                noLines: t("episode.script.noSourceLines"),
+              }}
+              className="min-w-0"
+            />
+            </div><details className="mt-4 rounded-lg border border-white/10 p-3"><summary className="cursor-pointer text-sm text-muted-foreground">逐镜头文案与对白预览</summary><ScriptBeatPreview beats={beats} loading={beatsLoading} labels={{
+                title: t("episode.script.previewTitle"),
+                count: count => t("episode.script.previewCount", {count}),
+                loading: t("episode.script.previewLoading"),
+                emptyTitle: t("episode.script.previewEmptyTitle"),
+                empty: t("episode.script.previewEmpty"),
+                audioType: type => t(`audioType.${type}`, {defaultValue:type}),
+                speaker: t("episode.script.previewSpeaker"), noSpeaker:t("episode.script.previewNoSpeaker"),
+                dialogueLine:t("episode.script.previewDialogueLine"), narrationLine:t("episode.script.previewNarrationLine"),
+                noNarration:t("episode.script.previewNoNarration"), visualDescription:t("episode.script.previewVisualDescription"),
+                noVisualDescription:t("episode.script.previewNoVisualDescription")
+              }} /></details></section>
+          <section hidden={workspace !== "semantics"} aria-label="场次校对工作区" className="h-full overflow-y-auto p-3"><ScreenplayWorkbench compact project={project} episode={epNum} onReviewRequest={() => setWorkspace("review")} /></section>
+          <section hidden={workspace !== "assets"} aria-label="本集资产核对" className="h-full overflow-y-auto p-4"><section id="script-assets" className="rounded-xl border border-white/10 p-4">
               <div className="mb-2 flex h-7 items-center justify-between gap-3">
                 <h2 className="text-sm font-semibold tracking-tight text-foreground">
                   {t("episode.script.assetPlanningTitle")}
@@ -549,7 +610,10 @@ function ScriptTabContent() {
                   </SelectContent>
                 </Select>
               </div>
+              <AssetPlanningPrerequisite reason={planningBlocked} onRetry={directorPlans.isError ? () => { void directorPlans.refetch(); } : undefined} onOpenPlan={() => setWorkspace("semantics")} />
+              {([["character", planningErrors.character || identityTask.stream.error], ["scene", planningErrors.scene || sceneTask.stream.error], ["prop", planningErrors.prop || propTask.stream.error]] as const).map(([kind, error]) => <AssetPlanningFailure key={kind} kind={kind} error={error} onOpenAssets={(type) => { void navigate({ to: "/projects/$project/characters", params: { project }, search: { type } as never }); }} />)}
               <EpisodeAssetPlanning
+                planningBlocked={!!planningBlocked}
                 project={project}
                 selectedCategory={assetCategory}
                 characters={characters}
@@ -596,84 +660,8 @@ function ScriptTabContent() {
                   promoteSuccess: t("episode.script.promoteSuccess"),
                 }}
               />
-            </section>
-
-            <EpisodeSourceEditor
-              rawContent={rawContent}
-              sourceText={sourceTextForEditor}
-              saving={updateEpisode.isPending}
-              onSave={handleSourceSave}
-              labels={{
-                rawLabel: t("episode.script.rawLabel"),
-                rawActionLabel: t("episode.script.rawActionLabel"),
-                noRawText: t("episode.script.noRawText"),
-                sourceLabel: t(
-                  isNarratedProject
-                    ? "episode.script.sourceTextLabelNarrated"
-                    : "episode.script.sourceTextLabelDrama",
-                ),
-                sourceMeta: (count) =>
-                  t("episode.script.sourceTextMeta", { count }),
-                sourcePlaceholder: t(
-                  isNarratedProject
-                    ? "episode.script.sourceTextPlaceholderNarrated"
-                    : "episode.script.sourceTextPlaceholderDrama",
-                ),
-                linePreviewLabel: t("episode.script.linePreviewLabel"),
-                lineCount: (count) => t("episode.script.lineCount", { count }),
-                noLines: t("episode.script.noSourceLines"),
-              }}
-              className="min-w-0"
-            />
-          </div>
-
-          <div className="min-w-0">
-            {directorPlan ? (
-              <section className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.04] p-5" aria-label="导演镜头方案摘要">
-                <div className="flex flex-wrap items-start gap-3">
-                  <div className="mr-auto">
-                    <h2 className="text-sm font-semibold text-foreground">镜头方案已生成</h2>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {directorPlan.status === "review_required" ? "待人工审核" : directorPlan.status === "active" ? "已激活" : directorPlan.status}
-                    </p>
-                  </div>
-                  <Button size="sm" variant="outline" nativeButton={false} render={<Link to="/projects/$project/episodes/$episode/beats" params={{ project, episode }} />}>审核镜头方案</Button>
-                </div>
-                <div className="mt-5 grid grid-cols-2 gap-3">
-                  <div className="rounded-lg border border-white/10 bg-black/10 p-3">
-                    <div className="text-[11px] text-muted-foreground">叙事组</div>
-                    <div className="mt-1 text-xl font-semibold tabular-nums">{directorPlan.groups.length}</div>
-                  </div>
-                  <div className="rounded-lg border border-white/10 bg-black/10 p-3">
-                    <div className="text-[11px] text-muted-foreground">镜头</div>
-                    <div className="mt-1 text-xl font-semibold tabular-nums">{directorShotCount}</div>
-                  </div>
-                </div>
-              </section>
-            ) : (
-              <ScriptBeatPreview
-                beats={beats}
-                loading={beatsLoading}
-                className="px-0 pb-0"
-                labels={{
-                  title: t("episode.script.previewTitle"),
-                  count: (count) => t("episode.script.previewCount", { count }),
-                  loading: t("episode.script.previewLoading"),
-                  emptyTitle: t("episode.script.previewEmptyTitle"),
-                  empty: t("episode.script.previewEmpty"),
-                  audioType: (type) =>
-                    t(`audioType.${type}`, { defaultValue: type }),
-                  speaker: t("episode.script.previewSpeaker"),
-                  noSpeaker: t("episode.script.previewNoSpeaker"),
-                  dialogueLine: t("episode.script.previewDialogueLine"),
-                  narrationLine: t("episode.script.previewNarrationLine"),
-                  noNarration: t("episode.script.previewNoNarration"),
-                  visualDescription: t("episode.script.previewVisualDescription"),
-                  noVisualDescription: t("episode.script.previewNoVisualDescription"),
-                }}
-              />
-            )}
-          </div>
+            </section></section>
+          {workspace === "review" && <DirectorReviewWorkbench project={project} episode={epNum} onClose={() => setWorkspace("semantics")} />}
         </div>
       </div>
 
@@ -687,6 +675,7 @@ function ScriptTabContent() {
         onChange={handleIdentityChange}
         onPlan={handlePlanIdentities}
         planPending={identityPlanning}
+        planDisabled={!!planningBlocked}
         planCostDisplay={planIdentitiesCostDisplay}
       />
     </div>

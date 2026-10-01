@@ -1,0 +1,198 @@
+{
+  "3": {
+    "inputs": {
+      "seed": [
+        "109",
+        0
+      ],
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "78",
+        0
+      ],
+      "positive": [
+        "94",
+        0
+      ],
+      "negative": [
+        "47",
+        0
+      ],
+      "latent_image": [
+        "98",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "18": {
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "106",
+        0
+      ]
+    },
+    "class_type": "VAEDecodeAudio",
+    "_meta": {
+      "title": "VAE Decode Audio"
+    }
+  },
+  "47": {
+    "inputs": {
+      "conditioning": [
+        "94",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "Conditioning Zero Out"
+    }
+  },
+  "78": {
+    "inputs": {
+      "shift": 3,
+      "sampling": "flow",
+      "model": [
+        "104",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": {
+      "title": "ModelSamplingAuraFlow"
+    }
+  },
+  "94": {
+    "inputs": {
+      "tags": "Instrumental, no vocals, pure instrumental Ghibli anime night market BGM, warm whimsical atmosphere, 4/4, 75BPM, soft piano and strings, quiet dreamy ambient, smooth short melody, [Intro soft opening], [Short main theme], [Quick smooth fade out]",
+      "lyrics": "",
+      "seed": [
+        "109",
+        0
+      ],
+      "bpm": [
+        "203",
+        0
+      ],
+      "duration": [
+        "205",
+        0
+      ],
+      "timesignature": "4",
+      "language": "zh",
+      "keyscale": "A minor",
+      "generate_audio_codes": true,
+      "cfg_scale": 2,
+      "temperature": 0.85,
+      "top_p": 0.9,
+      "top_k": 0,
+      "min_p": 0,
+      "clip": [
+        "105",
+        0
+      ]
+    },
+    "class_type": "TextEncodeAceStepAudio1.5",
+    "_meta": {
+      "title": "TextEncodeAceStepAudio1.5"
+    }
+  },
+  "98": {
+    "inputs": {
+      "seconds": [
+        "205",
+        0
+      ],
+      "batch_size": 1
+    },
+    "class_type": "EmptyAceStep1.5LatentAudio",
+    "_meta": {
+      "title": "Empty Ace Step 1.5 Latent Audio"
+    }
+  },
+  "104": {
+    "inputs": {
+      "unet_name": "acestep_v1.5_xl_turbo_bf1s6.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "105": {
+    "inputs": {
+      "clip_name1": "qwen_0.6b_ace15.safetensors",
+      "clip_name2": "qwen_4b_ace15.safetensors",
+      "type": "ace",
+      "device": "default"
+    },
+    "class_type": "DualCLIPLoader",
+    "_meta": {
+      "title": "Load CLIP (Dual)"
+    }
+  },
+  "106": {
+    "inputs": {
+      "vae_name": "ace_1.5_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "107": {
+    "inputs": {
+      "filename_prefix": "audio/ys_acestep15xl_mv_new",
+      "quality": "320k",
+      "audioUI": "",
+      "audio": [
+        "18",
+        0
+      ]
+    },
+    "class_type": "SaveAudioMP3",
+    "_meta": {
+      "title": "Save Audio (MP3) (DEPRECATED)"
+    }
+  },
+  "109": {
+    "inputs": {
+      "value": -1019475144958018
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Seed / 随机种子"
+    }
+  },
+  "203": {
+    "inputs": {
+      "value": 75
+    },
+    "class_type": "Int",
+    "_meta": {
+      "title": "每分钟节拍数"
+    }
+  },
+  "205": {
+    "inputs": {
+      "value": 15.000000000000004
+    },
+    "class_type": "Float",
+    "_meta": {
+      "title": "歌曲时长（秒）"
+    }
+  }
+}

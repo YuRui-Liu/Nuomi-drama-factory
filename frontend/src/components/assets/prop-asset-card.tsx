@@ -29,6 +29,7 @@ import { resolveMediaUrl } from "@/lib/media-url";
 import type { PropAsset } from "@/types/prop";
 
 interface PropAssetCardProps {
+  workspace?: boolean;
   prop: PropAsset;
   generating?: boolean;
   uploading?: boolean;
@@ -44,6 +45,7 @@ interface PropAssetCardProps {
 
 export function PropAssetCard({
   prop,
+  workspace = false,
   generating = false,
   uploading = false,
   referenceCount = 0,
@@ -72,7 +74,7 @@ export function PropAssetCard({
     : "";
 
   return (
-    <Card size="sm" className="rounded-[10px] bg-white/[0.03] shadow-none">
+    <Card size="sm" className={`rounded-[10px] bg-white/[0.03] shadow-none ${workspace ? "asset-prop-detail" : ""}`}>
       {/* Header: title + status chips inline, action icons on right */}
       <CardHeader className="gap-2">
         <div className="flex min-w-0 items-center justify-between gap-3">

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 import json
 import os
+import re
 from pathlib import Path
 import time
 from typing import Any
@@ -16,6 +17,8 @@ import typer
 
 
 app = typer.Typer(help="漫剧制作 API：JSON 输出、可选草图、任务跟踪。", no_args_is_help=True)
+voice_app = typer.Typer(help="角色声音候选：预检、导入、设计、复检和显式审批。", no_args_is_help=True)
+app.add_typer(voice_app, name="voice")
 _http_client = httpx.Client
 
 
@@ -37,6 +40,11 @@ class Method(str, Enum):
     PUT = "PUT"
     PATCH = "PATCH"
     DELETE = "DELETE"
+
+
+class VoiceKind(str, Enum):
+    dialogue = "dialogue"
+    nonverbal = "nonverbal"
 
 
 @dataclass
@@ -101,15 +109,34 @@ def _body(value: str, file: Path | None) -> dict[str, Any]:
 
 def _perform(
     connection: Connection, method: str, relative: str,
-    body: dict[str, Any] | None = None, *, files: Any = None,
+    body: dict[str, Any] | None = None, *, files: Any = None, runtime_settings: bool = False,
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     path = _path(connection, relative)
+    if runtime_settings:
+        if method != "GET" or relative != "task-runtime/concurrency":
+            raise ValueError("Only task concurrency may be read outside project scope")
+        path = "/task-runtime/concurrency"
+    elif method != "GET":
+        _require_group_production(relative, body)
     if connection.dry_run:
         preview = {"ok": True, "dry_run": True, "method": method, "path": path, "body": body}
         if params is not None:
             preview["params"] = params
         return preview
+    video_group = re.fullmatch(r"(episodes/\d+/narrative-groups)/([^/]+)/video/(?:generate|regenerate)", relative)
+    if method == "POST" and video_group:
+        from novelvideo.production_batch import _Producer
+
+        groups = _perform(connection, "GET", video_group[1]).get("data")
+        group = next((row for row in groups if isinstance(row, dict)
+                      and row.get("id") == video_group[2]), None) if isinstance(groups, list) else None
+        stages = group.get("stages") if group else None
+        render = stages.get("render") if isinstance(stages, dict) else None
+        if not isinstance(render, dict) or not _Producer.usable(render, "render"):
+            _fail("production_group_image_required",
+                  "Complete the current narrative-group image before submitting its video; "
+                  "Ref does not bypass group storyboards.", group_id=video_group[2])
     token = os.environ.get("NUOMI_TOKEN", "").strip()
     session = os.environ.get("NUOMI_SESSION", "").strip()
     # Local CE permits unauthenticated loopback access. The API, not the CLI,
@@ -132,7 +159,8 @@ def _perform(
         # Preserve structured API validation details; never dump a proxy HTML error page.
         try:
             error_body = response.json()
-            detail = error_body.get("detail") if isinstance(error_body, dict) else None
+            detail = (error_body.get("detail", error_body.get("error"))
+                      if isinstance(error_body, dict) else None)
         except ValueError:
             detail = None
         _fail("http_error", "API rejected the request", status=response.status_code, detail=detail)
@@ -146,6 +174,35 @@ def _perform(
         _emit(result)
         raise CliFailure(result)
     return result
+
+
+def _require_group_production(path: str, body: dict[str, Any] | None) -> None:
+    """Production CLI cannot silently fall back to legacy shot/segment generation."""
+    if not re.match(r"episodes/[1-9]\d*/", path):
+        return
+    group_media = re.fullmatch(
+        r"episodes/\d+/narrative-groups/[^/]+/(?:sketch|render|sketch-grid|render-grid|video)/(?:generate|regenerate|split)", path)
+    legacy_media = (
+        re.search(r"/(?:beats|shots)/[^/]+/(?:video|render|sketch)(?:/|$)", path)
+        or re.search(r"/video/segments/", path)
+        or re.search(r"/(?:sketches|grids|render|videos)/(?:[^/]+/)?(?:generate|regenerate|execute|plan|upload|generate-missing-manual)$", path)
+    )
+    subset = {"beat_ids", "beat_numbers", "beat_indices", "shot_ids", "segment_id", "segment_ids", "beats", "shots"}
+    if (legacy_media and not group_media) or (
+        (group_media or path.endswith("/videos/compose")) and subset.intersection(body or {})
+    ):
+        _fail("production_group_required",
+              "Production requires narrative-group images and videos. Use batch or generate --group; "
+              "do not submit shots/segments or custom composition subsets. Resume the original group on failure.")
+
+
+@app.command()
+def policy() -> None:
+    """Show mandatory production scope and scheduling policy without network access."""
+    _emit({"ok": True, "mode": "production", "production_unit": "narrative_group",
+           "stages": ["group_render", "group_video", "episode_compose"],
+           "concurrency_source": "task-runtime/concurrency",
+           "fallback_to_shots": False, "direct_provider_bypass": False})
 
 
 @app.callback()
@@ -167,6 +224,79 @@ def configure(
 def status(ctx: typer.Context) -> None:
     """List project tasks, including task IDs and terminal results."""
     _emit(_perform(ctx.obj, "GET", "tasks"))
+
+
+@voice_app.command("preflight")
+def voice_preflight(ctx: typer.Context, character: str = typer.Argument(...)) -> None:
+    """查看角色声音生产就绪状态及阻塞原因。"""
+    _emit(_perform(ctx.obj, "GET", f"characters/{_segment(character)}/voice-preflight"))
+
+
+@voice_app.command("preflight-episode")
+def voice_preflight_episode(ctx: typer.Context, episode: int = typer.Argument(..., min=1)) -> None:
+    """查看本集角色声音预检。"""
+    _emit(_perform(ctx.obj, "GET", f"episodes/{episode}/voice-preflight"))
+
+
+@voice_app.command("candidates")
+def voice_candidates(ctx: typer.Context, character: str = typer.Argument(...)) -> None:
+    """列出候选及真实质检状态；候选不等于生产可用。"""
+    _emit(_perform(ctx.obj, "GET", f"characters/{_segment(character)}/voice-candidates"))
+
+
+@voice_app.command("recheck")
+def voice_recheck(
+    ctx: typer.Context, character: str = typer.Argument(...), candidate: str = typer.Argument(...),
+) -> None:
+    """复检一个候选，不自动审批。"""
+    _emit(_perform(ctx.obj, "POST", f"characters/{_segment(character)}/voice-candidates/{_segment(candidate)}/recheck"))
+
+
+@voice_app.command("approve")
+def voice_approve(
+    ctx: typer.Context, character: str = typer.Argument(...), candidate: str = typer.Argument(...),
+    reason: str = typer.Option(..., help="听音审查结论与审批理由"),
+    confirm_reviewed: bool = typer.Option(False, "--confirm-reviewed", help="明确确认已完成听音审查"),
+) -> None:
+    """显式审批一个候选；服务端仍检查质检与审查条件。"""
+    if not confirm_reviewed or not reason.strip():
+        raise typer.BadParameter("Approval requires --confirm-reviewed and a nonempty --reason")
+    _emit(_perform(ctx.obj, "POST", f"characters/{_segment(character)}/voice-candidates/{_segment(candidate)}/approve",
+                   {"confirm": True, "reason": reason}))
+
+
+@voice_app.command("import")
+def voice_import(
+    ctx: typer.Context, character: str = typer.Argument(...), file: Path = typer.Argument(...),
+    kind: VoiceKind = typer.Option(...), slot: str = typer.Option(..., help="对白使用 default；兽声填写用途，例如 alarm"),
+    source: str = typer.Option(..., help="素材来源"), rights: str = typer.Option(..., help="使用权说明"),
+) -> None:
+    """导入一个声音候选；不自动审批或覆盖生产参考。"""
+    relative = f"characters/{_segment(character)}/voice-candidates/import"
+    body = {"kind": kind.value, "slot": _segment(slot), "source": source, "rights": rights}
+    if not source.strip() or not rights.strip():
+        raise typer.BadParameter("--source and --rights must be nonempty")
+    if ctx.obj.dry_run:
+        result = _perform(ctx.obj, "POST", relative, body)
+        result["file"] = str(file)
+        _emit(result)
+        return
+    try:
+        stream = file.open("rb")
+    except OSError:
+        raise typer.BadParameter("Audio file must be an existing readable file") from None
+    with stream:
+        _emit(_perform(ctx.obj, "POST", relative, body, files=[("file", (file.name, stream))]))
+
+
+@voice_app.command("design")
+def voice_design(
+    ctx: typer.Context, character: str = typer.Argument(...), slot: str = typer.Option(...),
+    description: str = typer.Option(...), text: str = typer.Option(...),
+) -> None:
+    """提交一次音色设计候选任务（可能付费）；不重试、不自动审批。"""
+    _emit(_perform(ctx.obj, "POST", f"characters/{_segment(character)}/voice-samples/{_segment(slot)}/design",
+                   {"voice_description": description, "audition_text": text}))
 
 
 @app.command()
@@ -247,7 +377,7 @@ def request(
 def wait(
     ctx: typer.Context,
     task_id: str = typer.Argument(...),
-    timeout: float = typer.Option(600.0, min=0.01),
+    timeout: float = typer.Option(3600.0, min=0.01),
     interval: float = typer.Option(2.0, min=0.01, max=60.0),
 ) -> None:
     """Wait for exactly one task ID. Failure/cancellation/timeout exits with code 1."""
@@ -291,7 +421,7 @@ def batch(
     max_submissions: int = typer.Option(100, min=1, help="Maximum mutation requests in this batch, not a currency budget"),
     retry_failed: bool = typer.Option(False, help="Allow one retry of previously failed stages"),
     aspect_ratio: str | None = typer.Option(None, help="9:16 or 16:9; default follows project orientation"),
-    task_timeout: float = typer.Option(900.0, min=0.01),
+    task_timeout: float = typer.Option(3600.0, min=0.01),
     poll_interval: float = typer.Option(2.0, min=0.01, max=60.0),
 ) -> None:
     """Produce multiple imported episodes, reuse media, and report only exceptions (JSONL)."""
@@ -310,8 +440,21 @@ def batch(
         if through == Through.compose:
             stages.append("compose")
         _emit({"ok": True, "dry_run": True, "episodes": numbers, "stages": stages,
-               "aspect_ratio": aspect_ratio or "project", "max_submissions": max_submissions})
+               "aspect_ratio": aspect_ratio or "project", "max_submissions": max_submissions,
+               "production_unit": "narrative_group", "concurrency_source": "task-runtime/concurrency"})
         return
+    runtime = _perform(ctx.obj, "GET", "task-runtime/concurrency", runtime_settings=True).get("data")
+    try:
+        lanes = runtime["lanes"]
+        image_limit = lanes["default"]["configured"]
+        video_limit = lanes["video"]["configured"]
+        if any(type(value) is not int or value < 1 for value in (image_limit, video_limit)):
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        _fail("concurrency_settings_required", "Read valid saved task concurrency before production; no guessed limit was used")
+    concurrency = {"sketch": image_limit, "render": image_limit, "video": video_limit}
+    _emit({"event": "production_policy", "production_unit": "narrative_group",
+           "concurrency": concurrency, "restart_required": bool(runtime.get("restart_required"))})
     if aspect_ratio is None:
         project = _perform(ctx.obj, "GET", "").get("data")
         try:
@@ -340,7 +483,7 @@ def batch(
     summary = run_batch(request=call, wait_task=await_task, episodes=numbers,
                         through=through.value, with_sketch=with_sketch,
                         max_submissions=max_submissions, aspect_ratio=aspect_ratio,
-                        retry_failed=retry_failed, emit=_emit)
+                        retry_failed=retry_failed, emit=_emit, concurrency=concurrency)
     _emit(summary)
     if not summary["ok"]:
         raise typer.Exit(1)

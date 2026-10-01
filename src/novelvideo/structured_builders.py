@@ -12,6 +12,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Iterable, Literal
 
 from novelvideo.models import NovelCharacter, NovelEpisode, NovelScene
+from novelvideo.character_voice_facts import VoiceFacts
+from novelvideo.character_visual.casting_proposals import blocking_casting_issues
 
 
 EntityKind = Literal["episode", "character", "scene"]
@@ -318,8 +320,8 @@ async def _write_character(db: Any, character: NovelCharacter) -> int:
     cursor = await db.execute(
         """INSERT INTO characters (
         name, aliases_json, role, is_main, gender, age_group, body_type,
-        description, face_prompt, appearance_details
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        description, face_prompt, appearance_details, voice_facts_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(name) DO NOTHING""",
         (
             character.name,
@@ -332,6 +334,7 @@ async def _write_character(db: Any, character: NovelCharacter) -> int:
             character.description,
             character.face_prompt,
             character.appearance_details,
+            character.voice_facts_json,
         ),
     )
     return int(cursor.rowcount or 0)
@@ -428,58 +431,42 @@ def _visual_workspace_for_merged_character(
     source_text: str,
     existing_workspace: Any,
     existing_roster_proposals: list[Any],
+    project_style: str = "",
 ) -> Any:
     from novelvideo.character_visual.models import (
         CharacterDesignProposal,
-        CharacterNarrativeFact,
-        CharacterNarrativeProfile,
-        SourceSpan,
     )
     from novelvideo.character_visual.proposals import build_character_visual_workspace
+    from novelvideo.character_visual.casting_brief import profile_from_merged, build_casting_revision
+    from novelvideo.character_visual.casting_proposals import validate_casting_proposals
 
-    facts = []
-    for index, evidence in enumerate(item.evidence):
-        field_name = str(evidence.get("field") or "").strip()
-        value = str(evidence.get("value") or "").strip()
-        quote = str(evidence.get("evidence_text") or "").strip()
-        if not field_name or not value or not quote:
-            continue
-        start = _line_number(source_text, int(evidence.get("source_start", 0)))
-        end = _line_number(source_text, int(evidence.get("source_end", 0)))
-        facts.append(
-            CharacterNarrativeFact(
-                fact_id=f"{item.name}-fact-{index + 1}",
-                field=field_name,
-                value=value,
-                source_span=SourceSpan(start_line=start, end_line=max(start, end)),
-                evidence=quote,
-                confidence=float(evidence.get("confidence", 1.0)),
-                assertion="explicit",
-            )
-        )
-    profile = CharacterNarrativeProfile(
-        character_id=item.name,
-        name=item.name,
-        aliases=sorted(item.aliases),
-        biography=item.biography or item.description,
-        occupation=item.occupation or item.role,
-        social_identity=item.social_identity,
-        relationships=list(item.relationships),
-        personality=list(item.personality),
-        dramatic_function=item.dramatic_function,
-        facts=facts,
-    )
+    source_revision = hashlib.sha256(source_text.encode()).hexdigest()
+    profile = profile_from_merged(item, source_revision, source_text)
     proposals = [
         CharacterDesignProposal.model_validate(proposal)
         for proposal in item.design_proposals
     ]
-    return build_character_visual_workspace(
+    workspace = build_character_visual_workspace(
         profile=profile,
         proposals=proposals,
         existing_workspace=existing_workspace,
         existing_roster_proposals=existing_roster_proposals,
         preserve_rejected_proposals=True,
     )
+    if not (existing_workspace and existing_workspace.selected_proposal_id):
+        issues = validate_casting_proposals(profile, proposals, None, source_revision=source_revision,
+                    style_revision=project_style or "unspecified", existing_proposals=existing_roster_proposals,
+                    limitation_reason=getattr(item, "design_limitation_reason", ""))
+        # Only the explicit persisted human selection branch below is legacy.
+        # Missing facts cannot turn a fresh rejected response into an accepted set.
+        workspace.design_proposals = [p.model_copy(update={"quality_issues": issues}) for p in proposals]
+        try:
+            workspace.casting_revision = build_casting_revision(workspace, None, source_revision, project_style or "unspecified")
+        except ValueError as exc:
+            workspace.design_proposals = [p.model_copy(update={"quality_issues": [*p.quality_issues, str(exc)]}) for p in workspace.design_proposals]
+    else:
+        workspace.casting_revision = existing_workspace.casting_revision
+    return workspace
 
 
 def _decode_character_artifact(
@@ -520,6 +507,12 @@ async def build_characters_structured(
     )
 
     text = require_imported_novel(store.project_dir)
+    from novelvideo.project_config import load_project_config_file_from_state_dir
+    from novelvideo.character_visual.casting_brief import DESIGN_PROMPT_VERSION, profile_from_merged
+    config = load_project_config_file_from_state_dir(store.state_dir)
+    project_style = json.dumps({"visual_style": config.get("visual_style", ""),
+                               "custom_styles": config.get("custom_styles", {})}, ensure_ascii=False, sort_keys=True)
+    design_context = {"project_style": project_style, "prompt_version": DESIGN_PROMPT_VERSION}
     template = spine_template_for(store)
     chunks = chunk_source_text(text, template)
     if not chunks:
@@ -555,9 +548,12 @@ async def build_characters_structured(
             from novelvideo.structured_extraction import MergedCharacter
 
             cached_characters = _decode_character_artifact(artifact, excluded_names)
+            if json.loads(artifact).get("design_context") != design_context:
+                cached_characters = None
             merged = [
                 MergedCharacter(
                     name=item["name"],
+                    voice_facts=VoiceFacts.model_validate(item.get("voice_facts") or {}),
                     aliases=set(item.get("aliases") or []),
                     role=item.get("role", ""),
                     face=item.get("face", ""),
@@ -571,16 +567,71 @@ async def build_characters_structured(
                     personality=list(item.get("personality") or []),
                     dramatic_function=item.get("dramatic_function", ""),
                     design_proposals=list(item.get("design_proposals") or []),
+                    design_accepted=bool(item.get("design_accepted", False)),
+                    design_limitation_reason=item.get("design_limitation_reason", ""),
                     evidence=list(item.get("evidence") or []),
                     chunk_ids=set(item.get("chunk_ids") or []),
                 )
                 for item in (cached_characters or [])
                 if item.get("name") not in excluded_names
             ]
-            if merged and any(len(item.design_proposals) != 3 for item in merged):
+            from novelvideo.character_design_stage import (
+                CharacterDesignOutput,
+                design_quality_issues,
+            )
+
+            try:
+                reusable_designs = True
+                from novelvideo.character_visual import CharacterVisualWorkspaceStore
+
+                cached_names = {item.name for item in merged}
+                cached_visuals = CharacterVisualWorkspaceStore(store.project_dir)
+                accepted_proposals = [
+                    proposal.model_dump(mode="json")
+                    for character in existing_characters if character.name not in cached_names
+                    for workspace in [cached_visuals.get(character.name)] if workspace is not None
+                    for proposal in workspace.design_proposals if not blocking_casting_issues(proposal.quality_issues)
+                ]
+                for item in merged:
+                    if design_quality_issues(
+                        item.name, CharacterDesignOutput(design_proposals=item.design_proposals),
+                        other_proposals=accepted_proposals,
+                        profile=profile_from_merged(item, source_sha256(text), text),
+                        source_revision=source_sha256(text), style_revision=project_style,
+                    ):
+                        reusable_designs = False
+                        break
+                    accepted_proposals.extend(item.design_proposals)
+            except ValueError:
+                reusable_designs = False
+            if not reusable_designs:
                 merged = []
             run_id = reusable["run_id"]
     if not merged:
+        from novelvideo.character_visual import CharacterVisualWorkspaceStore
+
+        prior_visuals = CharacterVisualWorkspaceStore(store.project_dir)
+        roster_designs = {
+            character.name: [proposal.model_dump(mode="json") for proposal in workspace.design_proposals]
+            for character in existing_characters
+            if character.name not in excluded_names
+            for workspace in [prior_visuals.get(character.name)]
+            if workspace is not None and 1 <= len(workspace.design_proposals) <= 3
+            and not any(blocking_casting_issues(proposal.quality_issues) for proposal in workspace.design_proposals)
+        }
+        # Only explicit selections override new source facts. Unconfirmed designs
+        # are reused through fact-keyed checkpoints, never solely by name.
+        existing_designs = {
+            name: proposals for name, proposals in roster_designs.items()
+            if prior_visuals.get(name).selected_proposal_id
+        }
+
+        async def load_checkpoint(key: str) -> str:
+            return await store.get_analysis_artifact(run_id, key)
+
+        async def save_checkpoint(key: str, value: str) -> None:
+            await store.save_analysis_artifact(run_id, key, value)
+
         await store.start_analysis_run(
             run_id=run_id,
             pipeline_version=STRUCTURED_PIPELINE_VERSION,
@@ -596,6 +647,12 @@ async def build_characters_structured(
                 chunks,
                 on_log=on_log,
                 excluded_names=excluded_names,
+                on_progress=on_progress,
+                load_checkpoint=load_checkpoint,
+                save_checkpoint=save_checkpoint,
+                existing_designs=existing_designs,
+                roster_designs=roster_designs,
+                source_revision=source_sha256(text), project_style=project_style, source_text=text,
             )
             merged = await extracted if inspect.isawaitable(extracted) else extracted
             await store.save_analysis_artifact(
@@ -604,9 +661,11 @@ async def build_characters_structured(
                 json.dumps(
                     {
                         "excluded_names": sorted(excluded_names),
+                        "design_context": design_context,
                         "characters": [
                         {
                             "name": item.name,
+                            "voice_facts": item.voice_facts.model_dump(mode="json"),
                             "aliases": sorted(item.aliases),
                             "role": item.role,
                             "face": item.face,
@@ -620,6 +679,8 @@ async def build_characters_structured(
                             "personality": item.personality,
                             "dramatic_function": item.dramatic_function,
                             "design_proposals": item.design_proposals,
+                            "design_accepted": item.design_accepted,
+                            "design_limitation_reason": item.design_limitation_reason,
                             "evidence": item.evidence,
                             "chunk_ids": sorted(item.chunk_ids),
                         }
@@ -636,6 +697,8 @@ async def build_characters_structured(
     candidates = [
         NovelCharacter(
             name=item.name,
+            voice_facts=item.voice_facts,
+            age_group=item.voice_facts.age_group,
             aliases=sorted(item.aliases),
             role=item.role,
             gender=item.gender,
@@ -648,39 +711,52 @@ async def build_characters_structured(
     from novelvideo.character_visual import CharacterVisualWorkspaceStore
 
     visual_store = CharacterVisualWorkspaceStore(store.project_dir)
-    roster_proposals = [
-        proposal
+    merged_names = {item.name for item in merged}
+    roster_by_character = {
+        character.name: [proposal for proposal in workspace.design_proposals if not blocking_casting_issues(proposal.quality_issues)]
         for character in existing_characters
         if not bool(getattr(character, "extraction_locked", False))
         for workspace in [visual_store.get(character.name)]
         if workspace is not None
-        for proposal in workspace.design_proposals
-        if not proposal.quality_issues
-    ]
+        and (character.name not in merged_names or workspace.selected_proposal_id)
+    }
+    from novelvideo.character_visual.models import CharacterDesignProposal
+
+    # Retain the design-stage winners regardless of async completion/name order.
+    # Rejected candidates must not displace a previously accepted checkpoint.
+    for item in merged:
+        if item.design_accepted:
+            roster_by_character.setdefault(item.name, [
+                CharacterDesignProposal.model_validate(p) for p in item.design_proposals
+            ])
     workspaces = []
     proposal_failed: list[str] = []
     for item in merged:
         workspace = _visual_workspace_for_merged_character(
             item=item,
             source_text=text,
+            project_style=project_style,
             existing_workspace=visual_store.get(item.name),
-            existing_roster_proposals=roster_proposals,
+            existing_roster_proposals=[
+                proposal
+                for name, proposals in roster_by_character.items() if name != item.name
+                for proposal in proposals
+            ],
         )
         workspaces.append(workspace)
         proposal_set_ready = (
-            len(workspace.design_proposals) == 3
-            and sum(proposal.recommended for proposal in workspace.design_proposals) == 1
+            1 <= len(workspace.design_proposals) <= 3
             and not any(
-                proposal.quality_issues for proposal in workspace.design_proposals
+                blocking_casting_issues(proposal.quality_issues) for proposal in workspace.design_proposals
             )
         )
         if not proposal_set_ready:
             proposal_failed.append(item.name)
-        roster_proposals.extend(
+        roster_by_character[item.name] = [
             proposal
             for proposal in workspace.design_proposals
-            if not proposal.quality_issues
-        )
+            if not blocking_casting_issues(proposal.quality_issues)
+        ]
 
     _report(on_progress, 0.8, "原子发布角色与视觉提案...")
     try:

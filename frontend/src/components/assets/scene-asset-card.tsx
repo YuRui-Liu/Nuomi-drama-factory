@@ -37,6 +37,7 @@ import type {
 } from "@/types/scene";
 
 interface SceneAssetCardProps {
+  view?: string;
   scene: SceneAsset;
   referenceCount?: number;
   masterRunning?: boolean;
@@ -92,7 +93,7 @@ function AssetImageSlot({
   const resolved = resolveMediaUrl(src);
   return (
     <div className="min-w-0">
-      <div className="relative aspect-video w-full overflow-hidden rounded-[8px] border border-border bg-black/20">
+      <div data-scene-preview className="relative aspect-video w-full overflow-hidden rounded-[8px] border border-border bg-black/20">
         {resolved ? (
           <>
             {/* Blurred background fill for contain mode */}
@@ -167,6 +168,7 @@ function StagePlyBadge({
 }
 
 export function SceneAssetCard({
+  view = "all",
   scene,
   referenceCount = 0,
   masterRunning = false,
@@ -201,6 +203,8 @@ export function SceneAssetCard({
   const { t } = useTranslation();
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewLabel, setPreviewLabel] = useState("");
+  const [referenceSlot, setReferenceSlot] = useState<"master" | "reverse" | "pano">("master");
+  const focusedReferences = view === "references";
   const hasMaster = Boolean(resolveMediaUrl(scene.master_url));
   const hasReverse = Boolean(resolveMediaUrl(scene.reverse_master_url));
   const hasPano = Boolean(resolveMediaUrl(scene.pano_url));
@@ -230,7 +234,7 @@ export function SceneAssetCard({
 
   return (
     <>
-      <Card size="sm" className="rounded-[10px] bg-white/[0.03] shadow-none">
+      <Card size="sm" data-view={view} className="asset-scene-card rounded-[10px] bg-white/[0.03] shadow-none">
         {/* Header: title + status chips inline, action icons on right */}
         <CardHeader className="gap-2">
           <div className="flex min-w-0 items-center justify-between gap-3">
@@ -302,7 +306,7 @@ export function SceneAssetCard({
               </button>
             </div>
           </div>
-          {description && (
+          {description && !focusedReferences && (
             <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">
               {description}
             </p>
@@ -315,16 +319,25 @@ export function SceneAssetCard({
         </CardHeader>
 
         {/* Image + actions merged into single columns */}
-        <CardContent className="grid gap-4 pt-1 md:grid-cols-2 xl:grid-cols-3">
+        <CardContent className={cn("grid gap-4 pt-1", focusedReferences ? "asset-scene-reference-focus grid-cols-1" : "md:grid-cols-2 xl:grid-cols-3")}>
+          {focusedReferences && (
+            <div role="tablist" aria-label="场景参考槽位" className="asset-workspace-tabs">
+              {(["master", "reverse", "pano"] as const).map(slot => (
+                <button key={slot} type="button" role="tab" aria-selected={referenceSlot === slot} onClick={() => setReferenceSlot(slot)}>
+                  {t(`assets.scenes.${slot}`)}
+                </button>
+              ))}
+            </div>
+          )}
           {/* Master column */}
-          <div className="flex flex-col gap-3">
+          <div data-reference-slot="master" hidden={focusedReferences && referenceSlot !== "master"} style={{ display: focusedReferences && referenceSlot !== "master" ? "none" : undefined }} className="flex flex-col gap-3">
             <AssetImageSlot
               label={t("assets.scenes.master")}
               src={scene.master_url}
               emptyLabel={t("assets.scenes.noMaster")}
               stale={staleMaster}
               staleLabel={t("assets.scenes.staleBadge")}
-              fit="cover"
+              fit={focusedReferences ? "contain" : "cover"}
               onPreview={masterResolved ? () => { setPreviewSrc(masterResolved); setPreviewLabel(t("assets.scenes.master")); } : undefined}
               actions={
                 <Button
@@ -373,14 +386,14 @@ export function SceneAssetCard({
           </div>
 
           {/* Reverse column */}
-          <div className="flex flex-col gap-3">
+          <div data-reference-slot="reverse" hidden={focusedReferences && referenceSlot !== "reverse"} style={{ display: focusedReferences && referenceSlot !== "reverse" ? "none" : undefined }} className="flex flex-col gap-3">
             <AssetImageSlot
               label={t("assets.scenes.reverse")}
               src={scene.reverse_master_url}
               emptyLabel={t("assets.scenes.noReverse")}
               stale={staleReverse}
               staleLabel={t("assets.scenes.staleBadge")}
-              fit="cover"
+              fit={focusedReferences ? "contain" : "cover"}
               onPreview={reverseResolved ? () => { setPreviewSrc(reverseResolved); setPreviewLabel(t("assets.scenes.reverse")); } : undefined}
             />
             <div className="flex flex-wrap items-center gap-1.5">
@@ -406,7 +419,7 @@ export function SceneAssetCard({
           </div>
 
           {/* Panorama column */}
-          <div className="flex flex-col gap-3">
+          <div data-reference-slot="pano" hidden={focusedReferences && referenceSlot !== "pano"} style={{ display: focusedReferences && referenceSlot !== "pano" ? "none" : undefined }} className="flex flex-col gap-3">
             <AssetImageSlot
               label={t("assets.scenes.pano")}
               src={scene.pano_url}
@@ -473,7 +486,7 @@ export function SceneAssetCard({
 
           {/* 3D world section — full width below the image columns */}
           {canOpenStageViewer && (
-            <section className="rounded-[10px] bg-cyan-500/[0.055] p-3 md:col-span-2 xl:col-span-3">
+            <section data-world-assets className="rounded-[10px] bg-cyan-500/[0.055] p-3 md:col-span-2 xl:col-span-3">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0 space-y-1">
                   <div className="flex items-center gap-2 text-sm font-medium">

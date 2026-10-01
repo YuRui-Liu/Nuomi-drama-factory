@@ -773,6 +773,12 @@ async def resolve_group_video_reference_preview(
         project, episode_number, group.id
     )
     beats = await _group_beats(store, episode_number, group)
+    if group.director_revision_id:
+        from .service import generation_beats_for_group
+
+        beats = tuple(generation_beats_for_group(
+            project, episode_number, group.id, beats
+        ))
     identity_metadata, scene_descriptions, prop_descriptions = (
         await _asset_descriptions(store, episode_number)
     )
@@ -786,8 +792,15 @@ async def resolve_group_video_reference_preview(
         for identity_id in real_detected_identities(
             _value(beat, "detected_identities", ()) or ()
         ):
+            if group.director_revision_id and identity_id not in identity_metadata:
+                matches = [key for key, (name, _) in identity_metadata.items()
+                           if name == identity_id]
+                if len(matches) == 1:
+                    identity_id = matches[0]
             identity_ids.setdefault(identity_id, []).append(beat_id)
         scene_id = beat_scene_id(beat)
+        if not scene_id and group.director_revision_id:
+            scene_id = str(_value(beat, "scene_name", "") or "")
         if scene_id:
             scene_ids.setdefault(scene_id, []).append(beat_id)
         for prop_id in real_detected_props(

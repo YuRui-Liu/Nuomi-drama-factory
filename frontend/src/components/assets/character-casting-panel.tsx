@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { StudioShortcut } from "@/features/studios/studio-shortcut";
+import { useCharacterDraft, useCharacterSwitch } from "@/features/studios/character-draft-bridge";
 import {
   castingTaskActive,
   castingTaskStatus,
@@ -17,7 +19,7 @@ import type {
   CastingWorkspace,
 } from "@/types/character-casting";
 
-type Props = { project: string; name: string; imageModel?: string };
+type Props = { project: string; name: string; imageModel?: string; studioBridge?: boolean };
 type RunAction = (action: CastingAction, onSuccess?: () => void) => void;
 const card = "rounded-xl border border-border/70 bg-card/50 p-4 space-y-3";
 const field =
@@ -54,6 +56,7 @@ const attributeLabels: Record<string, string> = {
   asymmetry_detail: "不对称细节",
   age_group: "年龄阶段",
   age_range: "年龄范围",
+  apparent_age: "外观年龄",
   gender: "性别",
   species: "物种",
   grooming: "仪容",
@@ -91,6 +94,8 @@ function friendly(error: string | CastingTaskError) {
   if (value.includes("untrusted") || value.includes("unverified_evidence"))
     return "部分资料缺少可信原文依据，已排除出硬约束。";
   if (value.includes("conflicting")) return "原文事实存在冲突，请先核对来源。";
+  if (value.split(":").includes("generic_beauty"))
+    return "外观描述包含泛化美化用语，请检查是否符合人物设定。";
   return value;
 }
 
@@ -122,11 +127,13 @@ export function CharacterCastingPanel({
   imageModel,
   identityId: controlledIdentityId,
   onIdentityChange,
+  studioBridge,
 }: Props & {
   identityId?: string | null;
   onIdentityChange?: (identityId: string | null) => void;
 }) {
   const [localIdentityId, setLocalIdentityId] = useState<string | null>(null);
+  const switching = useCharacterSwitch(studioBridge === true);
   const identityId =
     controlledIdentityId === undefined ? localIdentityId : controlledIdentityId;
   const setIdentityId = (next: string | null) => {
@@ -135,16 +142,16 @@ export function CharacterCastingPanel({
   };
   const base = useCharacterCasting(project, name);
   return (
-    <div className="space-y-5">
+    <div className={studioBridge ? "studio-casting-wrapper" : "space-y-5"}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-lg font-semibold">剧情驱动选角</h2>
         <label className="flex items-center gap-2 text-sm">
-          身份阶段
+          <span className="shrink-0 text-muted-foreground">身份阶段</span>
           <select
             className={field}
             aria-label="身份阶段"
             value={identityId ?? ""}
-            onChange={(e) => setIdentityId(e.target.value || null)}
+            onChange={(e) => { const next = e.target.value || null; switching.request(() => setIdentityId(next)); }}
           >
             <option value="">基础形象</option>
             {base.data?.data.identities.map((i) => (
@@ -161,7 +168,9 @@ export function CharacterCastingPanel({
         name={name}
         imageModel={imageModel}
         identityId={identityId}
+        studioBridge={studioBridge}
       />
+      {switching.dialog}
     </div>
   );
 }
@@ -171,6 +180,7 @@ function CastingStage({
   name,
   imageModel,
   identityId,
+  studioBridge,
 }: Props & { identityId: string | null }) {
   const workspace = useCharacterCasting(project, name, identityId);
   const candidates = useCastingCandidates(project, name, identityId);
@@ -197,6 +207,7 @@ function CastingStage({
     setSubmitted(action);
     setNotice("");
     mutation.mutate(action, {
+      onError: () => { if (studioBridge && action.kind === "draft") window.dispatchEvent(new Event("studio-save-failed-character")); },
       onSuccess: () => {
         onSuccess?.();
         setSubmitted(null);
@@ -228,8 +239,31 @@ function CastingStage({
   );
   const tasksRunning = data.tasks.some(castingTaskActive);
   const current = data.current ?? data.legacy_current;
+  const previewUrl = candidate ? candidate.url : current?.url;
+  if (studioBridge) return <div className="studio-casting">
+    <aside className="studio-casting-config">
+      {mutation.isError && <div role="alert" className="space-y-2 rounded border border-destructive/40 p-2 text-xs"><p>操作未确认成功：{friendly(mutation.error.message)}</p><Button disabled={!writable || mutation.isPending || !submitted} onClick={() => submitted && run(submitted, retrySuccess.current)}>重试同一次请求</Button><Button variant="outline" onClick={() => { mutation.reset(); setSubmitted(null); retrySuccess.current = undefined; void workspace.refetch(); void candidates.refetch(); }}>刷新状态</Button></div>}
+      {notice && <p role="status" className="text-xs text-primary">{notice}</p>}
+      <details className="rounded-lg border p-3"><summary className="cursor-pointer text-sm font-medium">查看选角依据与原文事实</summary><p className="mt-3 text-xs text-muted-foreground">{data.dossier.narrative.biography || '尚无人物小传'}</p><Facts facts={data.dossier.hard_constraints} /><Facts facts={data.dossier.interpretations} />{data.dossier.issues.map((issue,index) => <p key={index} className="text-xs text-amber-500">{friendly(issue)}</p>)}</details>
+      {data.prerequisite_error && <p role="alert" className="text-xs text-amber-500">缺少可用原文来源：{friendly(data.prerequisite_error)}</p>}
+      {data.draft_stale && <p role="alert" className="text-xs text-amber-500">草稿已过期，请基于最新原文重新选角。</p>}
+      {workspace.isError && <Button variant="outline" onClick={() => void workspace.refetch()}>重新读取选角资料</Button>}
+      <Button variant="outline" disabled={!writable || busy || tasksRunning || !!data.prerequisite_error} onClick={() => run({kind:'recast',body:{expected_revision:data.revision?.revision_id ?? null,idempotency_key:crypto.randomUUID()}})}>重新整理三套选角方案</Button>
+      <ProposalEditor key={data.revision?.revision_id ?? 'empty'} data={data} writable={writable && !busy && !tasksRunning} disabledReason={!writable ? '当前为只读权限。' : busy || tasksRunning ? '选角任务进行中，请等待结果。' : undefined} run={run} imageModel={imageModel} cost={cost.data?.data.display} studioSource={`casting/${project}/${name}/${identityId ?? 'base'}`} />
+      {!!data.tasks.length && <details className="rounded border p-2 text-xs"><summary>选角任务 · {data.tasks.length}</summary>{data.tasks.map(task => <p key={task.request_id} className="mt-2">{task.operation} · {castingTaskStatus(task)}</p>)}</details>}
+    </aside>
+    <section className="studio-casting-stage" aria-label="角色形象预览">
+      <header className="flex items-center justify-between gap-2 border-b px-4 py-3"><h3 className="text-sm font-medium">{candidate ? '候选形象预览' : '当前角色形象'}</h3><span className="text-xs text-muted-foreground">{candidate ? '确认定角后才替换当前形象' : '当前形象保留'}</span></header>
+      <div className="studio-casting-preview-scroll" role="region" aria-label="形象与定角检查" tabIndex={0}>
+      <div className="studio-casting-picture">{previewUrl ? <img alt={candidate ? '候选形象大图' : '当前角色形象大图'} src={resolveMediaUrl(previewUrl) ?? previewUrl} /> : <p className="text-sm text-muted-foreground">{candidate ? '此候选尚无可预览图像，请查看任务与检查结果' : '在左侧选择方案并生成候选'}</p>}</div>
+      {candidate && <details className="studio-casting-review"><summary className="cursor-pointer text-sm font-medium">检查结果与确认定角</summary><div className="mt-3 grid gap-3 lg:grid-cols-2"><CandidateCard candidate={candidate} index={(candidates.data?.data.findIndex(c => c.candidate_id === candidate.candidate_id) ?? 0) + 1} selected disabled={!writable || busy} onSelect={() => setSelectedCandidate(candidate.candidate_id)} onReview={() => run({kind:'review',candidateId:candidate.candidate_id,body:{idempotency_key:crypto.randomUUID()}})} /><AdoptionForm key={`${candidate.candidate_id}/${candidate.adoption_requirements.expected_review_attempt_id}/${data.revision?.revision_id}`} candidate={candidate} disabled={!writable || busy || data.draft_stale || !!data.prerequisite_error || candidates.isError || workspace.isError} revision={data.revision?.revision_id} run={run} /></div></details>}
+      </div>
+      <div className="studio-casting-versions" aria-label="角色候选版本"><div className="mb-2 flex justify-between text-xs"><span>候选与检查 · {candidates.data?.data.length ?? 0}</span><span className="text-muted-foreground">点击预览，检查后采用</span></div>{candidates.isError && <Button onClick={() => void candidates.refetch()}>重新读取候选</Button>}<div className="flex gap-2 overflow-x-auto"><button className={`w-28 shrink-0 rounded border p-1 text-left ${!candidate ? 'border-primary' : ''}`} onClick={() => setSelectedCandidate('')}><div className="flex h-16 items-center justify-center overflow-hidden rounded bg-muted">{current?.url ? <img className="h-full w-full object-contain" src={resolveMediaUrl(current.url) ?? current.url} alt="当前形象缩略图" /> : <span className="text-xs">尚未定角</span>}</div><span className="text-xs">当前形象</span></button>{candidates.data?.data.map((item,index) => <button key={item.candidate_id} className={`w-28 shrink-0 rounded border p-1 text-left ${candidate?.candidate_id === item.candidate_id ? 'border-primary bg-primary/5' : ''}`} onClick={() => setSelectedCandidate(item.candidate_id)} aria-label={`预览候选 ${index + 1}`}><div className="flex h-16 items-center justify-center overflow-hidden rounded bg-muted">{item.url ? <img src={resolveMediaUrl(item.url) ?? item.url} alt={`候选 ${index + 1} 缩略图`} className="h-full w-full object-contain" /> : <span className="text-xs">{item.generation_status === 'failed' ? '失败' : '生成中'}</span>}</div><span className="text-xs">候选 {index + 1}{item.stale ? ' · 已过期' : ''}</span></button>)}</div></div>
+    </section>
+  </div>;
   return (
     <div className="space-y-5">
+      {!window.location.pathname.endsWith('/studios') && <StudioShortcut project={project} studio="character" character={name} returnTo={window.location.pathname + window.location.search} label="打开角色造型室" />}
       {!writable && (
         <p className="text-sm text-muted-foreground">
           当前为只读权限，可查看依据、候选和检查结果。
@@ -243,8 +277,32 @@ function CastingStage({
           </Button>
         </div>
       )}
-      <section className={card} aria-label="选角依据">
-        <h3 className="font-semibold">选角依据</h3>
+      <div className="grid items-start gap-4 @[900px]:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+      <section className="grid grid-cols-[88px_minmax(0,1fr)] gap-4 rounded-xl border border-primary/20 bg-primary/[0.025] p-4 sm:grid-cols-[112px_minmax(0,1fr)]" aria-label="当前角色形象">
+        <div className="flex aspect-[4/5] max-h-36 items-center justify-center overflow-hidden rounded-lg border border-border bg-background/70">
+          {current?.url ? (
+            <img src={resolveMediaUrl(current.url) ?? current.url} alt="当前定角" className="h-full w-full object-contain" />
+          ) : <span className="text-sm text-muted-foreground">尚未定角</span>}
+        </div>
+        <div className="flex min-w-0 flex-col justify-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="font-semibold">当前定角</h3>
+            <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">{current?.url ? "已有形象" : "待选择形象"}</span>
+          </div>
+          <p className="text-sm leading-6 text-muted-foreground">{current?.url ? "当前形象已保留。可在下方比较新方案，确认定角后再替换。" : "从下方选择设计方案，生成候选，再确认角色形象。"}</p>
+          <ol aria-label="选角流程" className="flex flex-wrap gap-x-5 gap-y-2 text-xs">
+            <li><span className="mr-1.5 text-primary">01</span>选择方案</li>
+            <li><span className="mr-1.5 text-primary">02</span>生成与检查</li>
+            <li><span className="mr-1.5 text-primary">03</span>确认定角</li>
+          </ol>
+          {data.current && !data.current.candidate_id && <p className="text-xs text-muted-foreground">历史定角，尚未经过本次剧情选角流程。</p>}
+          {data.legacy_current && <p className="text-xs text-amber-500">历史形象尚未经过本次选角确认，继续保留。</p>}
+        </div>
+      </section>
+      <section className={`${card} h-full`} aria-label="选角依据">
+        <details>
+        <summary className="cursor-pointer text-sm font-medium focus-visible:outline-primary">查看选角依据与原文事实</summary>
+        <div className="mt-4 space-y-3">
         <p className="text-sm leading-6 text-muted-foreground">
           {data.dossier.narrative.biography || "尚无人物小传"}
         </p>
@@ -261,6 +319,8 @@ function CastingStage({
             <Facts facts={data.dossier.interpretations} />
           </>
         )}
+        </div>
+        </details>
         {data.dossier.issues.map((issue, i) => (
           <p key={i} className="text-xs text-amber-500">
             {friendly(issue)}
@@ -305,38 +365,19 @@ function CastingStage({
           </span>
         </div>
       </section>
+      </div>
       <ProposalEditor
         key={data.revision?.revision_id ?? "empty"}
         data={data}
         writable={writable && !busy && !tasksRunning}
+        disabledReason={!writable ? "当前为只读权限。" : mutation.isError ? "上次操作未确认成功，请先刷新状态或重试。" : busy || tasksRunning ? "选角任务进行中，请等待结果。" : undefined}
         run={run}
         imageModel={imageModel}
         cost={cost.data?.data.display}
+        studioSource={studioBridge ? `casting/${project}/${name}/${identityId ?? "base"}` : undefined}
       />
       <section className={card}>
         <h3 className="font-semibold">候选与检查</h3>
-        <div className="rounded-lg bg-muted/20 p-3">
-          <h4 className="mb-2 text-sm font-medium">当前定角</h4>
-          {current?.url ? (
-            <img
-              src={resolveMediaUrl(current.url) ?? current.url}
-              alt="当前定角"
-              className="max-h-64 rounded-lg object-contain"
-            />
-          ) : (
-            <p className="text-sm text-muted-foreground">尚未定角</p>
-          )}
-          {data.current && !data.current.candidate_id && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              历史定角，尚未经过本次剧情选角流程。
-            </p>
-          )}
-          {data.legacy_current && (
-            <p className="mt-2 text-xs text-amber-500">
-              历史形象尚未经过本次选角确认，继续保留。
-            </p>
-          )}
-        </div>
         <p className="text-xs text-muted-foreground">
           生成只增加候选；确认定角后才会更新当前形象。
         </p>
@@ -464,15 +505,19 @@ function CastingStage({
 function ProposalEditor({
   data,
   writable,
+  disabledReason,
   run,
   imageModel,
   cost,
+  studioSource,
 }: {
   data: CastingWorkspace;
   writable: boolean;
+  disabledReason?: string;
   run: RunAction;
   imageModel?: string;
   cost?: string;
+  studioSource?: string;
 }) {
   const [proposals, setProposals] = useState(data.proposals);
   const [selected, setSelected] = useState(data.selected_proposal_id);
@@ -485,10 +530,11 @@ function ProposalEditor({
     !data.draft_stale &&
     !data.prerequisite_error;
   const invalidSet =
-    proposals.length !== 3 ||
-    new Set(proposals.map((p) => p.proposal_id)).size !== 3 ||
-    proposals.filter((p) => p.recommended).length !== 1;
+    proposals.length < 1 || proposals.length > 3 ||
+    new Set(proposals.map((p) => p.proposal_id)).size !== proposals.length;
   const selectedProposal = proposals.find((p) => p.proposal_id === selected);
+  const qualityIssues = [...new Set(proposals.flatMap((proposal) => proposal.quality_issues ?? []))];
+  const proposalIds = new Set(proposals.map((proposal) => proposal.proposal_id));
   function updateDecision(
     proposalId: string,
     decisionId: string,
@@ -556,13 +602,21 @@ function ProposalEditor({
   const blanks = selectedProposal?.casting_decisions.some(
     (d) => !d.value.trim() || !d.reason.trim(),
   );
+  const saveDraft = () => {
+    if (!canEdit || !selected || !data.revision || invalidSet || blanks) {
+      if (studioSource) window.dispatchEvent(new Event("studio-save-failed-character"));
+      return;
+    }
+    run({ kind: "draft", body: { expected_revision: data.revision.revision_id, selected_proposal_id: selected, proposals } }, () => setSavedSignature(signature));
+  };
+  useCharacterDraft(studioSource, dirty, saveDraft);
   return (
     <section className={card}>
       <h3 className="font-semibold">三套选角方案</h3>
       <p className="text-sm text-muted-foreground">
         设计解释说明如何使用依据；自由选择是创作补充，不会变成原文事实。
       </p>
-      <div className="grid gap-3 lg:grid-cols-3">
+      <div className="grid items-start gap-3 @[700px]:grid-cols-3">
         {proposals.map((proposal) => (
           <article
             key={proposal.proposal_id}
@@ -574,6 +628,12 @@ function ProposalEditor({
                 <span className="text-xs text-lime-500">推荐</span>
               )}
             </div>
+            {proposal.identity_anchors?.length ? (
+              <p className="text-xs leading-5 text-muted-foreground">{proposal.identity_anchors.slice(0, 3).join(" · ")}</p>
+            ) : <p className="text-xs leading-5 text-muted-foreground">{[proposal.face_shape, proposal.hair_style, proposal.body_type].filter(Boolean).join(" · ") || "展开设计说明，比较造型细节。"}</p>}
+            <details className="rounded-md bg-background/40 p-2.5">
+            <summary className="cursor-pointer text-xs text-muted-foreground">查看设计说明与依据</summary>
+            <div className="mt-3 space-y-3">
             <p className="text-xs leading-5 text-muted-foreground">
               {proposal.rationale}
             </p>
@@ -605,7 +665,9 @@ function ProposalEditor({
                 辨识特征：{proposal.identity_anchors.join("、")}
               </p>
             ) : null}
-            {proposal.quality_issues?.map((issue) => (
+            </div>
+            </details>
+            {qualityIssues.filter((issue) => !proposalIds.has(issue.split(":")[0]) || issue.startsWith(`${proposal.proposal_id}:`)).map((issue) => (
               <p key={issue} className="text-xs text-amber-500">
                 {friendly(issue)}
               </p>
@@ -615,7 +677,7 @@ function ProposalEditor({
               size="sm"
               aria-pressed={selected === proposal.proposal_id}
               disabled={
-                !canEdit || invalidSet || !!proposal.quality_issues?.length
+                !canEdit || invalidSet
               }
               onClick={() => {
                 setSelected(proposal.proposal_id);
@@ -676,6 +738,7 @@ function ProposalEditor({
           点击“重新选角”，根据当前剧情整理三套方案。
         </p>
       )}
+      {!canEdit && <p className="text-xs text-amber-500">{disabledReason || (data.prerequisite_error ? "请先补齐原文来源，再重新选角。" : data.draft_stale ? "方案已过期，请先重新选角。" : "当前没有可用的选角版本，请先点击重新选角。")}</p>}
       <div className="flex flex-wrap items-center gap-3">
         <Button
           variant="outline"
@@ -684,8 +747,7 @@ function ProposalEditor({
             !dirty ||
             !selected ||
             invalidSet ||
-            blanks ||
-            !!selectedProposal?.quality_issues?.length
+            blanks
           }
           onClick={() =>
             selected &&
@@ -713,8 +775,7 @@ function ProposalEditor({
             !canEdit ||
             dirty ||
             !selected ||
-            invalidSet ||
-            !!selectedProposal?.quality_issues?.length
+            invalidSet
           }
           onClick={() =>
             data.revision &&

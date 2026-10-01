@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import pytest
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -298,7 +299,8 @@ def test_detail_missing_is_404_and_invalid_activation_is_409(monkeypatch):
     assert conflict.json()["detail"]["code"] == "DIRECTOR_PLAN_ACTIVATION_CONFLICT"
 
 
-def test_activation_allows_explicit_superseded_restore(monkeypatch):
+@pytest.mark.parametrize('refresh_failure', [False, True])
+def test_activation_allows_explicit_superseded_restore(monkeypatch, refresh_failure):
     restored = _revision(status="active")
 
     class Store:
@@ -307,13 +309,27 @@ def test_activation_allows_explicit_superseded_restore(monkeypatch):
             return restored
 
     client, calls, *_ = _client(monkeypatch, store=Store())
+    from novelvideo.api.routes import director_plans
+    refreshed = []
+    async def refresh(ctx, episode, revision_id):
+        refreshed.append((episode, revision_id))
+        if refresh_failure:
+            raise ValueError('catalog changed')
+        return 0
+    monkeypatch.setattr(director_plans, '_refresh_plan_references', refresh)
 
     response = client.post(
         "/api/v1/projects/project-1/episodes/2/director-plans/old-revision/activate"
     )
 
+    if refresh_failure:
+        assert response.status_code == 409
+        assert response.json()['detail']['active_revision_id'] == 'revision-1'
+        assert response.json()['detail']['code'] == 'DIRECTOR_PLAN_ACTIVATED_REFERENCE_REFRESH_REQUIRED'
+        return
     assert response.status_code == 200
     assert response.json()["data"]["status"] == "active"
+    assert refreshed == [(2, 'revision-1')]
     assert calls == [("project-1", "editor")]
 
 
@@ -326,6 +342,23 @@ def test_viewer_cannot_create_or_activate(monkeypatch):
     assert client.post(
         "/api/v1/projects/project-1/episodes/2/director-plans/r/activate"
     ).status_code == 403
+
+
+def test_atomic_requirement_edit_creates_one_child(monkeypatch):
+    parent = _review_revision()
+    saved = []
+    store = SimpleNamespace(load=lambda *args: parent, save=saved.append)
+    client, *_ = _client(monkeypatch, store=store)
+    response = client.post(
+        "/api/v1/projects/project-1/episodes/2/director-plans/revision-2/edits",
+        json={"kind": "update_shots", "updates": [
+            {"kind": "update_shot", "shot_id": "shot-1", "asset_requirements": []},
+            {"kind": "update_shot", "shot_id": "shot-2", "asset_requirements": []},
+        ]},
+    )
+    assert response.status_code == 201, response.text
+    assert len(saved) == 1
+    assert response.json()["data"]["parent_revision_id"] == parent.revision_id
 
 
 def test_edit_creates_immutable_child_revision(monkeypatch):

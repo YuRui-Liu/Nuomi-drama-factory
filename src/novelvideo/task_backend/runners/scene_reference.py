@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 from datetime import datetime, timezone
@@ -24,6 +25,15 @@ _SCENE_REFERENCE_FILENAMES = {
     "spatial_layout": "spatial_layout.png",
     "reverse_master": "reverse_master.png",
 }
+
+
+def _scene_authoring_context(ctx: ProjectContext, scene, base_scene=None) -> str:
+    from novelvideo.script_creation.asset_context import load_asset_authoring_context
+
+    contexts = load_asset_authoring_context(Path(ctx.state_dir) / "data.db", "scene", scene.name)
+    if base_scene is not None and base_scene.name != scene.name:
+        contexts += load_asset_authoring_context(Path(ctx.state_dir) / "data.db", "scene", base_scene.name)
+    return json.dumps(contexts, ensure_ascii=False) if contexts else ""
 
 
 def _scene_reference_version_path(
@@ -272,6 +282,7 @@ async def _run_scene_reference_asset(
         output_path = await generate_scene_reference_image(
             project_dir=output_dir,
             scene=scene,
+            source_context=_scene_authoring_context(ctx, scene, base_scene),
             kind=kind,  # type: ignore[arg-type]
             provider=provider,
             model=model,

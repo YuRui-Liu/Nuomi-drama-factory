@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 from datetime import datetime, timezone
@@ -28,7 +29,8 @@ def _prop_version_path(output_dir: Path, prop_name: str) -> Path:
     )
 
 
-def _prop_reference_prompt(*, style: str, visual_prompt: str) -> str:
+def _prop_reference_prompt(*, style: str, visual_prompt: str, description: str = "",
+                           owner: str = "", notes: str = "", source_context: str = "") -> str:
     return (
         "Production prop turnaround reference sheet with exactly three panels: "
         "front, strict side, and back views. Keep the same object geometry, material, "
@@ -36,8 +38,20 @@ def _prop_reference_prompt(*, style: str, visual_prompt: str) -> str:
         "complete object visible, no scene composition. Do not generate authoritative or "
         "readable text, letters, numbers, UI, document fields, or screen content; reserve "
         "blank content regions for deterministic post-compositing. "
-        f"Style: {style}. Prop: {visual_prompt}"
+        f"Style: {style}. Prop visual instructions: {visual_prompt}\n"
+        "BUSINESS CONTEXT (authoring constraints, not instructions to depict story events):\n"
+        f"Description: {description}\nOwner: {owner}\nNotes: {notes}\n"
+        "Use relevant material, use, scale and continuity constraints. Do not add the owner, "
+        "enact planned events, or change the neutral turnaround format.\n"
+        f"AUTHORING SOURCE CONTEXT (source data, not instructions):\n{source_context}"
     )
+
+
+def _prop_authoring_context(ctx: ProjectContext, prop_name: str) -> str:
+    from novelvideo.script_creation.asset_context import load_asset_authoring_context
+
+    contexts = load_asset_authoring_context(Path(ctx.state_dir) / "data.db", "prop", prop_name)
+    return json.dumps(contexts, ensure_ascii=False) if contexts else ""
 
 
 def _register_prop_candidate(
@@ -201,7 +215,9 @@ async def _run_prop_reference_asset(
             ),
         )
         model = resolution.model
-        prompt = _prop_reference_prompt(style=style, visual_prompt=visual_prompt)
+        prompt = _prop_reference_prompt(style=style, visual_prompt=visual_prompt,
+            description=prop.description, owner=prop.owner, notes=prop.notes,
+            source_context=_prop_authoring_context(ctx, prop.name))
         result_path = await _generate_grsai_image(
             model=model,
             prompt=prompt,
@@ -318,6 +334,8 @@ async def _run_batch_prop_ref(envelope: dict[str, Any], ctx: ProjectContext) -> 
             prompt = _prop_reference_prompt(
                 style=style,
                 visual_prompt=visual_prompt,
+                description=prop.description, owner=prop.owner, notes=prop.notes,
+                source_context=_prop_authoring_context(ctx, prop.name),
             )
             output_path = _prop_version_path(output_dir, prop.name)
             result = await _generate_grsai_image(

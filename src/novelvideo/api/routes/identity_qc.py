@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, StrictBool
 
 from novelvideo.api.auth import get_api_user
-from novelvideo.api.deps import resolve_project_scope
+from novelvideo.api.deps import resolve_project_scope, make_sqlite_store_for_context
+from novelvideo.character_visual.species import confirmed_nonhuman_species
 from novelvideo.character_visual.identity_sheet import resolve_identity_sheet_style_family
 from novelvideo.character_visual.identity_sheet_qc import identity_sheet_qc_policy_fingerprint
 from novelvideo.character_visual.recheck import prepare_recheck, recheck_cache
@@ -23,6 +24,22 @@ router = APIRouter()
 class IdentityRecheckRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     retry: StrictBool = False
+
+
+async def _current_identity_facts(ctx, name: str, identity_id: str) -> dict:
+    store = await make_sqlite_store_for_context(ctx)
+    try:
+        character = store.get_character(name)
+        if character is None:
+            raise KeyError(name)
+        identity = next((item for item in character.identities if item.identity_id == identity_id), None)
+        if identity is None:
+            raise KeyError(identity_id)
+        from novelvideo.character_visual.identity_constraints import effective_identity_appearance
+        return {"expected_appearance": effective_identity_appearance(ctx.output_dir, character, identity),
+                "nonhuman_species": confirmed_nonhuman_species(character)}
+    finally:
+        await store.close()
 
 
 def _route_and_style(ctx):
@@ -44,6 +61,8 @@ async def recheck_identity(project: str, name: str, identity_id: str, version_id
     try:
         target = prepare_recheck(ctx, character_name=name, identity_id=identity_id, version_id=version_id)
         route, style, fingerprint, family = _route_and_style(ctx)
+        facts = await _current_identity_facts(ctx, name, identity_id)
+        fingerprint = hashlib.sha256(json.dumps([fingerprint, facts], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         cached = recheck_cache(ctx, target, fingerprint)
     except KeyError as exc:
         raise HTTPException(404, "identity version not found") from exc
@@ -64,7 +83,7 @@ async def recheck_identity(project: str, name: str, identity_id: str, version_id
     # between preflight and the backend's own enqueue-time snapshot resolution.
     queued = await get_task_backend().enqueue_project_task(
         ctx, task_type="identity_sheet_qc", episode=0, scope=scope,
-        payload={"target": target, "style": style, "style_family": family, "fingerprint": fingerprint,
+        payload={"target": target, "style": style, "style_family": family, "fingerprint": fingerprint, **facts,
                  "qc_route": route.model_dump(mode="json"),
                  "agent_route_override": route.model_dump(exclude={"source", "task_role"}),
                  "display_name": f"身份图重检 · {name}"},

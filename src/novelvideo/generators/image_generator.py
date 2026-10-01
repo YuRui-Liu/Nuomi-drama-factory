@@ -1347,6 +1347,7 @@ async def generate_identity_image_unified(
     identity_name: str = "",
     raise_on_error: bool = False,
     structured: bool = False,
+    nonhuman_species: str = "",
 ) -> bool | dict:
     """基于角色基准图生成身份参考图（Identity Locking）。
 
@@ -1413,6 +1414,7 @@ async def generate_identity_image_unified(
                 usage_task_type=usage_task_type,
                 usage_scope=usage_scope,
                 identity_name=identity_name,
+                nonhuman_species=nonhuman_species,
             )
             if dry_run:
                 return {
@@ -1476,6 +1478,7 @@ async def generate_identity_image_unified(
                 usage_task_type=usage_task_type,
                 usage_scope=usage_scope,
                 identity_name=identity_name,
+                nonhuman_species=nonhuman_species,
             )
             if dry_run:
                 return {
@@ -1518,6 +1521,7 @@ async def generate_identity_image_unified(
                 usage_task_type=usage_task_type,
                 usage_scope=usage_scope,
                 identity_name=identity_name,
+                nonhuman_species=nonhuman_species,
             )
             if dry_run:
                 return {

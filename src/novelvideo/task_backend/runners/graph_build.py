@@ -67,10 +67,18 @@ async def _run_build_characters(ctx: ProjectContext) -> dict[str, Any]:
         if is_structured_pipeline(ctx.state_dir):
             from novelvideo.structured_builders import build_characters_structured
 
+            current_progress = 0.0
+
+            def report(progress: float | None, message: str) -> None:
+                nonlocal current_progress
+                if progress is not None:
+                    current_progress = max(current_progress, progress)
+                _progress(ctx, "build_characters", current_progress, message)
+
             build_result = await build_characters_structured(
                 store,
-                on_progress=lambda progress, task: _progress(ctx, "build_characters", progress, task),
-                on_log=lambda message: _progress(ctx, "build_characters", 0.0, message),
+                on_progress=report,
+                on_log=lambda message: report(None, message),
             )
             if hasattr(build_result, "as_task_result"):
                 return build_result.as_task_result(

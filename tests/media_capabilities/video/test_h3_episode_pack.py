@@ -263,6 +263,41 @@ class FakeAgent:
         return SimpleNamespace(output=self.outputs.pop(0))
 
 
+@pytest.mark.asyncio
+async def test_saved_failure_plan_is_regated_without_new_model_request(tmp_path):
+    value = _input().model_copy(update={"segments": (_input().segments[0],)})
+    entry = value.segments[0]
+    agent = FakeAgent([])
+    input_hash = episode_pack.visual_input_hash(
+        episode_pack._segment_input_hash(value, entry), (), agent
+    )
+    path = episode_pack._cache_path(tmp_path, entry.segment_id, input_hash)
+    episode_pack._save_failure(path.with_suffix(".failure"), H3PromptQualityReport(
+        passed=False, issues=(H3PromptQualityIssue(code="old_compiler_error", message="old"),)
+    ), _plan())
+    result = await H3EpisodePackOptimizer(agent, cache_dir=tmp_path).optimize(value)
+    assert result.segments[0].quality_report.passed
+    assert result.segments[0].cache_hit
+    assert agent.calls == []
+
+
+@pytest.mark.asyncio
+async def test_text_failure_recovers_original_recorded_plan_when_repair_regressed(tmp_path):
+    value = _input().model_copy(update={"segments": (_input().segments[0],)})
+    entry = value.segments[0]
+    agent = FakeAgent([_pack(((entry.segment_id, _plan()),))])
+    optimizer = H3EpisodePackOptimizer(agent, tmp_path)
+    await optimizer._run_recorded(episode_pack._episode_task(value))
+    input_hash = episode_pack.visual_input_hash(episode_pack._segment_input_hash(value, entry), (), agent)
+    path = episode_pack._cache_path(tmp_path, entry.segment_id, input_hash)
+    episode_pack._save_failure(path.with_suffix(".failure"), H3PromptQualityReport(
+        passed=False, issues=(H3PromptQualityIssue(code="unknown_moving_entity", message="bad repair"),)), _invalid_entity_plan())
+    result = await optimizer.optimize(value)
+    assert result.segments[0].quality_report.passed
+    assert result.segments[0].cache_hit
+    assert len(agent.calls) == 1
+
+
 def _pack(plans, *, revision="rev-1"):
     return H3EpisodePromptPack(
         episode=1,
@@ -293,6 +328,7 @@ def test_episode_optimizer_factory_uses_prompted_output_without_tool_choice(
 
     assert isinstance(captured["output_type"], PromptedOutput)
     assert captured["output_type"].outputs is H3EpisodePromptPack
+    assert captured["retries"] == {"tools": 0, "output": 0}
     assert "tool_choice" not in captured
 
     episode_pack.create_h3_episode_pack_optimizer(
@@ -364,7 +400,7 @@ def test_episode_task_distinguishes_internal_and_business_shot_ids():
     assert "moving_entities" in task
     assert "target=characters" in task
     assert "ACTION" in task and "PHYSICS" in task
-    assert "active character or visible held prop" in task
+    assert "operated fixed mechanisms" in task
     assert "structured dialogue line" in task
 
 
@@ -584,7 +620,7 @@ def test_episode_pack_does_not_repair_missing_shot_id():
 @pytest.mark.asyncio
 async def test_episode_pack_calls_once_then_repairs_only_bad_segment(tmp_path):
     initial = _pack(
-        (("seg-1", _plan()), ("seg-2", _plan(vague=True)), ("seg-3", _plan()))
+        (("seg-1", _plan()), ("seg-2", _invalid_entity_plan()), ("seg-3", _plan()))
     )
     repair = _pack((("seg-2", _plan()),))
     agent = FakeAgent((initial, repair))
@@ -600,17 +636,73 @@ async def test_episode_pack_calls_once_then_repairs_only_bad_segment(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_episode_pack_any_bad_segment_with_no_revision_writes_no_cache(tmp_path):
+async def test_episode_pack_bad_segment_preserves_successful_segment_cache(tmp_path):
     initial = _pack(
-        (("seg-1", _plan()), ("seg-2", _plan(vague=True)), ("seg-3", _plan()))
+        (("seg-1", _plan()), ("seg-2", _invalid_entity_plan()), ("seg-3", _plan()))
     )
 
-    with pytest.raises(H3PromptQualityError, match="vague_action"):
+    with pytest.raises(H3PromptQualityError, match="style_prefix_mismatch"):
         await H3EpisodePackOptimizer(
             FakeAgent((initial,)), tmp_path, quality_revisions=0
         ).optimize(_input())
 
-    assert list(tmp_path.glob("*.json")) == []
+    assert len(list(tmp_path.glob("*.json"))) == 1
+
+
+@pytest.mark.asyncio
+async def test_interrupted_planning_is_not_resubmitted_on_restart(tmp_path):
+    from novelvideo.media_capabilities.video.h3_prompt_optimizer import H3PromptOptimizationUnavailable
+    class InterruptedAgent:
+        calls = 0
+        async def run(self, task):
+            self.calls += 1
+            raise TimeoutError("response unknown")
+    agent = InterruptedAgent()
+    with pytest.raises(TimeoutError):
+        await H3EpisodePackOptimizer(agent, tmp_path).optimize(_input())
+    with pytest.raises(H3PromptOptimizationUnavailable, match="H3_PLANNING_OUTCOME_UNKNOWN"):
+        await H3EpisodePackOptimizer(agent, tmp_path).optimize(_input())
+    assert agent.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_incomplete_planning_retry_is_bounded_and_recorded(tmp_path):
+    from novelvideo.media_capabilities.video.h3_prompt_optimizer import H3PromptOptimizationUnavailable
+    class InterruptedAgent:
+        calls = 0
+        async def run(self, task):
+            self.calls += 1
+            raise TimeoutError('response unknown')
+    agent = InterruptedAgent()
+    for retry in (False, True):
+        with pytest.raises(TimeoutError):
+            await H3EpisodePackOptimizer(agent, tmp_path, retry_incomplete=retry).optimize(_input())
+    with pytest.raises(H3PromptOptimizationUnavailable, match='H3_PLANNING_OUTCOME_UNKNOWN'):
+        await H3EpisodePackOptimizer(agent, tmp_path, retry_incomplete=True).optimize(_input())
+    assert agent.calls == 2
+    import json
+    record = json.loads(next((tmp_path/'requests').glob('*.json')).read_text())
+    assert record['request_count'] == 2
+    assert record['explicit_retry'] is True
+
+
+@pytest.mark.asyncio
+async def test_text_cache_separates_runtime_models(tmp_path):
+    plans = _pack(tuple((entry.segment_id, _plan()) for entry in _input().segments))
+    agent = FakeAgent((plans, plans))
+    agent.model = "model-a"
+    await H3EpisodePackOptimizer(agent, tmp_path).optimize(_input())
+    agent.model = "model-b"
+    await H3EpisodePackOptimizer(agent, tmp_path).optimize(_input())
+    assert len(agent.calls) == 2
+
+
+def test_segment_hash_tracks_neighbor_context():
+    value = _input()
+    original = episode_pack._segment_input_hash(value, value.segments[0])
+    changed = value.model_copy(update={"segments": (value.segments[0],
+        value.segments[1].model_copy(update={"summary": "Changed next action"}), *value.segments[2:])})
+    assert episode_pack._segment_input_hash(changed, changed.segments[0]) != original
 
 
 @pytest.mark.asyncio
@@ -625,7 +717,9 @@ async def test_quality_repair_can_replace_nonempty_rejected_physics(tmp_path):
     agent = FakeAgent((initial, _pack((("seg-1", good),))))
     result = await H3EpisodePackOptimizer(agent, tmp_path, quality_revisions=1).optimize(value)
     assert result.segments[0].quality_report.passed
-    assert result.segments[0].plan.rigid_prompt.physics == good.rigid_prompt.physics
+    assert result.segments[0].plan.rigid_prompt.physics == bad.rigid_prompt.physics
+    assert len(agent.calls) == 1
+    assert "physics_incomplete" in result.segments[0].quality_report.codes
     assert result.segments[0].plan.rigid_prompt.lighting == good.rigid_prompt.lighting
 
 
@@ -666,7 +760,7 @@ async def test_episode_pack_cache_key_tracks_revision_style_frame_and_compiler(
 
     assert len(agent.calls) == 2
     assert all(not item.cache_hit for item in first.segments)
-    assert {item.format_version for item in first.segments} == {4}
+    assert {item.format_version for item in first.segments} == {5}
     assert all(item.cache_hit for item in cached.segments)
     assert all(not item.cache_hit for item in changed.segments)
     assert {item.input_hash for item in first.segments}.isdisjoint(
@@ -682,6 +776,32 @@ def test_episode_cache_hash_tracks_quality_version(monkeypatch):
     monkeypatch.setattr(episode_pack, "H3_PROMPT_QUALITY_VERSION", 999)
 
     assert episode_pack._segment_input_hash(value, entry) != before
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reported_id", ["1", "unrelated-shot"])
+@pytest.mark.parametrize("source_count", [1, 2])
+async def test_visual_conflict_single_source_normalizes_only_local_plan_id(tmp_path, reported_id, source_count):
+    from tests.media_capabilities.video.test_h3_storyboard_context import picture
+    value = _input().model_copy(update={"segments": (_input().segments[0],)})
+    entry = value.segments[0]
+    image = picture(1, segment=entry.segment_id, group=entry.group_id)
+    images = tuple(picture(i, segment=entry.segment_id, group=entry.group_id)
+                   for i in range(1, source_count + 1))
+    output = dict(episode=value.episode, director_revision_id=value.director_revision_id,
+        segments=[dict(segment_id=entry.segment_id, decision=dict(status="conflict",
+            observations=[dict(image_label=img.label, framing="wide", orientation="back",
+                               spatial_relations="left") for img in images],
+            conflicts=[dict(image_label=image.label, shot_id=reported_id, field="position",
+                            observed="right", required="left")], plan=_plan()))])
+    optimizer = H3EpisodePackOptimizer(FakeAgent([output]), tmp_path)
+    if reported_id == "unrelated-shot" or source_count > 1:
+        with pytest.raises(ValueError, match="mapping mismatch"):
+            await optimizer._visual_decisions(value, "task", images)
+    else:
+        result = await optimizer._visual_decisions(value, "task", images)
+        assert result[entry.segment_id].conflicts[0].shot_id == image.shot_id
+        assert result[entry.segment_id].conflicts[0].observed == "right"
+
+
 @pytest.mark.asyncio
 async def test_visual_pack_caches_observations_and_sends_actual_images(tmp_path):
     from tests.media_capabilities.video.test_h3_storyboard_context import picture
@@ -705,6 +825,39 @@ async def test_visual_pack_caches_observations_and_sends_actual_images(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_visual_failure_replays_recorded_evidence_without_model_call(tmp_path):
+    from tests.media_capabilities.video.test_h3_storyboard_context import picture
+    value = _input().model_copy(update={"segments": (_input().segments[0],)})
+    entry = value.segments[0]
+    image = picture(1, segment=entry.segment_id, group=entry.group_id)
+    output = dict(episode=value.episode, director_revision_id=value.director_revision_id,
+        segments=[dict(segment_id=entry.segment_id, decision=dict(status="ready",
+            required_starting_facts_status="verified", observations=[dict(image_label=image.label,
+            framing="wide", orientation="back", spatial_relations="left of door")],
+            conflicts=[], plan=_plan()))])
+    agent = FakeAgent([output])
+    optimizer = H3EpisodePackOptimizer(agent, tmp_path)
+    await optimizer._visual_decisions(value, episode_pack._episode_task(value), (image,))
+    input_hash = episode_pack.visual_input_hash(episode_pack._segment_input_hash(value, entry), (image,), agent)
+    path = episode_pack._cache_path(tmp_path, entry.segment_id, input_hash)
+    episode_pack._save_failure(path.with_suffix(".failure"), H3PromptQualityReport(
+        passed=False, issues=(H3PromptQualityIssue(code="old_compiler_error", message="old"),)), _plan())
+    result = await optimizer.optimize(value, storyboard_images=(image,))
+    assert len(agent.calls) == 1
+    assert result.segments[0].cache_hit
+    assert result.segments[0].storyboard_decision.observations[0].image_label == image.label
+
+
+@pytest.mark.asyncio
+async def test_replay_only_missing_request_never_calls_model(tmp_path):
+    agent = FakeAgent([])
+    optimizer = H3EpisodePackOptimizer(agent, tmp_path)
+    with pytest.raises(episode_pack.H3PromptOptimizationUnavailable):
+        await optimizer._run_recorded("missing historical request", replay_only=True)
+    assert agent.calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("blocked", [False, True])
 async def test_visual_pack_repair_keeps_images_and_blocks_conflict(tmp_path, blocked):
     from tests.media_capabilities.video.test_h3_storyboard_context import picture
@@ -722,7 +875,7 @@ async def test_visual_pack_repair_keeps_images_and_blocks_conflict(tmp_path, blo
                 conflicts=[dict(image_label=image.label, shot_id=image.shot_id, field="orientation",
                                 observed="back", required="front")] if conflict else []))])
 
-    agent = FakeAgent([output(_plan(vague=True)), output(_plan(), conflict=blocked)])
+    agent = FakeAgent([output(_invalid_entity_plan()), output(_plan(), conflict=blocked)])
     optimizer = H3EpisodePackOptimizer(agent, tmp_path)
     if blocked:
         with pytest.raises(StoryboardPromptBlocked):
@@ -761,3 +914,9 @@ async def test_visual_pack_batches_whole_segments_and_rejects_response_outside_b
     with pytest.raises(ValueError, match="coverage"):
         await H3EpisodePackOptimizer(wrong, tmp_path / "bad").optimize(value, storyboard_images=images)
     assert not list((tmp_path / "bad").glob("*.json"))
+
+
+def _invalid_entity_plan():
+    plan = _plan()
+    return plan.model_copy(update={"rigid_prompt": plan.rigid_prompt.model_copy(update={
+        "style_prefix": "unrequested live-action photography"})})

@@ -1,6 +1,54 @@
 from types import SimpleNamespace
+import json
 
 import pytest
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["entities", "events", "relations"])
+async def test_candidate_serializes_merged_conflicts_without_losing_values(kind):
+    from novelvideo.episode_graph.merge import merge_extractions
+    from novelvideo.episode_graph.models import (
+        EpisodeGraphExtraction, GraphEntity, GraphEvent, GraphRelation,
+    )
+    from novelvideo.task_backend.runners.episode_graph import CogneeGraphCandidate
+
+    factories = {
+        "entities": lambda **kw: GraphEntity(name="角色", kind="character", **kw),
+        "events": lambda **kw: GraphEvent(episode=1, ordinal=1, description="会面", **kw),
+        "relations": lambda **kw: GraphRelation(
+            source_key="character:角色", target_key="scene:大厅",
+            relation_type="appears_in", episode=1, **kw,
+        ),
+    }
+    extractions = [
+        EpisodeGraphExtraction(group_key=f"g{i}", **{kind: [factories[kind](
+            attributes={"description": description, "tags": tags, "state": None},
+            source_episodes={i},
+        )]})
+        for i, (description, tags) in enumerate(
+            [("甲", ["a", "b"]), ("乙", ["c"])], start=1
+        )
+    ]
+    merged = merge_extractions(extractions)
+    captured = []
+
+    class Graph:
+        async def add_nodes(self, nodes):
+            captured.extend(node.attributes_json for node in nodes)
+
+        async def add_edges(self, edges):
+            captured.extend(edge[3]["attributes_json"] for edge in edges)
+
+    candidate = CogneeGraphCandidate(
+        shadow=object(), store=SimpleNamespace(), graph=Graph(), vector=SimpleNamespace(),
+    )
+    await getattr(candidate, f"upsert_{kind}")(getattr(merged, kind))
+    assert len(captured) == 1
+    attributes = json.loads(captured[0])
+    assert set(attributes["description"]["values"]) == {"甲", "乙"}
+    assert attributes["tags"] == {"values": [["a", "b"], ["c"]]}
+    assert attributes["state"] is None
 
 
 @pytest.mark.asyncio

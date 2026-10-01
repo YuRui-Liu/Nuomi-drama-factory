@@ -3,6 +3,7 @@ from dataclasses import asdict
 import json
 import re
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -546,6 +547,168 @@ async def put_entity(project: str, body: EntityBody, user: dict = Depends(get_ap
     service = await _entities(project, user, "editor")
     try:
         return {"ok": True, "data": await service.put(**body.model_dump())}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+class PropExtractionBody(Strict):
+    document_id: str = Field(min_length=1)
+    base_revision_id: str = Field(min_length=1)
+    client_mutation_id: str = Field(min_length=1, max_length=128)
+
+
+class PropExtractionConfirmBody(Strict):
+    base_revision_id: str = Field(min_length=1)
+    candidate_ids: list[str] = Field(min_length=1, max_length=100)
+    client_mutation_id: str = Field(min_length=1, max_length=128)
+
+
+class AssetExtractionBody(PropExtractionBody):
+    asset_type: Literal['character', 'scene', 'prop']
+
+
+async def _prop_extractions(project, user, role, *, generic=False):
+    from novelvideo.script_creation.prop_extraction import PropExtractionService
+    from novelvideo.script_creation.asset_extraction import AssetExtractionService
+    store, resolved = await _store(project, user, role)
+    sqlite = await make_sqlite_store_for_context(resolved.ctx)
+    await sqlite.close()
+    service = AssetExtractionService(store) if generic else PropExtractionService(store)
+    await service.initialize()
+    return service, resolved
+
+
+@router.post(PREFIX + '/prop-extractions', status_code=status.HTTP_202_ACCEPTED)
+async def create_prop_extraction(project: str, body: PropExtractionBody,
+                                user: dict = Depends(require_scope('tasks:submit'))):
+    service, resolved = await _prop_extractions(project, user, 'editor')
+    return await _submit_asset_extraction(service, resolved, body, generic=False)
+
+
+async def _submit_asset_extraction(service, resolved, body, *, generic):
+    task_type = 'script_creation_asset_extraction' if generic else 'script_creation_prop_extraction'
+    scope_prefix = 'asset-extraction' if generic else 'prop-extraction'
+    try:
+        run = await service.start(**body.model_dump())
+        if run['status'] == 'pending' and not run['task_id']:
+            try:
+                queued = await enqueue_project_task(resolved.ctx, task_type=task_type,
+                    queue_kind='default', episode=0, scope=f"{scope_prefix}:{run['id']}",
+                    payload={'project_id': str(resolved.ctx.project_id), 'run_id': run['id']})
+                run = await service.bind_task(run['id'], queued.task_state.task_id)
+            except Exception:
+                await service.fail_submission(run['id'])
+                raise
+        return {'ok': True, 'data': {**run, 'queued_task_id': run['task_id']}}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+@router.get(PREFIX + '/prop-extractions')
+async def list_prop_extractions(project: str, document_id: str | None = None,
+                               user: dict = Depends(get_api_user)):
+    service, _ = await _prop_extractions(project, user, 'viewer')
+    return {'ok': True, 'data': await service.list(document_id)}
+
+
+@router.get(PREFIX + '/prop-extractions/{run_id}')
+async def get_prop_extraction(project: str, run_id: str, user: dict = Depends(get_api_user)):
+    service, _ = await _prop_extractions(project, user, 'viewer')
+    try:
+        return {'ok': True, 'data': await service.get(run_id)}
+    except DocumentNotFound as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + '/prop-extractions/{run_id}/confirm')
+async def confirm_prop_extraction(project: str, run_id: str, body: PropExtractionConfirmBody,
+                                 user: dict = Depends(get_api_user)):
+    service, _ = await _prop_extractions(project, user, 'editor')
+    try:
+        return {'ok': True, 'data': await service.confirm(run_id, **body.model_dump())}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + '/asset-extractions', status_code=status.HTTP_202_ACCEPTED)
+async def create_asset_extraction(project: str, body: AssetExtractionBody,
+                                 user: dict = Depends(require_scope('tasks:submit'))):
+    service, resolved = await _prop_extractions(project, user, 'editor', generic=True)
+    return await _submit_asset_extraction(service, resolved, body, generic=True)
+
+
+@router.get(PREFIX + '/asset-extractions')
+async def list_asset_extractions(project: str, document_id: str | None = None,
+                                asset_type: Literal['character', 'scene', 'prop'] | None = None,
+                                user: dict = Depends(get_api_user)):
+    service, _ = await _prop_extractions(project, user, 'viewer', generic=True)
+    return {'ok': True, 'data': await service.list(document_id, asset_type=asset_type)}
+
+
+@router.get(PREFIX + '/asset-extractions/{run_id}')
+async def get_asset_extraction(project: str, run_id: str, user: dict = Depends(get_api_user)):
+    service, _ = await _prop_extractions(project, user, 'viewer', generic=True)
+    try:
+        return {'ok': True, 'data': await service.get(run_id)}
+    except DocumentNotFound as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + '/asset-extractions/{run_id}/confirm')
+async def confirm_asset_extraction(project: str, run_id: str, body: PropExtractionConfirmBody,
+                                  user: dict = Depends(get_api_user)):
+    service, _ = await _prop_extractions(project, user, 'editor', generic=True)
+    try:
+        return {'ok': True, 'data': await service.confirm(run_id, **body.model_dump())}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + '/asset-extractions/{run_id}/revalidate')
+async def revalidate_asset_extraction(project: str, run_id: str, user: dict = Depends(get_api_user)):
+    service, _ = await _prop_extractions(project, user, 'editor', generic=True)
+    try:
+        return {'ok': True, 'data': await service.revalidate(run_id)}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + '/asset-extractions/{run_id}/rollback-created')
+async def rollback_created_assets(project: str, run_id: str, user: dict = Depends(get_api_user)):
+    service, resolved = await _prop_extractions(project, user, 'editor', generic=True)
+    try:
+        return {'ok': True, 'data': await service.rollback_created(run_id, output_dir=resolved.ctx.output_dir)}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+class SceneContextLinkBody(Strict):
+    source_asset_id: str
+    target_asset_ids: list[str] = Field(min_length=1, max_length=100)
+    document_id: str
+    base_revision_id: str
+    client_mutation_id: str = Field(min_length=1)
+
+
+async def _scene_context_links(project, user, role):
+    from novelvideo.script_creation.context_links import SceneContextLinks
+    service, _ = await _prop_extractions(project, user, role, generic=True)
+    links = SceneContextLinks(service.store)
+    await links.initialize()
+    return links
+
+
+@router.get(PREFIX + '/scene-context-links')
+async def list_scene_context_links(project: str, target_asset_id: str, user: dict = Depends(get_api_user)):
+    service = await _scene_context_links(project, user, 'viewer')
+    return {'ok': True, 'data': await service.list(target_asset_id)}
+
+
+@router.post(PREFIX + '/scene-context-links')
+async def associate_scene_context(project: str, body: SceneContextLinkBody, user: dict = Depends(get_api_user)):
+    service = await _scene_context_links(project, user, 'editor')
+    try:
+        return {'ok': True, 'data': await service.associate(**body.model_dump())}
     except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
         raise _error(exc) from exc
 

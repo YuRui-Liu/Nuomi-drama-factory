@@ -103,10 +103,19 @@ class H3SubjectBlocking(_H3RigidModel):
     held_props: tuple[str, ...] = ()
 
 
+class H3PropAttachment(_H3RigidModel):
+    prop_id: str = Field(min_length=1)
+    anchor: str = Field(min_length=1)
+    attachment_point: str = Field(min_length=1)
+    start_frame: int = Field(ge=0)
+    end_frame: int = Field(gt=0)
+
+
 class H3SpatialBlockingPlan(_H3RigidModel):
     shot_id: str = Field(min_length=1)
     summary: str = Field(min_length=1)
     subjects: tuple[H3SubjectBlocking, ...]
+    prop_attachments: tuple[H3PropAttachment, ...] = ()
 
 
 class H3FormatPlan(_H3RigidModel):

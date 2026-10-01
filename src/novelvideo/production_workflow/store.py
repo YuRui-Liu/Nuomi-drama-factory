@@ -359,9 +359,6 @@ class ProductionWorkflowStore:
                 or not audit.get('candidate_id') or not audit.get('snapshot')
                 or not audit.get('command_hash')):
             raise ValueError('explicit casting adoption audit required')
-        if not selected.qc_passed and (not str(audit.get('override_reason') or '').strip()
-                or not set(selected.soft_issues).issubset(set(audit.get('acknowledged_findings', [])))):
-            raise ValueError('casting findings require explicit acknowledgement and reason')
         previous = slot.current_version_id
         if previous and previous != version_id and previous in versions:
             versions[previous] = versions[previous].model_copy(update={'adoption_status': AdoptionStatus.SUPERSEDED})

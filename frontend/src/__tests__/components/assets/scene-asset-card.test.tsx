@@ -95,6 +95,22 @@ function renderCard(scene: SceneAsset, overrides = {}) {
   return handlers;
 }
 
+it("focuses one reference slot in workspace mode and preserves each slot's actions", () => {
+  const handlers = renderCard({ name: "Hall", scene_type: "interior", master_url: "/master.png", reverse_master_url: "/reverse.png", pano_url: "/pano.png" }, { view: "references" });
+  expect(screen.getByRole("tab", { name: "源图" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("button", { name: "上传/替换源图" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "重生 reverse" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", { name: "reverse" }));
+  fireEvent.click(screen.getByRole("button", { name: "重生 reverse" }));
+  expect(handlers.onGenerateReverse).toHaveBeenCalledOnce();
+  expect(screen.queryByRole("button", { name: "上传/替换源图" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", { name: "360 全景" }));
+  fireEvent.click(screen.getByRole("button", { name: "上传/替换 360" }));
+  fireEvent.click(screen.getByRole("button", { name: "删除 360" }));
+  expect(handlers.onUploadPano).toHaveBeenCalledOnce();
+  expect(handlers.onDeletePano).toHaveBeenCalledOnce();
+});
+
 describe("SceneAssetCard", () => {
   it("renders master, 360, and active Director World controls", () => {
     const handlers = renderCard({

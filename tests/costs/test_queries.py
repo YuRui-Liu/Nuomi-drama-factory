@@ -41,6 +41,17 @@ def test_rounding_timezone_and_covered_zeros(ledger):
     assert result['summary']['complete']
     json.dumps(result)
 
+
+def test_native_credits_only_sum_measured_submitted_project_usage(ledger):
+    add(ledger, 'actual', 'unpriced', None, usage={'credit': '1.25'}, usage_source='provider')
+    add(ledger, 'actual2', 'unpriced', None, usage={'credit': '0.15'}, usage_source='provider')
+    add(ledger, 'request', 'unpriced', None, usage={'credit': '99'}, usage_source='request')
+    add(ledger, 'foreign', 'unpriced', None, project_id='other', usage={'credit': '99'}, usage_source='provider')
+    add(ledger, 'unsent', 'unpriced', None, submission_status='pending', usage={'credit': '99'}, usage_source='provider')
+    result = snap(ledger)
+    assert result['measured_credits'] == [{'provider': 'v', 'account_id': 'a', 'credit': '1.40'}]
+    assert result['summary']['priced_count'] == 0
+
 def test_priced_count_distinguishes_confirmed_zero_from_unsent(ledger):
     add(ledger, 'unsent', micros=0, submission_status='failed')
     assert snap(ledger)['summary']['priced_count'] == 0
@@ -152,3 +163,23 @@ def test_detail_keeps_current_and_revisions_in_one_read_transaction(ledger, monk
     applied = [revision for revision in detail['revisions'] if revision['applied']]
     assert detail['current_cost']['value'] == applied[-1]['value']
     assert detail['current_cost']['amount_cents'] == 100
+
+
+def test_runninghub_is_settled_in_credits_without_currency_conversion(ledger):
+    for identity, usage in [('rh-paid', {'credit': '56'}), ('rh-zero', {'credit': '0'}), ('rh-unknown', {})]:
+        ledger.create_attempt(dict(attempt_id=identity, project_id='p', provider='runninghub',
+            account_id='rh', model='workflow', media_type='video', occurred_at=START,
+            submission_status='submitted', usage_source='provider', usage=usage))
+    add(ledger, 'cash', micros=1000000)
+    query = CostQueries(ledger)
+    result = snap(ledger)
+    assert result['summary']['unpriced_count'] == 1
+    assert result['summary']['native_credit_count'] == 2
+    assert result['summary']['native_credit_total'] == '56'
+    assert result['summary']['total_cents'] == 100
+    assert result['summary']['cny_attempt_count'] == 1
+    assert {r['attempt_id'] for r in query.entries('p', status='unpriced')['entries']} == {'rh-unknown'}
+    known = query.entries('p', channel='runninghub', status='confirmed')['entries']
+    assert len(known) == 2
+    assert all(r['billing']['unit'] == 'RH_CREDIT' and r['amount_cents'] is None for r in known)
+    assert query.entry_detail('p', 'rh-paid')['current_cost']['billing'] == dict(unit='RH_CREDIT', amount='56', status='confirmed')

@@ -26,42 +26,8 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { TaskListSkeleton } from "@/components/skeletons";
 import { cn } from "@/lib/utils";
-import { stageForTaskType } from "@/lib/episode-stage-registry";
-import { TASK_TYPES } from "@/lib/task-types";
+import { taskDeepLink } from "@/lib/task-navigation";
 import type { Task, TaskStatus } from "@/types/task";
-
-// Map a backend task_type → the most relevant FE route under a project.
-function taskDeepLink(task: Task): string | null {
-  const { episode, task_type } = task;
-  const project = task.project_id ?? task.project;
-
-  // Project-level tasks (no episode)
-  if (task_type === TASK_TYPES.BUILD_CHARACTERS) {
-    return `/projects/${project}/characters`;
-  }
-  if (task_type === TASK_TYPES.INGEST_FAST) {
-    return `/projects/${project}/ingest`;
-  }
-  if (task_type === TASK_TYPES.BUILD_EPISODES) {
-    return `/projects/${project}/episodes`;
-  }
-  if (task_type === TASK_TYPES.CHARACTER_PORTRAIT) {
-    return `/projects/${project}/characters`;
-  }
-  if (
-    task_type === TASK_TYPES.IDENTITY_IMAGE ||
-    task_type === TASK_TYPES.IDENTITY_PORTRAIT
-  ) {
-    return `/projects/${project}/characters`;
-  }
-
-  if (!episode || episode <= 0) return null;
-
-  const base = `/projects/${project}/episodes/${episode}`;
-  const stage = stageForTaskType(task_type);
-  if (stage) return `${base}${stage.routeSegment}`;
-  return base; // unknown task type — at least land on the episode shell
-}
 
 const STATUS_KEYS: Record<TaskStatus, string> = {
   submitting: "tasks.status.submitting",
@@ -194,7 +160,7 @@ function TaskRow({
         <div className="flex shrink-0 gap-1" onClick={(e) => e.stopPropagation()}>
           {/* Deep link to the task's owning page */}
           {deepLink && (
-            <Button variant="ghost" size="icon-sm" render={<Link to={deepLink} />}>
+            <Button aria-label="查看任务结果" variant="ghost" size="icon-sm" render={<Link to={deepLink} />}>
               <ExternalLink className="size-3.5" />
             </Button>
           )}

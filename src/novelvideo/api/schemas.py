@@ -8,6 +8,8 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from novelvideo.models import SceneRef
 from novelvideo.freezone.slots import PushTarget
 from novelvideo.shot_continuity.models import H3RequestedMode
+from novelvideo.media_capabilities.tts.models import VoiceSpec
+from novelvideo.character_voice_facts import VoiceFacts
 
 ProjectStatus = Literal["active", "archived", "deleted"]
 ProjectStatusFilter = Literal["all", "active", "archived", "deleted", "visible"]
@@ -437,7 +439,7 @@ class CharacterCreate(BaseModel):
     is_main: bool = False
     extraction_locked: bool = False
     gender: str = ""
-    age_group: str = "youth"
+    age_group: str = ""
     description: str = ""
     face_prompt: str = ""
 
@@ -1858,6 +1860,7 @@ class CharacterUpdate(BaseModel):
     body_type: Optional[str] = None  # "纤细高挑" / "健壮魁梧" 等
     fish_voice_id: Optional[str] = None  # Fish Audio S2 声线 ID
     aliases: Optional[list[str]] = None
+    voice_facts: Optional[VoiceFacts] = None
 
 
 class CharacterExtractionLockUpdate(BaseModel):
@@ -2013,6 +2016,8 @@ class IdentityCreate(BaseModel):
     identity_name: str
     age_group: str = ""
     appearance_details: str = ""
+    face_prompt: str = ""
+    body_type: str = ""
 
 
 class IdentityImageGenRequest(BaseModel):
@@ -2042,9 +2047,12 @@ class CharacterVoiceRecordRequest(BaseModel):
 
 
 class CharacterVoiceDesignRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     voice_description: str = ""
     audition_text: str = ""
     language: str = "Chinese"
+    voice_spec: VoiceSpec | None = None
 
 
 class NarratorVoiceCopyRequest(BaseModel):

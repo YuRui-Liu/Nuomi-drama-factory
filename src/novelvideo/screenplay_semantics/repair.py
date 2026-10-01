@@ -25,6 +25,7 @@ from novelvideo.screenplay_semantics.repair_prompts import (
     build_scene_repair_prompt,
 )
 from novelvideo.screenplay_semantics.store import ScreenplaySemanticStore
+from novelvideo.screenplay_semantics.parser import recover_scene_fields
 from novelvideo.screenplay_semantics.validation import (
     validate_revision_beats,
     validate_scene_beats,
@@ -130,6 +131,11 @@ class ScreenplaySemanticRepairService:
             raise ValueError("max_rounds must be at least 1")
         if concurrency < 1:
             raise ValueError("concurrency must be at least 1")
+        # Old revisions retain raw labeled lines, so restore their deterministic
+        # classification without rewriting source text or changing evidence IDs.
+        base = base.model_copy(update={
+            "scenes": tuple(recover_scene_fields(scene) for scene in base.scenes),
+        })
         round_limit = min(max_rounds, 2)
         beats_by_scene = {scene.id: base.beats_for(scene.id) for scene in base.scenes}
         report = base.validation_report
@@ -233,6 +239,9 @@ class ScreenplaySemanticRepairService:
             beat
             for scene in sorted(base.scenes, key=lambda item: item.ordinal)
             for beat in beats_by_scene[scene.id]
+        )
+        report = validate_revision_beats(
+            base.scenes, final_beats, extra_issues=tuple(operational_issues.values()),
         )
         child = base.model_copy(update={
             "revision_id": str(ULID()),

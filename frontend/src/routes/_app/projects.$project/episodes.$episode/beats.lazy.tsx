@@ -548,15 +548,12 @@ function BeatsTabContent() {
   if (workbenchMode === "groups" && hasProductionGroups) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        <div className="flex h-10 shrink-0 items-center justify-end border-b border-white/[0.055] px-3">
-          <Button type="button" variant="outline" size="sm" onClick={() => setWorkbenchMode("director")}>
-            审核镜头方案
-          </Button>
-        </div>
         <div className="min-h-0 flex-1">
           <NarrativeGroupWorkbench
             project={project}
             episode={epNum}
+            view={targetSection === "video" ? "video" : "image"}
+            onReviewRequest={() => setWorkbenchMode("director")}
             onRepairBeat={
               beats.length > 0
                 ? (beatId) => {

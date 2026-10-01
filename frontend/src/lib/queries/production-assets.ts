@@ -21,6 +21,7 @@ export interface ProductionAssetQualityReport {
   checks: Record<string, unknown>;
   issues: string[];
   style_family: string | null;
+  evidence?: Record<string, string>;
 }
 
 export interface ProductionAssetGenerationMetadata extends Record<string, unknown> {

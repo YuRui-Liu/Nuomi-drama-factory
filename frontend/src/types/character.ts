@@ -27,6 +27,30 @@ export interface CharacterVoiceSlot {
 export interface CharacterVoiceSamples {
   character: string;
   slots: CharacterVoiceSlot[];
+  voice_facts?: CharacterVoiceFacts;
+  candidates?: CharacterVoiceCandidate[];
+}
+
+export interface CharacterVoiceFacts {
+  species?: string;
+  age_group?: string;
+  vocalization_mode?: "dialogue" | "nonverbal" | "both" | "none" | "unknown";
+  voice_traits?: string;
+  evidence?: string[];
+  provenance?: "source" | "human" | "unknown";
+  conflicts?: string[];
+}
+
+export interface CharacterVoiceCandidate {
+  candidate_id: string;
+  slot: string;
+  kind?: string;
+  status: string;
+  path?: string;
+  url?: string;
+  sha256?: string;
+  payload?: { voice_description?: string; voice_spec?: Record<string, unknown>; effective_language?: string };
+  report?: { status?: string; reason?: string; technical?: unknown };
 }
 
 export type CharacterAssetKind =
@@ -65,6 +89,7 @@ export interface Character {
   role?: string;
   gender?: string;
   age_group?: string;
+  voice_facts?: CharacterVoiceFacts;
   is_main?: boolean;
   face_prompt?: string;
   body_type?: string;

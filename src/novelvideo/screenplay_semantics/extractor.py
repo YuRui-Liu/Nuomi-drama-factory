@@ -43,7 +43,8 @@ SceneInvoker = Callable[[Scene, str], Awaitable[SceneBeatDraft]]
 
 
 async def _runtime_invoke(scene: Scene, prompt: str) -> SceneBeatDraft:
-    runtime = current_text_task_runtime()
+    from novelvideo.agent_teams.adapters import method_runtime
+    runtime = method_runtime('script_parser', 'screenplay_semantics', current_text_task_runtime())
     if runtime is None:
         raise RuntimeError("screenplay semantics requires a frozen text-task runtime")
     output = await runtime.run_structured(

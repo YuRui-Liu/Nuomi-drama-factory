@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from novelvideo.character_voice_facts import VoiceFacts
 from novelvideo.time_of_day import is_time_of_day_token, time_of_day_name_candidates
 from novelvideo.utils.derived_scenes import compose_derived_scene_name
 
@@ -1052,7 +1053,8 @@ class NovelCharacter(BaseModel):
         description="是否禁止自动角色提取覆盖该角色",
     )
     gender: str = Field(default="", description="性别")
-    age_group: str = Field(default="youth", description="年龄段: child/youth/middle/elder")
+    age_group: str = Field(default="", description="年龄段: child/youth/middle/elder；空表示未知")
+    voice_facts_json: str = Field(default="{}", description="原文明示或人工确认的声音事实 JSON")
     body_type: str = Field(default="", description="体型描述，如'纤细高挑'、'健壮魁梧'")
     fish_voice_id: str = Field(
         default="",
@@ -1102,6 +1104,29 @@ class NovelCharacter(BaseModel):
     updated_at: str = Field(default="", description="角色资产最后一次内容变化时间 ISO 字符串")
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_voice_facts_kwarg(cls, data):
+        from novelvideo.character_voice_facts import VoiceFacts
+
+        if isinstance(data, dict) and "voice_facts" in data:
+            data = dict(data)
+            value = data.pop("voice_facts")
+            data["voice_facts_json"] = VoiceFacts.model_validate(value or {}).model_dump_json()
+        return data
+
+    @property
+    def voice_facts(self) -> VoiceFacts:
+        from novelvideo.character_voice_facts import VoiceFacts
+
+        return VoiceFacts.model_validate_json(self.voice_facts_json or "{}")
+
+    @voice_facts.setter
+    def voice_facts(self, value: VoiceFacts | dict[str, Any]) -> None:
+        from novelvideo.character_voice_facts import VoiceFacts
+
+        self.voice_facts_json = VoiceFacts.model_validate(value).model_dump_json()
 
     @model_validator(mode="before")
     @classmethod

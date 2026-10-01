@@ -6,11 +6,52 @@ import re
 from .casting_brief import _age_interval, _negated_at, build_casting_dossier, evidence_supports, validate_casting_decisions
 from .casting_models import CastingDecision
 from .models import CharacterDesignProposal, CharacterNarrativeFact, CharacterNarrativeProfile
-from .proposals import _all_proposal_text, _structures_collide, assess_design_proposal
+from .proposals import (
+    HUMAN_SPECIES,
+    UNKNOWN_SPECIES,
+    _structures_collide,
+    assess_design_proposal,
+    facts_imply_creature_anatomy,
+    is_nonhuman_species,
+    rendered_visual_text,
+)
+
+# Only explicitly identified language/design heuristics are advisory. Unknown
+# diagnostics remain blocking so new structural checks cannot silently weaken.
+_ADVISORY_CODES = frozenset({
+    'recommendation', 'structure_collision', 'roster_collision', 'identity_anchors',
+    'face_structure', 'individual_structure', 'structure_coverage', 'generic_beauty',
+    'celebrity_reference', 'species_anatomy', 'casting_reason', 'casting_decisions',
+    'creative_choices', 'invented_history', 'occupational_phenotype',
+    'personality_phenotype', 'visual_field_contradiction', 'constraint_not_visualized',
+    'age_contradiction', 'missing_constraint',
+})
+_BLOCKING_CODES = frozenset({'proposal_ids', 'decision_ids', 'untrusted', 'stale_source',
+    'unverified_evidence', 'identity_required', 'conflicting', 'unknown_fact',
+    'wrong_identity', 'invalid_evidence', 'unsupported_attribute', 'changed_explicit_fact',
+    'creative_overrides_fact'})
 
 
-HUMAN_SPECIES = {"人", "人类", "human", "homo sapiens"}
-UNKNOWN_SPECIES = {"", "unknown", "未知"}
+def blocking_casting_issues(issues: list[str]) -> list[str]:
+    def advisory(issue):
+        parts = issue.split(':')
+        if _BLOCKING_CODES.intersection(parts[:2]):
+            return False
+        return ((len(parts) == 2 and parts[0] in _ADVISORY_CODES)
+            or (len(parts) >= 3 and parts[1] in _ADVISORY_CODES)
+            or issue.startswith(('proposal_count:explanation_required',
+                                     'proposal_count:constrained_set_requires_review:')))
+    return [issue for issue in issues if not advisory(issue)]
+
+
+__all__ = [
+    "HUMAN_SPECIES",
+    "UNKNOWN_SPECIES",
+    "selected_casting_species",
+    "strip_nonvisual_evidence_decisions",
+    "validate_casting_proposal",
+    "validate_casting_proposals",
+]
 
 
 def strip_nonvisual_evidence_decisions(profile: CharacterNarrativeProfile,
@@ -44,11 +85,79 @@ def selected_casting_species(hard_constraints: list[CharacterNarrativeFact], pro
     return values[0].casefold().strip() if len(set(values)) == 1 else ""
 
 
+def proposal_set_is_nonhuman(
+    hard_constraints: list[CharacterNarrativeFact],
+    proposals: list[CharacterDesignProposal],
+    *,
+    profile_facts: list[CharacterNarrativeFact] = (),
+) -> bool:
+    """One species verdict for the whole set, so every pair is compared alike.
+
+    Precedence: a stated species wins, then the proposals' own species
+    decisions, then any sourced anatomy fact that names a creature body — a
+    beast is often only ever described as 驮兽, never with a 物种 field. Anatomy
+    inference reads every profile fact, not just the evidence-verified subset:
+    misclassifying a beast as human demands human face diversity from a beast
+    head, which is exactly the 假鹿蜀 regression.
+    """
+
+    for facts in (hard_constraints, profile_facts):
+        values = {
+            str(f.value or "").strip().casefold()
+            for f in facts
+            if getattr(f, "field", None) == "species" and str(f.value or "").strip()
+        }
+        if values:
+            return len(values) == 1 and is_nonhuman_species(next(iter(values)))
+    declared = {
+        str(d.value or "").strip().casefold()
+        for proposal in proposals
+        for d in proposal.casting_decisions
+        if d.attribute == "species" and str(d.value or "").strip()
+    }
+    if declared:
+        return len(declared) == 1 and is_nonhuman_species(next(iter(declared)))
+    return facts_imply_creature_anatomy([*hard_constraints, *profile_facts])
+
+
 def _rendered_text(proposal: CharacterDesignProposal) -> str:
     """Only image instructions can demonstrate preservation, not titles/reasons."""
-    return "\n".join([proposal.face_shape or "", *proposal.facial_features,
-        proposal.hair_style or "", proposal.body_type or "", *proposal.distinctive_features,
-        *proposal.identity_anchors, proposal.asymmetry_detail, *proposal.outfit_states.values()])
+    return rendered_visual_text(proposal)
+
+
+# Terms that, asserted positively about a rendered feature, invent a history the
+# source never stated.
+_HISTORY_TERMS = ("伤疤", "有疤", "疤痕", "残疾", "失明", "截肢", "童年遭", "幼年遭")
+# Character sheets habitually *deny* these ("无可见疤痕", "未见明显伤疤"). Denying
+# an invented history is not inventing one, so those mentions must be dropped
+# before the positive-assertion check runs.
+_HISTORY_ABSENCE_PATTERN = re.compile(
+    r"(?:无|没有|没|未见|未现|未发现|未有|不显|不带|不含|避免|不要|不得|不添加)"
+    r"[\s、，,:：的]*(?:任何|明显|可见|可见的|别的|其他|新的|旧的|一[道条个处块])*"
+    r"[\s、，,:：的]*$"
+)
+
+
+def _strip_negated_history(text: str) -> str:
+    """Remove history terms the proposal explicitly denies."""
+
+    for term in _HISTORY_TERMS:
+        while True:
+            match = next(
+                (
+                    found
+                    for found in re.finditer(re.escape(term), text)
+                    if _HISTORY_ABSENCE_PATTERN.search(
+                        text[max(0, found.start() - 24): found.start()]
+                    )
+                    or _negated_at(text, found.start())
+                ),
+                None,
+            )
+            if match is None:
+                break
+            text = text[: match.start()] + text[match.end():]
+    return text
 
 
 def _age_contradicts(value: str, rendered: str) -> bool:
@@ -80,15 +189,18 @@ def validate_casting_proposals(profile: CharacterNarrativeProfile, proposals: li
         issues.append("recommendation:exactly_one")
     dossier = build_casting_dossier(profile, identity_id, source_revision, style_revision)
     issues.extend(x for x in dossier.issues if not x.startswith(("missing:", "excluded_narrative:", "excluded_source:")))
+    nonhuman = proposal_set_is_nonhuman(
+        dossier.hard_constraints, proposals, profile_facts=profile.facts
+    )
     for proposal in proposals:
         prefix = proposal.proposal_id + ":"
         issues.extend(prefix + issue for issue in validate_casting_proposal(profile, proposal, identity_id,
             source_revision=source_revision, style_revision=style_revision))
         for other in proposals:
-            if other.proposal_id != proposal.proposal_id and _structures_collide(proposal, other):
+            if other.proposal_id != proposal.proposal_id and _structures_collide(proposal, other, nonhuman=nonhuman):
                 issues.append(prefix + "structure_collision:" + other.proposal_id)
         for other in existing_proposals or []:
-            if _structures_collide(proposal, other):
+            if _structures_collide(proposal, other, nonhuman=nonhuman):
                 issues.append(prefix + "roster_collision:" + other.proposal_id)
     return list(dict.fromkeys(issues))
 
@@ -101,7 +213,9 @@ def validate_casting_proposal(profile: CharacterNarrativeProfile, proposal: Char
     issues = [x for x in dossier.issues if not x.startswith(("missing:", "excluded_narrative:", "excluded_source:"))]
     applicable = profile.model_copy(update={"facts": dossier.hard_constraints + dossier.interpretations})
     species = selected_casting_species(dossier.hard_constraints, proposal)
-    nonhuman = species not in HUMAN_SPECIES | UNKNOWN_SPECIES
+    nonhuman = species not in HUMAN_SPECIES | UNKNOWN_SPECIES or facts_imply_creature_anatomy(
+        [*dossier.hard_constraints, *profile.facts]
+    )
     assessed = assess_design_proposal(proposal, profile=applicable)
     structural = assessed.quality_issues
     if nonhuman:
@@ -123,11 +237,13 @@ def validate_casting_proposal(profile: CharacterNarrativeProfile, proposal: Char
                            for value in _rendered_text(proposal).splitlines())
     if has_free_details and not any(d.basis == "creative_choice" for d in decisions):
         issues.append("creative_choices:required")
-    text = _all_proposal_text(proposal)
     rendered = _rendered_text(proposal)
-    # A model cannot bypass history validation by putting a scar only in
-    # visual prose and omitting it from its structured decisions.
-    unchecked_text = text
+    # A model cannot bypass history validation by putting a scar only in visual
+    # prose and omitting it from its structured decisions. Only the rendered
+    # image instructions are prose-with-rendering-effect: `rationale`/`title` are
+    # where narrative context is *supposed* to live, so scanning them flagged
+    # every honest "因为他的童年遭遇…" as an invented visual attribute.
+    unchecked_text = rendered
     for fact in dossier.hard_constraints:
         if fact.field in {"face_shape", "hair_style", "body_type"}:
             visual_value = getattr(proposal, fact.field) or ""
@@ -135,8 +251,9 @@ def validate_casting_proposal(profile: CharacterNarrativeProfile, proposal: Char
                 issues.append("visual_field_contradiction:" + fact.fact_id)
         if fact.field in {"scar", "disability", "injury_state", "distinctive_feature"}:
             unchecked_text = unchecked_text.replace(fact.value, "")
+    unchecked_text = _strip_negated_history(unchecked_text)
     issues.extend(issue for issue in validate_casting_decisions(profile, [CastingDecision(
-        decision_id="visual-text", attribute="visual_details", value=unchecked_text or "无补充",
+        decision_id="visual-text", attribute="visual_details", value=unchecked_text.strip() or "无补充",
         reason="检查未声明的视觉设定", basis="creative_choice")], identity_id))
     for fact in dossier.hard_constraints:
         if not any(d.basis == "evidence" and fact.fact_id in d.fact_ids and d.value == fact.value for d in decisions):

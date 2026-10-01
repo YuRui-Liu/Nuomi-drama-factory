@@ -15,6 +15,9 @@ import {
 
 import { useComposeEpisode, useFinalVideo } from "@/lib/queries/video";
 import { useEpisodeBeats, useEpisodeDetail } from "@/lib/queries/episodes";
+import { useNarrativeGroups } from "@/lib/queries/narrative-groups";
+import { groupCompositionReadiness } from "@/lib/group-composition-readiness";
+import { NarrativeVideoClips } from "@/components/episode/narrative-video-clips";
 import { useProject, useUpdateProject } from "@/lib/queries/projects";
 import { useTaskController } from "@/hooks/use-task-controller";
 import { useBeatStates } from "@/hooks/use-beat-states";
@@ -29,6 +32,7 @@ import {
 import { EpisodeEmptyState } from "@/components/episode/episode-empty-state";
 import { StageProgressPanel } from "@/components/stage-progress-panel";
 import { Button } from "@/components/ui/button";
+import { StudioShortcut } from "@/features/studios/studio-shortcut";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -54,9 +58,10 @@ type TFn = ReturnType<typeof useTranslation>["t"];
 type BlockerStage = Exclude<StageId, "compose">;
 
 function formatDuration(totalSeconds: number): string | null {
-  if (!totalSeconds || totalSeconds <= 0) return null;
-  const m = Math.floor(totalSeconds / 60);
-  const s = Math.round(totalSeconds % 60);
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return null;
+  const roundedSeconds = Math.round(totalSeconds);
+  const m = Math.floor(roundedSeconds / 60);
+  const s = roundedSeconds % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
@@ -126,17 +131,25 @@ function ComposeTabContent() {
   const composeEpisode = useComposeEpisode(project, epNum);
   const { counts } = useBeatStates(project, epNum);
   const beatsRes = useEpisodeBeats(project, epNum);
+  const groupsRes = useNarrativeGroups(project, epNum);
+  const navigate = useNavigate();
+  const groups = groupsRes.data?.ok ? groupsRes.data.data : [];
+  const groupsError = groupsRes.isError || groupsRes.data?.ok === false;
   const episodeRes = useEpisodeDetail(project, epNum);
   const projectConfigRes = useProject(project);
   const updateProject = useUpdateProject(project);
   const finalVideoRes = useFinalVideo(project, epNum);
-  const canCompose = counts.compose.ready;
+  const groupReadiness = groupCompositionReadiness(groups);
+  const canCompose = groups.length > 0 ? !groupsError && !groupsRes.isLoading && groupReadiness.ready : counts.compose.ready;
   const projectConfig = projectConfigRes.data?.data;
   const orientation = orientationForAspectRatio(projectConfig?.aspect_ratio) ?? "portrait";
 
   const [addSubtitles, setAddSubtitles] = useState(true);
   const [resolution, setResolution] = useState<Resolution>("720x1280");
   const [resultUrl, setResultUrl] = useState<string | null>(null);
+  const [outputMedia, setOutputMedia] = useState<{
+    url: string; width: number; height: number; duration: number;
+  } | null>(null);
   const [composeConfirm, setComposeConfirm] = useState(false);
 
   useEffect(() => {
@@ -179,14 +192,17 @@ function ComposeTabContent() {
 
   // The compose gate requires audio + video per beat (matches BE actor
   // pre-flight). `counts.video.total` is the canonical total beat count.
-  const totalBeats = counts.video.total;
+  const totalBeats = groups.length
+    ? groups.reduce((sum, group) => sum + (group.shot_ids?.length ?? group.beat_ids.length), 0)
+    : counts.video.total;
 
   const beats = beatsRes.data?.data ?? [];
-  const totalDurationSec = beats.reduce(
+  const totalDurationSec = groups.length ? groups.reduce((sum, group) => sum + (group.video_plan?.total_duration_seconds ?? 0), 0) : beats.reduce(
     (acc, b) => acc + (b.estimated_duration ?? 0),
     0,
   );
   const durationLabel = formatDuration(totalDurationSec);
+  const currentOutputMedia = outputMedia?.url === resultUrl ? outputMedia : null;
 
   // De-dup: trust the episode title when present, else fall back to the
   // "第 N 集" header. Previous layout rendered both, which produced the
@@ -221,6 +237,7 @@ function ComposeTabContent() {
 
   const beatsLoading = beatsRes.isLoading;
   const beatsEmpty = !beatsLoading && beats.length === 0;
+  const hasProductionContent = !beatsEmpty || groups.length > 0;
 
   // Hydrate on mount / refetch: if a final video already exists on disk, show
   // the preview + download without waiting for an SSE. Skipped while compose
@@ -359,35 +376,91 @@ function ComposeTabContent() {
       </AlertDialog>
 
       {/* Main area */}
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex h-full w-full max-w-5xl flex-col gap-6 p-6 sm:p-8">
-          {/* Header: title + meta, actions on the right */}
-          {!beatsEmpty && (
-            <header className="flex flex-wrap items-center justify-between gap-3">
+      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:grid-cols-[minmax(0,1fr)_300px] lg:overflow-hidden">
+        <main aria-label="成片预览与来源" className="min-h-0 min-w-0 space-y-4 overflow-y-auto p-4 lg:p-5">
+          <div><h1 className="text-base font-semibold">整集合成与导出</h1><p className="mt-1 text-xs text-muted-foreground">检查本集所有叙事组片段，设置输出参数后合成整集。</p></div>
+          {resultUrl ? (
+            // Vertical (9:16) drama clips are taller than they are wide.
+            <div className="flex min-h-52 items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-black/50">
+              <video
+                src={resultUrl}
+                controls
+                onLoadedMetadata={(event) => {
+                  const video = event.currentTarget;
+                  setOutputMedia({ url: resultUrl, width: video.videoWidth,
+                    height: video.videoHeight, duration: video.duration });
+                }}
+                className="block max-h-[min(42vh,420px)] max-w-full rounded-lg"
+              />
+            </div>
+          ) : beatsLoading ? (
+            <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              {t("episode.beats.loading")}
+            </div>
+          ) : beatsEmpty && !groupsRes.isLoading && !groupsError && groups.length === 0 ? (
+            <EpisodeEmptyState
+              icon={Film}
+              title={t("episode.compose.noClips")}
+              description={t("episode.compose.noClipsHint")}
+            />
+          ) : isComposing ? (
+            <StageProgressPanel
+              title={t("episode.compose.composing")}
+              currentTask={task.stream.currentTask}
+              progress={task.stream.progress}
+              logs={task.logs}
+              onStop={task.stop}
+              stopping={task.stopping}
+            />
+          ) : (
+            <>
+              {/* Beat grid — lightweight cards */}
+              {groups.length === 0 && counts.compose.missing.length > 0 && (
+                <BeatBlockerGrid
+                  project={project}
+                  episode={epNum}
+                  missing={counts.compose.missing}
+                  t={t}
+                />
+              )}
+            </>
+          )}
+          {!resultUrl && groups.length > 0 && <div className="rounded-lg border border-white/10 bg-black/20 p-4 text-sm">{groupReadiness.ready ? "本集视频来源已就绪，右侧确认参数后开始合成。" : <><p className="mb-3 text-amber-300">{groupReadiness.missing.length} 个叙事组需要补齐或更新视频</p><div className="flex flex-wrap gap-2">{groups.filter(group => groupReadiness.missing.includes(group.id)).map(group => <Button key={group.id} size="sm" variant="outline" onClick={() => void navigate({to:"/projects/$project/episodes/$episode/beats",params:{project,episode},search:{group:group.id,sub:"video"} as never})}>第 {group.ordinal} 组 · 前往处理 →</Button>)}</div></>}</div>}
+          {groupReadiness.outdated.length > 0 && <div role="status" className="rounded-lg border border-amber-400/20 bg-amber-400/5 p-4 text-sm text-amber-300">第 {groups.filter(group => groupReadiness.outdated.includes(group.id)).map(group => group.ordinal).join("、")} 组分镜或引用已更新。本次将使用现有视频合成，无需重新生成；如需同步最新画面，可前往镜头生成更新视频。</div>}
+          <details open={!resultUrl} className="rounded-lg border border-white/10"><summary className="cursor-pointer px-4 py-3 text-sm">本集片段 · {groupReadiness.completed} / {groups.length} 组就绪</summary>
+          <NarrativeVideoClips compact
+            groups={groups}
+            loading={groupsRes.isLoading}
+            error={groupsError}
+            onRetry={() => { void groupsRes.refetch(); }}
+            onOpenWorkbench={() => { void navigate({ to: "/projects/$project/episodes/$episode/beats", params: { project, episode }, search: {sub:"video"} as never }); }}
+          />
+          </details>
+        </main>
+        <aside aria-label="合成设置与导出" className="min-h-0 overflow-y-auto border-t border-white/10 bg-white/[0.025] p-4 lg:border-t-0 lg:border-l">
+          <h2 className="mb-4 text-sm font-semibold">输出与下载</h2>
+          {hasProductionContent && (
+            <header className="space-y-4">
               <div className="min-w-0 flex-1">
-                <h1 className="truncate text-xl font-semibold text-foreground sm:text-2xl">
+                <h1 className="truncate text-base font-semibold text-foreground">
                   {displayTitle}
                 </h1>
+                <StudioShortcut project={project} episode={Number(episode)} studio="intro" label="制作片头" returnTo={window.location.pathname + window.location.search} />
                 <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
                   <span className="font-mono">{outputFilename}</span>
-                  {resultUrl ? (
+                  {resultUrl && currentOutputMedia ? (
                     <>
                       <MetaDot />
-                      <span>{resolutionLabel(resolution)}</span>
-                      <MetaDot />
-                      <span>
-                        {addSubtitles
-                          ? t("episode.compose.subtitlesOn")
-                          : t("episode.compose.subtitlesOff")}
-                      </span>
-                      {durationLabel ? (
+                      <span>{currentOutputMedia.width}×{currentOutputMedia.height}</span>
+                      {formatDuration(currentOutputMedia.duration) ? (
                         <>
                           <MetaDot />
-                          <span>{durationLabel}</span>
+                          <span>{formatDuration(currentOutputMedia.duration)}</span>
                         </>
                       ) : null}
                     </>
-                  ) : durationLabel ? (
+                  ) : !resultUrl && durationLabel ? (
                     <>
                       <MetaDot />
                       <span>
@@ -398,7 +471,7 @@ function ComposeTabContent() {
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="grid grid-cols-2 gap-2 [&_button]:min-w-0 [&_button]:whitespace-normal [&_button]:h-auto [&_button]:min-h-9">
                 <Button
                   variant="outline"
                   size="sm"
@@ -461,20 +534,17 @@ function ComposeTabContent() {
             </header>
           )}
 
-          {!beatsEmpty && <hr className="border-border/30" />}
-
-          {/* Config row + warning: below divider */}
-          {!beatsEmpty && !resultUrl && !isComposing && (
-            <div className="flex flex-col gap-5 pb-2 pt-1 lg:flex-row lg:items-center lg:justify-between lg:gap-8">
+          {hasProductionContent && !isComposing && (
+            <div className="space-y-4 border-t border-white/10 pt-4">
               <div className="min-w-0 space-y-1.5">
                 <h2 className="text-base font-semibold text-amber-400">
-                  {t("episode.compose.blockerCount", { count: counts.compose.missing.length })}
+                  {groups.length ? groupReadiness.ready ? "全部叙事组已就绪" : `${groupReadiness.missing.length} 个叙事组待处理` : t("episode.compose.blockerCount", { count: counts.compose.missing.length })}
                 </h2>
                 <p className="text-xs text-muted-foreground">
-                  {t("episode.compose.blockerSubtitle")}
+                  {groups.length ? "使用当前组视频来源；过期或缺失片段需先处理。" : t("episode.compose.blockerSubtitle")}
                 </p>
               </div>
-              <div className="flex shrink-0 flex-wrap items-center gap-6">
+              <div className="flex flex-col items-start gap-4">
                 {/* Resolution */}
                 <div className="flex items-center gap-1.5">
                   <span className="text-[12px] text-muted-foreground">{t("episode.compose.resolution")}:</span>
@@ -503,50 +573,7 @@ function ComposeTabContent() {
             </div>
           )}
 
-          {/* Content below divider */}
-          {resultUrl ? (
-            // Vertical (9:16) drama clips are taller than they are wide.
-            <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden">
-              <video
-                src={resultUrl}
-                controls
-                className="block max-h-full max-w-full rounded-lg"
-              />
-            </div>
-          ) : beatsLoading ? (
-            <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />
-              {t("episode.beats.loading")}
-            </div>
-          ) : beatsEmpty ? (
-            <EpisodeEmptyState
-              icon={Film}
-              title={t("episode.compose.noClips")}
-              description={t("episode.compose.noClipsHint")}
-            />
-          ) : isComposing ? (
-            <StageProgressPanel
-              title={t("episode.compose.composing")}
-              currentTask={task.stream.currentTask}
-              progress={task.stream.progress}
-              logs={task.logs}
-              onStop={task.stop}
-              stopping={task.stopping}
-            />
-          ) : (
-            <>
-              {/* Beat grid — lightweight cards */}
-              {counts.compose.missing.length > 0 && (
-                <BeatBlockerGrid
-                  project={project}
-                  episode={epNum}
-                  missing={counts.compose.missing}
-                  t={t}
-                />
-              )}
-            </>
-          )}
-        </div>
+        </aside>
       </div>
     </div>
   );

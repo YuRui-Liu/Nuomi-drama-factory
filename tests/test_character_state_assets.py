@@ -208,6 +208,7 @@ async def test_identity_state_generation_registers_candidates_without_overwritin
             "blocking_issues": [],
             "warnings": warnings,
             "style_family": "2d",
+            "qc_input_snapshot": {},
         },
         "raw_candidate_path": versions[second["version_id"]].generation_metadata["raw_candidate_path"],
         "recipe_revision": "1",
@@ -280,13 +281,14 @@ async def test_qc_failure_registers_candidate_but_preserves_canonical(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_age_variant_requires_identity_portrait_before_model_call(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("age,face", [("old", ""), ("youth", "灰白皮肤与无神双眼")])
+async def test_age_variant_requires_identity_portrait_before_model_call(monkeypatch, tmp_path: Path, age, face) -> None:
     from novelvideo.models import CharacterIdentity, NovelCharacter
     from novelvideo.task_backend.runners import character_image
 
     identity = CharacterIdentity(
         identity_id="old", character_name="林默", identity_name="老年",
-        age_group="old", appearance_details="灰色长袍",
+        age_group=age, face_prompt=face, appearance_details="灰色长袍",
     )
     character = NovelCharacter(name="林默", age_group="youth")
     character.identities = [identity]
@@ -307,6 +309,65 @@ async def test_age_variant_requires_identity_portrait_before_model_call(monkeypa
             output_dir=tmp_path, style="anime", model="m", task_type="identity_image", scope="", update=lambda *_: None,
         )
     assert called is False
+
+
+@pytest.mark.asyncio
+async def test_identity_portrait_preserves_infected_face_and_parent_reference(monkeypatch, tmp_path):
+    from novelvideo.models import CharacterIdentity, NovelCharacter
+    from novelvideo.task_backend.runners import character_image
+    import novelvideo.character_visual as visual
+    import novelvideo.character_visual.casting_recovery as recovery
+
+    parent = tmp_path / 'assets/characters/林默/portrait.png'
+    parent.parent.mkdir(parents=True)
+    Image.new('RGB', (32, 32), 'gray').save(parent)
+    character = NovelCharacter(name='林默', age_group='youth')
+    character.identities = [CharacterIdentity(identity_id='infected', character_name='林默',
+        identity_name='感染态', age_group='youth', face_prompt='保留原本五官，灰白肤色与浑浊双眼')]
+    monkeypatch.setattr(visual, 'CharacterVisualWorkspaceStore', lambda *a, **kw:
+        SimpleNamespace(get_confirmed_bible=lambda *_: object()))
+    monkeypatch.setattr(visual, 'compile_visual_prompt_snapshot', lambda **kw:
+        SimpleNamespace(prompt='Original character: recognizable facial proportions.'))
+    monkeypatch.setattr(recovery, 'assert_legacy_portrait_mutation_allowed', lambda *a, **kw: None)
+    captured = {}
+    async def capture(**kwargs):
+        captured.update(kwargs)
+        raise RuntimeError('captured transport')
+    monkeypatch.setattr(character_image, '_generate_grsai_image', capture)
+    with pytest.raises(RuntimeError, match='captured transport'):
+        await character_image._generate_identity_portrait(store=SimpleNamespace(), character=character,
+            ethnicity='Chinese', identity_id='infected', identity_name='感染态', output_dir=tmp_path,
+            style='anime', model='m', task_type='character_portrait', scope='', update=lambda *_: None)
+    assert '灰白肤色与浑浊双眼' in captured['prompt']
+    assert captured['reference_paths'] == [str(parent)]
+    assert 'recognizable facial identity' in captured['prompt']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("face", ["", "灰白皮肤与无神双眼"])
+async def test_same_age_sheet_uses_identity_portrait(monkeypatch, tmp_path, face):
+    from novelvideo.models import CharacterIdentity, NovelCharacter
+    from novelvideo.task_backend.runners import character_image
+    from novelvideo.utils.path_resolver import canonical_identity_portrait_path
+
+    variant = canonical_identity_portrait_path(tmp_path, "林默", "感染态")
+    variant.parent.mkdir(parents=True)
+    Image.new("RGB", (32, 32)).save(variant)
+    parent = tmp_path / "assets/characters/林默/portrait.png"
+    Image.new("RGB", (32, 32), "gray").save(parent)
+    character = NovelCharacter(name="林默", age_group="youth")
+    character.identities = [CharacterIdentity(identity_id="infected", character_name="林默",
+        identity_name="感染态", age_group="youth", face_prompt=face, appearance_details="破损制服")]
+    captured = {}
+    async def capture(**kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("captured transport")
+    monkeypatch.setattr(character_image, "_generate_grsai_image", capture)
+    with pytest.raises(RuntimeError, match="captured transport"):
+        await character_image._generate_identity_image(character=character, ethnicity="Chinese",
+            identity_id="infected", identity_name="感染态", output_dir=tmp_path,
+            style="anime", model="m", task_type="identity_image", scope="", update=lambda *_: None)
+    assert captured["reference_paths"] == [str(variant)]
 
 
 @pytest.mark.asyncio

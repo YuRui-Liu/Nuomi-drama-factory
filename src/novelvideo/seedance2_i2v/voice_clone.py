@@ -483,6 +483,9 @@ def resolve_character_voice(
     → L3 character.reference_audio_path. Returns the first hit whose file exists.
     """
     project_dir = Path(project_dir)
+    facts = getattr(character, "voice_facts", None)
+    if facts is not None and (facts.vocalization_mode in {"nonverbal", "none"} or facts.conflicts):
+        return CharacterVoiceResolution(audio_path=None, sha256="", tier=None)
 
     if identity is not None:
         stored = str(getattr(identity, "reference_audio_path", "") or "").strip()
@@ -544,6 +547,10 @@ async def resolve_dialogue_reference_audio(beat: dict, store) -> tuple[Path, str
     for character in await store.list_characters():
         if not speaker.startswith(character.name):
             continue
+
+        facts = getattr(character, "voice_facts", None)
+        if facts is not None and (facts.vocalization_mode in {"nonverbal", "none"} or facts.conflicts):
+            return None
 
         identity = next(
             (item for item in character.identities if item.identity_id == speaker),

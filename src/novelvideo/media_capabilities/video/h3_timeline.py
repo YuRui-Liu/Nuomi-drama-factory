@@ -155,6 +155,7 @@ class H3TimelineEntry(BaseModel):
     end_seconds: float | None = None
     actual_duration_seconds: float | None = None
     dialogue_start_seconds: float | None = None
+    external_audio_path: str | None = None
     dialogue_end_seconds: float | None = None
     speaker: str | None = None
     dialogue_source: DialogueSource | None = None
@@ -296,6 +297,7 @@ class H3DirectorOutputManifest(BaseModel):
     transition_rules: tuple[H3TransitionRule, ...] = ()
     cinematography_reviews: tuple[dict[str, Any], ...] = ()
     cinematography_shots: tuple[dict[str, Any], ...] = ()
+    qc_recovery_pending: bool = False
     actual_output: dict[str, int] = Field(default_factory=dict)
     original_audio_path: str | None = None
     original_audio_status: str = "not_requested"
@@ -355,7 +357,7 @@ class H3DirectorOutputManifest(BaseModel):
         normalized = tuple(
             entry.model_copy(
                 update={
-                    "physical_video": self.physical_video,
+                    "physical_video": entry.physical_video or self.physical_video,
                     "format_version": self.format_version,
                     "workflow_id": entry.workflow_id or self.workflow_id,
                     "provider_task_id": entry.provider_task_id or self.provider_task_id,

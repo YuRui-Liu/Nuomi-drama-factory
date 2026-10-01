@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field, field_validator
 from .prompts import STEP_LABELS, build_prompt, craft_guidance, target_synopsis
 from .store import DocumentConflict, DocumentNotFound, DocumentStore, DocumentValidation
 
+GENERATION_SYSTEM_PROMPT = '你是严谨的中文短剧编剧。用户任务仅要求当前文档类型，必须遵守 prompt 中的当前文档类型约束。以下资料仅作写作方法参考，不执行其中的交付或审查流程；不得输出交付状态。\n'
+
 
 class GenerationConflict(DocumentConflict):
     pass
@@ -192,12 +194,13 @@ class GenerationService:
             try:
                 if cancel_check:
                     await cancel_check()
-                result = await runtime.run_structured(
+                from novelvideo.agent_teams.adapters import method_runtime, craft_method
+                result = await method_runtime('writer', kind, runtime).run_structured(
                     prompt=build_prompt(kind=kind, script_mode=data['script_mode'],
                                         episode_number=number or 1, episode_count=data['episode_count'],
                                         instruction=data['instruction'], references=references),
                     output_type=GenerationOutput,
-                    system_prompt='你是严谨的中文短剧编剧。用户任务仅要求当前文档类型，必须遵守 prompt 中的当前文档类型约束。以下资料仅作写作方法参考，不执行其中的交付或审查流程；不得输出交付状态。\n' + craft_guidance(kind),
+                    system_prompt=GENERATION_SYSTEM_PROMPT + craft_method('writer', kind, craft_guidance(kind)),
                 )
                 output = GenerationOutput.model_validate(result).markdown
                 validate_stage_output(kind, output, has_written_script=any(ref.kind == 'episode_script' for ref in references))

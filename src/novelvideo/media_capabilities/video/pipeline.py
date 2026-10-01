@@ -79,8 +79,26 @@ def _timeline_image_file(value: object, *, field: str) -> str:
     return _required_timeline_text(value.get("imageFile"), field=f"{field}.imageFile")
 
 
-def _transport_segment_mode(segment: Mapping[str, object]) -> str:
+def _transport_segment_mode(
+    segment: Mapping[str, object], *, reference_envelope: bool = False
+) -> str:
+    from novelvideo.media_capabilities.video.h3_reference_payload import (
+        H3_LEGACY_REFERENCE_SEGMENT_TASK_TYPES,
+        H3_REFERENCE_SEGMENT_TASK_TYPES,
+    )
+
     task_type = segment.get("taskType")
+    if reference_envelope:
+        # Reference payloads keep the global r2v envelope and name each
+        # segment's frame-anchored mode; Node 12 rejects any other value.
+        if task_type in H3_LEGACY_REFERENCE_SEGMENT_TASK_TYPES:
+            return "ref2va"
+        if task_type not in H3_REFERENCE_SEGMENT_TASK_TYPES:
+            raise ValueError(
+                "H3 transport timeline reference segment task type is not "
+                "supported by node 12"
+            )
+        return "ref2va"
     if task_type in {"Ref-I2V", "Ref-FL2V"}:
         return "ref2va"
     if task_type != "":
@@ -278,11 +296,18 @@ def _validate_transport_timeline(
     actual_segments = payload.get("segments")
     _validate_prompt_surface("segments", actual_segments, evidence_by_id)
     assert isinstance(actual_segments, list)
+    global_payload = payload.get("global")
+    reference_envelope = (
+        isinstance(global_payload, Mapping)
+        and global_payload.get("taskType") == H3_REFERENCE_TASK_TYPE
+    )
     for actual in actual_segments:
         assert isinstance(actual, dict)
         segment_id = str(actual["id"])
         evidence = evidence_by_id[segment_id]
-        resolved_mode = _transport_segment_mode(actual)
+        resolved_mode = _transport_segment_mode(
+            actual, reference_envelope=reference_envelope
+        )
         if resolved_mode != evidence["resolved_mode"]:
             raise ValueError(
                 "H3 transport timeline segment mode does not match quality evidence"
@@ -298,10 +323,14 @@ def _validate_transport_timeline(
             raise ValueError("H3 transport timeline Ref2VA requires a start frame")
         if resolved_mode not in {"i2va", "fl2va", "ref2va"}:
             raise ValueError("H3 transport timeline mode is unsupported by node 12")
-        expected_task_type = (
-            "Ref-FL2V" if is_end else "Ref-I2V"
-        ) if resolved_mode == "ref2va" else ""
-        if actual.get("taskType") != expected_task_type:
+        if resolved_mode == "ref2va":
+            if reference_envelope:
+                expected_task_types = {"fl2v"} if is_end else {"i2v"}
+            else:
+                expected_task_types = {"Ref-FL2V"} if is_end else {"Ref-I2V"}
+        else:
+            expected_task_types = {""}
+        if actual.get("taskType") not in expected_task_types:
             raise ValueError("H3 transport timeline segment task type is not canonical")
         if actual.get("refs") != []:
             raise ValueError("H3 transport timeline segment refs must be empty")

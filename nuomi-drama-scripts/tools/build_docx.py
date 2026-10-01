@@ -224,17 +224,33 @@ def new_styles_xml():
 
 
 def new_document_xml(name, count, manuscript_dir="", start_episode=1,
-                     default_duration_seconds=90, single_episode=False):
+                     default_duration_seconds=90, single_episode=False, cover=None):
+    # 封面元数据优先读 project.yaml；缺省时保持旧的格式验收样稿文案。
+    cover = cover or {}
+    genre_label = cover.get("genre_label") or "女频 · 现实共鸣 · 格式验收样稿"
+    aspect_ratio = cover.get("aspect_ratio") or "9:16"
+    orientation_label = cover.get("orientation_label") or "竖屏"
+    version_label = cover.get("version_label") or (
+        "版本：v0.1 · 内容为格式测试样例，不是投稿正文"
+    )
+    delivery_status_label = cover.get("delivery_status_label") or (
+        "交付状态：delivery_blocked（待渲染环境恢复）"
+    )
     paragraphs = []
     if not single_episode:
         paragraphs.append(new_paragraph_xml(name, "CoverTitle"))
-        paragraphs.append(new_paragraph_xml("女频 · 现实共鸣 · 格式验收样稿", "CoverMeta"))
+        paragraphs.append(new_paragraph_xml(genre_label, "CoverMeta"))
         paragraphs.append(
             new_paragraph_xml("首交 %d 集 · 红果漫剧 DOCX 结构验收" % count, "CoverMeta")
         )
-        paragraphs.append(new_paragraph_xml("A4 · 9:16 竖屏内容的剧本交付格式画像", "CoverMeta"))
-        paragraphs.append(new_paragraph_xml("版本：v0.1 · 内容为格式测试样例，不是投稿正文", "CoverMeta"))
-        paragraphs.append(new_paragraph_xml("交付状态：delivery_blocked（待渲染环境恢复）", "CoverMeta"))
+        paragraphs.append(
+            new_paragraph_xml(
+                "A4 · %s %s内容的剧本交付格式画像" % (aspect_ratio, orientation_label),
+                "CoverMeta",
+            )
+        )
+        paragraphs.append(new_paragraph_xml(version_label, "CoverMeta"))
+        paragraphs.append(new_paragraph_xml(delivery_status_label, "CoverMeta"))
         paragraphs.append(PAGE_BREAK_XML)
 
         paragraphs.append(new_paragraph_xml("第零集", "EpisodeTitle"))
@@ -480,6 +496,7 @@ def main(argv=None):
     start_episode = args.episode_number if args.single_episode else 1
     default_duration_seconds = 90
     resolved_manuscript_dir = ""
+    cover = {}
 
     if args.manuscript_dir.strip():
         resolved_manuscript_dir = os.path.abspath(args.manuscript_dir)
@@ -505,14 +522,27 @@ def main(argv=None):
             if not name:
                 name = get_yaml_scalar(project_yaml, "title", "格式验收稿")
             args.project_name = name
-            # 原版只读 episode_duration_seconds，与模板里的
-            # episode_duration_default_seconds 对不上；这里补上兜底。
-            project_duration = positive_int_or_none(
-                get_yaml_scalar(project_yaml, "episode_duration_seconds", "")
-                or get_yaml_scalar(project_yaml, "episode_duration_default_seconds", "")
-            )
-            if project_duration:
-                default_duration_seconds = project_duration
+        # 原版只读 episode_duration_seconds，与模板里的
+        # episode_duration_default_seconds 对不上；这里补上兜底。
+        # 封面元数据同样从 project.yaml 读取，缺省时回退到格式验收样稿文案。
+        project_yaml = os.path.normpath(
+            os.path.join(resolved_manuscript_dir, "..", "project.yaml")
+        )
+        project_duration = positive_int_or_none(
+            get_yaml_scalar(project_yaml, "episode_duration_seconds", "")
+            or get_yaml_scalar(project_yaml, "episode_duration_default_seconds", "")
+        )
+        if project_duration:
+            default_duration_seconds = project_duration
+        cover = {
+            "genre_label": get_yaml_scalar(project_yaml, "genre_label", ""),
+            "aspect_ratio": get_yaml_scalar(project_yaml, "aspect_ratio", ""),
+            "orientation_label": get_yaml_scalar(project_yaml, "orientation_label", ""),
+            "version_label": get_yaml_scalar(project_yaml, "version_label", ""),
+            "delivery_status_label": get_yaml_scalar(
+                project_yaml, "delivery_status_label", ""
+            ),
+        }
 
     if args.require_delivery_gate:
         if not resolved_manuscript_dir:
@@ -532,6 +562,7 @@ def main(argv=None):
                 start_episode=start_episode,
                 default_duration_seconds=default_duration_seconds,
                 single_episode=args.single_episode,
+                cover=cover,
             ),
         )
         write_text(os.path.join(staging, "word", "styles.xml"), new_styles_xml())

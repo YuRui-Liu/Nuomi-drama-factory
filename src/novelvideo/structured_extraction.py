@@ -9,7 +9,7 @@ asset.  The module has no Cognee import or graph/runtime dependency.
 from __future__ import annotations
 
 import asyncio
-import json
+import hashlib
 from dataclasses import replace
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
@@ -17,6 +17,8 @@ from typing import Any, Callable, Iterable
 from pydantic import BaseModel, Field, field_validator
 
 from novelvideo.story_analysis import SourceChunk
+from novelvideo.character_voice_facts import VoiceFacts, merge_voice_facts
+from novelvideo.character_visual.casting_models import CastingDecision
 
 
 GENERIC_ADDRESS_TERMS = {
@@ -33,6 +35,7 @@ class CharacterEvidence(BaseModel):
     field: str = Field(default="", description="该证据支持的人物字段")
     value: str = Field(default="", description="从证据中归纳的字段值")
     confidence: float = Field(default=1.0, ge=0, le=1)
+    identity_id: str | None = None
 
 
 class CharacterOutfitStateCandidate(BaseModel):
@@ -53,6 +56,7 @@ class CharacterProposalCandidate(BaseModel):
     identity_anchors: list[str] = Field(default_factory=list)
     asymmetry_detail: str = ""
     recommended: bool = False
+    casting_decisions: list[CastingDecision] = Field(default_factory=list)
 
     @field_validator("outfit_states", mode="before")
     @classmethod
@@ -65,8 +69,9 @@ class CharacterProposalCandidate(BaseModel):
         return value
 
 
-class CharacterCandidate(BaseModel):
+class CharacterFacts(BaseModel):
     name: str
+    voice_facts: VoiceFacts = Field(default_factory=VoiceFacts)
     aliases: list[str] = Field(default_factory=list)
     role: str = ""
     face: str = ""
@@ -79,8 +84,15 @@ class CharacterCandidate(BaseModel):
     relationships: list[str] = Field(default_factory=list)
     personality: list[str] = Field(default_factory=list)
     dramatic_function: str = ""
-    design_proposals: list[CharacterProposalCandidate] = Field(default_factory=list)
     evidence: list[CharacterEvidence] = Field(default_factory=list)
+
+
+class CharacterCandidate(CharacterFacts):
+    design_proposals: list[CharacterProposalCandidate] = Field(default_factory=list)
+
+
+class ChunkCharacterFacts(BaseModel):
+    characters: list[CharacterFacts] = Field(default_factory=list)
 
 
 class ChunkCharacterOutput(BaseModel):
@@ -90,6 +102,7 @@ class ChunkCharacterOutput(BaseModel):
 @dataclass
 class MergedCharacter:
     name: str
+    voice_facts: VoiceFacts = field(default_factory=VoiceFacts)
     aliases: set[str] = field(default_factory=set)
     role: str = ""
     face: str = ""
@@ -103,11 +116,13 @@ class MergedCharacter:
     personality: list[str] = field(default_factory=list)
     dramatic_function: str = ""
     design_proposals: list[dict[str, Any]] = field(default_factory=list)
+    design_accepted: bool = False
+    design_limitation_reason: str = ""
     evidence: list[dict[str, Any]] = field(default_factory=list)
     chunk_ids: set[str] = field(default_factory=set)
 
 
-CHARACTER_EXTRACTION_SYSTEM_PROMPT = """你是剧本/小说角色抽取器。只根据输入片段回答。
+CHARACTER_EXTRACTION_SYSTEM_PROMPT = """你是剧本/小说角色事实抽取器。只根据输入片段回答。
 
 规则：
 - name 必须逐字出现在片段中；旁白、画外音、群体和职务称呼不是角色。
@@ -116,17 +131,14 @@ CHARACTER_EXTRACTION_SYSTEM_PROMPT = """你是剧本/小说角色抽取器。只
 - role 只填写原文明确表达的剧情身份；face/build 只提取原文明示的视觉特征。
 - 为角色整理人物小传：biography、occupation、social_identity、relationships、
   personality、dramatic_function；事实必须能由 evidence 支持，推断必须克制。
-- 在剧本明示视觉事实约束下，提供三套结构差异明显的 creative design 提案，
-  其中恰好一套 recommended=true。每套至少 3 个 identity_anchors，并包含
-  明确落在眉、眼、鼻、唇、嘴、耳、颧、颌、下巴、额头、发际线、疤、痣、
-  凹点或酒窝上的 asymmetry_detail/非对称细节，不能只写“略有不对称”。
-  三套提案的脸型、五官、发型和个体细节中至少三类必须有实质差异，不能只换
-  服装、颜色或文案。outfit_states 必须使用
-  [{"state": "default", "description": "服装描述"}] 这样的对象数组。
-- 不得根据姓名猜测地域、阶层或外貌；不得使用明星姓名；不得只写“漂亮、帅气、
-  高级脸”等空泛审美词。提案不得改变剧本明示的年龄、性别、伤疤、残疾或制服。
-- 不得补写片段以外的剧情事实。创意外貌必须明确放在 design_proposals 中，
-  不得伪装成剧本明示事实。"""
+- 不得根据姓名猜测地域、阶层或外貌，不得补写片段以外的事实。
+- voice_facts 只记原文明示的物种 species、年龄段 age_group、声音特征 voice_traits，
+  以及发声模式 vocalization_mode（dialogue/nonverbal/both/none/unknown）。
+  每项声音事实必须有 voice_facts.evidence 中逐字原文支持；年龄不明留空，发声不明用 unknown。
+  只有明确不会说话、只发叫声才记 nonverbal；只有明确无发声才记 none。
+  不得由物种、性别、外貌推断会不会说话；非人类也可以 dialogue。
+  provenance 使用 source；人工确认 human 不能由抽取器填写。矛盾写入 conflicts，不擅自取舍。
+- 本阶段只提取事实，不生成视觉设计、服装创作或外貌备选方案。"""
 
 
 def redact_locked_characters(
@@ -198,6 +210,7 @@ def verify_evidence(candidate: CharacterCandidate, chunk: SourceChunk) -> list[d
                 "field": str(item.field or "").strip(),
                 "value": str(item.value or "").strip(),
                 "confidence": float(item.confidence),
+                "identity_id": item.identity_id,
             }
         )
     return verified
@@ -227,6 +240,15 @@ def merge_character_candidates(
             item.aliases.update(aliases)
             item.chunk_ids.add(chunk.chunk_id)
             item.evidence.extend(evidence)
+            voice = candidate.voice_facts
+            if voice.evidence and all(
+                quote.strip() and quote in chunk.text
+                and any(_name_attested(anchor, quote) for anchor in {name, *aliases})
+                for quote in voice.evidence
+            ):
+                item.voice_facts = merge_voice_facts(
+                    item.voice_facts, voice.model_copy(update={"provenance": "source"})
+                )
             if candidate.role and not item.role:
                 item.role = candidate.role.strip()
             if candidate.face and len(candidate.face.strip()) > len(item.face):
@@ -276,7 +298,10 @@ def merge_character_candidates(
     return sorted(merged.values(), key=lambda item: item.name)
 
 
-def _create_agent(agent: Any = None) -> Any:
+def _create_agent(
+    agent: Any = None, *, output_type: type[BaseModel] = ChunkCharacterFacts,
+    system_prompt: str = CHARACTER_EXTRACTION_SYSTEM_PROMPT,
+) -> Any:
     if agent is not None:
         return agent
     from novelvideo.text_task_runtime.runtime import (
@@ -288,8 +313,8 @@ def _create_agent(agent: Any = None) -> Any:
     if runtime is not None:
         return StructuredRuntimeAgent(
             runtime,
-            output_type=ChunkCharacterOutput,
-            system_prompt=CHARACTER_EXTRACTION_SYSTEM_PROMPT,
+            output_type=output_type,
+            system_prompt=system_prompt,
         )
     from pydantic_ai import Agent, PromptedOutput
     from novelvideo.config import (
@@ -301,18 +326,20 @@ def _create_agent(agent: Any = None) -> Any:
         get_newapi_text_pydantic_model(
             "CHARACTER_BUILD_MODEL", "gemini-3-flash-preview"
         ),
-        system_prompt=CHARACTER_EXTRACTION_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         model_settings=get_newapi_text_pydantic_model_settings(
             "CHARACTER_BUILD_THINKING_LEVEL", "low"
         ),
         # DeepSeek thinking models reject native tool output because it adds
         # tool_choice. PromptedOutput preserves typed validation without tools.
-        output_type=PromptedOutput(ChunkCharacterOutput),
+        output_type=PromptedOutput(output_type),
         name="Structured Character Extractor",
     )
 
 
-def _visual_proposal_quality_issues(output: ChunkCharacterOutput) -> dict[str, Any]:
+def _visual_proposal_quality_issues(
+    output: ChunkCharacterOutput, *, existing_proposals: Any = (),
+) -> dict[str, Any]:
     """Return deterministic proposal issues suitable for a focused model retry."""
     from novelvideo.character_visual.models import CharacterDesignProposal
     from novelvideo.character_visual.proposals import (
@@ -338,7 +365,7 @@ def _visual_proposal_quality_issues(output: ChunkCharacterOutput) -> dict[str, A
             for proposal in character.design_proposals
         ]
         try:
-            validate_design_proposals(proposals)
+            validate_design_proposals(proposals, existing_proposals=existing_proposals)
         except ProposalQualityError as exc:
             rejected[character.name] = {
                 proposal.proposal_id: proposal.quality_issues
@@ -357,8 +384,19 @@ async def extract_characters_from_chunks(
     concurrency: int = 3,
     on_log: Callable[[str], None] | None = None,
     excluded_names: set[str] | None = None,
+    design_agent: Any = None,
+    on_progress: Callable[[float, str], None] | None = None,
+    load_checkpoint: Any = None,
+    save_checkpoint: Any = None,
+    existing_designs: dict[str, list[dict[str, Any]]] | None = None,
+    roster_designs: dict[str, list[dict[str, Any]]] | None = None,
+    source_revision: str | None = None,
+    project_style: str = "",
+    source_text: str | None = None,
 ) -> list[MergedCharacter]:
-    """Extract and validate characters with bounded model concurrency."""
+    """Extract facts, merge evidence, then design each unique character once."""
+    from novelvideo.character_design_stage import design_merged_characters
+
     excluded = {
         normalize_character_name(name)
         for name in (excluded_names or set())
@@ -369,38 +407,62 @@ async def extract_characters_from_chunks(
         return []
     runner = _create_agent(agent)
     semaphore = asyncio.Semaphore(max(1, int(concurrency)))
+    completed = 0
 
     async def one(chunk: SourceChunk) -> tuple[SourceChunk, ChunkCharacterOutput]:
+        nonlocal completed
+        key = "character-facts-v3-voice:" + hashlib.sha256(chunk.text.encode()).hexdigest()
         async with semaphore:
-            result = await runner.run(chunk.text)
-        output = getattr(result, "output", result)
-        if not isinstance(output, ChunkCharacterOutput):
-            output = ChunkCharacterOutput.model_validate(output)
-        issues = _visual_proposal_quality_issues(output)
-        if issues:
-            retry_prompt = (
-                f"{chunk.text}\n\n"
-                "上一次输出的角色视觉提案未通过确定性质量门禁。请完整重新输出当前"
-                "片段的结构化结果，只修正 design_proposals，不改变原文事实。"
-                f"必须逐项消除以下问题：{json.dumps(issues, ensure_ascii=False)}"
-            )
-            if on_log:
-                on_log(f"{chunk.section_label} 视觉提案未通过质量门禁，正在定向重试")
-            async with semaphore:
-                result = await runner.run(retry_prompt)
-            output = getattr(result, "output", result)
-            if not isinstance(output, ChunkCharacterOutput):
-                output = ChunkCharacterOutput.model_validate(output)
-        if on_log:
-            on_log(f"已分析 {chunk.section_label}")
+            cached = await load_checkpoint(key) if load_checkpoint else ""
+            facts = None
+            if cached:
+                try:
+                    facts = ChunkCharacterFacts.model_validate_json(cached)
+                except ValueError:
+                    pass
+            if facts is None:
+                if on_log:
+                    on_log(f"正在提取 {chunk.section_label} 的角色事实（共 {len(source_chunks)} 段）")
+                result = await runner.run(chunk.text)
+                raw = getattr(result, "output", result)
+                if isinstance(raw, BaseModel):
+                    raw = raw.model_dump()
+                facts = ChunkCharacterFacts.model_validate(raw)
+                if save_checkpoint:
+                    await save_checkpoint(key, facts.model_dump_json())
+        output = ChunkCharacterOutput.model_validate(facts.model_dump())
+        completed += 1
+        message = f"角色事实已分析 {completed}/{len(source_chunks)}：{chunk.section_label}"
+        if on_progress:
+            on_progress(0.1 + 0.45 * completed / len(source_chunks), message)
+        elif on_log:
+            on_log(message)
         return chunk, output
 
-    outcomes = await asyncio.gather(*(one(chunk) for chunk in source_chunks))
-    return [
+    tasks = [asyncio.create_task(one(chunk)) for chunk in source_chunks]
+    try:
+        outcomes = await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+    merged = [
         item
         for item in merge_character_candidates(outcomes)
         if normalize_character_name(item.name) not in excluded
     ]
+    await design_merged_characters(
+        merged, agent=design_agent, concurrency=concurrency,
+        on_log=on_log, on_progress=on_progress,
+        load_checkpoint=load_checkpoint, save_checkpoint=save_checkpoint,
+        existing_designs=existing_designs,
+        roster_designs=roster_designs,
+        source_revision=source_revision or hashlib.sha256("".join(chunk.text for chunk in source_chunks).encode()).hexdigest(),
+        project_style=project_style,
+        source_text=source_text,
+    )
+    return merged
 
 
 __all__ = [

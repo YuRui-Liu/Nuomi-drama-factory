@@ -319,3 +319,48 @@ async def test_resumed_stable_intent_repairs_post_send_storage_gap(service, monk
     assert service.store.get_attempt('a').external_id == 'external'
     assert service.store.get_attempt('a').execution_status == 'succeeded'
     await close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('coins, expected', [('12.50', '12.50'), (0, '0'), (True, None), ('NaN', None), (-1, None)])
+async def test_runninghub_reports_only_valid_explicit_coin_usage(service, coins, expected):
+    def respond(request):
+        return httpx.Response(200, json={'data': {'taskId': 'external', 'status': 'succeeded', 'coins': coins}})
+    _, submit, query, close = make_client('runninghub', service, respond)
+    with cost_context(CostContext(project_id='p', media_type='image', attempt_id='coin-attempt')):
+        await submit()
+        await query()
+        before = service.store.list_revisions('coin-attempt')
+        await query()
+        assert service.store.list_revisions('coin-attempt') == before
+    attempt = service.store.get_attempt('coin-attempt')
+    assert attempt.usage == ({'credit': expected} if expected is not None else {'call': '1', 'item': '1'})
+    assert attempt.usage_source == ('provider' if expected is not None else 'request')
+    assert service.store.get_cost('coin-attempt').status == 'unpriced'
+    await close()
+
+
+def test_production_task_metrics_propagates_stable_project_to_cost_capture():
+    from types import SimpleNamespace
+    from novelvideo.task_backend.run_core import _set_project_task_metrics_context, _clear_project_task_metrics_context
+    from novelvideo.costs.context import resolve_cost_context
+    try:
+        _set_project_task_metrics_context(SimpleNamespace(project_id='stable-project', requester_user_id='', owner_id=''), 'narrative_group_render')
+        assert resolve_cost_context().project_id == 'stable-project'
+    finally:
+        _clear_project_task_metrics_context()
+
+
+@pytest.mark.asyncio
+async def test_runninghub_nested_usage_is_exposed_and_not_double_counted(service):
+    def respond(request):
+        return httpx.Response(200, json={'data': {'taskId': 'external', 'status': 'SUCCESS',
+            'usage': {'consumeCoins': '56', 'consumeMoney': None, 'taskCostTime': '15'},
+            'taskUsageList': [{'taskId': 'external', 'usage': {'consumeCoins': '56'}}]}})
+    client, submit, query, close = make_client('runninghub', service, respond)
+    with cost_context(CostContext(project_id='p', media_type='image', attempt_id='nested')):
+        await submit()
+        snapshot = await query()
+    assert snapshot.usage == {'credit': '56'}
+    assert service.store.get_attempt('nested').usage == {'credit': '56'}
+    await close()

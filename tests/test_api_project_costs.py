@@ -88,3 +88,35 @@ def test_local_audit_actor(client):
     assert c.post('/cost-settings/subscriptions',json=dict(id='s',provider='x',account_id='a',starts_at='2026-09-23T00:00:00Z')).status_code == 200
     with routes.get_cost_service().store._connection() as db:
         assert db.execute('SELECT actor FROM cost_settings_audit').fetchone()[0] == 'local'
+
+
+def test_platform_presets_are_detected_without_exposing_credentials(client, monkeypatch):
+    from novelvideo.api.routes import project_costs as routes
+    c, user = client
+    monkeypatch.setattr(routes, 'get_media_capability_store', lambda: SimpleNamespace(list_providers=lambda: [
+        SimpleNamespace(id='grsai-main', provider_type='grsai', enabled=True, credential_ref='secret://never-expose')]))
+    before = c.get('/cost-settings/presets').json()['data']
+    assert not before['installed']
+    assert len(before['rules']) == 2
+    assert 'never-expose' not in str(before)
+    assert c.post('/cost-settings/presets').json()['data']['installed_count'] == 2
+    assert c.post('/cost-settings/presets').json()['data']['installed_count'] == 0
+    user['role'] = 'viewer'
+    assert c.post('/cost-settings/presets').status_code == 403
+    assert c.post('/projects/p/costs/recover').status_code == 403
+
+
+def test_recovery_binds_authorized_registry_project_and_reprices(client, monkeypatch):
+    from novelvideo.api.routes import project_costs as routes
+    from novelvideo.costs import setup
+    c, _ = client
+    recover = AsyncMock(return_value={'backfill': {'imported': 1}, 'refresh': {'queried': 1}})
+    monkeypatch.setattr(setup, 'recover_project_costs', recover)
+    monkeypatch.setattr(routes, 'get_media_capability_store', lambda: SimpleNamespace(list_providers=lambda: []))
+    monkeypatch.setattr(routes, 'get_media_credential_resolver', lambda: 'resolver')
+    result = c.post('/projects/p/costs/recover')
+    assert result.status_code == 200
+    assert result.json()['data']['repriced'] == 0
+    assert recover.await_count == 1
+    assert c.post('/projects/foreign/costs/recover').status_code == 403
+    assert recover.await_count == 1

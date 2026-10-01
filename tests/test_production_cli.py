@@ -12,6 +12,85 @@ def module():
     return importlib.import_module("novelvideo.production_cli")
 
 
+@pytest.mark.parametrize("path", [
+    "episodes/1/beats/2/video",
+    "episodes/1/beats/2/render/upload",
+    "episodes/1/narrative-groups/g1/video/segments/s1/generate",
+    "episodes/1/sketches/generate",
+    "episodes/1/render/execute",
+])
+def test_production_request_rejects_non_group_generation_before_transport(monkeypatch, path):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(202, json={"ok": True, "task_id": "should-not-submit"})
+    install_transport(monkeypatch, handler)
+    result = CliRunner().invoke(module().app, [
+        "--project", "demo", "request", path, "--method", "POST",
+    ])
+    assert result.exit_code == 1
+    assert "production_group_required" in result.output
+    assert not calls
+
+
+def test_group_generation_cannot_smuggle_a_shot_subset():
+    result = CliRunner().invoke(module().app, [
+        "--project", "demo", "--dry-run", "generate", "--episode", "1",
+        "--group", "g1", "--stage", "video", "--json", '{"shot_ids":["s1"]}',
+    ])
+    assert result.exit_code == 1
+    assert "production_group_required" in result.output
+
+
+def test_group_video_requires_completed_group_image(monkeypatch):
+    calls = []
+    def handler(request):
+        calls.append(request.method)
+        return httpx.Response(200, json={"ok": True, "data": [{
+            "id": "g1", "stages": {"render": {"status": "pending"}},
+        }]})
+    install_transport(monkeypatch, handler)
+    result = CliRunner().invoke(module().app, ["--project", "demo", "generate",
+        "--episode", "1", "--group", "g1", "--stage", "video"])
+    assert result.exit_code == 1
+    assert "production_group_image_required" in result.output
+    assert calls == ["GET"]
+
+
+def test_invalid_concurrency_blocks_before_production(monkeypatch):
+    calls = []
+    def handler(request):
+        calls.append(request.method)
+        return httpx.Response(200, json={"ok": True, "data": {"lanes": {
+            "default": {"configured": 3}, "video": {"configured": "5"},
+        }}})
+    install_transport(monkeypatch, handler)
+    result = CliRunner().invoke(module().app, ["--project", "demo", "batch", "--episodes", "1"])
+    assert result.exit_code == 1
+    assert "concurrency_settings_required" in result.output
+    assert calls == ["GET"]
+
+
+def test_batch_reads_saved_five_way_concurrency(monkeypatch):
+    captured = {}
+    def handler(request):
+        assert request.url.path == "/api/v1/task-runtime/concurrency"
+        return httpx.Response(200, json={"ok": True, "data": {"lanes": {
+            "default": {"configured": 3}, "video": {"configured": 5},
+        }}})
+    install_transport(monkeypatch, handler)
+    batch = importlib.import_module("novelvideo.production_batch")
+    def run(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "episodes": []}
+    monkeypatch.setattr(batch, "run_batch", run)
+    result = CliRunner().invoke(module().app, [
+        "--project", "demo", "batch", "--episodes", "1", "--aspect-ratio", "16:9",
+    ])
+    assert result.exit_code == 0, result.output
+    assert captured["concurrency"] == {"sketch": 3, "render": 3, "video": 5}
+
+
 def test_render_dry_run_defaults_to_no_sketch_and_needs_no_auth():
     result = CliRunner().invoke(module().app, [
         "--project", "demo", "--dry-run", "generate", "--episode", "1",

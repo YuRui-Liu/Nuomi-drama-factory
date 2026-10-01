@@ -10,7 +10,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Literal, Mapping
+from typing import Any, Awaitable, Callable, Iterable, Literal, Mapping
 
 from novelvideo.media_capabilities.audio.stem_separator import (
     DemucsStemSeparator,
@@ -107,6 +107,7 @@ from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_backend.cancel import (
     TaskCancelled,
     TaskTimedOut,
+    TaskLeaseLost,
     await_envelope_with_cancel_watch,
     raise_if_envelope_cancel_requested,
 )
@@ -140,7 +141,7 @@ def _continuity_failure_is_observational(
 ) -> bool:
     from novelvideo.shot_continuity import ContinuityContractUnavailable
 
-    if isinstance(exc, (MemoryError, StoryboardPromptBlocked)):
+    if isinstance(exc, (MemoryError, StoryboardPromptBlocked, TaskCancelled, TaskTimedOut, TaskLeaseLost)):
         return False
     if policy == "observe":
         return True
@@ -170,8 +171,77 @@ def _describe_optimizer_failure(exc: Exception) -> str:
     return ":".join(parts)
 
 
+def _record_optimizer_failure(
+    evidence_by_segment: dict[str, dict[str, Any]],
+    segment_ids: Iterable[str],
+    exc: Exception,
+) -> None:
+    """Persist why no typed plan exists so the stage error can name it.
+
+    A non-blocking continuity policy keeps producing video from plan prompts,
+    but reference transport needs the typed plan, so the reason must survive to
+    the failure message instead of only reaching the log.
+    """
+
+    reason = _describe_optimizer_failure(exc)
+    for segment_id in segment_ids:
+        evidence = evidence_by_segment.setdefault(segment_id, {})
+        evidence.setdefault("optimizer_error", reason)
+
+
+def _optimizer_error_detail(
+    segment_ids: Iterable[str],
+    evidence_by_segment: Mapping[str, Mapping[str, Any]],
+) -> str:
+    reasons = sorted(
+        {
+            str(evidence_by_segment.get(segment_id, {}).get("optimizer_error") or "")
+            for segment_id in segment_ids
+        }
+        - {""}
+    )
+    return f" (optimizer failure: {'; '.join(reasons)})" if reasons else ""
+
+
 def _project_dir(payload: Mapping[str, Any], ctx: ProjectContext) -> Path:
     return Path(str(payload.get("project_dir") or ctx.output_dir))
+
+
+_VIDEO_TASK_TYPE = "narrative_group_video"
+
+
+def _progress_reporter(
+    ctx: ProjectContext, envelope: Mapping[str, Any], episode: int
+) -> Callable[[float, str], None]:
+    """Best-effort phase reporting for the task centre.
+
+    This runner is the long pole of episode production — prompt planning, one
+    provider round trip per segment, then composition — and it used to leave the
+    task at its 1%「任务已开始」seed for the whole run, so the progress bar never
+    moved and no phase text ever appeared. Reporting must never endanger the
+    production itself, so every failure here is swallowed.
+    """
+
+    manager = get_task_manager()
+    scope = str(envelope.get("scope") or "") or None
+    expected_task_id = str(envelope.get("__run_task_id") or "") or None
+
+    def report(value: float, message: str) -> None:
+        try:
+            manager.update_progress_for_project(
+                ctx,
+                _VIDEO_TASK_TYPE,
+                episode,
+                scope=scope,
+                progress=max(0.0, min(1.0, float(value))),
+                current_task=message,
+                logs=[message],
+                expected_task_id=expected_task_id,
+            )
+        except Exception:
+            _LOG.debug("narrative group video progress update failed", exc_info=True)
+
+    return report
 
 
 class H3StaleStageError(RuntimeError):
@@ -336,6 +406,12 @@ def _reference_snapshot_owner_resolver(ctx: ProjectContext):
     return owner_resolver
 
 
+async def _load_speaker_voice_characters(ctx: ProjectContext):
+    from novelvideo.api.deps import make_sqlite_store_for_context
+    store = await make_sqlite_store_for_context(ctx)
+    return store.get_all_characters()
+
+
 async def _load_canonical_beats(ctx: ProjectContext, episode: int) -> list[dict[str, Any]]:
     """Load durable beat records at execution time; never trust queued beat content."""
     from novelvideo.api.deps import make_sqlite_store_for_context
@@ -437,16 +513,16 @@ def _synthetic_pair_beat(
         "speaker": _join_labels(beats, h3_speaker_text),
         "tone": _join_labels(beats, h3_tone_text),
         "dialogue_lines": tuple(
-            {
-                "speaker": h3_speaker_text(beat),
-                "text": dialogue,
-                "tone": h3_tone_text(beat),
-            }
-            for beat in beats
-            if (dialogue := h3_dialogue_text(beat))
+            line.model_dump() for line in _source_dialogue_lines(tuple(beats))
         ),
         "dialogue_required": any(h3_dialogue_required(beat) for beat in beats),
         "dialogue_source": _dialogue_source_for(beats).value,
+        "source_director_intents": tuple(
+            item for beat in beats for item in _beat_director_intents(beat)
+        ),
+        "active_character_ids": tuple(dict.fromkeys(
+            character for beat in beats for character in _beat_active_characters(beat)
+        )),
         "duration_seconds": sum(_duration(beat) for beat in beats),
     }
 
@@ -572,6 +648,52 @@ def _optimizer_director_context(
     )
 
 
+def _source_state_context(active, segment: H3DirectorSegment, director_context: str,
+                          *, source_blocks: Mapping[str, Mapping[str, str]] | None = None) -> str:
+    """Retain exact shot boundaries even when segment prose merges several shots."""
+    shots = {shot.id: shot for group in getattr(active, "groups", ()) for shot in group.shots}
+    states = [
+        {"shot_id": shot_id, "visible_start_state": shots[shot_id].visible_start_state,
+         "visible_end_state": shots[shot_id].visible_end_state,
+         "director_intent": (shots[shot_id].intent.model_dump(mode="json")
+                             if getattr(shots[shot_id], "intent", None) is not None else None)}
+        for shot_id in source_shot_ids_for(segment) if shot_id in shots
+    ]
+    if not states:
+        return director_context
+    if source_blocks is not None:
+        for state in states:
+            state["screenplay_source"] = [
+                {"source_id": source_id, **source_blocks[source_id]}
+                for source_id in shots[state["shot_id"]].source_span_ids
+                if source_id in source_blocks
+            ]
+    return json.dumps({"director_context": json.loads(director_context) if director_context else {},
+                       "source_shot_states": states}, ensure_ascii=False, separators=(",", ":"))
+
+
+def _beat_director_intents(beat: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    if "source_director_intents" in beat:
+        return tuple(beat["source_director_intents"])
+    intent = beat.get("director_intent")
+    if not intent:
+        return ()
+    return ({"shot_id": str(beat.get("id") or beat.get("beat_id") or beat.get("beat_number")),
+             "director_intent": intent},)
+
+
+def _beat_active_characters(beat: Mapping[str, Any]) -> tuple[str, ...]:
+    if "active_character_ids" in beat:
+        return tuple(beat["active_character_ids"])
+    cinematography = beat.get("cinematography")
+    if isinstance(cinematography, Mapping) and "subjects" in cinematography:
+        return tuple(dict.fromkeys(
+            str(subject["subject_id"]) for subject in cinematography["subjects"]
+            if subject.get("subject_id")
+        ))
+    return tuple(dict.fromkeys(beat.get("detected_identities") or ()))
+
+
 def _prompt_context(
     segment: H3DirectorSegment,
     beat: Mapping[str, Any],
@@ -582,6 +704,13 @@ def _prompt_context(
     frozen_frames: Mapping[str, H3FrozenFrame] | None = None,
 ) -> H3PromptContext:
     from novelvideo.text_runtime_settings import load_text_runtime_settings
+
+    intents = _beat_director_intents(beat)
+    if intents:
+        director_context = json.dumps({
+            "director_context": json.loads(director_context) if director_context else {},
+            "source_director_intents": intents,
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
     return H3PromptContext(
         visual_description=_raw_prompt(beat),
@@ -598,6 +727,7 @@ def _prompt_context(
         model_id=load_text_runtime_settings().model,
         dialogue_required=_dialogue_required(beat, segment),
         director_context=director_context,
+        active_character_ids=_beat_active_characters(beat),
     )
 
 
@@ -625,6 +755,7 @@ async def _optimize_missing_prompts(
     workflow_id: str | None = None,
     frozen_frames: Mapping[str, H3FrozenFrame] | None = None,
     storyboard_binding: StoryboardBinding | None = None,
+    retry_planning: bool = False,
 ) -> list[H3DirectorSegment]:
     del max_parallel
     requested_ids = {segment.segment_id for segment in segments}
@@ -668,15 +799,30 @@ async def _optimize_missing_prompts(
         beats = list(episode_context_beats)
     optimizer = create_h3_episode_pack_optimizer(
         cache_dir=ctx.state_dir / "h3_episode_prompt_cache",
+        **({"retry_incomplete": True} if retry_planning else {}),
         **({"storyboard_grounded": True} if storyboard_images else {}),
     )
     active = _load_active_director_plan(project_dir, episode)
+    source_blocks = None
+    if getattr(active, "semantic_revision_id", None):
+        from novelvideo.screenplay_semantics.store import ScreenplaySemanticStore
+
+        semantic = ScreenplaySemanticStore(project_dir).load(episode, active.semantic_revision_id)
+        if semantic is None:
+            raise ValueError("frozen screenplay semantic source is unavailable")
+        source_blocks = {block.id: {"kind": block.kind, "text": block.text}
+                         for scene in semantic.scenes for block in scene.blocks}
     style_prefix = authoritative_h3_style_prefix(active)
     snapshot = active.project_style_snapshot
     resolved_references = build_h3_resolved_reference_facts(
         global_references
     )
     resolved_reference_tags = tuple(fact.tag for fact in resolved_references)
+    from novelvideo.media_capabilities.video.h3_speaker_voices import resolve_speaker_voices
+
+    voice_characters = await _load_speaker_voice_characters(ctx) if any(
+        s.dialogue_lines or s.dialogue.strip() for s in segments
+    ) else []
     contexts = []
     for index, (segment, beat) in enumerate(zip(segments, beats, strict=True)):
         context = _prompt_context(
@@ -689,6 +835,13 @@ async def _optimize_missing_prompts(
             frozen_frames=frozen_frames,
         )
         context_updates: dict[str, object] = {
+            "speaker_voices": resolve_speaker_voices(
+                [line.speaker for line in segment.dialogue_lines]
+                or ([segment.speaker] if segment.dialogue.strip() else []),
+                voice_characters,
+            ),
+            "director_context": _source_state_context(active, segment, context.director_context,
+                                                       source_blocks=source_blocks),
             "style_prefix": style_prefix,
             "resolved_reference_tags": resolved_reference_tags,
             "resolved_references": resolved_references,
@@ -845,7 +998,7 @@ async def _optimize_missing_prompts(
                             ),
                         })
                         if policy == "enforce" and bundle is not None
-                        else segment
+                        else segment.model_copy(update={"prompt": item.prompt})
                     )
                 ),
                 bundle=bundle,
@@ -897,7 +1050,7 @@ async def _optimize_missing_prompts(
                 ),
                 **(
                     {"_final_prompt": item.prompt}
-                    if policy == "legacy" or (policy == "enforce" and global_references)
+                    if policy != "enforce" or global_references
                     else (
                         {"_final_prompt": bundle.prompt}
                         if policy == "enforce" and bundle is not None else {}
@@ -1089,6 +1242,11 @@ def _reference_wire_from_evidence(
         raise ValueError(
             "H3 reference execution requires a typed director plan: "
             "the episode prompt optimizer produced no plan for this segment"
+            + (
+                f" (optimizer failure: {evidence['optimizer_error']})"
+                if evidence.get("optimizer_error")
+                else ""
+            )
         )
     plan = H3DirectorPlan.model_validate(plan_payload)
     wire = project_director_plan_to_wire(plan)
@@ -1120,6 +1278,7 @@ def _ensure_reference_plan_evidence(
             "H3 reference execution requires a typed director plan: "
             "the episode prompt optimizer produced no plan for segment(s) "
             + ", ".join(missing)
+            + _optimizer_error_detail(missing, evidence_by_segment)
         )
 
 
@@ -1386,6 +1545,7 @@ def _build_segments(
             dialogue=h3_dialogue_text(beat),
             speaker=h3_speaker_text(beat),
             tone=h3_tone_text(beat),
+            dialogue_lines=_source_dialogue_lines((beat,)),
             dialogue_source=dialogue_source,
         ))
     return segments
@@ -1438,6 +1598,7 @@ def _build_planned_segments(
                 dialogue=h3_dialogue_text(beat),
                 speaker=h3_speaker_text(beat),
                 tone=h3_tone_text(beat),
+                dialogue_lines=_source_dialogue_lines((beat,)),
                 dialogue_source=_dialogue_source_for(beats),
             ))
             continue
@@ -1470,15 +1631,17 @@ def _build_planned_segments(
 def _source_dialogue_lines(
     beats: tuple[Mapping[str, Any], ...],
 ) -> tuple[H3SourceDialogueLine, ...]:
-    return tuple(
-        H3SourceDialogueLine(
-            speaker=h3_speaker_text(beat),
-            text=dialogue,
-            tone=h3_tone_text(beat),
-        )
-        for beat in beats
-        if (dialogue := h3_dialogue_text(beat))
-    )
+    lines = []
+    for beat in beats:
+        if "dialogue_lines" in beat:
+            lines.extend(H3SourceDialogueLine.model_validate(line)
+                         for line in beat["dialogue_lines"])
+        elif dialogue := h3_dialogue_text(beat):
+            lines.append(H3SourceDialogueLine(
+                speaker=h3_speaker_text(beat), text=dialogue,
+                tone=h3_tone_text(beat),
+            ))
+    return tuple(lines)
 
 
 def _canonical_beats_for_segments(
@@ -2062,6 +2225,20 @@ async def _review_cinematography(
     return [{"phase": phase, **report.model_dump(mode="json")} for report in reports]
 
 
+async def _advisory_cinematography_review(phase: str, **kwargs) -> list[dict[str, Any]]:
+    """QC service availability and opinions do not determine media usability."""
+    try:
+        reviews = await _review_cinematography(phase, **kwargs)
+    except (TaskCancelled, TaskTimedOut, TaskLeaseLost):
+        raise
+    except Exception as exc:
+        _LOG.warning("%s visual review unavailable: %s", phase, type(exc).__name__)
+        return [{"phase": phase, "status": "unavailable", "evidence": [],
+                 "issues": [], "technical_error": type(exc).__name__}]
+    return reviews or [{"phase": phase, "status": "unavailable", "evidence": [],
+                        "issues": [], "technical_error": "EmptyReview"}]
+
+
 async def _execute_inner(
     envelope: dict[str, Any], ctx: ProjectContext
 ) -> dict[str, Any]:
@@ -2171,6 +2348,8 @@ async def _execute_inner(
         started_state.revision != revision or started_state.status != "running"
     ):
         return {"status": "stale", "group_id": group_id, "revision": revision}
+    report = _progress_reporter(ctx, envelope, episode)
+    report(0.03, "校验分镜、连续性与参考素材…")
     try:
         _assert_stage_revision(
             project_dir, episode, group_id, revision, plan_revision
@@ -2311,13 +2490,17 @@ async def _execute_inner(
             )
             else {}
         )
+        recover_qc_media = bool(
+            replay_entries and (replay_manifest.status == "quality_mismatch" or replay_manifest.qc_recovery_pending)
+            and replay_manifest.workflow_parameters == workflow_parameters
+            and all(getattr(replay_manifest, key) == value for key, value in reference_manifest_fields.items())
+            and any(review.get("status") != "passed" for review in replay_manifest.cinematography_reviews)
+        )
         review_shots = {}
-        if payload.get("cinematography_review_required"):
+        if payload.get("cinematography_review_required") and not recover_qc_media:
             from novelvideo.director_plan.models import ShotPlan
 
             if replay_entries:
-                if not replay_manifest.cinematography_shots:
-                    raise H3ContinuityQualityError("replay is missing frozen cinematography facts")
                 review_shots = {
                     shot.id: shot for shot in (
                         ShotPlan.model_validate(value)
@@ -2355,6 +2538,7 @@ async def _execute_inner(
         continuity_by_segment: dict[str, PreparedContinuity] | None = None
         blocked: dict[str, tuple[str, ...]] = {}
         if not replay_entries and policy != "legacy":
+            report(0.08, "准备镜头连续性与生成模式判定…")
             try:
                 _assert_stage_revision(
                     project_dir, episode, group_id, revision, plan_revision
@@ -2394,7 +2578,7 @@ async def _execute_inner(
                     policy, continuity_exc
                 ):
                     if policy == "guard" and not isinstance(
-                        continuity_exc, MemoryError
+                        continuity_exc, (MemoryError, TaskCancelled, TaskTimedOut, TaskLeaseLost)
                     ):
                         raise H3ContinuityQualityError(
                             "continuity_guard_failed:"
@@ -2440,6 +2624,7 @@ async def _execute_inner(
             )
             raise error
         try:
+            report(0.15, "生成分镜提示词（导演规划）…")
             if replay_entries:
                 segments = [
                     replay_entries[segment.segment_id].segment
@@ -2461,136 +2646,24 @@ async def _execute_inner(
                         for segment_id, entry in replay_entries.items()
                     }
                 )
-            elif policy == "legacy":
+            else:
+                # One authoritative plan: failed planning cannot fall back to raw
+                # prompts because reference transport requires a typed plan.
                 segments = await _optimize_missing_prompts(
                     raw_segments, segment_beats, ctx=ctx,
                     project_dir=project_dir, episode=episode,
                     evidence_by_segment=evidence_by_segment,
                     episode_beats=source_beats,
+                    policy=policy,
+                    continuity_by_segment=continuity_by_segment,
                     global_references=global_references,
                     resolved_modes=resolved_modes,
                     requested_mode=requested_mode,
                     workflow_id=workflow.id,
                     frozen_frames=frozen_frames,
+                    **({"retry_planning": True} if payload.get("retry_planning") else {}),
                     **({"storyboard_binding": storyboard_binding} if storyboard_binding is not None else {}),
                 )
-            else:
-                legacy_evidence: dict[str, dict[str, Any]] = {}
-                if policy == "enforce":
-                    legacy_segments = raw_segments
-                else:
-                    try:
-                        legacy_segments = await _optimize_missing_prompts(
-                            raw_segments, segment_beats, ctx=ctx,
-                            project_dir=project_dir, episode=episode,
-                            evidence_by_segment=legacy_evidence,
-                            episode_beats=source_beats,
-                            global_references=global_references,
-                            resolved_modes=resolved_modes,
-                            requested_mode=requested_mode,
-                            workflow_id=workflow.id,
-                            frozen_frames=frozen_frames,
-                            **({"storyboard_binding": storyboard_binding} if storyboard_binding is not None else {}),
-                        )
-                    except Exception as optimizer_exc:
-                        # The prompt optimizer is a quality pass over deterministic
-                        # plan prompts, and the enforce path already renders from
-                        # `raw_segments`. When its runtime is unavailable, honour the
-                        # configured policy and render from the plan prompts instead
-                        # of failing the whole group before the provider is called.
-                        if not _continuity_failure_is_observational(
-                            policy, optimizer_exc
-                        ):
-                            raise
-                        _LOG.warning(
-                            "prompt optimizer unavailable (%s); using plan prompts",
-                            _describe_optimizer_failure(optimizer_exc),
-                        )
-                        legacy_evidence.clear()
-                        legacy_segments = raw_segments
-                try:
-                    if continuity_by_segment is None:
-                        raise LookupError("continuity preparation unavailable")
-                    continuity_segments = await _optimize_missing_prompts(
-                        raw_segments, segment_beats, ctx=ctx,
-                        project_dir=project_dir, episode=episode,
-                        evidence_by_segment=evidence_by_segment,
-                        episode_beats=source_beats,
-                        policy=policy,
-                        continuity_by_segment=continuity_by_segment,
-                        global_references=global_references,
-                        resolved_modes=resolved_modes,
-                        requested_mode=requested_mode,
-                        workflow_id=workflow.id,
-                        frozen_frames=frozen_frames,
-                        **({"storyboard_binding": storyboard_binding} if storyboard_binding is not None else {}),
-                    )
-                except Exception as shadow_exc:
-                    if not _continuity_failure_is_observational(
-                        policy, shadow_exc
-                    ):
-                        if policy == "guard" and not isinstance(
-                            shadow_exc, (MemoryError, StoryboardPromptBlocked)
-                        ):
-                            raise H3ContinuityQualityError(
-                                "continuity_guard_failed:"
-                                f"{type(shadow_exc).__name__}"
-                            ) from shadow_exc
-                        raise
-                    continuity_segments = raw_segments
-                    # Reason codes stay bounded identifiers; the full runtime
-                    # message only goes to the log.
-                    diagnostic = (
-                        "continuity_observe_failed:"
-                        f"{type(shadow_exc).__name__}"
-                    )
-                    _LOG.warning(
-                        "continuity shadow pass failed under policy=%s: %s",
-                        policy,
-                        _describe_optimizer_failure(shadow_exc),
-                    )
-                    for segment_id, prepared in (
-                        continuity_by_segment or {}
-                    ).items():
-                        diagnostic_decision = prepared.mode_decision.model_copy(
-                            update={
-                                "reason_codes": _stable_union(
-                                    prepared.mode_decision.reason_codes,
-                                    (diagnostic,),
-                                )
-                            }
-                        )
-                        evidence_by_segment[segment_id] = {
-                            "continuity_contracts": tuple(
-                                contract.model_dump(mode="json")
-                                for contract in prepared.contracts
-                            ),
-                            "risk_report": prepared.risk_report.model_dump(
-                                mode="json"
-                            ),
-                            "mode_decision": diagnostic_decision.model_dump(
-                                mode="json"
-                            ),
-                            "compiled_bundle": None,
-                        }
-                segments = (
-                    continuity_segments
-                    if policy == "enforce" else legacy_segments
-                )
-                if policy != "enforce":
-                    for segment_id, selected in legacy_evidence.items():
-                        continuity = evidence_by_segment.get(segment_id, {})
-                        selected.update({
-                            key: continuity.get(key)
-                            for key in (
-                                "continuity_contracts",
-                                "risk_report",
-                                "mode_decision",
-                                "compiled_bundle",
-                            )
-                            if key in continuity
-                        })
-                        evidence_by_segment[segment_id] = selected
         except StoryboardPromptBlocked as exc:
             for segment in raw_segments:
                 evidence_by_segment.setdefault(segment.segment_id, {}).update({
@@ -2710,41 +2783,29 @@ async def _execute_inner(
             ),
             **reference_manifest_fields,
         )
+        if recover_qc_media:
+            manifest = manifest.model_copy(update={
+                "cinematography_reviews": replay_manifest.cinematography_reviews,
+                "cinematography_shots": replay_manifest.cinematography_shots,
+                "qc_recovery_pending": True,
+                "entries": tuple(entry.model_copy(update={
+                    "physical_video": replay_entries[entry.segment.segment_id].physical_video,
+                    "status": replay_entries[entry.segment.segment_id].status,
+                }) for entry in manifest.entries),
+            })
         if manifest_path.is_file():
             # The stage revision is encoded in this revision-scoped path.
             manifest = _merge_replay_evidence(
                 manifest, load_h3_director_manifest(manifest_path)
             )
         save_h3_director_manifest(manifest_path, manifest)
-        if payload.get("cinematography_review_required"):
-            review_failure = ""
-            try:
-                reference_reviews = await _review_cinematography(
-                    "reference", ctx=ctx, project_dir=project_dir, episode=episode,
-                    segments=segments, frozen_frames=frozen_frames, shots_by_id=review_shots,
-                )
-            except Exception as review_exc:
-                reference_reviews = []
-                review_failure = f"{type(review_exc).__name__}: {review_exc}"
+        if payload.get("cinematography_review_required") and not recover_qc_media:
+            report(0.28, "导演视觉复核（参考图一致性）…")
+            reference_reviews = await _advisory_cinematography_review(
+                "reference", ctx=ctx, project_dir=project_dir, episode=episode,
+                segments=segments, frozen_frames=frozen_frames, shots_by_id=review_shots,
+            )
             manifest = manifest.model_copy(update={"cinematography_reviews": tuple(reference_reviews)})
-            rejected = [item for item in reference_reviews if item.get("status") != "passed"]
-            if not reference_reviews or rejected:
-                if policy in {"guard", "enforce"}:
-                    manifest = manifest.model_copy(update={"status": "quality_rejected"})
-                    save_h3_director_manifest(manifest_path, manifest)
-                    raise H3ContinuityQualityError("reference_visual_review_failed_or_unavailable: no video submitted")
-                # The reference review is a quality signal, not an input-completeness
-                # check, and its runtime is an external agent that can legitimately be
-                # unavailable. Under the non-blocking policies record it and let the
-                # pack reach the provider instead of failing every group.
-                _LOG.warning(
-                    "reference visual review unavailable under policy=%s: %s",
-                    policy,
-                    review_failure
-                    or "; ".join(
-                        str(item.get("reason") or item.get("status")) for item in rejected
-                    ),
-                )
             save_h3_director_manifest(manifest_path, manifest)
         record_stage_result(
             project_dir, episode, group_id, "video",
@@ -2760,6 +2821,11 @@ async def _execute_inner(
         try:
             generated_segments = []
             segment_errors = []
+            segment_total = len(segments)
+            report(
+                0.35,
+                f"分镜提示词已就绪，开始生成 {segment_total} 个视频片段…",
+            )
             for segment_index, segment in enumerate(segments, start=1):
                 _assert_stage_revision(
                     project_dir, episode, group_id, revision, plan_revision
@@ -2768,9 +2834,46 @@ async def _execute_inner(
                 segment_output = output.with_name(
                     f"{output.stem}_segment_{segment_index:03d}{output.suffix}"
                 )
+                if recover_qc_media:
+                    from .narrative_group_video_recovery import recover_reviewed_clip
+
+                    old_entry = replay_entries[segment.segment_id]
+                    # Older manifests assigned the composed group file to every
+                    # entry. Their individually paid clips use revision-scoped names.
+                    if (len(segments) > 1 and old_entry.physical_video == replay_manifest.physical_video
+                            or not old_entry.physical_video and any(a.status == "completed" for a in old_entry.attempts)):
+                        old_entry = old_entry.model_copy(update={"physical_video": str(segment_output)})
+                    if replay_manifest.qc_recovery_pending and any(a.status == "completed" for a in old_entry.attempts):
+                        old_entry = old_entry.model_copy(update={"status": "completed"})
+                    recovered = await asyncio.to_thread(
+                        recover_reviewed_clip, old_entry,
+                        segment=segment, project_dir=project_dir,
+                        resolution=str(workflow_parameters.get("resolution") or "720p"),
+                        aspect_ratio=str(payload.get("aspect_ratio") or "9:16"),
+                        mode=str(resolved_modes[segment.segment_id]),
+                    )
+                    if recovered is not None:
+                        _assert_stage_revision(project_dir, episode, group_id, revision, plan_revision)
+                        generated_segments.append((segment_index, segment, recovered))
+                        record_video_segment_result(
+                            project_dir, episode, group_id, durable_segment_id,
+                            status="completed", provider_task_id=recovered.provider_task_id,
+                            result={"output_path": recovered.output_path}, expected_revision=revision,
+                        )
+                        report(0.35 + 0.5 * segment_index / max(segment_total, 1),
+                               f"已复用第 {segment_index}/{segment_total} 个视频片段")
+                        continue
+                report(
+                    0.35 + 0.5 * (segment_index - 1) / max(segment_total, 1),
+                    f"提交第 {segment_index}/{segment_total} 个片段到视频服务…",
+                )
 
                 async def on_provider_submitted(provider_task_id: str) -> None:
                     nonlocal manifest
+                    report(
+                        0.35 + 0.5 * (segment_index - 0.5) / max(segment_total, 1),
+                        f"第 {segment_index}/{segment_total} 个片段已提交，等待渲染…",
+                    )
                     entry = next(
                         item for item in manifest.entries
                         if item.segment.segment_id == segment.segment_id
@@ -2881,6 +2984,10 @@ async def _execute_inner(
                         status="failed", error=message,
                         expected_revision=revision,
                     )
+                    report(
+                        0.35 + 0.5 * segment_index / max(segment_total, 1),
+                        f"第 {segment_index}/{segment_total} 个片段生成失败，继续其余片段…",
+                    )
                 else:
                     entry = next(
                         current for current in manifest.entries
@@ -2917,6 +3024,10 @@ async def _execute_inner(
                         status="completed", provider_task_id=item.provider_task_id,
                         result={"output_path": str(item.output_path)},
                         expected_revision=revision,
+                    )
+                    report(
+                        0.35 + 0.5 * segment_index / max(segment_total, 1),
+                        f"第 {segment_index}/{segment_total} 个片段渲染完成",
                     )
             if not generated_segments:
                 raise RuntimeError(f"all video segments failed: {segment_errors}")
@@ -3009,6 +3120,7 @@ async def _execute_inner(
                     "manifest_asset": str(manifest_path),
                     "segment_assets": [str(item.output_path) for _, _, item in generated_segments],
                 }
+            report(0.88, "合片与音轨处理…")
             from novelvideo.task_backend.runners.narrative_group_video_compose import (
                 SegmentCompositionItem,
                 build_local_composition_plan,
@@ -3081,42 +3193,14 @@ async def _execute_inner(
             })
         save_h3_director_manifest(manifest_path, manifest)
 
-        if payload.get("cinematography_review_required"):
-            generated_reviews = await _review_cinematography(
+        if payload.get("cinematography_review_required") and not recover_qc_media:
+            generated_reviews = await _advisory_cinematography_review(
                 "generated", ctx=ctx, project_dir=project_dir, episode=episode,
                 segments=segments, generated_segments=generated_segments, shots_by_id=review_shots,
             )
             manifest = manifest.model_copy(update={
                 "cinematography_reviews": (*manifest.cinematography_reviews, *generated_reviews),
             })
-            if not generated_reviews or any(item["status"] != "passed" for item in generated_reviews):
-                reviewed_ids = {segment.segment_id for _, segment, _ in generated_segments}
-                manifest = manifest.model_copy(update={
-                    "status": "quality_mismatch",
-                    "entries": tuple(
-                        entry.model_copy(update={"status": "quality_mismatch"})
-                        if entry.segment.segment_id in reviewed_ids else entry
-                        for entry in manifest.entries
-                    ),
-                })
-                save_h3_director_manifest(manifest_path, manifest)
-                _assert_stage_revision(project_dir, episode, group_id, revision, plan_revision)
-                message = "video_visual_review_failed_or_unavailable: preserve generated clips; recheck before regeneration"
-                for index, _, item in generated_segments:
-                    record_video_segment_result(
-                        project_dir, episode, group_id, durable_segment_ids[index - 1],
-                        status="partial_failure", provider_task_id=item.provider_task_id,
-                        result={"output_path": str(item.output_path), "qc_passed": False},
-                        expected_revision=revision,
-                    )
-                record_stage_result(
-                    project_dir, episode, group_id, "video", expected_revision=revision,
-                    status="partial_failure", error=message,
-                    video_asset=str(generated.output_path), manifest_asset=str(manifest_path),
-                )
-                return {"status": "partial_failure", "qc_passed": False, "error": message,
-                        "group_id": group_id, "revision": revision,
-                        "video_asset": str(generated.output_path), "manifest_asset": str(manifest_path)}
             save_h3_director_manifest(manifest_path, manifest)
 
         expected_output = (
@@ -3165,6 +3249,7 @@ async def _execute_inner(
             }
 
         try:
+            report(0.93, "分离对白与环境音轨…")
             if any(segment.dialogue_source is DialogueSource.EXTERNAL_TTS for segment in segments):
                 try:
                     stems = await _separate_stems(
@@ -3202,6 +3287,7 @@ async def _execute_inner(
             segment.segment_id: (item.provider_task_id, str(item.output_path))
             for _, segment, item in generated_segments
         }
+        report(0.96, "写入成片与生成清单…")
         manifest = _finalize_segment_manifest(
             manifest,
             generated=generated_by_segment,
@@ -3209,6 +3295,7 @@ async def _execute_inner(
             physical_video=str(generated.output_path),
             provider_parameters=generated.provider_parameters,
             actual_output=generated.actual_output,
+            qc_recovery_pending=bool(segment_errors) and recover_qc_media,
             original_audio_path=stems.get("original_audio_path"),
             original_audio_status=(
                 "succeeded" if stems.get("original_audio_path") else "unavailable"

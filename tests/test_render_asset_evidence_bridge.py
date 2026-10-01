@@ -5,7 +5,8 @@ from PIL import Image
 
 
 @pytest.mark.parametrize("character_name", [None, "林舟", "林_舟"])
-def test_verified_render_snapshot_reaches_video_asset_evidence(tmp_path, monkeypatch, character_name):
+@pytest.mark.parametrize("portrait", [False, True])
+def test_verified_render_snapshot_reaches_video_asset_evidence(tmp_path, monkeypatch, character_name, portrait):
     from novelvideo.task_backend.runners import narrative_group as image_runner
     from novelvideo.task_backend.runners.narrative_group_video import _explicit_asset_evidence
 
@@ -33,10 +34,17 @@ def test_verified_render_snapshot_reaches_video_asset_evidence(tmp_path, monkeyp
         snapshot["images"][0].update({
             "entity_id": identity_id,
             "asset_kind": "character_identity",
-            "asset_slot_id": f"character:{character_name}:state:{identity_id}",
+            "asset_slot_id": (f"character:{character_name}:portrait" if portrait else
+                              f"character:{character_name}:state:{identity_id}"),
         })
-    monkeypatch.setattr(image_runner, "_grid_prompt", lambda *_a, **_k: "prompt")
     generated = image_runner._snapshot_generation_input(payload, snapshot)
+    if character_name:
+        assert f"character {character_name}," in generated.prompt
+        if portrait:
+            assert "face identity only" in generated.prompt
+            assert "not a wardrobe reference" in generated.prompt
+        else:
+            assert "wardrobe reference" in generated.prompt
     render = {
         "cell_assets": [{"beat_id": "shot-1", "path": "frames/1.png"}],
         "provider_parameters": {"reference_audit": dict(generated.reference_audit)},

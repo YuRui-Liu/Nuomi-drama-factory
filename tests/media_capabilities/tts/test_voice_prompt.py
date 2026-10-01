@@ -128,3 +128,31 @@ def test_character_voice_description_rejects_real_person_imitation() -> None:
         compile_character_voice_description(
             gender="female", age_group="youth", role="", raw_description="模仿周杰伦的声音"
         )
+
+
+def test_unknown_age_and_gender_do_not_become_young_neutral_voice():
+    description = compile_character_voice_description()
+    assert "青年" not in description
+    assert "中性" not in description
+
+
+@pytest.mark.parametrize("age,label", [("老年", "老年"), (" middle ", "中年"), ("幼年", "儿童")])
+def test_character_age_aliases(age, label):
+    assert label in compile_character_voice_description(age_group=age)
+
+
+def test_invalid_age_is_not_silently_replaced():
+    with pytest.raises(VoiceSpecError, match="age"):
+        compile_character_voice_description(age_group="typo")
+
+
+def test_character_biography_is_not_copied_when_it_contains_sound_keyword():
+    instruction = compile_character_voice_description(
+        raw_description="声音温和。身穿黑衣，出生于东海，肩负复仇使命。"
+    )
+    assert "黑衣" not in instruction
+    assert "复仇" not in instruction
+
+
+def test_old_age_does_not_force_huskiness():
+    assert "沙哑" not in compile_character_voice_description(age_group="elder")

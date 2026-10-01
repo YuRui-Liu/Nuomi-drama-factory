@@ -115,7 +115,7 @@ export function CharacterStatsStrip({
     <ul
       aria-label="角色统计"
       className={cn(
-        "flex flex-wrap items-center justify-center gap-x-10 gap-y-2 py-1.5",
+        "flex flex-wrap items-center gap-x-5 gap-y-2 py-1.5",
         className,
       )}
     >
@@ -133,7 +133,7 @@ export function CharacterStatsStrip({
               tone === "warning" && "text-amber-600 dark:text-amber-300",
             )}
           />
-          <div className="flex items-center gap-5">
+          <div className="flex items-center gap-2">
             <span className="truncate text-[11px] text-muted-foreground">
               {label}
             </span>

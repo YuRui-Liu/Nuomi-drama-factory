@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { AlertTriangle, Check, Loader2, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -30,6 +30,7 @@ interface CharacterStateVersionsProps {
   characterName: string;
   identityId: string;
   legacyAssetPath?: string | null;
+  onPreview?: (imageUrl: string) => void;
 }
 
 const V1_PANELS = ["front", "side", "back"];
@@ -106,6 +107,7 @@ export function CharacterStateVersions({
   characterName,
   identityId,
   legacyAssetPath,
+  onPreview,
 }: CharacterStateVersionsProps) {
   const { t } = useTranslation();
   const slotId = `character:${characterName}:state:${identityId}`;
@@ -120,6 +122,11 @@ export function CharacterStateVersions({
   const [qcUnavailableVersionId, setQcUnavailableVersionId] = useState<string | null>(null);
   const [deleteVersionId, setDeleteVersionId] = useState<string | null>(null);
   const payload = slotQuery.data?.ok ? slotQuery.data.data : undefined;
+  const [previewVersionId, setPreviewVersionId] = useState<string | null>(null);
+  const previewVersion = payload?.versions.find((version) => version.version_id === previewVersionId)
+    ?? payload?.current_version
+    ?? [...(payload?.versions ?? [])].sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))[0];
+  useEffect(() => { onPreview?.(previewVersion ? assetMediaUrl(project, previewVersion.asset_path) : ""); }, [onPreview, project, previewVersion?.asset_path]);
 
   if (slotQuery.isLoading) {
     return (
@@ -255,6 +262,7 @@ export function CharacterStateVersions({
                 className="aspect-video w-full bg-white/[0.025] object-contain"
               />
               <div className="space-y-2 p-3">
+                {onPreview && <Button variant="outline" size="sm" aria-pressed={previewVersion?.version_id === version.version_id} onClick={() => setPreviewVersionId(version.version_id)}>查看大图</Button>}
                 <div className="flex items-center justify-between gap-2">
                   <span className="flex items-center gap-1 text-xs font-medium">
                     {version.qc_passed ? (
@@ -295,6 +303,10 @@ export function CharacterStateVersions({
                     {issues.map((issue) =>
                       t(`characters.stateVersions.qcIssues.${issue}${isV3(version) && issue === "front_face_detected" ? "V3" : ""}`, { defaultValue: issue }),
                     ).join(t("characters.stateVersions.issueSeparator"))}
+                    {issues.map((issue) => {
+                      const evidence = version.generation_metadata?.quality_report?.evidence?.[issue];
+                      return evidence ? <p key={issue} className="mt-1">{evidence}</p> : null;
+                    })}
                   </div>
                 )}
 

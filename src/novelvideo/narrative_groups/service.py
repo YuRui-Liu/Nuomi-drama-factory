@@ -396,6 +396,8 @@ def load_effective_groups(
     project_dir: str | Path,
     episode: int,
     legacy_beats: Iterable[Any],
+    *,
+    aspect_ratio: str | None = None,
 ) -> list[NarrativeGroup]:
     """Read active director groups through the legacy narrative-group DTO."""
     project_path = Path(project_dir)
@@ -403,7 +405,7 @@ def load_effective_groups(
     if active is None:
         return ensure_groups(project_dir, episode, legacy_beats)
 
-    return _materialize_active_groups(project_path, episode, active)
+    return _materialize_active_groups(project_path, episode, active, aspect_ratio=aspect_ratio)
 
 
 def _empty_stages() -> dict[StageName, GroupStageState]:
@@ -432,11 +434,16 @@ def _materialize_active_groups(
     project_path: Path,
     episode: int,
     active: Any,
+    *,
+    aspect_ratio: str | None = None,
 ) -> list[NarrativeGroup]:
     """Synchronize the active DirectorPlan projection into the mutable sidecar."""
     with _sidecar_guard(project_path, episode):
         previous_groups = load_groups(project_path, episode)
         previous_by_id = {group.id: group for group in previous_groups}
+        if aspect_ratio is None:
+            aspect_ratio = next((str(batch["aspect_ratio"]) for prior in previous_groups
+                for batch in prior.generation_batches if batch.get("aspect_ratio") in {"9:16", "16:9"}), "9:16")
         projected = []
         from novelvideo.director_plan.generation import (
             plan_generation_batches,
@@ -502,6 +509,7 @@ def _materialize_active_groups(
                         group,
                         revision_id=active.revision_id,
                         style_snapshot_hash=style_snapshot_hash,
+                        aspect_ratio=aspect_ratio,
                     )
                 ),
                 video_segments=tuple(
@@ -534,6 +542,7 @@ def _materialize_active_groups(
                 group,
                 revision_id=active.revision_id,
                 style_snapshot_hash=style_snapshot_hash,
+                aspect_ratio=aspect_ratio,
             )
             video_segments = plan_video_segments(
                 group,
@@ -700,7 +709,8 @@ def _apply_image_prompt_overrides(
     applied: list[dict[str, Any]] = []
     for beat in beats:
         override = str(overrides.get(str(beat.get("id") or "")) or "").strip()
-        applied.append({**beat, "visual_description": override} if override else beat)
+        applied.append({**beat, "visual_description": override,
+                        "image_prompt_override": override} if override else beat)
     return applied
 
 
@@ -723,6 +733,7 @@ def generation_beats_for_group(
         raise KeyError(group_id)
     dialogue_sources = {}
     if active.semantic_revision_id:
+        from novelvideo.screenplay_semantics.parser import split_speaker_delivery
         from novelvideo.screenplay_semantics.store import ScreenplaySemanticStore
 
         semantic = ScreenplaySemanticStore(Path(project_dir)).load(
@@ -733,12 +744,14 @@ def generation_beats_for_group(
         for scene in semantic.scenes:
             speaker = scene.characters[0] if len(scene.characters) == 1 else ""
             tone = ""
+            pending_tone = ""
             for block in sorted(scene.blocks, key=lambda item: item.ordinal):
                 if block.kind == "speaker":
-                    speaker = block.text.strip().rstrip("：:")
-                    tone = ""
+                    speaker, tone = split_speaker_delivery(block.text.strip().rstrip("：:"))
+                    pending_tone = tone
                 elif block.kind == "parenthetical":
                     tone = block.text.strip()
+                    pending_tone = tone
                 elif block.kind == "dialogue":
                     text = block.text.strip()
                     import re
@@ -746,7 +759,11 @@ def generation_beats_for_group(
                     inline = re.match(r"^([^：:\n]{1,40})[：:]\s*(.+)$", text, re.S)
                     if inline:
                         speaker, text = inline.group(1).strip(), inline.group(2).strip()
+                        # Parentheticals describe delivery or voice source, not identity.
+                        speaker, tone = split_speaker_delivery(speaker)
+                        tone = tone or pending_tone
                     dialogue_sources[block.id] = {"speaker": speaker, "text": text, "tone": tone}
+                    pending_tone = ""
     beats = []
     for shot in group.shots:
         dialogue_lines = []
@@ -792,6 +809,7 @@ def generation_beats_for_group(
             "composition": shot.composition,
             "camera_motion": shot.camera_motion,
             "cinematography": shot.cinematography.model_dump(mode="json") if shot.cinematography else None,
+            "director_intent": shot.intent.model_dump(mode="json") if shot.intent else None,
             "dialogue_source_ids": list(shot.dialogue_source_ids),
             "dialogue_lines": dialogue_lines,
             "dialogue": "\n".join(line["text"] for line in dialogue_lines),
@@ -1211,6 +1229,8 @@ def advance_revision(
         if original is None:
             raise KeyError(group_id)
         current = original.stages.get(stage, GroupStageState())
+        if current.provider_parameters.get("cell_repair", {}).get("status") in {"queued", "running"}:
+            raise RuntimeError("本组分镜修复正在进行中")
         if expected_revision is not None and current.revision != int(expected_revision):
             raise RuntimeError(f"narrative group {stage} revision is stale")
         # A new image request after completion buys new content. Decide under
@@ -1401,6 +1421,26 @@ def restore_video_reservation(
         if restored:
             save_groups(project_dir, episode, updated)
         return restored
+
+
+def fail_unowned_image_enqueue(project_dir, episode, group_id, stage, revision):
+    """Release only a still-queued image reservation after proven absent task."""
+    with _sidecar_guard(project_dir, episode):
+        groups = load_materialized_groups(project_dir, episode)
+        updated = []
+        changed = False
+        for group in groups:
+            current = group.stages.get(stage)
+            if (group.id == group_id and current is not None
+                and current.revision == revision and current.status == 'queued'):
+                stages = dict(group.stages)
+                stages[stage] = replace(current, status='failed', error='任务入队失败，可重试；未启动生成。')
+                group = replace(group, stages=stages)
+                changed = True
+            updated.append(group)
+        if changed:
+            save_groups(project_dir, episode, updated)
+        return changed
 
 
 def record_stage_result(
@@ -1984,20 +2024,23 @@ def update_video_manifest_dialogue_source(
         if span_index < 0 or span_index >= len(manifest.entries):
             raise IndexError(span_index)
         source = DialogueSource(dialogue_source)
+        if source is DialogueSource.EXTERNAL_TTS and (
+            manifest.ambience_stem_status != "succeeded"
+            or not Path(manifest.ambience_stem_path or "").is_file()
+        ):
+            raise RuntimeError(
+                "环境音轨尚不可用，无法切换为外部配音。请先完成音轨分离，"
+                "或保留 H3 原声直接合成；无需重新生成视频。"
+            )
         entries = []
         for index, entry in enumerate(manifest.entries):
             segment = entry.segment
             if index == span_index:
                 segment = segment.model_copy(update={"dialogue_source": source})
-            entries.append(H3TimelineEntry(
-                segment=segment,
-                start_frame=entry.start_frame,
-                frame_count=entry.frame_count,
-                physical_video=entry.physical_video,
-                format_version=entry.format_version,
-                workflow_id=entry.workflow_id,
-                provider_task_id=entry.provider_task_id,
-            ))
+            entries.append(entry.model_copy(update={
+                "segment": segment,
+                "dialogue_source": source if index == span_index else entry.dialogue_source,
+            }))
         updated = H3DirectorOutputManifest(
             **manifest.model_dump(exclude={"entries"}), entries=tuple(entries)
         )

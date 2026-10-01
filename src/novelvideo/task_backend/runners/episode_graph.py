@@ -11,7 +11,7 @@ from cognee.infrastructure.engine import DataPoint
 from cognee.infrastructure.engine.models.FieldAnnotations import Embeddable
 
 from novelvideo.episode_graph.checkpoints import EpisodeGraphCheckpointStore
-from novelvideo.episode_graph.models import EpisodeGraphSource
+from novelvideo.episode_graph.models import ConflictValues, EpisodeGraphSource
 from novelvideo.episode_graph.service import EpisodeGraphBuildService
 from novelvideo.episode_import_service import CogneeShadowBuild, CogneeShadowGraph
 from novelvideo.episode_source_store import EpisodeSourceStore
@@ -37,6 +37,13 @@ def _node_id(key: str) -> str:
     return str(uuid5(NAMESPACE_URL, f"novelvideo:episode-graph:{key}"))
 
 
+def _serialize_conflict(value: object) -> dict[str, Any]:
+    # Preserve the wrapper: competing lists must not become one native list.
+    if isinstance(value, ConflictValues):
+        return value.model_dump(mode="json")
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 class CogneeGraphCandidate:
     """Concrete Cognee graph/vector writer bound to one candidate runtime."""
 
@@ -60,7 +67,7 @@ class CogneeGraphCandidate:
             props = {
                 "name": entity.name,
                 "type": entity.kind,
-                "attributes_json": json.dumps(entity.attributes, ensure_ascii=False, sort_keys=True),
+                "attributes_json": json.dumps(entity.attributes, ensure_ascii=False, sort_keys=True, default=_serialize_conflict),
                 "source_episodes_json": json.dumps(sorted(entity.source_episodes)),
             }
             point = EpisodeGraphPoint(
@@ -86,7 +93,7 @@ class CogneeGraphCandidate:
                 "type": "event",
                 "episode": event.episode,
                 "ordinal": event.ordinal,
-                "attributes_json": json.dumps(event.attributes, ensure_ascii=False, sort_keys=True),
+                "attributes_json": json.dumps(event.attributes, ensure_ascii=False, sort_keys=True, default=_serialize_conflict),
                 "source_episodes_json": json.dumps(sorted(event.source_episodes)),
             }
             point = EpisodeGraphPoint(
@@ -110,7 +117,7 @@ class CogneeGraphCandidate:
                 relation.relation_type,
                 {
                     "episode": relation.episode,
-                    "attributes_json": json.dumps(relation.attributes, ensure_ascii=False, sort_keys=True),
+                    "attributes_json": json.dumps(relation.attributes, ensure_ascii=False, sort_keys=True, default=_serialize_conflict),
                     "source_episodes_json": json.dumps(sorted(relation.source_episodes)),
                 },
             )

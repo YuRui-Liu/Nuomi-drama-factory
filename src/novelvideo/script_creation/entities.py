@@ -5,6 +5,7 @@ No names are used to infer relationships. All writes share the project DB transa
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 
 from novelvideo.models import NovelCharacter
@@ -13,6 +14,29 @@ from .store import DocumentConflict, DocumentNotFound, DocumentValidation, _dige
 
 KINDS = {"people": "character", "scenes": "scene", "props": "prop"}
 TABLES = {"character": "characters", "scene": "scenes", "prop": "props"}
+
+
+def _design_prompt(asset_type: str, description: str) -> str:
+    """Copy only explicit single-line visual fields from the design contract.
+
+    Narrative roles, planned appearances, ownership and continuity may describe
+    future events rather than a drawable asset. Keep those in the source text.
+    Unlabeled prose and continuation lines remain there too; do not infer facts.
+    """
+    labels = {
+        "scene": {"空间布局", "视觉/光线", "关键物件"},
+        "prop": {"外观材质"},
+    }[asset_type]
+    fields = []
+    for line in description.splitlines():
+        line = re.sub(r"^\s*(?:[-*+]\s+)?", "", line).replace("**", "")
+        parts = re.split(r"[：:]", line, maxsplit=1)
+        if len(parts) != 2:
+            continue
+        label, value = parts
+        if label.strip() in labels and value.strip():
+            fields.append(f"{label.strip()}：{value.strip()}")
+    return "\n".join(fields)
 
 
 class EntityService:
@@ -172,7 +196,11 @@ class EntityService:
                         asset_name = NovelCharacter(name=asset_name, age_group="").name
                         await db.execute("INSERT INTO characters(name,description,age_group) VALUES (?,?,?)", (asset_name, description, ""))
                     else:
-                        await db.execute(f"INSERT INTO {TABLES[asset_type]}(name,description) VALUES (?,?)", (asset_name, description))
+                        prompt_field = "environment_prompt" if asset_type == "scene" else "visual_prompt"
+                        await db.execute(
+                            f"INSERT INTO {TABLES[asset_type]}(name,description,{prompt_field}) VALUES (?,?,?)",
+                            (asset_name, description, _design_prompt(asset_type, description)),
+                        )
                     asset_id = (await (await db.execute("SELECT asset_uuid FROM asset_registry WHERE kind=? AND current_name=? AND deleted_at IS NULL", (asset_type, asset_name))).fetchone())[0]
                 if asset_id:
                     target = await (await db.execute(f"""SELECT r.asset_uuid FROM asset_registry r JOIN {TABLES[asset_type]} a ON a.name=r.current_name

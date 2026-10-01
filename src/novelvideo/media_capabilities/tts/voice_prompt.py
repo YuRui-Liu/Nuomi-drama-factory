@@ -33,10 +33,10 @@ def _validate(spec: VoiceSpec) -> None:
         raise VoiceSpecError("voice specification must not reference a real person")
 
     pitch = _clean(spec.pitch).lower()
-    if ("high" in pitch and "low" in pitch) or ("高音" in pitch and "低音" in pitch):
+    if re.search(r"\bhigh\b|高音|高亢", pitch) and re.search(r"\blow\b|低音|低沉", pitch):
         raise VoiceSpecError("pitch is contradictory")
     pace = _clean(spec.pace).lower()
-    if ("fast" in pace and "slow" in pace) or ("快速" in pace and "缓慢" in pace):
+    if re.search(r"\bfast\b|快速|很快", pace) and re.search(r"\bslow\b|缓慢|很慢", pace):
         raise VoiceSpecError("pace is contradictory")
 
 
@@ -63,42 +63,46 @@ def compile_voice_instruction(spec: VoiceSpec) -> str:
 def compile_character_voice_description(
     *, gender: str = "", age_group: str = "", role: str = "", raw_description: str = ""
 ) -> str:
-    """Build a compact Qwen3 VoiceDesign instruction from audible attributes only."""
+    """Compatibility adapter; use the same VoiceSpec compiler as the pipeline."""
     raw = _clean(raw_description)
     _validate(VoiceSpec(texture=raw))
-    gender_label = "女性" if gender.lower() in {"female", "女", "woman"} else (
-        "男性" if gender.lower() in {"male", "男", "man"} else "中性"
+    audible = "；".join(
+        part.strip() for part in re.split(r"[。；;！!？?\n]", raw)
+        if re.search(r"音色|声线|嗓音|声音|语速|吐字|口音|沙哑|清亮|低沉", part)
+        and not re.search(r"身穿|出生|使命|不说人话|不会说话", part)
     )
-    age_label = {
-        "child": "儿童", "teen": "青少年", "youth": "青年",
-        "young": "青年", "middle": "中年", "elder": "老年",
-    }.get(age_group.lower(), "青年")
-    role_text = _clean(role)
-    if age_label in {"儿童", "青少年"}:
-        pitch, texture, pace = "中高音", "清澈自然", "语速稍快，节奏灵活"
-    elif age_label == "老年":
-        pitch, texture, pace = "低音", "浑厚微沙哑", "语速缓慢，气息平稳"
-    elif any(word in role_text for word in ("反派", "冷峻", "威严", "强势")):
-        pitch, texture, pace = "中低音", "沉稳略带颗粒感", "语速偏慢，停顿明确"
-    elif gender_label == "女性":
-        pitch, texture, pace = "中高音", "清亮温润", "语速中等，节奏自然"
-    else:
-        pitch, texture, pace = "中低音", "温暖沉稳", "语速中等，停顿自然"
-    emotion = (
-        "情绪克制、压迫感适中，关键句力度加重"
-        if any(word in role_text for word in ("反派", "冷峻", "威严"))
-        else "整体情绪自然可信，表达有适度起伏但不过度夸张"
-    )
-    audible_keywords = ("音", "声", "嗓", "语速", "吐字", "口音", "情绪", "沙哑", "清亮", "低沉")
-    audible_raw = raw if any(word in raw for word in audible_keywords) else ""
-    parts = [
-        f"{age_label}{gender_label}，{pitch}，音色{texture}",
-        f"{pace}，吐字清晰",
-        emotion,
-    ]
-    if audible_raw:
-        parts.append(audible_raw[:240])
-    return "；".join(parts) + "。"
+    label = AGE_LABELS[normalize_voice_age(age_group)]
+    gender_label = GENDER_LABELS.get(gender.strip().lower(), "")
+    return compile_voice_instruction(VoiceSpec(
+        age_impression=label + gender_label,
+        pitch="" if audible else "中低音",
+        texture=audible or "自然",
+        articulation="吐字清晰" if not audible else "",
+        pace="节奏自然" if not audible else "",
+    ))
+
+
+AGE_LABELS = {"": "", "child": "儿童", "teen": "青少年", "youth": "青年", "middle": "中年", "elder": "老年"}
+AGE_ALIASES = {
+    "unknown": "", "未知": "", "young": "youth", "young adult": "youth",
+    "儿童": "child", "幼年": "child", "少年": "teen", "青少年": "teen",
+    "青年": "youth", "中年": "middle", "middle-aged": "middle", "老年": "elder", "elderly": "elder",
+}
+GENDER_LABELS = {"female": "女性", "女": "女性", "woman": "女性", "male": "男性", "男": "男性", "man": "男性"}
+
+
+def normalize_voice_age(value: str) -> str:
+    value = str(value or "").strip().lower()
+    value = AGE_ALIASES.get(value, value)
+    if value not in AGE_LABELS:
+        raise VoiceSpecError(f"invalid voice age: {value}")
+    return value
+
+
+def prepare_character_voice_request(*args, **kwargs):
+    from novelvideo.media_capabilities.tts.character_voice import prepare_character_voice_request as prepare
+
+    return prepare(*args, **kwargs)
 
 
 __all__ = ["compile_character_voice_description", "compile_voice_instruction"]

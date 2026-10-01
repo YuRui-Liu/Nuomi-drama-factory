@@ -65,6 +65,8 @@ class IdentitySheetQualityReport(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     style_family: IdentitySheetStyleFamily
     technical_error: str | None = None
+    qc_input_snapshot: dict[str, str] = Field(default_factory=dict)
+    evidence: dict[str, str] = Field(default_factory=dict)
 
 
 def classify_identity_sheet_style(
@@ -144,6 +146,16 @@ def resolve_identity_sheet_style_family(
     return explicit
 
 
+AUTHORED_STATE_POLICY = """Authored or confirmed pallor, dead eyes, injuries and infection-related skin changes
+specified in the expected character state are intentional design, not rendering defects.
+Do not restore a healthy or beautified appearance or infer a different species from infection.
+These explicit state details take precedence over generic lively-eye and healthy-skin defaults.
+Preserve the stated humanoid anatomy and recognizable identity when the state is humanoid.
+Unintended anatomy changes and accidental cropping remain defects; do not invent injuries
+or missing limbs. An explicitly stated missing part is not accidental cropping.
+The clean headless front-panel boundary and all panel geometry rules still apply."""
+
+
 def style_quality_instructions(family: IdentitySheetStyleFamily) -> str:
     if family is IdentitySheetStyleFamily.TWO_D:
         return (
@@ -190,6 +202,7 @@ def build_identity_sheet_v3_prompt(
     ethnicity: str,
     has_costume_reference: bool,
     project_dir: str | Path | None = None,
+    nonhuman_species: str = "",
 ) -> str:
     """Compile the provider-neutral, single-face Identity Sheet v3 prompt."""
     style_family = resolve_identity_sheet_style_family(project_style, project_dir=project_dir)
@@ -211,6 +224,26 @@ COSTUME REFERENCE (CRITICAL):
 - Combine the Portrait identity with the costume reference; do not copy its person or face.
 """
     quality = style_quality_instructions(style_family)
+    if nonhuman_species:
+        return f"""Identity Sheet v3 for {character_tag} ({character_name}).
+NONHUMAN ANATOMY: {nonhuman_species}. Preserve the species and natural anatomy specified below.
+Never substitute an anthropomorphic human body. If four-legged, retain all four animal legs,
+natural paws, torso and tail; never stand upright as a person. Default to no clothing,
+shoes or accessories unless explicitly required by CHARACTER STATE.
+Create exactly three separate panels on a neutral gray background, newly rendered:
+- LEFT 40%: headless front body reference in the species' natural posture. Retain the entire
+body, limbs and tail inside the panel, with a clean non-bloody anatomical neck boundary.
+No head, face, wound, exposed tissue, mannequin or mask in this panel.
+- CENTER 30%: complete rear view including head and tail, fully facing away, no visible face.
+- RIGHT 30%: large unobstructed three-quarter animal portrait, the sheet's only visible face.
+Use the confirmed Portrait as facial identity authority. Keep clear neutral gutters at
+40% and 70%, safe margins, and consistent anatomy, fur, markings and state across views.
+CHARACTER STATE:
+{appearance}
+PROJECT STYLE: {project_style}. {style_instructions}. {quality}
+Flat even lighting. No environment, props, text, watermark, action or dramatic lighting.
+ADDITIONAL EXCLUSIONS: {avoid_instructions}
+""".strip()
     return f"""Identity Sheet v3 for {character_tag} ({character_name}).
 Create exactly one 3-panel sheet, LEFT TO RIGHT, with fixed proportional regions.
 The confirmed Portrait is an identity reference only. Never copy or paste pixels from the reference image into the output; newly render every panel:
@@ -231,6 +264,7 @@ IDENTITY AND STATE LOCK:
 
 CHARACTER STATE:
 {appearance}
+{AUTHORED_STATE_POLICY}
 {costume_block}
 PROJECT STYLE:
 - Preserve the configured project style ({project_style}): {style_instructions}

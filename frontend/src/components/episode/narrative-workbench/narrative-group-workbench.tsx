@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 import { Loader2, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "@tanstack/react-router";
 import { HTTPError } from "ky";
@@ -13,7 +13,7 @@ import { useTaskController } from "@/hooks/use-task-controller";
 import { queryKeys } from "@/lib/query-keys";
 import { aspectRatioForOrientation, type Orientation } from "@/lib/aspect-ratio";
 import { useUpdateProject } from "@/lib/queries/projects";
-import { NarrativeGroupList } from "./narrative-group-list";
+import { NarrativeGroupList, narrativeGroupDisplayTitle, narrativeGroupScopeLabel } from "./narrative-group-list";
 import { GroupPipeline } from "./group-pipeline";
 import { GroupVideoStage, groupFrameSummary } from "./group-video-stage";
 import { GroupVideoResult } from "./group-video-result";
@@ -63,7 +63,7 @@ function validVideoReferences(
     });
 }
 
-export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { project: string; episode: number; onRepairBeat?: (beatId: string) => void }) {
+export function NarrativeGroupWorkbench({ project, episode, onRepairBeat, view = "all", onReviewRequest }: { project: string; episode: number; onRepairBeat?: (beatId: string) => void; view?: "image" | "video" | "all"; onReviewRequest?: () => void }) {
   const navigate = useNavigate();
   const { t } = useTranslation();
   const { orientation, setOrientation } = useProjectAspectRatio(project);
@@ -79,6 +79,7 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
   const [videoSettingsSaving, setVideoSettingsSaving] = useState(false);
   const [selectedVideoModelId, setSelectedVideoModelId] = useState<string | null>(null);
   const [renderSettingsOpen, setRenderSettingsOpen] = useState(false);
+  const [videoControlsTarget, setVideoControlsTarget] = useState<HTMLDivElement | null>(null);
   const [styleDialogOpen, setStyleDialogOpen] = useState(false);
   const [renderModelDraft, setRenderModelDraft] = useState("gpt-image-2");
   const [renderImageSizeDraft, setRenderImageSizeDraft] = useState<NarrativeImageSize>("1K");
@@ -95,6 +96,16 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
   const select = useEpisodeWorkbenchStore((s) => s.setNarrativeGroupSelection);
   const mediaDefaults = defaultsQuery.data?.ok ? defaultsQuery.data.data : undefined;
   const groups = groupsQuery.data?.ok ? groupsQuery.data.data : [];
+  const requestedGroup = new URLSearchParams(window.location.search).get('group');
+  const appliedGroupLink = useRef<string | null>(null);
+  useEffect(() => {
+    const linkKey = JSON.stringify([project, episode, requestedGroup]);
+    if (requestedGroup && appliedGroupLink.current !== linkKey && groups.some(item => item.id === requestedGroup)) {
+      appliedGroupLink.current = linkKey;
+      select({ project, episode }, requestedGroup);
+    }
+    if (!requestedGroup) appliedGroupLink.current = null;
+  }, [project, episode, requestedGroup, groups, select]);
   const group = groups.find((item) => item.id === selectedId) ?? groups.find((item) => item.stages.video.status !== "completed") ?? groups[0];
   const referencesQuery = useNarrativeGroupReferences(project, episode, pendingAction?.groupId ?? "", pendingAction?.stage ?? "render", pendingAction !== null);
   const referenceUpload = useUploadNarrativeReference(project, episode, pendingAction?.groupId ?? "", pendingAction?.stage ?? "render");
@@ -169,7 +180,12 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
       await updateProject.mutateAsync({
         aspect_ratio: aspectRatioForOrientation(nextOrientation),
       });
-      toast.success("项目画幅已保存");
+      toast.success("画幅已变更，请重新生成并激活镜头方案", {
+        duration: 10000,
+        action: { label: "前往镜头方案", onClick: () => void navigate({
+          to: "/projects/$project/episodes/$episode/script", params: { project, episode: String(episode) },
+        }) },
+      });
     } catch (error) {
       setOrientation(previousOrientation);
       toast.error(error instanceof Error ? error.message : "项目画幅保存失败");
@@ -456,7 +472,14 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
   const referencePreview = videoReferenceQuery.data?.ok === true && queriedReferencePreview
     ? (savedReferencePreview?.groupId === group.id ? savedReferencePreview.preview : queriedReferencePreview)
     : null;
-  const selectedReferences = referencePreview?.selected ?? [];
+  // A failed or still-loading preview must not read as "no references selected".
+  // The stored per-group selection is what the next run will use, and a bogus 0
+  // here silently flipped auto mode to I2VA on a workflow whose reference policy
+  // requires reference images (`resolveAutomaticH3Mode`: references -> ref2va).
+  // The generate gate below still requires a loaded, valid preview.
+  const selectedReferences = referencePreview?.selected
+    ?? group.video_reference_settings?.references
+    ?? [];
   const referenceMaxImages = referencePreview?.max_images ?? referencePolicy?.max_images ?? 0;
   const referenceValid = referenceRevisionSynchronized && validVideoReferences(
     referencePreview,
@@ -468,14 +491,58 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat }: { pr
     && group.stages.video.status !== "queued" && group.stages.video.status !== "running"
     && (!referencePolicy || (referenceValid && !videoReferenceDirty && !videoReferenceQuery.isFetching
       && !videoReferenceQuery.isError && videoReferenceQuery.data?.ok === true)));
-  return <div className="flex h-full min-h-0 overflow-hidden" data-narrative-group-workbench>
-    <aside className="w-72 shrink-0 overflow-y-auto border-r border-white/10 p-4"><div className="mb-4 flex items-center justify-between"><h2 className="font-semibold">叙事组生产</h2><Button variant="ghost" size="icon" onClick={() => groupsQuery.refetch()}><RefreshCw className="size-4" /></Button></div><NarrativeGroupList groups={groups} selectedId={group.id} onSelect={(id) => select({ project, episode }, id)} /></aside>
+  return <div className="grid h-full min-h-0 grid-cols-1 overflow-y-auto lg:grid-cols-[188px_minmax(0,1fr)_280px] lg:overflow-hidden" data-narrative-group-workbench>
+    <aside className="max-h-48 min-h-0 overflow-y-auto border-b border-white/10 bg-white/[0.015] p-3 lg:max-h-none lg:border-r lg:border-b-0">
+      <div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-semibold">叙事组</h2><Button variant="ghost" size="icon-sm" aria-label="刷新叙事组" onClick={() => groupsQuery.refetch()}><RefreshCw className="size-3.5" /></Button></div>
+      <NarrativeGroupList groups={groups} selectedId={group.id} onSelect={(id) => select({ project, episode }, id)} />
+    </aside>
     <StyleChangeDialog open={styleDialogOpen} currentStyleId={group.effective_style_snapshot?.style_id ?? null} availableStyles={(stylesQuery.data?.data ?? []).map((style) => ({ id: style.id, label: style.label || style.name }))} saving={changeGroupStyle.isPending} onOpenChange={setStyleDialogOpen} onApply={applyStyleChange} />
     <GroupReferenceDialog project={project} episode={episode} groupId={pendingAction?.groupId ?? ""} open={pendingAction !== null} preview={referencesQuery.data?.ok ? referencesQuery.data.data : null} loading={referencesQuery.isLoading} error={referencesQuery.error instanceof Error ? referencesQuery.error : null} submitting={action.isPending} stage={pendingAction?.stage ?? "render"} defaultProvider={pendingAction?.stage === "sketch" ? mediaDefaults?.narrative_sketch_provider : mediaDefaults?.narrative_render_provider} defaultModel={pendingAction?.stage === "sketch" ? mediaDefaults?.narrative_sketch_model : mediaDefaults?.narrative_render_model} defaultImageSize={mediaDefaults?.narrative_render_image_size} sketchReady={group.stages.sketch.status === "completed" && !!group.stages.sketch.grid_asset} uploadingReference={referenceUpload.isPending} onResetUploadError={referenceUpload.reset} onUploadReference={async (file) => { const response = await referenceUpload.mutateAsync({ file }); return response.ok ? response.data : null; }} onResolvePlanning={() => { setPendingAction(null); void navigate({ to: "/projects/$project/episodes/$episode/script", params: { project, episode: String(episode) } }); }} onRetry={() => referencesQuery.refetch()} onSubmit={confirmAction} onOpenChange={(open) => { if (!open) setPendingAction(null); }} />
     {referencePolicy ? <GroupVideoReferenceDialog open={videoReferenceDialogOpen} onOpenChange={(open) => { setVideoReferenceDialogOpen(open); if (!open) setVideoReferenceDirty(false); }} project={project} episode={episode} groupId={group.id} preview={referencePreview} loading={videoReferenceQuery.isFetching} error={videoReferenceQuery.error instanceof Error ? videoReferenceQuery.error : videoReferenceQuery.data?.ok === false ? new Error(videoReferenceQuery.data.error) : null} minImages={referencePolicy.min_images} maxImages={referenceMaxImages} onDirtyChange={setVideoReferenceDirty} onRefresh={async () => { const response = await videoReferenceQuery.refetch(); return response.data?.ok ? response.data.data : undefined; }} onSaved={(saved) => { setSavedReferencePreview({ groupId: group.id, preview: saved }); setVideoReferenceDirty(false); void groupsQuery.refetch(); }} /> : null}
-    <main className="min-w-0 flex-1 overflow-y-auto p-5"><div className="mb-5 flex flex-wrap items-start justify-between gap-3"><div><div className="text-xs text-primary">叙事组 {String(group.ordinal).padStart(2, "0")}</div><h1 className="mt-1 text-xl font-semibold">{group.title || `Beat ${group.beat_ids.join("–")}`}</h1><p className="mt-1 text-xs text-muted-foreground">{group.layout.rows}×{group.layout.columns} · {group.beat_ids.length} 个 Beat · 多宫格生成后服务端自动切分</p>{group.stages.render.requested_image_size || group.stages.render.actual_pixel_size ? <p className="mt-1 text-[11px] text-muted-foreground">请求 {group.stages.render.requested_image_size ?? "—"}{group.stages.render.requested_pixel_size ? ` / ${group.stages.render.requested_pixel_size}` : ""} · 实际 {group.stages.render.actual_pixel_size ?? "—"}</p> : null}</div><div className="flex flex-wrap items-start justify-end gap-3">{aspectSelector}<Button variant="outline" size="sm" onClick={openRenderSettings}>实图设置</Button><Button variant="outline" size="sm" onClick={() => setStyleDialogOpen(true)}>修改风格</Button></div></div>{renderSettingsOpen ? <section className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-white/10 bg-black/20 p-3"><label className="space-y-1 text-xs"><span className="block text-muted-foreground">项目实图模型</span><select aria-label="项目实图模型" className="h-9 rounded-md border border-input bg-background px-3" value={renderModelDraft} onChange={(event) => { const nextModel = event.target.value; setRenderModelDraft(nextModel); setRenderImageSizeDraft(coerceNarrativeImageSize(nextModel, renderImageSizeDraft)); }}><option value="gpt-image-2">gpt-image-2</option><option value="gpt-image-2-vip">gpt-image-2-vip</option></select></label><label className="space-y-1 text-xs"><span className="block text-muted-foreground">项目实图分辨率</span><select aria-label="项目实图分辨率" className="h-9 rounded-md border border-input bg-background px-3" value={renderImageSizeDraft} onChange={(event) => setRenderImageSizeDraft(event.target.value as NarrativeImageSize)}>{supportedNarrativeImageSizes(renderModelDraft).map((size) => <option key={size} value={size}>{size}</option>)}</select></label><Button size="sm" disabled={updateDefaults.isPending} onClick={saveRenderSettings}>保存实图设置</Button><Button variant="ghost" size="sm" onClick={() => setRenderSettingsOpen(false)}>取消</Button></section> : null}<GenerationBatchSummary batches={group.generation_batches ?? []} /><GroupPipeline project={project} episode={episode} group={group} onAction={runAction} onRepairBeat={onRepairBeat} onRegenerateStage={(stage) => runAction(stage, "regenerate")} /><div className="mt-4 space-y-3"><GroupVideoParameters parameters={model?.parameters ?? []} projectDefaults={projectVideoDefaults} overrides={videoOverrides} aspectRatio={aspectRatio} busy={group.stages.video.status === "queued" || group.stages.video.status === "running"} saving={videoSettingsSaving || updateDefaults.isPending} onSaveOverride={saveVideoOverride} onRestoreDefault={restoreVideoDefault} onPromoteDefault={promoteVideoDefault} />{referenceNeedsVideoRegeneration ? <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">{t("narrativeVideoReferences.staleVideo")}</p> : needsVideoRegeneration ? <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">清晰度设置已变化，当前旧视频仍可预览；点击生成组合视频后才会按新设置重新生成。</p> : null}<GroupVideoStage modelId={modelId} mode={videoMode} models={catalog} modelSaving={updateDefaults.isPending || videoSettingsSaving} onModelChange={changeVideoModel} onModeChange={changeVideoMode} hasFirstFrame={frames.allHaveFirst} hasLastFrame={frames.allHaveLast} inputs={group.video_inputs} plan={group.video_plan} planSaving={videoPlanSaving || videoSettingsSaving || updateDefaults.isPending} workflowSynchronized={videoWorkflowSynchronized} taskStatus={group.stages.video.status} available={model?.available ?? false} unavailableReason={model?.unavailable_reason} reference={referencePolicy ? { required: true, count: selectedReferences.length, max: referenceMaxImages, valid: referenceValid, loading: videoReferenceQuery.isFetching, error: videoReferenceQuery.isError || videoReferenceQuery.data?.ok === false, dirty: videoReferenceDirty, onManage: () => setVideoReferenceDialogOpen(true) } : undefined} onPlanSave={saveGroupVideoPlan} onGenerate={runGroupVideo} /><GroupVideoSegmentList segments={group.video_segments ?? []} onRetrySegment={videoRequestAllowed ? retryVideoSegment : undefined} /><GroupVideoResult project={project} episode={episode} groupId={group.id} stage={group.stages.video} onDialogueSourceChange={async ({ spanIndex, dialogueSource }) => {
-      try { await updateDialogueSource.mutateAsync({ groupId: group.id, spanIndex, dialogueSource, revision: group.stages.video.revision }); toast.success("已提交重新合成，对应 H3 视频不会重新生成"); }
+
+    <main className="min-h-0 min-w-0 overflow-y-auto p-4">
+      <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0"><p className="text-[11px] text-primary">叙事组 {String(group.ordinal).padStart(2, "0")} · {narrativeGroupScopeLabel(group)}</p><h1 className="mt-1 text-base font-semibold">{narrativeGroupDisplayTitle(group)}</h1></div>
+        {onReviewRequest && <Button size="sm" variant="ghost" onClick={onReviewRequest}>审核镜头方案</Button>}
+      </header>
+      <section hidden={view === "video"} aria-label="分镜生图工作区">
+        {!!group.generation_batches?.length && <details className="mb-3 text-xs text-muted-foreground"><summary className="cursor-pointer">{group.generation_batches.length} 个生成批次 · 展开查看模型与分辨率</summary><GenerationBatchSummary batches={group.generation_batches} /></details>}
+        <GroupPipeline project={project} episode={episode} group={group} onAction={runAction} onRepairBeat={onRepairBeat} onRegenerateStage={(stage) => runAction(stage, "regenerate")} />
+      </section>
+      <section hidden={view === "image"} aria-label="视频制作工作区" className="space-y-4">
+        <section aria-label="当前组视频结果" className="mb-4"><GroupVideoResult project={project} episode={episode} groupId={group.id} stage={group.stages.video} onDialogueSourceChange={async ({ spanIndex, dialogueSource }) => {
+      try {
+        const response = await updateDialogueSource.mutateAsync({ groupId: group.id, spanIndex, dialogueSource, revision: group.stages.video.revision });
+        toast.success(response.ok && response.data.recomposition_deferred
+          ? "音频来源已保存，待本集视频与所选音轨齐全后可合成"
+          : dialogueSource === "external_tts"
+            ? "已提交角色声音克隆，将自动准备配音与环境音轨后合成，无需重新生成视频"
+            : "已提交重新合成，对应 H3 视频不会重新生成");
+      }
       catch (error) { toast.error(error instanceof Error ? error.message : "对白源切换提交失败"); }
-    }} /></div></main>
+    }} /></section>
+        {referenceNeedsVideoRegeneration ? <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">{t("narrativeVideoReferences.staleVideo")}</p> : needsVideoRegeneration ? <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">清晰度设置已变化，旧视频仍保留。确认参数后重新生成。</p> : null}
+        <GroupVideoStage controlsTarget={videoControlsTarget} modelId={modelId} mode={videoMode} models={catalog} modelSaving={updateDefaults.isPending || videoSettingsSaving} onModelChange={changeVideoModel} onModeChange={changeVideoMode} hasFirstFrame={frames.allHaveFirst} hasLastFrame={frames.allHaveLast} inputs={group.video_inputs} plan={group.video_plan} planSaving={videoPlanSaving || videoSettingsSaving || updateDefaults.isPending} workflowSynchronized={videoWorkflowSynchronized} taskStatus={group.stages.video.status} available={model?.available ?? false} unavailableReason={model?.unavailable_reason} reference={referencePolicy ? { required: true, count: selectedReferences.length, max: referenceMaxImages, valid: referenceValid, loading: videoReferenceQuery.isFetching, error: videoReferenceQuery.isError || videoReferenceQuery.data?.ok === false, dirty: videoReferenceDirty, onManage: () => setVideoReferenceDialogOpen(true) } : undefined} onPlanSave={saveGroupVideoPlan} onGenerate={runGroupVideo} />
+        <GroupVideoSegmentList segments={group.video_segments ?? []} onRetrySegment={videoRequestAllowed ? retryVideoSegment : undefined} />
+      </section>
+    </main>
+    <aside className="min-h-0 min-w-0 overflow-y-auto border-t border-white/10 bg-white/[0.025] p-4 lg:border-t-0 lg:border-l">
+      <section hidden={view === "video"} aria-label="分镜生成参数" className="space-y-4">
+        <h2 className="text-sm font-semibold">参考与生成参数</h2>
+        {group.stages.render.requested_pixel_size && <p className="text-[11px] text-muted-foreground">请求 {group.stages.render.requested_image_size ?? "—"} / {group.stages.render.requested_pixel_size} · 实际 {group.stages.render.actual_pixel_size ?? "—"}</p>}
+        <div className="border-b border-white/10 pb-4">{aspectSelector}</div>
+        <dl className="space-y-3 text-xs"><div><dt className="text-muted-foreground">实图模型</dt><dd className="mt-1 break-all">{mediaDefaults?.narrative_render_model || "尚未配置"}</dd></div><div><dt className="text-muted-foreground">分辨率</dt><dd className="mt-1">{group.stages.render.requested_image_size ?? mediaDefaults?.narrative_render_image_size ?? "1K"}{group.stages.render.actual_pixel_size ? " · 实际 " + group.stages.render.actual_pixel_size : ""}</dd></div><div><dt className="text-muted-foreground">多宫格</dt><dd className="mt-1">{group.layout.rows} × {group.layout.columns}</dd></div></dl>
+        <div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" onClick={openRenderSettings}>实图设置</Button><Button variant="outline" size="sm" onClick={() => setStyleDialogOpen(true)}>修改风格</Button></div>
+        {renderSettingsOpen ? <section className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-white/10 bg-black/20 p-3"><label className="space-y-1 text-xs"><span className="block text-muted-foreground">项目实图模型</span><select aria-label="项目实图模型" className="h-9 rounded-md border border-input bg-background px-3" value={renderModelDraft} onChange={(event) => { const nextModel = event.target.value; setRenderModelDraft(nextModel); setRenderImageSizeDraft(coerceNarrativeImageSize(nextModel, renderImageSizeDraft)); }}><option value="gpt-image-2">gpt-image-2</option><option value="gpt-image-2-vip">gpt-image-2-vip</option></select></label><label className="space-y-1 text-xs"><span className="block text-muted-foreground">项目实图分辨率</span><select aria-label="项目实图分辨率" className="h-9 rounded-md border border-input bg-background px-3" value={renderImageSizeDraft} onChange={(event) => setRenderImageSizeDraft(event.target.value as NarrativeImageSize)}>{supportedNarrativeImageSizes(renderModelDraft).map((size) => <option key={size} value={size}>{size}</option>)}</select></label><Button size="sm" disabled={updateDefaults.isPending} onClick={saveRenderSettings}>保存实图设置</Button><Button variant="ghost" size="sm" onClick={() => setRenderSettingsOpen(false)}>取消</Button></section> : null}
+        <p className="text-xs leading-6 text-muted-foreground">生成前可核对人物、场景和道具参考。选用新版本后，既有图像与视频仍保留。</p>
+        <Button className="w-full" onClick={() => runAction("render", group.stages.render.grid_asset ? "regenerate" : "generate")} disabled={action.isPending || ["queued","running"].includes(group.stages.render.status)}>检查参考并生成分镜</Button>
+      </section>
+      <section hidden={view === "image"} aria-label="视频生成参数" className="space-y-4">
+        <h2 className="text-sm font-semibold">视频参考与参数</h2>
+        <div ref={setVideoControlsTarget} className="[&>div]:!items-stretch [&>div]:!flex-col [&_button]:max-w-full [&_button]:whitespace-normal" />
+        <GroupVideoParameters parameters={model?.parameters ?? []} projectDefaults={projectVideoDefaults} overrides={videoOverrides} aspectRatio={aspectRatio} busy={group.stages.video.status === "queued" || group.stages.video.status === "running"} saving={videoSettingsSaving || updateDefaults.isPending} onSaveOverride={saveVideoOverride} onRestoreDefault={restoreVideoDefault} onPromoteDefault={promoteVideoDefault} />
+        <Button variant="outline" className="w-full" onClick={() => void navigate({to:"/projects/$project/episodes/$episode/compose",params:{project,episode:String(episode)}})}>前往整集合成 →</Button>
+      </section>
+    </aside>
   </div>;
 }

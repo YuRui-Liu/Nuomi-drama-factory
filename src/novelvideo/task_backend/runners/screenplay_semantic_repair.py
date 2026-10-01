@@ -198,7 +198,7 @@ def run_screenplay_semantic_repair(envelope: dict[str, Any], ctx: ProjectContext
 register_project_task_runner(
     "screenplay_semantic_repair",
     run_screenplay_semantic_repair,
-    text_task_role="screenplay_semantic_repair",
+    text_task_role="episode_normalization",
 )
 
 __all__ = [

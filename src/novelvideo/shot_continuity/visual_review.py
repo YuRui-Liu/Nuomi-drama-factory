@@ -15,6 +15,7 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from novelvideo.director_plan.cinematography import ShotCinematography
+from novelvideo.task_backend.cancel import TaskCancelled, TaskTimedOut, TaskLeaseLost
 from novelvideo.knowledge_runtime.codex import (
     MAX_STRUCTURED_IMAGE_BYTES,
     StructuredImage,
@@ -172,6 +173,8 @@ async def review_cinematography(
         if cache is not None:
             cache[key] = report
         return report
+    except (TaskCancelled, TaskTimedOut, TaskLeaseLost):
+        raise
     except Exception as error:
         error_type = type(error).__name__
         safe_type = error_type if re.fullmatch(r"[A-Za-z0-9_]{1,64}", error_type) else "Exception"

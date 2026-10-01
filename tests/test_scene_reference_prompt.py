@@ -7,6 +7,24 @@ from novelvideo.generators.scene_reference_images import build_scene_reference_p
 from novelvideo.models import NovelScene
 
 
+@pytest.mark.parametrize("kind", ["master", "spatial_layout", "reverse_master"])
+def test_scene_visual_prompt_does_not_hide_business_description(kind):
+    scene = NovelScene(name="水箱区", environment_prompt="狭窄金属走廊", description="居民唯一备用饮水地点，设备必须可维护。", notes="出入口与广播间保持连通")
+    prompt = build_scene_reference_prompt(kind, scene, has_master_reference=True,
+        source_context="文档revision-r1：水箱接缝需可见，禁止额外出口")
+    for value in (scene.environment_prompt, scene.description, scene.notes, "revision-r1", "禁止额外出口"):
+        assert value in prompt
+    assert "BUSINESS CONTEXT" in prompt
+
+
+def test_derived_scene_preserves_base_and_own_business_context():
+    base = NovelScene(name="大厅", environment_prompt="金属大厅", description="唯一疏散通道", notes="不可封死北出口")
+    scene = NovelScene(name="夜间大厅", base_scene_id="大厅", environment_prompt="夜景", description="夜间限行区域", notes="保留应急灯", time_of_day="night")
+    prompt = build_scene_reference_prompt("master", scene, base_scene=base)
+    for value in (base.description, base.notes, scene.description, scene.notes):
+        assert value in prompt
+
+
 @pytest.mark.asyncio
 async def test_grsai_poll_retries_transient_read_timeout(monkeypatch):
     from novelvideo.generators import scene_reference_images

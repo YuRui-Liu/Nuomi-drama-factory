@@ -251,3 +251,30 @@ async def test_repair_never_runs_more_than_two_rounds(tmp_path):
     ).repair(_base_revision(failed_scene_ids=("scene-1",)), max_rounds=9)
 
     assert rounds == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_repair_recovers_legacy_fields_before_invoking_runtime(tmp_path):
+    base = _base_revision(failed_scene_ids=("scene-1",))
+    old = base.scenes[0]
+    legacy = old.model_copy(update={
+        "characters": (),
+        "source_range": SourceRange(start_line=8, end_line=11),
+        "blocks": (
+            SourceBlock(id="line-8", ordinal=1, kind="dialogue", text="**出场人物：**阿远", source_range=SourceRange(start_line=8, end_line=8)),
+            SourceBlock(id="line-9", ordinal=2, kind="dialogue", text="**动作：**", source_range=SourceRange(start_line=9, end_line=9)),
+            *(b.model_copy(update={"ordinal": b.ordinal + 2}) for b in old.blocks),
+        ),
+    })
+    base = base.model_copy(update={"scenes": (legacy, *base.scenes[1:])})
+
+    async def invoke(scene, prompt):
+        assert scene.characters == ("阿远",)
+        assert [b.kind for b in scene.blocks[:2]] == ["cast", "formatting"]
+        return SceneRepairDraft(scene_id=scene.id, beats=(_draft(10),))
+
+    child = await ScreenplaySemanticRepairService(CountingStore(tmp_path), invoke=invoke).repair(base)
+    assert child.validation_report.passed
+    assert child.scenes[0].characters == ("阿远",)
+    assert [(b.id, b.text, b.source_range) for b in child.scenes[0].blocks] == [(b.id, b.text, b.source_range) for b in legacy.blocks]
+    assert base.scenes[0].characters == ()

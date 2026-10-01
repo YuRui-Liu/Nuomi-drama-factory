@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import mimetypes
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Collection
@@ -17,6 +17,26 @@ from novelvideo.utils.error_redaction import redact_secrets, safe_exception_mess
 
 
 _STABLE_PROVIDER_CODE = re.compile(r"[A-Z][A-Z0-9_.-]{0,63}")
+_URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
+_QUERY_PATTERN = re.compile(r"\S*[?&]\S*")
+_SECRET_WORD_PATTERN = re.compile(
+    r"(?i)\b(?:bearer|token|secret|signature|authorization|cookie|session)\b\S*"
+)
+_PROVIDER_MESSAGE_LIMIT = 1536
+
+
+def _bounded_provider_message(text: str, limit: int = _PROVIDER_MESSAGE_LIMIT) -> str:
+    """Bound a sanitized provider message without dropping its conclusion.
+
+    RunningHub reports workflow failures as a traceback, so the actual exception
+    text lives at the *end*. Keeping only the head hid every real reason.
+    """
+
+    if len(text) <= limit:
+        return text
+    head = limit // 2
+    tail = limit - head - 3
+    return f"{text[:head]}…{text[-tail:]}"
 
 
 def _safe_repr_text(value: str | None) -> str | None:
@@ -58,6 +78,7 @@ class ProviderTaskSnapshot:
     status: str
     results: tuple[ProviderResult, ...] = ()
     provider_message: str | None = None
+    usage: dict[str, str] = field(default_factory=dict)
 
     def __repr__(self) -> str:
         message = None if self.provider_message is None else "[redacted]"
@@ -169,6 +190,24 @@ class RunningHubClient:
             )
         return remote_name
 
+    async def workflow_json(self, workflow_id: str) -> dict[str, Any]:
+        """Read-only deployed graph inspection; never creates a generation task.
+
+        Contract: runninghub.cn/runninghub-api-doc-cn/api-425749014.
+        """
+        import json
+        payload = await self._request_json('POST', '/api/openapi/getJsonApiFormat',
+            json={'apiKey': self._api_key, 'workflowId': workflow_id})
+        value = self._response_data(payload).get('prompt')
+        try:
+            graph = json.loads(value) if isinstance(value, str) else value
+        except (ValueError, TypeError):
+            graph = None
+        if not isinstance(graph, dict):
+            raise RunningHubError('RunningHub workflow graph is invalid', code='INVALID_RESPONSE')
+        self._reject_sensitive_response(graph)
+        return graph
+
     async def submit(self, workflow_id: str, node_info: Any) -> str:
         media = self._workflow_media.get(workflow_id)
         context = self._cost_capture.resolve()
@@ -258,12 +297,21 @@ class RunningHubClient:
                 payload, "msg", "message", "failedReason", "errorMessage"
             )
         self._reject_sensitive_response(message)
+        from novelvideo.costs.providers import runninghub_credit_usage
+        provider_usage = task_data.get('usage')
+        # v2 reports consumeCoins under usage. taskUsageList repeats task usage,
+        # so never sum it with the top-level total. Money has no explicit currency.
+        usage = runninghub_credit_usage(provider_usage.get('consumeCoins')) if isinstance(provider_usage, dict) else {}
+        if not usage:
+            usage = runninghub_credit_usage(task_data.get('coins'))
         snapshot = ProviderTaskSnapshot(
             status=self._normalize_status(raw_status),
             results=tuple(results),
             provider_message=self._safe_provider_message(message),
+            usage=usage,
         )
-        self._cost_capture.observe(task_id, snapshot.status)
+        self._cost_capture.observe(task_id, snapshot.status, usage=usage,
+                                   usage_source='provider' if usage else None)
         return snapshot
 
     async def cancel(self, task_id: str) -> None:
@@ -484,25 +532,21 @@ class RunningHubClient:
             )
 
     def _safe_provider_message(self, message: str | None) -> str | None:
+        """Keep the operator-visible failure reason, drop anything secret.
+
+        Provider failures are only diagnosable through this text, so sanitizing
+        beats discarding: URLs, query strings and secret words are replaced in
+        place instead of collapsing the whole message to a placeholder.
+        """
+
         if message is None:
             return None
         safe = redact_secrets(message).replace(self._api_key, "[redacted]")
-        lowered = safe.lower()
-        if any(
-            marker in lowered
-            for marker in (
-                "http://",
-                "https://",
-                "token",
-                "secret",
-                "signature",
-                "authorization",
-                "cookie",
-                "session",
-            )
-        ) or any(character in safe for character in ("=", "?", "&")):
-            return "RunningHub returned a provider message"
-        return safe[:512]
+        safe = _URL_PATTERN.sub("[url]", safe)
+        safe = _QUERY_PATTERN.sub("[params]", safe)
+        safe = _SECRET_WORD_PATTERN.sub("[redacted]", safe)
+        safe = " ".join(safe.split())
+        return _bounded_provider_message(safe) if safe else None
 
 
 __all__ = [

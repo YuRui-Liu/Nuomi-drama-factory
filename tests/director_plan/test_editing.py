@@ -14,6 +14,8 @@ from novelvideo.director_plan.models import (
     SourceSpan,
     SplitGroup,
     UpdateShot,
+    UpdateShots,
+    AssetRequirement,
 )
 
 
@@ -85,6 +87,37 @@ def active_plan() -> DirectorPlanRevision:
         ),
         created_at=datetime(2026, 8, 29, 12, tzinfo=timezone.utc),
     )
+
+
+def test_atomic_shot_edits_validate_only_the_complete_repair():
+    parent = active_plan()
+    first, second = parent.groups[0].shots
+    parent = parent.model_copy(update={"groups": (parent.groups[0].model_copy(update={"shots": (
+        first.model_copy(update={"action": ""}), second.model_copy(update={"action": ""}),
+    )}), *parent.groups[1:])})
+    with pytest.raises(DirectorEditError):
+        apply_edit(parent, UpdateShot(shot_id=first.id, action="fixed"), source_spans())
+    child = apply_edit(parent, UpdateShots(updates=(
+        UpdateShot(shot_id=first.id, action="fixed", asset_requirements=()),
+        UpdateShot(shot_id=second.id, action="fixed", asset_requirements=(AssetRequirement(
+            kind="character_identity", entity_key="hero", evidence_source_ids=("s2",)),)),
+    )), source_spans())
+    assert child.parent_revision_id == parent.revision_id
+    assert child.status == "review_required"
+    assert child.groups[0].shots[1].asset_requirements[0].entity_key == "hero"
+    assert parent.groups[0].shots[0].action == ""
+
+
+def test_atomic_shot_edits_reject_duplicate_targets_and_invalid_source():
+    with pytest.raises(DirectorEditError):
+        apply_edit(active_plan(), UpdateShots(updates=(UpdateShot(shot_id="shot-1", action="a"),
+                   UpdateShot(shot_id="shot-1", action="b"))), source_spans())
+    with pytest.raises(DirectorEditError):
+        apply_edit(active_plan(), UpdateShots(updates=(UpdateShot(shot_id="shot-1", source_span_ids=("unknown",)),)), source_spans())
+    with pytest.raises(DirectorEditError):
+        apply_edit(active_plan(), UpdateShots(updates=(UpdateShot(shot_id="shot-1", asset_requirements=(
+            AssetRequirement(kind="character_identity", entity_key="hero", evidence_source_ids=("s2",)),
+        )),)), source_spans())
 
 
 @pytest.mark.parametrize("operation", ["merge", "move"])

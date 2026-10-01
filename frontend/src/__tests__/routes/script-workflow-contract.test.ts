@@ -136,7 +136,11 @@ describe("script workflow canonical contract", () => {
     );
 
     expect(route).toContain("ScreenplayWorkbench");
-    expect(route).toContain("专业剧本语义模式");
+    expect(route).toContain('aria-label="脚本制作步骤"');
+    expect(route).toContain('hidden={workspace !== "source"}');
+    expect(route).toContain('hidden={workspace !== "semantics"}');
+    expect(route).toContain("<ScreenplayWorkbench compact");
+    expect(route).toContain('id="script-source"');
     expect(route).not.toContain("getScriptReviewFeedback");
   });
 
@@ -147,9 +151,22 @@ describe("script workflow canonical contract", () => {
 
     expect(route).toContain("useDirectorPlans");
     expect(route).toContain("directorPlan ?");
-    expect(route).toContain("镜头方案已生成");
-    expect(route).toContain("待人工审核");
+    expect(route).toContain("directorPlan.groups.length");
+    expect(route).toContain("directorShotCount");
+    expect(route).toContain("DirectorReviewWorkbench");
+    const workbench = read("src/components/episode/screenplay-workbench/screenplay-workbench.tsx");
+    expect(workbench).toContain("镜头方案已生成，待人工审核");
+    expect(workbench).toContain("onReviewRequest");
     expect(route).toContain("审核镜头方案");
+  });
+
+  it("resolves asset and source deep links through the router hash on entry and subsequent navigation", () => {
+    const route = read("src/routes/_app/projects.$project/episodes.$episode/script.lazy.tsx");
+    expect(route).toContain("state.location.hash");
+    expect(route).toContain('target === "script-assets") setWorkspace("assets")');
+    expect(route).toContain('target === "script-source") setWorkspace("source")');
+    expect(route).toContain("[scriptHash, project, epNum]");
+    expect(route).toContain('hidden={workspace !== "assets"}');
   });
 
   it("uses screenplay semantics for the episode header instead of legacy Beat counts", () => {

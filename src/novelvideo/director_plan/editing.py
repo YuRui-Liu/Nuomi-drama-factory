@@ -18,6 +18,7 @@ from .models import (
     SourceSpan,
     SplitGroup,
     UpdateShot,
+    UpdateShots,
     ValidationIssue,
     ValidationReport,
 )
@@ -78,6 +79,13 @@ def _dispatch_edit(
         return _reorder_groups(groups, command)
     if isinstance(command, UpdateShot):
         return _update_shot(groups, command)
+    if isinstance(command, UpdateShots):
+        ids = [update.shot_id for update in command.updates]
+        if len(ids) != len(set(ids)):
+            raise _edit_error("duplicate_shot_update", "Each shot can be updated only once per batch.")
+        for update in command.updates:
+            groups = _update_shot(groups, update)
+        return groups
     raise _edit_error("unsupported_edit", "Unsupported director edit command.")
 
 
@@ -186,6 +194,16 @@ def _update_shot(
     changed = type(current_group.shots[shot_index]).model_validate({
         **current_group.shots[shot_index].model_dump(mode="python"), **updates,
     })
+    if command.asset_requirements is not None:
+        for requirement in changed.asset_requirements:
+            if not set(requirement.evidence_source_ids).issubset(changed.source_span_ids):
+                raise _edit_error("invalid_asset_evidence", "Asset evidence must belong to the edited shot source spans.")
+        if changed.cinematography is not None:
+            declared = {item.entity_key for item in changed.asset_requirements
+                        if item.kind in {"character_identity", "character_state"}}
+            visible = {item.subject_id for item in changed.cinematography.subjects}
+            if declared != visible:
+                raise _edit_error("blocking_subject_mismatch", "Character requirements must match structured visible subjects.")
     changed_shots = list(current_group.shots)
     changed_shots[shot_index] = changed
     changed_group = current_group.model_copy(update={"shots": tuple(changed_shots)})

@@ -6,10 +6,15 @@ import {
   useNavigate,
   useParams,
   useRouterState,
+  useSearch,
 } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { useMemo } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
+import { EpisodeAssetsPanel } from "@/components/episode/episode-assets-panel";
+import { AssetPlanningPrerequisite, assetPlanningBlockReason } from "@/components/episode/asset-planning-prerequisite";
+import { AssetPlanningFailure, type PlanningAssetKind } from "@/components/episode/asset-planning-failure";
+import { useDirectorPlans } from "@/lib/queries/director-plans";
 import { toast } from "sonner";
 import {
   ArrowLeft,
@@ -260,6 +265,7 @@ function TopBar({
   showRefresh,
   onRefresh,
   refreshPending,
+  onAssets,
   selectedEpisode,
   episodes,
   onSelectEpisode,
@@ -275,6 +281,7 @@ function TopBar({
   showRefresh: boolean;
   onRefresh: () => Promise<boolean>;
   refreshPending: boolean;
+  onAssets?: () => void;
   selectedEpisode: Episode | null;
   episodes: Episode[];
   onSelectEpisode: (episodeNum: number) => void;
@@ -315,7 +322,7 @@ function TopBar({
     : t("episode.list.subtitle");
 
   return (
-    <div className="flex shrink-0 flex-col gap-3 border-b border-border/30 bg-background px-9 py-5 lg:flex-row lg:items-center lg:justify-between">
+    <div className="flex shrink-0 flex-col gap-2 border-b border-border/30 bg-background px-5 py-3 lg:flex-row lg:items-center lg:justify-between lg:px-9">
       <div className="flex min-w-0 items-start gap-3">
         <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
           <Clapperboard className="size-[18px]" />
@@ -332,12 +339,13 @@ function TopBar({
               {headerTitle}
             </h1>
           )}
-          <p className="ml-1.5 mt-3 truncate text-sm leading-6 text-muted-foreground">
+          <p className="ml-1.5 mt-1 truncate text-xs leading-5 text-muted-foreground">
             {headerSubtitle}
           </p>
         </div>
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-2 lg:justify-end">
+        {selectedEpisode && <Button size="sm" variant="outline" onClick={onAssets}>本集资产</Button>}
         {showRefresh && (
           <HeaderRefreshButton
             label={t("episode.list.refresh")}
@@ -540,6 +548,10 @@ function EpisodeListItem({
   identityCostDisplay,
   sceneCostDisplay,
   propCostDisplay,
+  onAssets,
+  actionsOnly = false,
+  onPendingChange,
+  onBeforeOpenPlan,
 }: {
   project: string;
   episode: Episode;
@@ -547,11 +559,24 @@ function EpisodeListItem({
   identityCostDisplay?: string | null;
   sceneCostDisplay?: string | null;
   propCostDisplay?: string | null;
+  onAssets?: () => void;
+  actionsOnly?: boolean;
+  onPendingChange?: (pending: boolean) => void;
+  onBeforeOpenPlan?: () => void;
 }) {
   const { t } = useTranslation();
   // 镜头数量 = 该集 beats 数。复用既有的 beats 查询（无需后端新增字段）；react-query
   // 会缓存，进入该集详情时本就要拉这份数据。未就绪时不显示，避免闪烁。
   const { data: beatsRes } = useEpisodeBeats(project, episode.number);
+  const navigate = useNavigate();
+  const directorPlans = useDirectorPlans(project, episode.number);
+  const planningBlocked = assetPlanningBlockReason(directorPlans);
+  const [planningErrors, setPlanningErrors] = useState<Partial<Record<PlanningAssetKind, string>>>({});
+  const reportPlanningError = (kind: PlanningAssetKind, cause: unknown) => {
+    const error = backendErrorToastMessage(cause, t);
+    setPlanningErrors((previous) => ({ ...previous, [kind]: error }));
+    toast.error(error);
+  };
   const shotCount = beatsRes?.data.length;
   const planIdentities = usePlanIdentities(project);
   const identityTask = useStageTask({
@@ -652,15 +677,17 @@ function EpisodeListItem({
       : t("episode.list.noProps");
 
   const handlePlanIdentities = async () => {
+    if (planningBlocked) { toast.warning(planningBlocked); return; }
+    setPlanningErrors((previous) => ({ ...previous, character: "" }));
     try {
       const res = await planIdentities.mutateAsync(episode.number);
       if (res.ok === false) {
-        toast.error(backendErrorToastMessage(res.error, t));
+        reportPlanningError("character", res.error);
         return;
       }
       identityTask.start();
     } catch (err) {
-      toast.error(backendErrorToastMessage(err, t));
+      reportPlanningError("character", err);
     }
   };
 
@@ -669,10 +696,12 @@ function EpisodeListItem({
   // CE(无控制面)下后端同步跑完并直接返回结果，没有任务可订阅；EE 走队列，
   // 返回的是 TaskResponse，此时才接上 SSE 流。
   const handlePlanScenes = async () => {
+    if (planningBlocked) { toast.warning(planningBlocked); return; }
+    setPlanningErrors((previous) => ({ ...previous, scene: "" }));
     try {
       const res = await planScenes.mutateAsync(episode.number);
       if (res.ok === false) {
-        toast.error(backendErrorToastMessage(res.error, t));
+        reportPlanningError("scene", res.error);
         return;
       }
       if (isPlanEpisodeAssetsResult(res)) {
@@ -683,15 +712,17 @@ function EpisodeListItem({
       }
       sceneTask.start({ scope: res.scope });
     } catch (err) {
-      toast.error(backendErrorToastMessage(err, t));
+      reportPlanningError("scene", err);
     }
   };
 
   const handlePlanProps = async () => {
+    if (planningBlocked) { toast.warning(planningBlocked); return; }
+    setPlanningErrors((previous) => ({ ...previous, prop: "" }));
     try {
       const res = await planProps.mutateAsync(episode.number);
       if (res.ok === false) {
-        toast.error(backendErrorToastMessage(res.error, t));
+        reportPlanningError("prop", res.error);
         return;
       }
       if (isPlanEpisodeAssetsResult(res)) {
@@ -702,13 +733,24 @@ function EpisodeListItem({
       }
       propTask.start({ scope: res.scope });
     } catch (err) {
-      toast.error(backendErrorToastMessage(err, t));
+      reportPlanningError("prop", err);
     }
   };
 
   const scenePending = planScenes.isPending || sceneTask.started;
   const propPending = planProps.isPending || propTask.started;
+  useEffect(() => { onPendingChange?.(identityPending || scenePending || propPending); }, [identityPending, scenePending, propPending, onPendingChange]);
 
+  const shortcuts = (
+    <div className="grid gap-1">
+      <EpisodePlanShortcut disabled={!!planningBlocked} icon={<Users className="size-3" />} summary={identityLabel} actionLabel="解析人物" pending={identityPending} costDisplay={identityCostDisplay} onClick={handlePlanIdentities} />
+      <EpisodePlanShortcut disabled={!!planningBlocked} icon={<MapPinned className="size-3" />} summary={sceneLabel} actionLabel="解析场景" pending={scenePending} costDisplay={sceneCostDisplay} onClick={handlePlanScenes} />
+      <EpisodePlanShortcut disabled={!!planningBlocked} icon={<Package className="size-3" />} summary={propLabel} actionLabel="解析道具" pending={propPending} costDisplay={propCostDisplay} onClick={handlePlanProps} />
+      <AssetPlanningPrerequisite reason={planningBlocked} onRetry={directorPlans.isError ? () => { void directorPlans.refetch(); } : undefined} onOpenPlan={() => { onBeforeOpenPlan?.(); void navigate({ to: "/projects/$project/episodes/$episode/script", params: { project, episode: String(episode.number) } }); }} />
+      {([["character", planningErrors.character || identityTask.stream.error], ["scene", planningErrors.scene || sceneTask.stream.error], ["prop", planningErrors.prop || propTask.stream.error]] as const).map(([kind, error]) => <AssetPlanningFailure key={kind} kind={kind} error={error} onOpenAssets={(type) => { onBeforeOpenPlan?.(); void navigate({ to: "/projects/$project/characters", params: { project }, search: { type } as never }); }} />)}
+    </div>
+  );
+  if (actionsOnly) return shortcuts;
   return (
     <div
       onClick={onSelect}
@@ -721,19 +763,19 @@ function EpisodeListItem({
         }
       }}
       className={cn(
-        "flex h-full min-h-[13rem] w-full flex-col gap-2 rounded-[10px] border border-white/[0.06] bg-white/[0.025] p-3 text-left transition-all duration-200 ease-out",
+        "flex h-full w-full flex-col gap-1 rounded-[10px] border border-white/[0.06] bg-white/[0.025] p-3 text-left transition-all duration-200 ease-out",
         "hover:scale-[1.01] hover:border-white/[0.12] hover:bg-white/[0.04]",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
       )}
     >
       <div className="flex min-w-0 items-center">
         <h3 className="min-w-0 truncate text-sm font-semibold text-foreground">
-          {title}
+          第 {episode.number} 集 · {title}
         </h3>
       </div>
 
       {snippet && (
-        <p className="line-clamp-2 text-xs leading-snug text-muted-foreground/80">
+        <p className="truncate text-xs leading-snug text-muted-foreground/80">
           {snippet}
         </p>
       )}
@@ -745,49 +787,10 @@ function EpisodeListItem({
         </div>
       )}
 
-      <div className="grid gap-1.5 pt-1">
-        <EpisodePlanShortcut
-          icon={<Users className="size-3.5 shrink-0 text-sky-400" />}
-          summary={identityLabel}
-          actionLabel={
-            identityCount > 0
-              ? t("episode.list.replanIdentities")
-              : t("episode.list.planIdentities")
-          }
-          pending={identityPending}
-          disabled={identityPending}
-          costDisplay={identityCostDisplay}
-          onClick={handlePlanIdentities}
-        />
-        <EpisodePlanShortcut
-          icon={<MapPinned className="size-3.5 shrink-0 text-emerald-400" />}
-          summary={sceneLabel}
-          actionLabel={
-            sceneCount > 0
-              ? t("episode.list.replanScenes")
-              : t("episode.list.planScenes")
-          }
-          pending={scenePending}
-          disabled={scenePending}
-          costDisplay={sceneCostDisplay}
-          onClick={handlePlanScenes}
-        />
-        <EpisodePlanShortcut
-          icon={<Package className="size-3.5 shrink-0 text-amber-400" />}
-          summary={propLabel}
-          actionLabel={
-            propCount > 0
-              ? t("episode.list.replanProps")
-              : t("episode.list.planProps")
-          }
-          pending={propPending}
-          disabled={propPending}
-          costDisplay={propCostDisplay}
-          onClick={handlePlanProps}
-        />
-      </div>
+      {shortcuts}
 
-      <div className="mt-auto pt-3">
+      <div className="mt-auto grid min-w-0 grid-cols-2 gap-2 pt-2">
+        <Button size="sm" variant="ghost" onClick={event => { event.stopPropagation(); onAssets?.(); }} onKeyDown={event => event.stopPropagation()} className="h-8 min-w-0 w-full text-xs">本集资产</Button>
         <Button
           type="button"
           variant="outline"
@@ -797,7 +800,7 @@ function EpisodeListItem({
             onSelect();
           }}
           onMouseDown={(event) => event.stopPropagation()}
-          className="h-8 w-full justify-center gap-1.5 rounded-[8px] border-white/10 bg-white/[0.025] px-3 text-xs font-normal text-foreground shadow-none hover:border-primary/45 hover:bg-primary/12 hover:text-primary"
+          className="h-8 min-w-0 w-full justify-center gap-1.5 rounded-[8px] border-white/10 bg-white/[0.025] px-2 text-xs font-normal text-foreground shadow-none hover:border-primary/45 hover:bg-primary/12 hover:text-primary"
         >
           {t("episode.list.viewDetails")}
           <ArrowRight className="size-3.5" />
@@ -816,6 +819,17 @@ function EpisodesPage() {
   const queryClient = useQueryClient();
   const activePath = useActiveStagePath();
   const selectedEpisodeNum = useSelectedEpisodeNum();
+  const stageSearch = useSearch({ strict: false }) as { sub?: string };
+  const [assetEpisode, setAssetEpisode] = useState<number | null>(null);
+  const [assetParsing, setAssetParsing] = useState(false);
+  const [filter, setFilter] = useState("");
+  const listScroll = useRef(0);
+  useEffect(() => {
+    if (selectedEpisodeNum !== null) {
+      sessionStorage.setItem(`episode-stage:${project}:${selectedEpisodeNum}`, activePath);
+      sessionStorage.setItem(`episode-stage:${project}:${selectedEpisodeNum}:sub`, stageSearch.sub ?? "");
+    }
+  }, [project, selectedEpisodeNum, activePath, stageSearch.sub]);
 
   // Queries
   const {
@@ -950,7 +964,8 @@ function EpisodesPage() {
   const handleSelectEpisode = (num: number) => {
     // Preserve the active stage when switching episodes
     navigate({
-      to: `/projects/${project}/episodes/${num}${activePath}`,
+      to: `/projects/${project}/episodes/${num}${selectedEpisodeNum !== null ? activePath : sessionStorage.getItem(`episode-stage:${project}:${num}`) || DEFAULT_STAGE_PATH}`,
+      search: {sub: selectedEpisodeNum !== null ? stageSearch.sub : sessionStorage.getItem(`episode-stage:${project}:${num}:sub`) || undefined} as never,
     });
   };
 
@@ -969,6 +984,7 @@ function EpisodesPage() {
       showRefresh={!selectedEpisode}
       onRefresh={handleRefresh}
       refreshPending={refreshPending}
+      onAssets={() => selectedEpisode && setAssetEpisode(selectedEpisode.number)}
       selectedEpisode={selectedEpisode}
       episodes={displayEpisodes}
       onSelectEpisode={handleSelectEpisode}
@@ -980,7 +996,7 @@ function EpisodesPage() {
     <HeaderCollapseProvider>
     <div className="-m-6 flex h-[calc(100%+3rem)] flex-col overflow-hidden">
       {selectedEpisode ? (
-        <CollapsibleHeaderRegion>{topBar}</CollapsibleHeaderRegion>
+        topBar
       ) : (
         topBar
       )}
@@ -1025,7 +1041,8 @@ function EpisodesPage() {
                 />
               </div>
             )}
-            <div className="flex-1 overflow-y-auto p-6">
+            <div className="flex-1 overflow-y-auto p-6" ref={node => { if (node) node.scrollTop = listScroll.current; }} onScroll={event => { listScroll.current = event.currentTarget.scrollTop; }}>
+              <input aria-label="搜索剧集" placeholder="搜索集号或名称" className="mb-4 h-9 w-64 max-w-full rounded border bg-background px-3 text-sm" value={filter} onChange={e => setFilter(e.target.value)} />
               {isLoading ? (
                 <EpisodeListSkeleton label={t("common.loading")} />
               ) : displayEpisodes.length === 0 ? (
@@ -1060,13 +1077,14 @@ function EpisodesPage() {
                 // 注册表宿主。列表不绑定单集，用 episode=0 作为宿主 scope；每张卡
                 // 片的 key 里带自己的集数，彼此互不干扰。
                 <TaskControllerProvider project={project} episode={0}>
-                  <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
-                    {displayEpisodes.map((ep) => (
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,280px),1fr))] gap-3">
+                    {displayEpisodes.filter(ep => `${ep.number} ${ep.title}`.includes(filter)).map((ep) => (
                       <EpisodeListItem
                         project={project}
                         key={ep.number}
                         episode={ep}
                         onSelect={() => handleSelectEpisode(ep.number)}
+                        onAssets={() => setAssetEpisode(ep.number)}
                         identityCostDisplay={planIdentitiesCostDisplay}
                         sceneCostDisplay={planScenesCostDisplay}
                         propCostDisplay={planPropsCostDisplay}
@@ -1079,6 +1097,7 @@ function EpisodesPage() {
           </div>
         )}
       </div>
+      {assetEpisode !== null && episodeByNum.has(assetEpisode) && <EpisodeAssetsPanel key={assetEpisode} parsing={assetParsing} project={project} episode={episodeByNum.get(assetEpisode)!} onClose={() => setAssetEpisode(null)} actions={<EpisodeListItem project={project} episode={episodeByNum.get(assetEpisode)!} onSelect={() => {}} actionsOnly onBeforeOpenPlan={() => setAssetEpisode(null)} onPendingChange={setAssetParsing} identityCostDisplay={planIdentitiesCostDisplay} sceneCostDisplay={planScenesCostDisplay} propCostDisplay={planPropsCostDisplay} />} />}
     </div>
     </HeaderCollapseProvider>
   );

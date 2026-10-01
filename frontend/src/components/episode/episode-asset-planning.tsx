@@ -87,6 +87,7 @@ interface EpisodeAssetPlanningProps {
   identityPending?: boolean;
   scenePending?: boolean;
   propPending?: boolean;
+  planningBlocked?: boolean;
   labels: EpisodeAssetPlanningLabels;
   onPlanIdentities: () => void;
   /**
@@ -147,6 +148,7 @@ export function EpisodeAssetPlanning({
   identityPending = false,
   scenePending = false,
   propPending = false,
+  planningBlocked = false,
   labels,
   onPlanIdentities,
   onIdentityChange,
@@ -227,6 +229,7 @@ export function EpisodeAssetPlanning({
           actionLabel={scenes.length > 0 ? labels.replanScenes : labels.planScenes}
           costDisplay={sceneCostDisplay}
           pending={scenePending}
+          disabled={planningBlocked}
           onPlan={onPlanScenes}
         />
       )}
@@ -241,6 +244,7 @@ export function EpisodeAssetPlanning({
           actionLabel={props.length > 0 ? labels.replanProps : labels.planProps}
           costDisplay={propCostDisplay}
           pending={propPending}
+          disabled={planningBlocked}
           onPlan={onPlanProps}
           renderItem={(propId) => {
             const propItem = props.find(
@@ -280,6 +284,7 @@ function AssetPlanningRow({
   actionLabel,
   costDisplay,
   pending,
+  disabled = false,
   onPlan,
   renderItem,
   className,
@@ -291,6 +296,7 @@ function AssetPlanningRow({
   actionLabel: string;
   costDisplay?: string | null;
   pending: boolean;
+  disabled?: boolean;
   onPlan: () => void;
   renderItem?: (item: string) => ReactNode;
   className?: string;
@@ -312,7 +318,7 @@ function AssetPlanningRow({
           variant="ghost"
           size="sm"
           onClick={onPlan}
-          disabled={pending}
+          disabled={pending || disabled}
           className={ASSET_PLAN_ACTION_BUTTON_CLASS}
         >
           {pending && <Loader2 className="animate-spin" />}

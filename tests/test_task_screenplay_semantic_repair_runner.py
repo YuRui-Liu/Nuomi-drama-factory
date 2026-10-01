@@ -29,11 +29,11 @@ def _revision(revision_id: str, *, source_revision: int = 7, issues=()):
     )
 
 
-def test_runner_registers_dedicated_text_task_role():
+def test_runner_registers_configurable_normalization_text_task_role():
     registration = get_project_task_runner_registration("screenplay_semantic_repair")
 
     assert registration is not None
-    assert registration.text_task_role == "screenplay_semantic_repair"
+    assert registration.text_task_role == "episode_normalization"
     assert registration.runner is runner.run_screenplay_semantic_repair
 
 
@@ -215,3 +215,9 @@ async def test_runner_rejects_semantic_base_change_before_commit(monkeypatch):
             },
             SimpleNamespace(project_id="project-1"),
         )
+def test_repair_uses_the_same_configured_route_as_initial_extraction():
+    from novelvideo.task_backend.runners import screenplay_semantics, screenplay_semantic_repair
+    from novelvideo.task_backend.registry import get_project_task_runner_registration
+    initial = get_project_task_runner_registration("screenplay_semantics")
+    repair = get_project_task_runner_registration("screenplay_semantic_repair")
+    assert initial.text_task_role == repair.text_task_role == "episode_normalization"

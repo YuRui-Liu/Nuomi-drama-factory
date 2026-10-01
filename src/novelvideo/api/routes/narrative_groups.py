@@ -8,6 +8,7 @@ grid.
 from __future__ import annotations
 
 import math
+import asyncio
 import re
 import uuid
 from dataclasses import asdict, replace
@@ -80,6 +81,7 @@ from novelvideo.narrative_groups.service import (
     load_materialized_groups,
     narrative_group_sidecar_guard,
     rebuild_groups,
+    record_stage_result,
     rollback_stage_revision,
     reserve_video_revision,
     restore_video_reservation,
@@ -252,13 +254,29 @@ class StoryboardContractRequest(BaseModel):
 class NarrativeGroupGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    aspect_ratio: Literal["9:16", "16:9"] = "9:16"
+    aspect_ratio: Literal["9:16", "16:9"] | None = None
     use_style: bool = True
     provider_id: str | None = None
     model: str | None = None
     image_size: Literal["1K", "2K", "4K"] | None = None
     allow_unconstrained: bool = True
     reference_resolution: NarrativeReferenceResolutionRequest | None = None
+
+
+def _generation_aspect_ratio(resolved, requested: str | None) -> str:
+    """An omitted generation ratio inherits the saved project orientation."""
+    if requested is not None:
+        return requested
+    from novelvideo.project_config import load_project_config_from_state_dir
+
+    ctx = resolved.ctx
+    config = load_project_config_from_state_dir(
+        getattr(ctx, "state_dir", resolved.project_dir),
+        username=getattr(ctx, "owner_username", ""),
+        project=getattr(ctx, "project_name", ""),
+    )
+    # Group providers support 9:16 portrait, including legacy 2:3 projects.
+    return "16:9" if config.get("aspect_ratio") == "16:9" else "9:16"
 
 
 def _image_binding(
@@ -309,12 +327,14 @@ class NarrativeGroupVideoRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model: str = Field(default="runninghub:minimax-h3", min_length=1)
     mode: H3RequestedMode = "auto"
-    aspect_ratio: Literal["9:16", "16:9"] = "9:16"
+    aspect_ratio: Literal["9:16", "16:9"] | None = None
     resolution: str | None = None
     revision: int = Field(ge=0)
     plan_revision: int = Field(ge=1)
     settings_revision: int | None = Field(default=None, ge=0)
     reference_revision: int | None = Field(default=None, ge=0)
+    cinematography_review: bool = False
+    retry_planning: bool = False
 
 
 class VideoReferenceSelectionRequest(BaseModel):
@@ -495,6 +515,94 @@ async def put_storyboard_selection(project: str, episode: int, group_id: str,
         "selected_storyboard_sources": selected.stages["render"].selected_storyboard_sources}}
 
 
+_STAGE_TASK_TYPES: dict[StageName, tuple[str, ...]] = {
+    "sketch": ("narrative_group_grid",),
+    # A render stage is fed either by a fresh grid render or by a split of an
+    # existing grid, so both task types keep it legitimately in flight.
+    "render": ("narrative_group_grid", "narrative_group_split"),
+    "video": ("narrative_group_video",),
+}
+_LIVE_STAGE_STATUSES = frozenset({"queued", "running"})
+_ORPHAN_STAGE_ERROR = (
+    "任务已结束但阶段状态未回收（任务中心已空闲），已重置为失败，可以直接重试。"
+)
+
+
+def _stage_task_scope(group_id: str, stage: StageName, revision: int) -> str:
+    return f"group_{group_id}_{stage}_r{int(revision)}"
+
+
+def _reconcile_orphan_stages(
+    resolved, episode: int, groups: list[NarrativeGroup]
+) -> list[NarrativeGroup]:
+    """Downgrade queued/running stage residue whose task is already gone.
+
+    The task centre is the single source of truth for liveness. A stage that
+    still claims to be running with no live task behind it greys out
+    "生成组合视频" forever, so the durable state is written back as ``failed``
+    (retryable) instead of being shown as in-flight.
+    """
+    reconciled = []
+    for group in groups:
+        for image_stage in ("sketch", "render"):
+            group = _reconcile_cell_repair(resolved, episode, group, image_stage)
+        reconciled.append(group)
+    groups = reconciled
+    pending = [
+        (group, stage)
+        for group in groups
+        for stage in _STAGE_TASK_TYPES
+        if (state := group.stages.get(stage)) is not None
+        and state.status in _LIVE_STAGE_STATUSES
+    ]
+    if not pending:
+        return groups
+    try:
+        tasks = get_task_manager().list_tasks_for_project(resolved.ctx)
+    except Exception:
+        # Ownership cannot be proven here; never rewrite durable state on a guess.
+        return groups
+    active: set[tuple[str, str]] = set()
+    recorded: set[tuple[str, str]] = set()
+    for task in tasks:
+        scope = getattr(task, "scope", None)
+        task_type = getattr(task, "task_type", None)
+        if not isinstance(scope, str) or not isinstance(task_type, str):
+            continue
+        key = (task_type, scope)
+        recorded.add(key)
+        if getattr(task, "status", None) in ACTIVE_PROJECT_TASK_STATUSES:
+            active.add(key)
+
+    repaired: dict[str, NarrativeGroup] = {}
+    for group, stage in pending:
+        current = repaired.get(group.id, group)
+        state = current.stages.get(stage)
+        if state is None or state.status not in _LIVE_STAGE_STATUSES:
+            continue
+        scope = _stage_task_scope(current.id, stage, state.revision)
+        keys = {(task_type, scope) for task_type in _STAGE_TASK_TYPES[stage]}
+        if keys & active:
+            continue
+        # `queued` may still sit inside the enqueue→task-record window, so an
+        # absent record is not proof of death. `running` is written by the
+        # runner itself, i.e. strictly after the record exists.
+        if state.status == "queued" and not (keys & recorded):
+            continue
+        repaired[current.id] = record_stage_result(
+            resolved.project_dir,
+            episode,
+            current.id,
+            stage,
+            expected_revision=state.revision,
+            status="failed",
+            error=_ORPHAN_STAGE_ERROR,
+        )
+    if not repaired:
+        return groups
+    return [repaired.get(group.id, group) for group in groups]
+
+
 async def _resolve_groups(project: str, episode: int, user: dict, *, rebuild: bool = False):
     resolved = await resolve_project_scope(project, user, required_role="editor")
     store = await make_sqlite_store_for_context(resolved.ctx)
@@ -510,7 +618,13 @@ async def _resolve_groups(project: str, episode: int, user: dict, *, rebuild: bo
             )
         groups = rebuild_groups(resolved.project_dir, episode, beats)
     else:
-        groups = load_effective_groups(resolved.project_dir, episode, beats)
+        groups = load_effective_groups(resolved.project_dir, episode, beats,
+            aspect_ratio=_generation_aspect_ratio(resolved, None))
+        from novelvideo.narrative_groups.wardrobe_dependencies import reconcile_wardrobe_dependencies
+        groups = reconcile_wardrobe_dependencies(
+            resolved.project_dir, episode,
+            ProductionWorkflowStore(Path(resolved.ctx.state_dir) / "production_workflow.json"),
+        )
     return resolved, groups, beats
 
 
@@ -535,18 +649,31 @@ def _project_video_workflow_defaults(resolved, workflow) -> dict[str, str]:
 
 
 def _asset_url(project: str, project_dir: Path, value: str) -> str:
+    """Absolute path -> protected media URL, versioned by file mtime.
+
+    Grid assets carry a per-revision filename, but cell/frame assets are
+    promoted to stable paths that a later render overwrites. Without a
+    version parameter the browser keeps showing the previous bytes for those
+    stable URLs — which is how the split-cell grid ends up disagreeing with
+    the grid image it was cut from. Mirrors utils/static_urls.project_static_url.
+    """
     if not value:
         return ""
     candidate = Path(value)
     if not candidate.is_absolute():
         candidate = project_dir / candidate
     try:
-        relative = candidate.resolve().relative_to(project_dir.resolve())
+        resolved = candidate.resolve()
+        relative = resolved.relative_to(project_dir.resolve())
     except ValueError:
         return ""
     encoded_project = quote(project, safe="")
     encoded_path = quote(relative.as_posix(), safe="/")
-    return f"/api/v1/projects/{encoded_project}/media/{encoded_path}"
+    url = f"/api/v1/projects/{encoded_project}/media/{encoded_path}"
+    try:
+        return f"{url}?v={resolved.stat().st_mtime_ns}"
+    except OSError:
+        return url
 
 
 def _video_reference_max_images(media_store: MediaCapabilityStore) -> int:
@@ -1291,6 +1418,7 @@ async def list_narrative_groups(
     user: dict = Depends(get_api_user),
 ):
     resolved, groups, _ = await _resolve_groups(project, episode, user)
+    groups = await asyncio.to_thread(_reconcile_orphan_stages, resolved, episode, groups)
     return {"ok": True, "data": _serialize(project, resolved.project_dir, groups)}
 
 
@@ -1365,6 +1493,104 @@ async def put_group_image_prompts(
         "ok": True,
         "data": {"image_prompt_overrides": group.image_prompt_overrides},
     }
+
+
+class StoryboardRepairRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_revision: int = Field(ge=1)
+    source_asset: str = Field(pattern=r"^[0-9a-f]{64}$")
+    prompt: str = Field(min_length=1, max_length=16000)
+    feedback: str = Field(default="", max_length=4000)
+
+
+def _reconcile_cell_repair(resolved, episode, group, stage):
+    from datetime import datetime, timezone
+    from novelvideo.narrative_groups.storyboard_repair import update_repair
+
+    pending = group.stages[stage].provider_parameters.get("cell_repair", {})
+    if pending.get("status") not in {"queued", "running"}:
+        return group
+    try:
+        task = get_task_manager().get_task_for_project(resolved.ctx, "narrative_storyboard_repair",
+            episode, scope=f"cell_repair_{pending['id']}")
+    except Exception:
+        return group
+    orphaned = False
+    if task is None:
+        try:
+            # Allow the reservation -> queue-record window. Do not strand a
+            # reservation forever if the API process stopped in that window.
+            created = datetime.fromisoformat(pending["created_at"])
+            orphaned = (datetime.now(timezone.utc) - created).total_seconds() > 120
+        except (ValueError, TypeError, KeyError):
+            return group
+    if orphaned or (task is not None and getattr(task, "status", None) in TERMINAL_TASK_STATUSES):
+        update_repair(resolved.project_dir, episode, group.id, stage, pending["id"],
+                      only_if_active=True, status="failed",
+                      error=str(getattr(task, "error", "") or "分镜修复任务已终止，可重新提交"))
+        return next(g for g in load_materialized_groups(resolved.project_dir, episode) if g.id == group.id)
+    return group
+
+
+@router.get("/projects/{project}/episodes/{episode}/narrative-groups/"
+            "{group_id}/{stage}/cells/{shot_id}/repair")
+async def get_storyboard_repair(project: str, episode: int, group_id: str,
+    stage: Literal["sketch", "render"], shot_id: str, user: dict = Depends(get_api_user)):
+    from novelvideo.narrative_groups.storyboard_repair import repair_input
+
+    resolved, groups, beats = await _resolve_groups(project, episode, user)
+    try:
+        group = next(g for g in groups if g.id == group_id)
+        group = _reconcile_cell_repair(resolved, episode, group, stage)
+        synthesized = generation_beats_for_group(resolved.project_dir, episode, group_id, beats)
+        text = next((str(b.get("visual_description") or b.get("description") or "")
+                     for b in synthesized if str(b.get("id") or b.get("beat_id") or b.get("beat_number")) == shot_id), "")
+        return {"ok": True, "data": repair_input(resolved.project_dir, group, stage, shot_id, synthesized=text)}
+    except (StopIteration, KeyError) as exc:
+        raise HTTPException(status_code=404, detail="分镜不存在") from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project}/episodes/{episode}/narrative-groups/"
+             "{group_id}/{stage}/cells/{shot_id}/repair")
+async def post_storyboard_repair(project: str, episode: int, group_id: str,
+    stage: Literal["sketch", "render"], shot_id: str, body: StoryboardRepairRequest,
+    user: dict = Depends(get_api_user)):
+    from novelvideo.narrative_groups.storyboard_repair import reserve_repair, update_repair
+
+    resolved, groups, _ = await _resolve_groups(project, episode, user)
+    try:
+        group = next(g for g in groups if g.id == group_id)
+        group = _reconcile_cell_repair(resolved, episode, group, stage)
+        provider, model, size = _image_binding(resolved.ctx, resolved.project_dir, stage, NarrativeGroupGenerationRequest())
+        ticket = reserve_repair(resolved.project_dir, episode, group_id, stage, shot_id,
+            **body.model_dump(), generation={"provider_id": provider, "model": model, "image_size": size,
+                "reference_audit": group.stages[stage].provider_parameters.get("reference_audit") or {},
+                "image_projection": (group.effective_style_snapshot.get("projections") or {}).get("image", "")})
+    except (StopIteration, KeyError) as exc:
+        raise HTTPException(status_code=404, detail="分镜不存在") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    scope = f"cell_repair_{ticket['id']}"
+    payload = {"project_dir": str(resolved.project_dir), "output_dir": resolved.output_dir,
+        "project_id": str(resolved.ctx.project_id), "episode": episode,
+        "group_id": group_id, "stage": stage, "repair_id": ticket["id"]}
+    try:
+        queued = await get_task_backend().enqueue_project_task(resolved.ctx,
+            task_type="narrative_storyboard_repair", queue_kind="default", episode=episode,
+            scope=scope, payload=payload)
+    except Exception as exc:
+        update_repair(resolved.project_dir, episode, group_id, stage, ticket["id"],
+                      status="failed", error="任务提交失败，请重试")
+        raise HTTPException(status_code=503, detail="任务提交失败，请重试") from exc
+    update_repair(resolved.project_dir, episode, group_id, stage, ticket["id"], task_id=queued.task_state.task_id)
+    return {"ok": True, "data": {"task_id": queued.task_state.task_id, "scope": scope,
+        "backend": queued.backend, "queue": queued.queue,
+        "metadata": {"group_id": group_id, "stage": stage, "revision": body.source_revision}}}
 
 
 @router.get(
@@ -1860,6 +2086,24 @@ async def _enqueue_group_action(
         ) from exc
 
     request = generation_request or NarrativeGroupGenerationRequest()
+    # Newly generated director storyboards must carry their actual cells into
+    # video planning, including projects created before visual contracts existed.
+    # Split-only recovery retains the original generation's provenance.
+    if (stage == "render" and not split_only
+            and source_group.generation_batches
+            and source_group.storyboard_contract_version == 0):
+        from novelvideo.narrative_groups.service import enable_storyboard_contract
+
+        try:
+            source_group = enable_storyboard_contract(
+                resolved.project_dir, episode, group_id,
+                project_id=str(resolved.ctx.project_id), expected_version=0,
+                expected_selected_id=source_group.stages["render"].selected_storyboard_id,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=422, detail="STORYBOARD_SOURCE_INVALID") from exc
     storyboard_payload = {}
     if stage == "render" and source_group.storyboard_contract_version:
         if source_group.storyboard_contract_version != 1:
@@ -1900,6 +2144,18 @@ async def _enqueue_group_action(
                 active_revision_id, required_binding_keys = (
                     _active_plan_reference_context(plan_store, episode, group_id)
                 )
+                # A plan revision is immutable, so reading the group's scope before
+                # freezing is race-free; the CAS below still proves the active
+                # revision did not move while the snapshot was being built. The
+                # scope must be known *before* the freeze: a binding shared by
+                # several groups carries their union of beat/shot ids, and the grid
+                # runner rejects any frozen id outside the rendered group's scope.
+                reference_plan = plan_store.load(episode, active_revision_id)
+                reference_group = next(item for item in reference_plan.groups if item.id == group_id)
+                frozen_reference_scope = {
+                    "beat_ids": list(reference_group.dramatic_beat_ids or reference_group.source_span_ids),
+                    "shot_ids": [shot.id for shot in reference_group.shots],
+                }
                 reference_snapshot = await build_planned_reference_snapshot(
                     store,
                     workflow,
@@ -1918,16 +2174,11 @@ async def _enqueue_group_action(
                     active_plan_revision_id=active_revision_id,
                     required_binding_keys=required_binding_keys,
                     max_images=MAX_GROUP_IMAGE_REFERENCES,
+                    group_scope=frozen_reference_scope,
                 )
                 _confirm_active_plan_revision(
                     plan_store, episode, active_revision_id
                 )
-                reference_plan = plan_store.load(episode, active_revision_id)
-                reference_group = next(item for item in reference_plan.groups if item.id == group_id)
-                frozen_reference_scope = {
-                    "beat_ids": list(reference_group.dramatic_beat_ids or reference_group.source_span_ids),
-                    "shot_ids": [shot.id for shot in reference_group.shots],
-                }
             except PlannedReferenceError as exc:
                 raise _planned_reference_http_error(exc) from exc
         else:
@@ -1974,6 +2225,8 @@ async def _enqueue_group_action(
             regenerate=regenerate,
             regenerate_completed=not split_only,
         )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found") from exc
 
@@ -1988,11 +2241,12 @@ async def _enqueue_group_action(
         "stage": stage,
         "revision": revision,
         "layout": group.layout.__dict__,
-        "aspect_ratio": request.aspect_ratio,
+        "aspect_ratio": _generation_aspect_ratio(resolved, request.aspect_ratio),
         "beat_ids": list(group.beat_ids),
         "cell_to_beat": mapping,
         "beats": selected_beats,
         "split_only": split_only,
+        "style_snapshot": dict(source_group.effective_style_snapshot),
     }
     payload.update(storyboard_payload)
     if reference_snapshot is not None:
@@ -2008,10 +2262,24 @@ async def _enqueue_group_action(
             "source_sketch_revision": source_sketch_revision,
             "source_sketch_asset": source_sketch_asset,
         })
-    queued = await get_task_backend().enqueue_project_task(
-        resolved.ctx, task_type=task_type, queue_kind="default", episode=episode,
-        scope=scope, payload=payload,
-    )
+    try:
+        queued = await get_task_backend().enqueue_project_task(
+            resolved.ctx, task_type=task_type, queue_kind="default", episode=episode,
+            scope=scope, payload=payload,
+        )
+    except Exception:
+        import asyncio
+        from novelvideo.narrative_groups.service import fail_unowned_image_enqueue
+        try:
+            owner = await asyncio.to_thread(get_task_manager().get_task_for_project,
+                resolved.ctx, task_type, episode, scope=scope)
+            if owner is None:
+                await asyncio.to_thread(fail_unowned_image_enqueue,
+                    resolved.project_dir, episode, group_id, stage, revision)
+        except Exception:
+            # Unknown task ownership must retain its reservation for recovery.
+            pass
+        raise
     return {"ok": True, "data": {
         "task_id": queued.task_state.task_id, "scope": scope,
         "backend": queued.backend, "queue": queued.queue,
@@ -2064,7 +2332,15 @@ async def _enqueue_group_video(
     source_group = next((item for item in groups if item.id == group_id), None)
     if source_group is None:
         raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found")
+    if source_group.stages["render"].needs_regeneration:
+        raise HTTPException(status_code=409, detail={
+            "code": "STORYBOARD_REFERENCE_STALE",
+            "message": "分镜图的引用已更新，请先重新生成本组分镜图，再生成视频。",
+            "reason": source_group.stages["render"].stale_reason,
+        })
     settings = source_group.video_settings
+    if request.retry_planning and source_group.stages["video"].status != "failed":
+        raise HTTPException(status_code=409, detail="Only failed planning can be explicitly retried")
     if request.settings_revision is not None:
         if request.settings_revision != settings.revision:
             raise HTTPException(
@@ -2221,8 +2497,6 @@ async def _enqueue_group_video(
             workflow,
             {**project_defaults, **parameter_overrides},
         )
-        if h3_input_snapshot_required:
-            workflow_parameters["continuity_policy"] = "enforce"
     except VideoWorkflowParameterError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
@@ -2248,9 +2522,10 @@ async def _enqueue_group_video(
         "plan_revision": request.plan_revision,
         "model": request.model,
         "mode": request.mode,
-        "aspect_ratio": request.aspect_ratio,
+        "aspect_ratio": _generation_aspect_ratio(resolved, request.aspect_ratio),
         "workflow_parameters": workflow_parameters,
-        "cinematography_review_required": h3_input_snapshot_required,
+        "cinematography_review_required": h3_input_snapshot_required and request.cinematography_review,
+        **({"retry_planning": True} if request.retry_planning else {}),
         "settings_revision": group.video_settings.revision,
     }
     if segment_id:
@@ -2792,6 +3067,29 @@ async def put_group_style(
     }}
 
 
+def _episode_group_audio_ready(project_dir: Path, episode: int, groups: list[NarrativeGroup]) -> bool:
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        DialogueSource, load_h3_director_manifest,
+    )
+    from novelvideo.utils.path_resolver import PathResolver
+
+    paths = PathResolver(str(project_dir), episode)
+    for group in groups:
+        try:
+            manifest = load_h3_director_manifest(group.stages["video"].manifest_asset)
+        except (OSError, ValueError):
+            return False
+        external_entries = [entry for entry in manifest.entries
+                            if entry.dialogue_source is DialogueSource.EXTERNAL_TTS]
+        if external_entries and (
+            manifest.ambience_stem_status != "succeeded"
+            or not Path(manifest.ambience_stem_path or "").is_file()
+            or any(not (Path(entry.external_audio_path) if entry.external_audio_path else paths.audio(entry.segment.beat_number)).is_file() for entry in external_entries)
+        ):
+            return False
+    return True
+
+
 @router.post(
     "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/video/dialogue-source",
     status_code=status.HTTP_202_ACCEPTED,
@@ -2804,15 +3102,27 @@ async def change_group_video_dialogue_source(
     user: dict = Depends(get_api_user),
 ):
     resolved, groups, _ = await _resolve_groups(project, episode, user)
+    prepare_external = request.dialogue_source == "external_tts"
     try:
-        update_video_manifest_dialogue_source(
-            resolved.project_dir,
-            episode,
-            group_id,
-            span_index=request.span_index,
-            dialogue_source=request.dialogue_source,
-            expected_revision=request.revision,
-        )
+        if prepare_external:
+            from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+            target = next((group for group in groups if group.id == group_id), None)
+            if target is None:
+                raise KeyError(group_id)
+            if target.stages["video"].revision != request.revision:
+                raise RuntimeError("narrative group video revision is stale")
+            manifest = load_h3_director_manifest(target.stages["video"].manifest_asset)
+            if not 0 <= request.span_index < len(manifest.entries):
+                raise IndexError(request.span_index)
+        else:
+            update_video_manifest_dialogue_source(
+                resolved.project_dir,
+                episode,
+                group_id,
+                span_index=request.span_index,
+                dialogue_source=request.dialogue_source,
+                expected_revision=request.revision,
+            )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Narrative group not found") from exc
     except (FileNotFoundError, IndexError) as exc:
@@ -2821,6 +3131,14 @@ async def change_group_video_dialogue_source(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     revision = request.revision
+    if not prepare_external and (any(group.stages["video"].status != "completed" for group in groups)
+        or not _episode_group_audio_ready(resolved.project_dir, episode, groups)):
+        # The choice is already saved. Composing a partly generated episode
+        # or one missing required external audio would predictably fail.
+        return {"ok": True, "data": {
+            "task_id": None, "recomposition_deferred": True,
+            "group_id": group_id, "revision": revision,
+        }}
     scope = f"group_{group_id}_video_compose_r{revision}_s{request.span_index}"
     payload = {
         "episode": episode,
@@ -2828,7 +3146,10 @@ async def change_group_video_dialogue_source(
         "revision": revision,
         "span_index": request.span_index,
         "dialogue_source": request.dialogue_source,
+        "resolution": "1280x720" if _generation_aspect_ratio(resolved, None) == "16:9" else "720x1280",
     }
+    if prepare_external:
+        payload["prepare_external_audio"] = True
     queued = await get_task_backend().enqueue_project_task(
         resolved.ctx,
         task_type="narrative_group_video_compose",

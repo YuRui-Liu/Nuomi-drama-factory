@@ -3,7 +3,7 @@ import asyncio
 
 from novelvideo.character_visual.casting_compiler import snapshot_digest
 from novelvideo.character_visual.casting_service import resolved_style, design_and_publish
-from novelvideo.character_visual.casting_source import load_sources, ground_profile, reuse_artifact_facts, assert_live_sources
+from novelvideo.character_visual.casting_source import load_sources, ground_profile, reuse_artifact_facts, assert_live_sources, character_source_revision
 from novelvideo.character_visual.store import CharacterVisualWorkspaceStore
 from novelvideo.character_visual.casting_submission import SubmissionJournal
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch, raise_if_envelope_cancel_requested, raise_if_local_task_stop_requested
@@ -43,6 +43,7 @@ def run_character_casting_proposals(envelope, ctx):
             if workspace is None or snapshot_digest(workspace.model_dump(mode='json')) != payload['workspace_hash']:
                 raise ValueError('casting inputs changed before recast')
             documents, revision = await load_sources(ctx.output_dir, sql)
+            revision = character_source_revision(documents, revision, name, expected_revision=payload['source_revision'])
             if revision != payload['source_revision'] or resolved_style(ctx) != payload['style']:
                 raise ValueError('source/style changed before recast')
             artifact_facts = await reuse_artifact_facts(workspace.profile, documents, revision, sql)
@@ -50,7 +51,8 @@ def run_character_casting_proposals(envelope, ctx):
                 identity_id=identity_id, artifact_facts=artifact_facts)
             async def assert_live():
                 await asyncio.to_thread(cancel)
-                _, current = await load_sources(ctx.output_dir, sql)
+                live_documents, current = await load_sources(ctx.output_dir, sql)
+                current = character_source_revision(live_documents, current, name, expected_revision=revision)
                 if current != revision or resolved_style(ctx) != payload['style']:
                     raise ValueError('source/style changed during recast')
             def before_commit():

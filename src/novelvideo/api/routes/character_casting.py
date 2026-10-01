@@ -17,7 +17,7 @@ from novelvideo.character_visual.casting_review import ReviewReference
 from novelvideo.character_visual.casting_service import (
     stage_workspace, revise_draft, compile_current, resolved_style, adopt_candidate, is_stale,
 )
-from novelvideo.character_visual.casting_source import load_sources
+from novelvideo.character_visual.casting_source import load_sources, character_source_revision
 from novelvideo.character_visual.casting_store import CastingCandidateStore
 from novelvideo.character_visual.casting_submission import SubmissionJournal, submission_view, submit_once
 from novelvideo.character_visual.models import CharacterDesignProposal, CharacterNarrativeProfile, CharacterVisualWorkspace
@@ -231,12 +231,19 @@ def conflict(exc):
     raise HTTPException(409, str(exc)) from exc
 
 
+async def _character_sources(ctx, sql, name, identity_id, *, fresh=False):
+    documents, revision = await load_sources(ctx.output_dir, sql)
+    draft = stage_workspace(workspace_or_empty(ctx, name), identity_id)
+    expected = draft.casting_revision.source_revision if draft.casting_revision and not fresh else None
+    return documents, character_source_revision(documents, revision, name, expected_revision=expected)
+
+
 @router.get(BASE)
 async def get_casting(project: str, name: str, identity_id: str | None = None, user: dict = Depends(get_api_user)):
     async with scope(project, name, user, identity_id) as (ctx, sql, character):
         source_revision, prerequisite = '', None
         try:
-            _, source_revision = await load_sources(ctx.output_dir, sql)
+            _, source_revision = await _character_sources(ctx, sql, name, identity_id)
         except ValueError as exc:
             prerequisite = str(exc)
         # Source loading may await. Capture bible + workflow current together only
@@ -277,7 +284,7 @@ async def patch_casting(project: str, name: str, body: DraftRequest, identity_id
             draft = stage_workspace(workspace_or_empty(ctx, name), identity_id)
             if not draft.casting_revision or draft.casting_revision.revision_id != body.expected_revision:
                 raise ValueError('casting revision conflict')
-            _, source_revision = await load_sources(ctx.output_dir, sql)
+            _, source_revision = await _character_sources(ctx, sql, name, identity_id)
             if source_revision != draft.casting_revision.source_revision or resolved_style(ctx) != draft.casting_revision.style_revision:
                 raise ValueError('source/style changed; recast required')
         except ValueError as exc:
@@ -302,7 +309,7 @@ async def recast(project: str, name: str, body: RecastRequest, identity_id: str 
             existing = journal.existing('recast', name, identity_id, body.idempotency_key, fingerprint)
             if existing:
                 return {'ok': True, 'data': submission_view(existing, ctx, get_task_manager())}
-            _, source_revision = await load_sources(ctx.output_dir, sql)
+            _, source_revision = await _character_sources(ctx, sql, name, identity_id, fresh=True)
             workspace = workspace_or_empty(ctx, name)
             draft = stage_workspace(workspace, identity_id)
             if (draft.casting_revision.revision_id if draft.casting_revision else None) != body.expected_revision:
@@ -327,7 +334,7 @@ async def recast(project: str, name: str, body: RecastRequest, identity_id: str 
 async def list_candidates(project: str, name: str, identity_id: str | None = None, user: dict = Depends(get_api_user)):
     async with scope(project, name, user, identity_id) as (ctx, sql, character):
         try:
-            _, source_revision = await load_sources(ctx.output_dir, sql)
+            _, source_revision = await _character_sources(ctx, sql, name, identity_id)
         except ValueError:
             source_revision = ''
         workspace, style = workspace_or_empty(ctx, name), resolved_style(ctx)
@@ -345,7 +352,7 @@ async def generate_candidate(project: str, name: str, body: GenerateRequest, ide
             existing = journal.existing('generate', name, identity_id, body.idempotency_key, fingerprint)
             if existing:
                 return {'ok': True, 'data': submission_view(existing, ctx, get_task_manager())}
-            _, source_revision = await load_sources(ctx.output_dir, sql)
+            _, source_revision = await _character_sources(ctx, sql, name, identity_id)
             style = resolved_style(ctx)
             model, selection = freeze_image_model(ctx, body.model)
             def prepare(row):
@@ -380,7 +387,7 @@ async def review(project: str, name: str, candidate_id: str, body: ReviewRequest
                 return {'ok': True, 'data': submission_view(existing, ctx, get_task_manager())}
             candidate_store(ctx).read_verified_asset(candidate_id)
             try:
-                documents, source_revision = await load_sources(ctx.output_dir, sql)
+                documents, source_revision = await _character_sources(ctx, sql, name, identity_id)
             except ValueError:
                 documents, source_revision = {}, ''
             references, coverage = resolve_references(ctx, sql, candidate, body.references, documents, source_revision)

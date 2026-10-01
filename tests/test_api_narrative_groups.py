@@ -53,6 +53,24 @@ from novelvideo.shot_continuity import (
 )
 
 
+def _without_version(value):
+    """Drop the ``?v=<mtime_ns>`` cache-buster from project media URLs.
+
+    ``_asset_url`` now versions every existing file so a stable path (split
+    cells, promoted frames) can no longer be served from a stale cache after a
+    re-render. These tests assert the canonical path shape, so they compare
+    through this helper; the version parameter itself is asserted explicitly
+    where it matters.
+    """
+    if isinstance(value, str):
+        return value.split("?", 1)[0] if value.startswith("/api/v1/") else value
+    if isinstance(value, dict):
+        return {key: _without_version(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_without_version(item) for item in value]
+    return value
+
+
 class FakeStore:
     def __init__(self, beat_count=6):
         self.beat_count = beat_count
@@ -245,6 +263,7 @@ def activate_director_plan(
     group_id: str = "director-group",
     shot_id: str = "shot-1",
     dramatic_beat_ids: tuple[str, ...] = (),
+    style_snapshot=None,
 ) -> None:
     group = NarrativeGroupPlan(
         id=group_id,
@@ -279,6 +298,7 @@ def activate_director_plan(
         director_model="director-v1",
         prompt_version="v2",
         project_style_snapshot_id="style-1",
+        project_style_snapshot=style_snapshot,
         groups=(group,),
         validation_report=ValidationReport(passed=True),
         created_at=datetime(2026, 8, 30, 12, tzinfo=timezone.utc),
@@ -321,6 +341,59 @@ def test_get_migrates_old_episode_to_stable_groups(monkeypatch, tmp_path):
     assert [group["id"] for group in groups] == ["ng-01"]
     assert groups[0]["layout"] == {"rows": 2, "columns": 3, "capacity": 6}
     assert groups[0]["cell_to_beat"][0] == {"cell": 0, "beat_id": "beat-1"}
+
+
+class _FakeTaskManager:
+    def __init__(self, tasks=()):
+        self._tasks = list(tasks)
+
+    def list_tasks_for_project(self, ctx):
+        return list(self._tasks)
+
+
+def _fake_task(task_type, scope, status):
+    return SimpleNamespace(task_type=task_type, scope=scope, status=status)
+
+
+def _stage_video_running(tmp_path, *, revision=2):
+    group = narrative_group_service.load_groups(tmp_path, 1)[0]
+    stages = dict(group.stages)
+    stages["video"] = replace(stages["video"], status="running", revision=revision)
+    narrative_group_service.save_groups(tmp_path, 1, [replace(group, stages=stages)])
+    return group.id
+
+
+def test_list_groups_reclaims_running_stage_without_a_live_task(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    assert client.get("/api/v1/projects/demo/episodes/1/narrative-groups").status_code == 200
+    _stage_video_running(tmp_path)
+    monkeypatch.setattr(narrative_groups, "get_task_manager", lambda: _FakeTaskManager())
+
+    response = client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+
+    assert response.status_code == 200
+    video = response.json()["data"][0]["stages"]["video"]
+    assert video["status"] == "failed"
+    assert "任务中心已空闲" in video["error"]
+    # durable, so every other consumer stops seeing the residue too
+    assert narrative_group_service.load_groups(tmp_path, 1)[0].stages["video"].status == "failed"
+
+
+def test_list_groups_keeps_running_stage_while_its_task_is_live(monkeypatch, tmp_path):
+    client, _ = make_client(monkeypatch, tmp_path)
+    assert client.get("/api/v1/projects/demo/episodes/1/narrative-groups").status_code == 200
+    group_id = _stage_video_running(tmp_path, revision=2)
+    scope = narrative_groups._stage_task_scope(group_id, "video", 2)
+    monkeypatch.setattr(
+        narrative_groups,
+        "get_task_manager",
+        lambda: _FakeTaskManager([_fake_task("narrative_group_video", scope, "running")]),
+    )
+
+    response = client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+
+    assert response.status_code == 200
+    assert response.json()["data"][0]["stages"]["video"]["status"] == "running"
 
 
 def test_get_projects_active_director_plan_fields(monkeypatch, tmp_path):
@@ -613,7 +686,7 @@ def test_video_reference_preview_returns_safe_dto_and_canonical_thumbnail(
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data == {
+    assert _without_version(data) == {
         "revision": 3,
         "max_images": 2,
         "candidates": [{
@@ -1412,6 +1485,41 @@ def test_legacy_h3_payload_does_not_gain_reference_revision(monkeypatch, tmp_pat
     assert descriptor["frames"]
 
 
+def test_video_generate_requires_refresh_of_stale_wardrobe_storyboard(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    prepare_render_frames(tmp_path)
+    groups = narrative_group_service.load_groups(tmp_path, 1)
+    stages = dict(groups[0].stages)
+    stages['render'] = replace(stages['render'], needs_regeneration=True,
+        stale_reason='portrait_reference_superseded_by_identity_sheet')
+    narrative_group_service.save_groups(tmp_path, 1, [replace(groups[0], stages=stages), *groups[1:]])
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={"model": "runninghub:minimax-h3", "mode": "auto", "revision": 0, "plan_revision": 1},
+    )
+    assert response.status_code == 409
+    assert response.json()['detail']['code'] == 'STORYBOARD_REFERENCE_STALE'
+    assert backend.calls == []
+
+
+def test_failed_group_accepts_explicit_planning_recovery(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    prepare_render_frames(tmp_path)
+    groups = narrative_group_service.load_groups(tmp_path, 1)
+    stages = dict(groups[0].stages)
+    stages['video'] = replace(stages['video'], status='failed', error='Codex execution timed out.')
+    narrative_group_service.save_groups(tmp_path, 1, [replace(groups[0], stages=stages), *groups[1:]])
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={"model": "runninghub:minimax-h3", "mode": "auto", "revision": 0,
+              "plan_revision": 1, "retry_planning": True},
+    )
+    assert response.status_code == 202
+    assert backend.calls[0][1]['payload']['retry_planning'] is True
+
+
 def test_video_generate_rejects_stale_plan_revision(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
@@ -1573,7 +1681,8 @@ def test_video_generate_does_not_mask_registry_builder_errors(monkeypatch, tmp_p
     assert backend.calls == []
 
 
-def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, tmp_path):
+@pytest.mark.parametrize("review", [False, True])
+def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, tmp_path, review):
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     prepare_render_frames(tmp_path)
@@ -1584,6 +1693,7 @@ def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, t
             "model": "runninghub:minimax-h3", "mode": "auto", "revision": 0,
             "plan_revision": 1,
             "aspect_ratio": "16:9", "resolution": "720p",
+            **({"cinematography_review": True} if review else {}),
         },
     )
 
@@ -1603,8 +1713,8 @@ def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, t
         "model": "runninghub:minimax-h3",
         "mode": "auto",
         "aspect_ratio": "16:9",
-        "workflow_parameters": {"resolution": "720p", "continuity_policy": "enforce"},
-        "cinematography_review_required": True,
+        "workflow_parameters": {"resolution": "720p"},
+        "cinematography_review_required": review,
         "settings_revision": 0,
     }
     assert len(payload["reference_snapshot_id"]) == 32
@@ -1700,9 +1810,13 @@ def test_list_urlizes_only_project_scoped_assets(monkeypatch, tmp_path):
                         cell_assets=[{"cell": 0, "path": str(cell)}])
 
     stage = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()["data"][0]["stages"]["render"]
-    assert stage["grid_asset"] == "/api/v1/projects/demo/media/grids/grid.png"
-    assert stage["cell_assets"][0]["url"] == "/api/v1/projects/demo/media/frames/cell.png"
-    assert stage["cell_assets"][0]["path"] == "/api/v1/projects/demo/media/frames/cell.png"
+    assert _without_version(stage["grid_asset"]) == "/api/v1/projects/demo/media/grids/grid.png"
+    assert _without_version(stage["cell_assets"][0]["url"]) == "/api/v1/projects/demo/media/frames/cell.png"
+    assert _without_version(stage["cell_assets"][0]["path"]) == "/api/v1/projects/demo/media/frames/cell.png"
+    # Stable paths carry the mtime cache-buster: without it a browser keeps
+    # rendering the bytes a later re-render replaced.
+    assert stage["grid_asset"].startswith("/api/v1/projects/demo/media/grids/grid.png?v=")
+    assert stage["cell_assets"][0]["url"].startswith("/api/v1/projects/demo/media/frames/cell.png?v=")
 
 
 def test_stage_history_and_rollback_routes(monkeypatch, tmp_path):
@@ -1734,7 +1848,11 @@ def test_reference_preview_with_unpublished_bindings_returns_warnings(
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["bindings"] == []
+    assert len(data["bindings"]) == 1
+    assert data["bindings"][0]["display_label"] == "letter"
+    assert data["bindings"][0]["status"] == "missing_asset"
+    assert data["bindings"][0]["required"] is True
+    assert data["bindings"][0]["selected_by_default"] is False
     assert data["reference_revision"]
     assert data["max_images"] == 9
     assert data["warnings"] == [
@@ -1988,6 +2106,29 @@ def test_generation_time_reference_matching_helpers_are_not_public_api():
     assert not hasattr(narrative_groups, "_reference_persistence_target")
     assert not hasattr(reference_decisions, "build_reference_snapshot")
     assert not hasattr(reference_decisions, "ResolvedProjectAsset")
+
+
+def test_new_render_upgrades_legacy_visual_contract_and_freezes_style(monkeypatch, tmp_path):
+    from novelvideo.narrative_groups.service import load_materialized_groups, save_groups
+    client, backend = make_client(monkeypatch, tmp_path)
+    from novelvideo.director_plan.models import StyleSnapshot, StyleProjections
+    activate_director_plan(tmp_path, style_snapshot=StyleSnapshot(
+        snapshot_id="style-1", style_id="guoman", style_version="1",
+        catalog_hash="catalog", style_hash="hash",
+        projections=StyleProjections(director="director", image="GUOMAN_TEST_STYLE",
+                                     video="video", panel_tag="guoman"),
+    ))
+    body = install_empty_planned_snapshot(monkeypatch, tmp_path)
+    body["allow_unconstrained"] = True
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/director-group/render/generate",
+        json=body,
+    )
+    assert response.status_code == 202, response.text
+    queued = backend.calls[0][1]["payload"]
+    assert queued.get("storyboard_contract_version") == 1
+    assert queued["style_snapshot"]["projections"]["image"] == "GUOMAN_TEST_STYLE"
+    assert load_materialized_groups(tmp_path, 1)[0].storyboard_contract_version == 1
 
 
 @pytest.mark.parametrize("stage", ["sketch", "render"])
@@ -2280,9 +2421,9 @@ def test_list_video_stage_exposes_manifest_video_spans_and_urls(monkeypatch, tmp
     _seed_director_manifest(tmp_path)
 
     stage = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()["data"][0]["stages"]["video"]
-    assert stage["video_asset"] == "/api/v1/projects/demo/media/videos/director.mp4"
-    assert stage["ambience_stem_path"] == "/api/v1/projects/demo/media/videos/ambience.wav"
-    assert stage["video_spans"] == [
+    assert _without_version(stage["video_asset"]) == "/api/v1/projects/demo/media/videos/director.mp4"
+    assert _without_version(stage["ambience_stem_path"]) == "/api/v1/projects/demo/media/videos/ambience.wav"
+    assert _without_version(stage["video_spans"]) == [
         {"span_index": 0, "beat_numbers": [1], "start_seconds": 0.0,
          "end_seconds": 39 / 24, "dialogue_source": "external_tts"},
         {"span_index": 1, "beat_numbers": [2], "start_seconds": 39 / 24,
@@ -2294,6 +2435,7 @@ def test_change_dialogue_source_updates_manifest_and_enqueues_compose_only(monke
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     _seed_director_manifest(tmp_path)
+    monkeypatch.setattr(narrative_groups, "_generation_aspect_ratio", lambda *_: "16:9")
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/dialogue-source",
@@ -2305,10 +2447,78 @@ def test_change_dialogue_source_updates_manifest_and_enqueues_compose_only(monke
     assert backend.calls[0][1]["payload"] == {
         "episode": 1, "group_id": "ng-01", "revision": 1,
         "span_index": 0, "dialogue_source": "h3_native",
+        "resolution": "1280x720",
     }
     from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
     manifest = load_h3_director_manifest(tmp_path / "videos" / "director.manifest.json")
     assert manifest.entries[0].dialogue_source.value == "h3_native"
+
+
+def test_dialogue_source_is_saved_without_composing_an_incomplete_episode(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path, beat_count=12)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_director_manifest(tmp_path)
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/dialogue-source",
+        json={"span_index": 0, "dialogue_source": "h3_native", "revision": 1},
+    )
+    assert response.status_code == 202
+    assert response.json()["data"]["recomposition_deferred"] is True
+    assert backend.calls == []
+    from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+    manifest = load_h3_director_manifest(tmp_path / "videos" / "director.manifest.json")
+    assert manifest.entries[0].dialogue_source.value == "h3_native"
+
+
+@pytest.mark.parametrize("missing_audio", ["ambience", "tts", None])
+def test_dialogue_source_waits_for_required_external_audio(monkeypatch, tmp_path, missing_audio):
+    from novelvideo.utils.path_resolver import PathResolver
+    from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_director_manifest(tmp_path)
+    narrative_groups.update_video_manifest_dialogue_source(
+        tmp_path, 1, "ng-01", span_index=1,
+        dialogue_source="external_tts", expected_revision=1,
+    )
+    tts = PathResolver(str(tmp_path), 1).audio(2)
+    if missing_audio != "tts":
+        tts.parent.mkdir(parents=True, exist_ok=True)
+        tts.write_bytes(b"audio")
+    if missing_audio == "ambience":
+        (tmp_path / "videos" / "ambience.wav").unlink()
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/dialogue-source",
+        json={"span_index": 0, "dialogue_source": "h3_native", "revision": 1},
+    )
+    assert response.status_code == 202
+    if missing_audio:
+        assert response.json()["data"].get("recomposition_deferred") is True
+        assert backend.calls == []
+    else:
+        assert backend.calls[0][1]["task_type"] == "narrative_group_video_compose"
+    manifest = load_h3_director_manifest(tmp_path / "videos" / "director.manifest.json")
+    assert manifest.entries[0].dialogue_source.value == "h3_native"
+    assert manifest.entries[1].dialogue_source.value == "external_tts"
+
+
+def test_external_dialogue_selection_prepares_audio_before_changing_source(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_director_manifest(tmp_path)
+    (tmp_path / "videos" / "ambience.wav").unlink()
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/dialogue-source",
+        json={"span_index": 1, "dialogue_source": "external_tts", "revision": 1},
+    )
+    assert response.status_code == 202
+    from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+    manifest = load_h3_director_manifest(tmp_path / "videos" / "director.manifest.json")
+    assert manifest.entries[1].dialogue_source.value == "h3_native"
+    assert backend.calls[0][1]["task_type"] == "narrative_group_video_compose"
+    assert backend.calls[0][1]["payload"]["prepare_external_audio"] is True
 
 
 def test_change_dialogue_source_rejects_invalid_span_and_stale_revision(monkeypatch, tmp_path):
@@ -3126,8 +3336,8 @@ def test_get_video_prompts_exposes_safe_submitted_prompt_evidence(monkeypatch, t
     assert item["label"] == "Beat 1 → Beat 2"
     assert item["mode"] == "fl2va"
     assert item["duration_seconds"] == 8.5
-    assert item["first_frame_url"] == "/api/v1/projects/demo/media/frames/beat-1.png"
-    assert item["last_frame_url"] == "/api/v1/projects/demo/media/frames/beat-2.png"
+    assert _without_version(item["first_frame_url"]) == "/api/v1/projects/demo/media/frames/beat-1.png"
+    assert _without_version(item["last_frame_url"]) == "/api/v1/projects/demo/media/frames/beat-2.png"
     assert item["director_plan"]["mode"] == "fl2va"
     assert item["final_prompt"] == "the exact submitted prompt"
     assert item["prompt_profile"]["version"] == 4

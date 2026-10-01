@@ -468,7 +468,8 @@ def _load_sqlite_characters(project_output: Path) -> list[NovelCharacter]:
                     role=row["role"] or "" if "role" in keys else "",
                     is_main=bool(row["is_main"]) if "is_main" in keys else False,
                     gender=row["gender"] or "" if "gender" in keys else "",
-                    age_group=row["age_group"] or "youth" if "age_group" in keys else "youth",
+                    age_group=(row["age_group"] or "") if "age_group" in keys else "",
+                    voice_facts_json=(row["voice_facts_json"] or "{}") if "voice_facts_json" in keys else "{}",
                     body_type=row["body_type"] or "" if "body_type" in keys else "",
                     fish_voice_id=row["fish_voice_id"] or "" if "fish_voice_id" in keys else "",
                     description=row["description"] or "" if "description" in keys else "",
@@ -776,6 +777,9 @@ def _dialogue_voice_assets(
             )
             continue
 
+        facts = getattr(character, "voice_facts", None)
+        if facts is not None and (facts.vocalization_mode in {"nonverbal", "none"} or facts.conflicts):
+            raise ValueError(f"vocalization_not_dialogue: {character.name}")
         identity = _identity_for_speaker(speaker, character, beat)
         identity_id = _voice_identity_id(character, identity)
         key = _voice_asset_key(character, identity)

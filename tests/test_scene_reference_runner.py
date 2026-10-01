@@ -74,6 +74,8 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
     from novelvideo.task_backend.runners import scene_reference
 
     scene = NovelScene(name="大厅", description="地下大厅")
+    monkeypatch.setattr("novelvideo.script_creation.asset_context.load_asset_authoring_context",
+        lambda db, kind, name: [{"source_revision_id": "scene-r4", "text": "大厅北侧连通水箱区"}])
     calls: dict[str, object] = {"clear_stale": [], "generate": []}
 
     def scene_slot(scene_name: str, kind: str) -> str:
@@ -174,6 +176,8 @@ async def test_scene_reference_runner_does_not_initialize_cognee(monkeypatch, tm
     assert calls["sqlite_closed"] is True
     assert calls["generate"][0]["provider"] == "grsai"
     assert calls["generate"][0]["model"] == "gpt-image-2-vip"
+    assert "scene-r4" in calls["generate"][0]["source_context"]
+    assert "大厅北侧连通水箱区" in calls["generate"][0]["source_context"]
     assert "versions" in str(calls["generate"][0]["output_path_override"])
     assert calls["clear_stale"] == [("大厅", "master")]
     assert calls["slot_factory"] == [("大厅", "master")]

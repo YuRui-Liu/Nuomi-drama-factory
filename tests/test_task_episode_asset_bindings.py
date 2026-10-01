@@ -1135,6 +1135,53 @@ def test_prop_binding_omits_unselected_or_missing_asset_requirement():
     assert bindings == ()
 
 
+def test_scene_requirement_named_by_alias_uses_the_canonical_scene():
+    """The imported library records 修简铺门口 as an alias of 修简铺.
+
+    A plan that names the alias names the same space, so the binding must point
+    at the canonical scene instead of an unpublished asset that cannot exist.
+    """
+
+    alias = SimpleNamespace(kind="scene_base", entity_key="咖啡馆门口", required=True)
+    canonical = SimpleNamespace(kind="scene_base", entity_key="咖啡馆", required=True)
+    shots = (
+        SimpleNamespace(id="shot-1", dramatic_beat_ids=("beat-1",), asset_requirements=(alias,)),
+        SimpleNamespace(id="shot-2", dramatic_beat_ids=("beat-2",), asset_requirements=(canonical,)),
+    )
+    plan = SimpleNamespace(
+        revision_id="director-r2",
+        groups=tuple(
+            SimpleNamespace(id=f"group-{index}", dramatic_beat_ids=(f"beat-{index}",), shots=(shot,))
+            for index, shot in enumerate(shots, start=1)
+        ),
+    )
+
+    bindings = _episode_asset_bindings(
+        asset_kind="scene",
+        project_id="owner/project",
+        episode_number=1,
+        director_plan=plan,
+        changed_entities=(),
+        scenes=(
+            NovelScene(
+                name="咖啡馆",
+                aliases=["L001", "咖啡馆门口"],
+                master_path="assets/scenes/cafe.png",
+            ),
+        ),
+        props=(),
+        characters=(),
+    )
+
+    assert [item.entity_id for item in bindings] == ["咖啡馆"]
+    [binding] = bindings
+    assert binding.asset_kind == "scene_base"
+    assert binding.asset_slot_id == scene_base_slot_id("咖啡馆", "master")
+    assert binding.status == "ready"
+    # One published row serves both the alias-named and canonical requirement.
+    assert binding.group_ids == ("group-1", "group-2")
+
+
 def test_binding_projection_retains_unchanged_full_catalog_alongside_overlay():
     requirements = (
         SimpleNamespace(kind="scene_base", entity_key="旧车站", required=True),

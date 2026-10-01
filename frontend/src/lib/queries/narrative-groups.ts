@@ -267,6 +267,7 @@ export interface NarrativeGroup {
   ordinal: number;
   title?: string | null;
   beat_ids: string[];
+  shot_ids?: string[];
   source_span_ids?: string[];
   objective?: string | null;
   visible_turn?: string | null;
@@ -547,6 +548,18 @@ export function useNarrativeGroups(project: string, episode: number) {
       p`api/v1/projects/${project}/episodes/${episode}/narrative-groups`, { signal },
     ).json<ApiResponse<NarrativeGroup[]>>(),
     enabled: !!project && episode > 0,
+    refetchInterval: (query) => {
+      const response = query.state.data;
+      if (!response?.ok) return false;
+      if (response.data.some((group) => Object.values(group.stages).some(
+        (stage) => stage.status === "queued" || stage.status === "running",
+      ))) return 1500;
+      return response.data.some((group) => [group.stages.render, group.stages.sketch].some((stage) => {
+        const repair = stage.provider_parameters?.cell_repair;
+        return typeof repair === "object" && repair !== null && "status" in repair
+          && (repair.status === "queued" || repair.status === "running");
+      })) ? 1500 : false;
+    },
   });
 }
 
@@ -677,7 +690,7 @@ export function useUpdateNarrativeGroupVideoDialogueSource(project: string, epis
       revision: number;
     }) => api.post(narrativeGroupVideoDialogueSourcePath(project, episode, groupId), {
       json: narrativeGroupVideoDialogueSourcePayload({ spanIndex, dialogueSource, revision }),
-    }).json<TaskResponse>(),
+    }).json<ApiResponse<{ task_id: string | null; recomposition_deferred?: boolean }>>(),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),
   });
 }

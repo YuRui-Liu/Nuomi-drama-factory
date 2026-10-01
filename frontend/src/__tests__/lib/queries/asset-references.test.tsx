@@ -36,6 +36,21 @@ function makeWrapper() {
 }
 
 describe("useAssetReferences", () => {
+  it("preserves narrative group and episode binding references without inventing beat zero", async () => {
+    server.use(http.get("http://localhost:3000/api/v1/projects/demo/assets/references", () => HttpResponse.json({
+      ok: true,
+      data: { usages: { "prop:Moon Fan": [
+        { episode: 2, group_id: "group-03", group_ordinal: 3 },
+        { episode: 4, binding: true },
+      ] }, scene_co_occurrence: {} },
+    })));
+    const { result } = renderHook(() => useAssetReferences("demo", [{ type: "prop", id: "Moon Fan" }]), { wrapper: makeWrapper() });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.referencesFor("prop", "Moon Fan")).toEqual([
+      { episode: 2, groupId: "group-03", groupOrdinal: 3 },
+      { episode: 4, binding: true },
+    ]);
+  });
   it("requests all expanded asset ids once and maps usages", async () => {
     const requests: string[][] = [];
     server.use(

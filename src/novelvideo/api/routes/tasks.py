@@ -35,6 +35,8 @@ _TASK_NOT_FOUND_GRACE_S = 10.0
 _TASK_TYPE_LABELS = {
     "ingest_fast": "快速导入",
     "script_creation_generation": "剧本创作",
+    "script_creation_prop_extraction": "创作道具提取",
+    "script_creation_asset_extraction": "创作资产提取",
     "script_creation_rewrite": "剧本改稿",
     "build_characters": "构建角色",
     "build_scenes": "构建场景",
@@ -73,6 +75,8 @@ _TASK_TYPE_LABELS = {
     "freezone_video_upscale": "视频放大",
     "freezone_audio_separate": "音频分离",
     "freezone_video_compose": "视频合成",
+    "music_generate": "生成配乐候选",
+    "music_render": "混音与配乐导出",
     "freezone_text_translate": "字幕翻译",
     "freezone_story_script": "生成故事脚本",
     "freezone_script_to_video_plan": "脚本转视频计划",
@@ -272,7 +276,7 @@ async def list_project_tasks(project: str, user: dict = Depends(get_api_user)):
     """列出单个项目的任务。生产多节点路径由 OpenResty 路由到项目 home node。"""
     ctx = await resolve_project_context(user=user, project_id=project, required_role="viewer")
     mgr = get_task_manager()
-    tasks = mgr.list_tasks_for_project(ctx)
+    tasks = await asyncio.to_thread(mgr.list_tasks_for_project,ctx)
     tasks.sort(key=lambda task: task.updated_at or task.created_at or "", reverse=True)
     return {"ok": True, "data": [_serialize_task(t, ctx=ctx) for t in tasks]}
 
@@ -293,9 +297,9 @@ async def get_project_task_limits(project: str, user: dict = Depends(get_api_use
             queue_kind,
             eligible_user_count=eligible_user_count,
         )
-        active = mgr.count_active_tasks_for_project_lane(ctx, queue_kind)
+        active = await asyncio.to_thread(mgr.count_active_tasks_for_project_lane,ctx, queue_kind)
         user_limit = project_user_lane_active_limit(queue_kind)
-        user_active = mgr.count_active_tasks_for_project_user_lane(ctx, queue_kind)
+        user_active = await asyncio.to_thread(mgr.count_active_tasks_for_project_user_lane,ctx, queue_kind)
         data[queue_kind] = {
             "limit": limit,
             "active": active,
@@ -313,9 +317,9 @@ async def clear_project_completed_tasks(project: str, user: dict = Depends(get_a
     ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
     mgr = get_task_manager()
     deleted = 0
-    for t in mgr.list_tasks_for_project(ctx):
+    for t in await asyncio.to_thread(mgr.list_tasks_for_project,ctx):
         if _effective_task_status(t) == "completed":
-            mgr.delete_task_for_project(
+            await asyncio.to_thread(mgr.delete_task_for_project,
                 ctx,
                 t.task_type,
                 t.episode,
@@ -338,7 +342,7 @@ async def get_project_task(
     """查询单个项目内指定任务的状态。"""
     ctx = await resolve_project_context(user=user, project_id=project, required_role="viewer")
     mgr = get_task_manager()
-    task = mgr.get_task_for_project(ctx, task_type, episode, beat_num=beat_num, scope=scope)
+    task = await asyncio.to_thread(mgr.get_task_for_project,ctx, task_type, episode, beat_num=beat_num, scope=scope)
     if not task:
         return {"ok": True, "data": None, "message": "Task not found"}
     return {"ok": True, "data": _serialize_task(task, ctx=ctx)}
@@ -368,7 +372,7 @@ async def stream_project_tasks(
         last_heartbeat = asyncio.get_event_loop().time()
         last_auth_check = last_heartbeat
 
-        for t in mgr.list_tasks_for_project(ctx):
+        for t in await asyncio.to_thread(mgr.list_tasks_for_project,ctx):
             payload = _serialize_task(t, ctx=ctx)
             key = payload["task_key"]
             last[key] = (t.status, round(t.progress, 3), t.updated_at)
@@ -384,7 +388,7 @@ async def stream_project_tasks(
         }
 
         while True:
-            tasks = mgr.list_tasks_for_project(ctx)
+            tasks = await asyncio.to_thread(mgr.list_tasks_for_project,ctx)
             seen: set[str] = set()
             for t in tasks:
                 payload = _serialize_task(t, ctx=ctx)
@@ -456,7 +460,7 @@ async def stream_project_task(
                 return
 
             mgr = get_task_manager()
-            task = mgr.get_task_for_project(ctx, task_type, episode, beat_num=beat_num, scope=scope)
+            task = await asyncio.to_thread(mgr.get_task_for_project,ctx, task_type, episode, beat_num=beat_num, scope=scope)
 
             if not task:
                 import time
@@ -543,7 +547,7 @@ async def cancel_project_task_route(
         scope,
     )
     mgr = get_task_manager()
-    task = mgr.get_task_for_project(ctx, task_type, episode, beat_num=beat_num, scope=scope)
+    task = await asyncio.to_thread(mgr.get_task_for_project,ctx, task_type, episode, beat_num=beat_num, scope=scope)
     if not task:
         logger.warning(
             "[%s] cancel_project_task: task not found (type=%s episode=%s beat=%s scope=%s)",

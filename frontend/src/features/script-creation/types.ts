@@ -110,6 +110,25 @@ export interface ConsistencyRun {
 }
 
 export type NarrativeAssetType = "character" | "scene" | "prop";
+export interface AssetExtractionCandidate {
+  id: string; name: string; description: string; visual_prompt?: string; prop_type?: string;
+  source_block_id: string; source_block_ids?: string[]; evidence: string; existing_asset_id: string | null; existing_name: string | null;
+  action: "create" | "reuse"; warnings: string[];
+  face_prompt?: string; environment_prompt?: string; scene_type?: string;
+  role?: string; gender?: string; age_group?: string;
+  fields?: Record<string, string>; missing_visual_description?: boolean;
+}
+export interface PropExtractionCandidate extends AssetExtractionCandidate { visual_prompt: string; prop_type: string }
+export interface AssetExtractionRun {
+  id: string; status: "pending" | "running" | "ready" | "failed" | "needs_rebase" | "committed";
+  asset_type?: NarrativeAssetType; document_id: string; source_revision_id: string; candidates: AssetExtractionCandidate[];
+  error: string | null; queued_task_id?: string | null;
+  raw_output?: Record<string, unknown> | null;
+  rejected_candidates?: Array<{ name: string; source_block_id: string; evidence: string; reason: string }>;
+  result?: Array<{ candidate_id: string; name: string; asset_id: string; action: "created" | "reused";
+    source_document_id: string; source_revision_id: string; source_block_id: string }>;
+}
+export interface PropExtractionRun extends AssetExtractionRun { candidates: PropExtractionCandidate[] }
 export interface EntityRelation { kind: "holding" | "key_prop" | "entry"; entity_id: string; missing?: boolean; stale?: boolean }
 export interface EntityAppearance { kind: "first_appearance" | "critical_scene"; status: "planned" | "written"; episode_number?: number; document_id?: string; revision_id?: string; stale?: boolean }
 export interface NarrativeEntity {

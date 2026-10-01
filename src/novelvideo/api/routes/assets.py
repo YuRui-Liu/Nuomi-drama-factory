@@ -15,6 +15,9 @@ from novelvideo.assets.organization import (
     AssetFolderNotFound,
     AssetOrganizationError,
 )
+from novelvideo.director_plan.store import DirectorPlanStore
+from novelvideo.narrative_groups.planned_binding_service import _character_identity_candidates
+from novelvideo.narrative_groups.reference_requirements import parse_scene_requirement
 from novelvideo.models import (
     beat_scene_id,
     extract_prop_ids_from_markers,
@@ -90,9 +93,72 @@ def _beat_asset_refs(beat) -> tuple[list[str], list[str], str]:
 
 
 async def _load_beat_asset_refs(ctx):
+    """Read legacy beats, published plan groups, and otherwise-unscoped bindings."""
     store = await make_sqlite_store_for_context(ctx)
     try:
-        return await store.list_visual_beats()
+        rows = []
+        for beat in await store.list_visual_beats():
+            identities, props, scene = _beat_asset_refs(beat)
+            rows.append(({"episode": int(beat.episode_number), "beat_number": int(beat.beat_number)},
+                         set(identities), set(props), {scene} if scene else set()))
+        list_episodes = getattr(store, "list_episodes", None)
+        episodes = await list_episodes() if list_episodes else []
+        get_characters = getattr(store, "get_all_characters", None)
+        characters = tuple(get_characters()) if get_characters and episodes else ()
+        list_scenes = getattr(store, "list_scenes", None)
+        known_scenes = {scene.name for scene in await list_scenes()} if list_scenes and episodes else set()
+        output_dir = getattr(ctx, "output_dir", None)
+        plans = DirectorPlanStore(output_dir) if output_dir else None
+        for episode in episodes:
+            number = episode.number
+            # Read the published snapshot without materializing groups, recovering
+            # transactions, or creating lock files during a reference lookup.
+            active = plans._load_active(number, check_source=False) if plans else None
+            if active:
+                list_bindings = getattr(store, "list_planned_reference_bindings", None)
+                bindings = await list_bindings(number) if list_bindings else []
+                bindings = [b for b in bindings if b.source_plan_revision_id == active.revision_id]
+                for group in active.groups:
+                    identities, props, scenes = set(), set(), set()
+                    shot_ids = {shot.id for shot in group.shots}
+                    for binding in bindings:
+                        if group.id not in binding.group_ids and not shot_ids.intersection(binding.shot_ids):
+                            continue
+                        if binding.asset_kind == "character_identity":
+                            identities.add(binding.entity_id)
+                        elif binding.asset_kind == "prop":
+                            props.add(binding.entity_id)
+                        elif binding.asset_kind in {"scene_base", "scene_variant"}:
+                            scenes.add(binding.base_entity_id or binding.entity_id)
+                    for shot in group.shots:
+                        for req in shot.asset_requirements:
+                            if req.kind == "prop":
+                                props.add(req.entity_key)
+                            elif req.kind in {"scene_base", "scene_state"}:
+                                scene_id, _ = parse_scene_requirement(req.entity_key, known_scenes)
+                                scenes.add(scene_id)
+                            elif req.kind in {"character_identity", "character_state"}:
+                                candidates, ambiguous = _character_identity_candidates(
+                                    req.entity_key, characters, frozenset(episode.identity_ids),
+                                    episode.identity_default_map,
+                                )
+                                if len(candidates) == 1 and not ambiguous:
+                                    identities.add(candidates[0][1].identity_id)
+                                elif req.entity_key in episode.identity_default_map:
+                                    identities.add(episode.identity_default_map[req.entity_key])
+                                elif req.entity_key in episode.identity_ids:
+                                    identities.add(req.entity_key)
+                    rows.append(({"episode": number, "group_id": group.id, "group_ordinal": group.ordinal},
+                                 identities - {""}, props - {""}, scenes - {""}))
+            # An episode binding is useful even before a plan exists. Do not
+            # double-count it when a more precise group/beat reference exists.
+            episode_sets = (set(episode.identity_ids), {p.prop_id for p in episode.prop_menu},
+                            {s.scene_id for s in episode.scene_menu})
+            remaining = [values - set().union(*(row[index + 1] for row in rows if row[0]["episode"] == number))
+                         for index, values in enumerate(episode_sets)]
+            if any(remaining):
+                rows.append(({"episode": number, "binding": True}, *remaining))
+        return rows
     finally:
         close = getattr(store, "close", None)
         if close:
@@ -229,33 +295,25 @@ async def get_project_asset_references(
     wanted_scenes = {
         key.split(":", 1)[1] for key in wanted if key.startswith("scene:")
     }
-    usages: dict[str, list[dict[str, int]]] = {}
+    usages: dict[str, list[dict[str, object]]] = {}
     scene_co: dict[str, dict[str, set[str]]] = {}
 
-    def _record(key: str, ref: dict[str, int]) -> None:
-        if key in wanted:
-            usages.setdefault(key, []).append(ref)
+    def _record(key: str, ref: dict[str, object]) -> None:
+        if key in wanted and ref not in usages.setdefault(key, []):
+            usages[key].append(ref)
 
-    for beat in beats:
-        ref = {
-            "episode": int(getattr(beat, "episode_number", 0) or 0),
-            "beat_number": int(getattr(beat, "beat_number", 0) or 0),
-        }
-        identities, props, scene_id = _beat_asset_refs(beat)
+    for ref, identities, props, scenes in beats:
         for identity_id in identities:
             _record(f"identity:{identity_id}", ref)
         for prop_id in props:
             _record(f"prop:{prop_id}", ref)
-        if not scene_id:
-            continue
-        _record(f"scene:{scene_id}", ref)
-        if scene_id not in wanted_scenes:
-            continue
-        bucket = scene_co.setdefault(
-            scene_id, {"identities": set(), "props": set()}
-        )
-        bucket["identities"].update(identities)
-        bucket["props"].update(props)
+        for scene_id in scenes:
+            _record(f"scene:{scene_id}", ref)
+            if scene_id not in wanted_scenes or ref.get("binding"):
+                continue
+            bucket = scene_co.setdefault(scene_id, {"identities": set(), "props": set()})
+            bucket["identities"].update(identities)
+            bucket["props"].update(props)
 
     return {
         "ok": True,
@@ -279,12 +337,14 @@ async def get_asset_references(
     asset_id: str,
     user: dict = Depends(get_api_user),
 ):
-    """Return beat references for a character identity, scene, or prop asset.
+    """Return precise references for a character identity, scene, or prop asset.
 
-    Matching follows the persisted beat contract:
+    Legacy matching follows the persisted beat contract:
     - identity: ``detected_identities`` stores ``identity_id``.
     - scene: ``scene_ref.scene_id`` stores the scene ``name``.
     - prop: ``detected_props`` stores the prop ``name`` / episode prop id.
+    Published plans return group ids; episode-only bindings have no beat number.
+    The ``beats`` response key is retained for older clients.
     """
     resolved = await resolve_project_scope(project, user, required_role="viewer")
     normalized_type = str(asset_type or "").strip().lower()
@@ -295,28 +355,26 @@ async def get_asset_references(
         return {"ok": False, "error": "Asset id is required"}
 
     beats = await _load_beat_asset_refs(resolved.ctx)
-    references: list[dict[str, int]] = []
+    references: list[dict[str, object]] = []
     co_identities: set[str] = set()
     co_props: set[str] = set()
 
-    for beat in beats:
-        episode = int(getattr(beat, "episode_number", 0) or 0)
-        beat_number = int(getattr(beat, "beat_number", 0) or 0)
-        detected_identities, detected_props, scene_id = _beat_asset_refs(beat)
+    for ref, detected_identities, detected_props, scenes in beats:
 
         matched = False
         if normalized_type == "identity":
             matched = _contains(detected_identities, target_id)
         elif normalized_type == "scene":
-            matched = scene_id == target_id
+            matched = target_id in scenes
         elif normalized_type == "prop":
             matched = _contains(detected_props, target_id)
 
         if not matched:
             continue
 
-        references.append({"episode": episode, "beat_number": beat_number})
-        if normalized_type == "scene":
+        if ref not in references:
+            references.append(ref)
+        if normalized_type == "scene" and not ref.get("binding"):
             co_identities.update(str(item or "").strip() for item in detected_identities if item)
             co_props.update(str(item or "").strip() for item in detected_props if item)
 

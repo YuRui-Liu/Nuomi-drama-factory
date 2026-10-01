@@ -39,6 +39,19 @@ def _reference_id(source_kind: str, asset_id: str) -> str:
     return hashlib.sha256(f"{source_kind}\0{asset_id}".encode()).hexdigest()
 
 
+def test_director_ref_preview_uses_shot_assets_without_legacy_beats(tmp_path, monkeypatch):
+    group = replace(_group("line-2"), director_revision_id="director-1")
+    _png(canonical_identity_path(tmp_path, "Alice", "Hero"))
+    monkeypatch.setattr(service, "generation_beats_for_group", lambda *args: [
+        {"id": "shot-1", "detected_identities": ["Alice"]}
+    ])
+    preview = _run(resolve_group_video_reference_preview(
+        store=_Store([]), project_dir=tmp_path, episode_number=1,
+        group=group, max_images=5,
+    ))
+    assert [item.asset_id for item in preview.candidates] == ["Alice_Hero"]
+
+
 class _Store:
     def __init__(self, beats):
         self.beats = beats

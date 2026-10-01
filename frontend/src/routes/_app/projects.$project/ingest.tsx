@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -38,7 +38,10 @@ import {
 import { FormatCheckDetailsDialog } from "@/components/ingest/FormatCheckDetailsDialog";
 import { NovelFormatDialog } from "@/components/ingest/NovelFormatDialog";
 import { EpisodeImportDialog } from "@/components/ingest/EpisodeImportDialog";
+import { IngestOverview, IngestHistory } from "@/components/ingest/IngestOverview";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetFooter } from "@/components/ui/sheet";
 import { KnowledgeGraphVisualization } from "@/components/ingest/KnowledgeGraphVisualization";
+import { useUpdateKnowledgeGraph } from "@/lib/queries/knowledge-graph";
 import { useStyles } from "@/lib/queries/styles";
 import { useCancelTask, useTasks } from "@/lib/queries/tasks";
 import { useGenerationCreditCost } from "@/lib/queries/generation-credit-cost";
@@ -911,6 +914,9 @@ export function IngestPageContent({ project }: { project: string }) {
   const [inputMode, setInputMode] = useState<InputMode>("upload");
   const [novelFormatOpen, setNovelFormatOpen] = useState(false);
   const [episodeImportOpen, setEpisodeImportOpen] = useState(false);
+  const [ingestTab, setIngestTab] = useState<"overview" | "history" | "graph" | "novel">("overview");
+  const [configurationOpen, setConfigurationOpen] = useState(false);
+  const navigate = useNavigate();
   const [episodeImportTaskResponse, setEpisodeImportTaskResponse] =
     useState<TaskResponse | null>(null);
   const [pastedText, setPastedText] = useState("");
@@ -948,7 +954,7 @@ export function IngestPageContent({ project }: { project: string }) {
   const chaptersData = chaptersRes?.data;
   const hasImportedContent = (chaptersData?.chapters?.length ?? 0) > 0;
   const isUploadOnlyPreview = chaptersData?.preview_only === true;
-  const episodeImports = useEpisodeImports(project, hasImportedContent);
+  const episodeImports = useEpisodeImports(project, true);
   const clearEpisodeImportStale = useClearEpisodeImportStale(project);
   const episodeImportTask = useTaskController({
     key: { taskType: "episode_import", project, episode: 0 },
@@ -1011,10 +1017,12 @@ export function IngestPageContent({ project }: { project: string }) {
   const [ingestStarted, setIngestStarted] = useState(false);
   const [reimporting, setReimporting] = useState(false);
   const [reuploadConfirmOpen, setReuploadConfirmOpen] = useState(false);
+  const showKnowledgeGraph = !isUploadOnlyPreview && (hasImportedContent || (episodeImports.data?.data.items.length ?? 0) > 0 || knowledgePipeline === "structured_v1");
   const knowledgeGraph = useKnowledgeGraph(
     project,
-    hasImportedContent && !isUploadOnlyPreview && !ingestStarted,
+    showKnowledgeGraph && !ingestStarted,
   );
+  const updateKnowledgeGraph = useUpdateKnowledgeGraph(project);
   const cancelTask = useCancelTask();
   const taskStream = useTaskStream({
     taskType: "ingest_fast",
@@ -1497,30 +1505,72 @@ export function IngestPageContent({ project }: { project: string }) {
             </span>
           </div>
         </div>
-        {hasImportedContent ? (
-          <div className="flex shrink-0 items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setEpisodeImportOpen(true)}
-            >
-              <Plus className="size-4" />
-              {t("ingest.episodeImport.append")}
-            </Button>
-            <Button type="button" onClick={() => setEpisodeImportOpen(true)}>
-              {t("ingest.episodeImport.batch")}
-            </Button>
-          </div>
-        ) : (
-          <Button type="button" onClick={() => setEpisodeImportOpen(true)}>
-            {t("ingest.episodeImport.multiEpisode")}
-          </Button>
-        )}
+      </div>
+
+      <div className="flex shrink-0 gap-2 border-b px-6 py-3" role="tablist" aria-label="导入视图">
+        {([['overview', '导入概览'], ['history', '导入历史'], ['graph', '知识图谱']] as const).map(([tab, label]) => <Button key={tab} role="tab" aria-selected={ingestTab === tab} variant={ingestTab === tab ? "secondary" : "ghost"} onClick={() => setIngestTab(tab)}>{label}</Button>)}
+        {ingestTab === "novel" && <Button role="tab" aria-selected variant="secondary">小说导入与解析</Button>}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-10">
         <div className="mx-auto w-full max-w-[1080px]">
-          {!shouldShowPreview ? (
+          {ingestTab === "overview" && <IngestOverview
+            episodes={isUploadOnlyPreview && importedEpisodeItems.length === 0 ? [] : previewChapters}
+            latest={episodeImports.data?.data.imports?.[0]}
+            configuration={`${t(spineTemplateLabel)} · ${resolveOptionLabel(visualStyleOptions, settingsValues.visual_style, t) ?? settingsValues.visual_style} · ${knowledgePipeline === "structured_v1" ? "结构化导入" : "知识图谱"}`}
+            onImport={() => setEpisodeImportOpen(true)} onNovel={() => setIngestTab("novel")} onConfigure={() => setConfigurationOpen(true)} onGraph={() => setIngestTab("graph")}
+            onProduce={() => void navigate({ to: "/projects/$project/episodes", params: { project } })}
+          />}
+          {ingestTab === "history" && <IngestHistory records={episodeImports.data?.data.imports ?? []} loading={episodeImports.isLoading} failed={episodeImports.isError} onRetry={() => void episodeImports.refetch()} />}
+          {episodeImportTaskResponse && ingestTab !== "novel" && <p role="status" className="mt-4 rounded-lg border border-primary/20 bg-primary/10 p-4 text-sm">{episodeImportTaskResponse.message ?? t("ingest.episodeImport.accepted")}</p>}
+              {/* Graph is available for imported projects even without chapter previews. */}
+              {ingestTab === "graph" && showKnowledgeGraph && (
+                <div className="mb-6 space-y-4">
+                  {knowledgeGraph.isLoading && (
+                    <div className="h-[520px] overflow-hidden rounded-2xl border border-violet-300/10 bg-[#05050a] p-5">
+                      <div className="flex items-center gap-3">
+                        <Skeleton className="size-9 rounded-xl" />
+                        <div className="space-y-2">
+                          <Skeleton className="h-3 w-24" />
+                          <Skeleton className="h-2.5 w-40" />
+                        </div>
+                      </div>
+                      <Skeleton className="mx-auto mt-16 size-72 rounded-full opacity-40" />
+                    </div>
+                  )}
+
+                  {knowledgeGraph.data?.data ? (
+                    <KnowledgeGraphVisualization graph={knowledgeGraph.data.data} onSave={updateKnowledgeGraph.mutateAsync} />
+                  ) : null}
+
+                  {knowledgeGraph.isError && (
+                    <div className="flex min-h-28 items-center justify-between gap-4 rounded-xl border border-amber-300/15 bg-amber-500/[0.04] p-4">
+                      <div className="flex items-start gap-3">
+                        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-400" />
+                        <div>
+                          <p className="text-sm font-medium text-foreground">
+                            {t("ingest.knowledgeGraph.loadFailed")}
+                          </p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {t("ingest.knowledgeGraph.loadFailedHint")}
+                          </p>
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => knowledgeGraph.refetch()}
+                      >
+                        <RefreshCw className="size-3.5" />
+                        {t("common.retry")}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+          {ingestTab === "graph" && !showKnowledgeGraph && <p className="rounded-lg border p-8 text-center text-muted-foreground">完成导入后可查看知识图谱。</p>}
+          {(ingestTab === "novel" || ingestStarted || ingestFileStatus === "failed") && (!shouldShowPreview ? (
             <motion.section
               layout
               transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
@@ -1807,29 +1857,6 @@ export function IngestPageContent({ project }: { project: string }) {
                   <span>{episodeImportTaskResponse.message ?? t("ingest.episodeImport.accepted")}</span>
                 </div>
               )}
-              {(episodeImports.data?.data.imports?.length ?? 0) > 0 && (
-                <section className={cn("rounded-lg border p-4", INGEST_SURFACE_SUBTLE_CLASS)}>
-                  <h2 className="text-sm font-semibold">{t("ingest.episodeImport.historyTitle")}</h2>
-                  <div className="mt-3 space-y-3">
-                    {episodeImports.data?.data.imports.map((record) => (
-                      <div key={record.import_id} className="rounded-md border border-white/[0.06] p-3 text-xs">
-                        <div className="flex items-center justify-between gap-3">
-                          <span>{t("ingest.episodeImport.revision", { revision: record.target_revision })}</span>
-                          <time className="text-muted-foreground" dateTime={record.created_at}>{new Date(record.created_at).toLocaleString()}</time>
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {record.episodes.map((episode) => {
-                            const result = episode.result ?? episode.status ?? "failed";
-                            return <span key={`${record.import_id}-${episode.episode_number}`} className="rounded bg-white/[0.05] px-2 py-1">
-                              {t("ingest.episodeImport.episodeLabel", { number: episode.episode_number })} · {t(`ingest.episodeImport.result.${result}`)}
-                            </span>;
-                          })}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              )}
               {(episodeImports.data?.data.stale?.length ?? 0) > 0 && (
                 <section className="rounded-lg border border-amber-300/15 bg-amber-500/[0.04] p-4">
                   <h2 className="text-sm font-semibold">{t("ingest.episodeImport.staleTitle")}</h2>
@@ -1942,51 +1969,10 @@ export function IngestPageContent({ project }: { project: string }) {
                 </div>
               )}
 
+
               {/* Preview — populated */}
               {chaptersData && chapterCount > 0 && (
                 <div className="space-y-4">
-                  {knowledgeGraph.isLoading && (
-                    <div className="h-[520px] overflow-hidden rounded-2xl border border-violet-300/10 bg-[#05050a] p-5">
-                      <div className="flex items-center gap-3">
-                        <Skeleton className="size-9 rounded-xl" />
-                        <div className="space-y-2">
-                          <Skeleton className="h-3 w-24" />
-                          <Skeleton className="h-2.5 w-40" />
-                        </div>
-                      </div>
-                      <Skeleton className="mx-auto mt-16 size-72 rounded-full opacity-40" />
-                    </div>
-                  )}
-
-                  {knowledgeGraph.data?.data.nodes.length ? (
-                    <KnowledgeGraphVisualization graph={knowledgeGraph.data.data} />
-                  ) : null}
-
-                  {knowledgeGraph.isError && (
-                    <div className="flex min-h-28 items-center justify-between gap-4 rounded-xl border border-amber-300/15 bg-amber-500/[0.04] p-4">
-                      <div className="flex items-start gap-3">
-                        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-400" />
-                        <div>
-                          <p className="text-sm font-medium text-foreground">
-                            {t("ingest.knowledgeGraph.loadFailed")}
-                          </p>
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            {t("ingest.knowledgeGraph.loadFailedHint")}
-                          </p>
-                        </div>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => knowledgeGraph.refetch()}
-                      >
-                        <RefreshCw className="size-3.5" />
-                        {t("common.retry")}
-                      </Button>
-                    </div>
-                  )}
-
                   <h2 className="text-lg font-semibold text-foreground">
                     {t("ingest.previewHeading")}
                   </h2>
@@ -2163,9 +2149,24 @@ export function IngestPageContent({ project }: { project: string }) {
                 </div>
               )}
             </div>
-          )}
+          ))}
         </div>
       </div>
+      <Sheet open={configurationOpen} onOpenChange={setConfigurationOpen}>
+        <SheetContent className="w-full sm:max-w-lg">
+          <SheetHeader><SheetTitle>项目导入配置</SheetTitle><p className="text-sm text-muted-foreground">保存配置不会开始导入。已导入项目的类型保持锁定。</p></SheetHeader>
+          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4">
+            {([
+              { key: "spine_template", label: t("ingest.projectType"), options: SPINE_TEMPLATE_OPTIONS.map((option) => ({ value: option.value, label: t(option.labelKey) })) },
+              { key: "visual_style", label: t("ingest.visualStyle"), options: visualStyleOptions },
+              ...(showNarrationStyle ? [{ key: "narration_style", label: t("ingest.narrationStyle"), options: NARRATION_STYLE_OPTIONS.map((option) => ({ value: option.value, label: t(option.labelKey) })) }] : []),
+              { key: "ethnicity", label: t("ingest.ethnicity"), options: ETHNICITY_OPTIONS.map((option) => ({ value: option.value, label: t(option.labelKey) })) },
+            ]).map((field) => <label key={field.key} className="block space-y-2 text-sm"><span>{field.key === "ethnicity" ? "默认角色人群" : field.label}</span><Select items={field.options} value={settingsValues[field.key as keyof IngestSettingsValues]} disabled={ingestStarted || (field.key === "spine_template" && spineTemplateLocked)} onValueChange={(value) => handleFieldChange(field.key as keyof SettingsForm, value ?? undefined)}><SelectTrigger className="w-full"><SelectValue>{(value) => field.options.find((option) => option.value === value)?.label ?? value}</SelectValue></SelectTrigger><SelectContent>{field.options.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select>{field.key === "ethnicity" && <p className="text-xs text-muted-foreground">仅用于原文未明确说明的角色。</p>}</label>)}
+            <div className="border-t pt-4 text-xs text-muted-foreground"><p>当前处理流程：<span className="text-foreground">{knowledgePipeline === "structured_v1" ? "结构化导入" : "知识图谱"}</span></p></div>
+          </div>
+          <SheetFooter className="shrink-0 border-t"><p className="text-xs text-muted-foreground">{settingsChanged ? "有未保存修改，关闭抽屉会保留当前草稿。" : "配置已保存"}</p><Button disabled={!settingsChanged || updateProject.isPending || ingestStarted} onClick={() => void handleSaveSettings()}>{updateProject.isPending ? "正在保存…" : "保存配置"}</Button></SheetFooter>
+        </SheetContent>
+      </Sheet>
       <FormatCheckDetailsDialog
         formatCheck={formatCheckDetails?.formatCheck ?? null}
         filename={formatCheckDetails?.filename}
@@ -2180,15 +2181,14 @@ export function IngestPageContent({ project }: { project: string }) {
         open={episodeImportOpen}
         onOpenChange={setEpisodeImportOpen}
         existingEpisodeNumbers={
-          hasImportedContent
-            ? episodeImports.data?.data.items.map((item) => item.episode_number) ?? []
-            : []
+          episodeImports.data?.data.items.map((item) => item.episode_number) ?? []
         }
         onCommitted={async (result) => {
           setEpisodeImportTaskResponse(result);
           episodeImportTask.start({ scope: result.scope });
           await episodeImports.refetch();
           toast.success(t("ingest.episodeImport.accepted"));
+          setIngestTab("overview");
         }}
       />
     </div>

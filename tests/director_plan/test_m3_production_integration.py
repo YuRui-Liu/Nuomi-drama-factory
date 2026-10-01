@@ -55,6 +55,11 @@ def test_active_plan_materializes_generation_video_and_effective_style(tmp_path)
     assert len(materialized.video_segments) == 2
     assert materialized.effective_style_snapshot["style_hash"] == "style-hash"
     assert materialized.video_plan.units[0].id.startswith(f"segment:{revision.revision_id}:ng-01:")
+    from novelvideo.narrative_groups.service import load_effective_groups
+    landscape = load_effective_groups(tmp_path, 1, [], aspect_ratio="16:9")[0]
+    assert landscape.generation_batches[0]["aspect_ratio"] == "16:9"
+    # Worker-side refresh must retain the last authoritative project ratio.
+    assert load_materialized_groups(tmp_path, 1)[0].generation_batches[0]["aspect_ratio"] == "16:9"
 
 
 def test_local_composition_plan_keeps_segment_order_and_transition_rules() -> None:

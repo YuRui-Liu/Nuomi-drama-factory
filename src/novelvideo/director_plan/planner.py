@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import Agent, PromptedOutput
 
 from novelvideo.config import (
@@ -41,7 +41,7 @@ class DirectorPlanInput(_FrozenModel):
 
 
 class DirectorPlanDraft(_FrozenModel):
-    groups: tuple[NarrativeGroupPlan, ...]
+    groups: tuple[NarrativeGroupPlan, ...] = Field(min_length=1)
 
 
 class GroupRepairInput(_FrozenModel):
@@ -57,7 +57,8 @@ class DirectorPlanner:
     def __init__(self, agent: Any | None = None) -> None:
         from novelvideo.text_task_runtime.runtime import current_text_task_runtime
 
-        self._runtime = current_text_task_runtime() if agent is None else None
+        from novelvideo.agent_teams.adapters import method_runtime
+        self._runtime = method_runtime('director', 'director_plan', current_text_task_runtime()) if agent is None else None
         self.model_name = (
             str(self._runtime.snapshot.model).strip()
             if self._runtime is not None

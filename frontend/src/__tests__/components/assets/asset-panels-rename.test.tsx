@@ -17,6 +17,10 @@ vi.mock("@/lib/api", () => ({
 }));
 
 const taskControllerMock = vi.hoisted(() => vi.fn());
+vi.mock("@/features/script-creation/prop-extraction-dialog", () => ({
+  AssetExtractionDialog: ({ assetType, project }: { assetType: string; project: string }) => <div role="dialog">提取 {project} · {assetType}</div>,
+  PropExtractionDialog: ({ project }: { project: string }) => <div role="dialog">提取 {project} · prop</div>,
+}));
 
 vi.mock("@/hooks/use-task-controller", () => ({
   useTaskController: (opts: unknown) => taskControllerMock(opts),
@@ -200,6 +204,43 @@ function renderWithProviders(ui: ReactNode) {
 }
 
 describe("asset panel rename behavior", () => {
+  it("opens saved scene extraction from the scene library", async () => {
+    renderWithProviders(<ScenesPanel project="demo" />);
+    await userEvent.click(await screen.findByRole("button", { name: "从创作场景表提取" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("提取 demo · scene");
+  });
+  it("keeps a single scene variant selected while moving between properties, references, world and history", async () => {
+    server.use(http.get("http://localhost:3000/api/v1/projects/demo/scenes", () => HttpResponse.json({ ok: true, data: [
+      { name: "Hall", base_scene_id: "Hall", scene_type: "interior" },
+      { name: "Hall_Night", base_scene_id: "Hall", derived_from_scene: "Hall", variant_id: "Night", scene_type: "interior", variant_prompt: "灯火照亮门廊" },
+    ] })));
+    renderWithProviders(<ScenesPanel project="demo" />);
+    await userEvent.click(await screen.findByRole("button", { name: "Hall_Night" }));
+    expect(screen.getByRole("button", { name: "Hall_Night" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByRole("button", { name: "Edit" })).toHaveLength(1);
+    await userEvent.click(screen.getByRole("tab", { name: "属性与变体" }));
+    expect(screen.getByRole("button", { name: "编辑属性与变体" })).toBeVisible();
+    expect(screen.getAllByText("灯火照亮门廊").some(node => !node.closest("[hidden]"))).toBe(true);
+    await userEvent.click(screen.getByRole("tab", { name: "3D 场景" }));
+    expect(screen.getByRole("tab", { name: "3D 场景" })).toHaveAttribute("aria-selected", "true");
+    await userEvent.click(screen.getByRole("tab", { name: "历史" }));
+    expect(screen.getByText("此场景尚无参考版本，生成或上传后可在这里检查与采用。")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Hall_Night" })).toHaveAttribute("aria-pressed", "true");
+  });
+  it("selects a prop in the left library and keeps one focused reference workspace with references and history", async () => {
+    server.use(http.get("http://localhost:3000/api/v1/projects/demo/props", () => HttpResponse.json({ ok: true, data: [
+      { name: "Bell", prop_type: "object", description: "铜铃", owner: "Li" },
+      { name: "Umbrella", prop_type: "object", description: "油纸伞", owner: "Wang" },
+    ] })));
+    renderWithProviders(<PropsPanel project="demo" />);
+    expect(await screen.findByRole("button", { name: "选择道具 Bell" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("tab", { name: "参考与属性" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "选择道具 Umbrella" }));
+    expect(screen.getByRole("button", { name: "选择道具 Umbrella" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByRole("button", { name: "Edit" })).toHaveLength(1);
+    await userEvent.click(screen.getByRole("tab", { name: "历史" }));
+    expect(screen.getByText("此道具尚无参考版本，生成或上传后可在这里检查与采用。")).toBeVisible();
+  });
   it("subscribes to build_scenes completion and invalidates the scene list", async () => {
     server.use(
       http.get("http://localhost:3000/api/v1/projects/demo/scenes", () =>
@@ -324,6 +365,7 @@ describe("asset panel rename behavior", () => {
     renderWithProviders(<ScenesPanel project="demo" />);
 
     await screen.findByText("Hall_Snow");
+    fireEvent.click(screen.getByRole("button", { name: "Hall_Snow" }));
     expect(screen.getByText("Derived from Hall")).toBeInTheDocument();
   });
 
@@ -551,7 +593,7 @@ describe("asset panel rename behavior", () => {
 
     renderWithProviders(<PropsPanel project="demo" />);
 
-    await screen.findByText("Sword");
+    await screen.findByRole("button", { name: "选择道具 Sword" });
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.change(screen.getByDisplayValue("Sword"), {
       target: { value: "MoonSword" },
@@ -593,7 +635,7 @@ describe("asset panel rename behavior", () => {
 
     renderWithProviders(<PropsPanel project="demo" />);
 
-    await screen.findByText("Sword");
+    await screen.findByRole("button", { name: "选择道具 Sword" });
     expect(screen.getByText("Batch reference generation")).toBeInTheDocument();
     expect(screen.getByText("Generating Sword reference")).toBeInTheDocument();
     expect(screen.getByText("Queued 3 props")).toBeInTheDocument();
@@ -628,7 +670,7 @@ describe("asset panel rename behavior", () => {
 
     renderWithProviders(<PropsPanel project="demo" />);
 
-    await screen.findByText("Sword");
+    await screen.findByRole("button", { name: "选择道具 Sword" });
     fireEvent.click(screen.getByRole("button", { name: "Batch generate refs" }));
 
     await waitFor(() => expect(postCalled).toBe(true));
@@ -647,7 +689,7 @@ describe("asset panel rename behavior", () => {
 
     renderWithProviders(<PropsPanel project="demo" />);
 
-    await screen.findByText("TOKEN");
+    await screen.findByRole("button", { name: "选择道具 TOKEN" });
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
 
     const dialog = screen.getByRole("dialog");

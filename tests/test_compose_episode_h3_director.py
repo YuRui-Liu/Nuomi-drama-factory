@@ -12,15 +12,21 @@ from novelvideo.media_capabilities.video.h3_timeline import (
 from novelvideo.task_backend.runners.video import resolve_episode_composition_sources
 
 
-def test_stale_director_video_cannot_be_composed_after_new_render(tmp_path, monkeypatch):
+def test_stale_director_video_can_be_composed_after_new_render(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from novelvideo.task_backend.runners import video as subject
 
-    stage = SimpleNamespace(status="completed", needs_regeneration=True, manifest_asset="old.json")
+    video = tmp_path / "old.mp4"
+    video.touch()
+    (tmp_path / "ambience.wav").touch()
+    manifest = tmp_path / "old.json"
+    _manifest(manifest, video)
+    stage = SimpleNamespace(status="completed", needs_regeneration=True, manifest_asset=str(manifest))
     group = SimpleNamespace(ordinal=1, stages={"video": stage})
     monkeypatch.setattr(subject, "load_materialized_groups", lambda *_: [group])
-    with pytest.raises(RuntimeError, match="stale"):
-        resolve_episode_composition_sources(tmp_path, 1, [{"beat_number": 1}])
+    spans = resolve_episode_composition_sources(tmp_path, 1, [{"beat_number": 1}])
+    assert spans[0].video_path == video
+    assert stage.needs_regeneration is True
 
 
 def _manifest(path: Path, video: Path) -> None:
@@ -43,6 +49,22 @@ def _manifest(path: Path, video: Path) -> None:
         ambience_stem_path=str(path.parent / "ambience.wav"), ambience_stem_status="succeeded",
     )
     save_h3_director_manifest(path, manifest)
+
+
+def test_composition_snapshot_accepts_outdated_completed_video(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from novelvideo.director_plan.store import DirectorPlanStore
+    from novelvideo.task_backend.runners.video import director_composition_snapshot
+
+    stage = SimpleNamespace(status="completed", needs_regeneration=True,
+                            revision=1, manifest_asset="old.json")
+    group = SimpleNamespace(id="group-08", director_revision_id="current",
+                            stages={"video": stage})
+    monkeypatch.setattr(DirectorPlanStore, "load_active", lambda *_: SimpleNamespace(
+        revision_id="current", groups=[group]))
+    snapshot = director_composition_snapshot(tmp_path, 1, groups=[group])
+    assert snapshot["video_sources"][0]["manifest_asset"] == "old.json"
+    assert stage.needs_regeneration is True
 
 
 def test_director_manifest_replaces_covered_legacy_beats_once(tmp_path: Path, monkeypatch) -> None:

@@ -154,6 +154,13 @@ def parse_scene_blocks(text_or_lines: str | list[str]) -> list[ParsedSceneBlock]
         episode_match = EPISODE_HEADER_RE.match(line)
         if episode_match:
             current_episode = chinese_to_int(episode_match.group(1))
+            # XYQ repeats the episode label on each scene heading. Keep the
+            # original source line while parsing the remaining scene number.
+            numbered = NUMBERED_SCENE_RE.match(line[episode_match.end():].strip())
+            if numbered and _looks_like_scene_number_line(numbered):
+                start_block(source_line, scene_no=numbered.group("scene"),
+                            location_line=(numbered.group("rest") or "").strip())
+                continue
             if current.header_line or current.lines:
                 current.episode = current.episode or current_episode
             continue
@@ -234,6 +241,10 @@ def is_scene_start_line(line: str) -> bool:
     stripped = (line or "").strip()
     if not stripped:
         return False
+    episode = EPISODE_HEADER_RE.match(stripped)
+    if episode:
+        numbered = NUMBERED_SCENE_RE.match(stripped[episode.end():].strip())
+        return bool(numbered and _looks_like_scene_number_line(numbered))
     if INLINE_LABELED_SCENE_RE.match(stripped):
         return True
     numbered = NUMBERED_SCENE_RE.match(stripped)
@@ -267,6 +278,11 @@ def parse_location_header_relaxed(line: str) -> tuple[str, str, str] | None:
     if parsed is not None:
         return parsed
     text = _strip_numbered_scene_prefix(_strip_location_prefix(line))
+    # Interior/exterior is optional in XYQ's labeled scene metadata. Do not
+    # infer an interior merely to reuse the old bool-based location parser.
+    timed = re.fullmatch(rf"(?P<location>.+?)\s+(?P<time>{TIME_TOKEN_RE})", text)
+    if timed and LABELED_LOCATION_RE.match(line):
+        return timed.group("location").strip(), timed.group("time"), ""
     match = PLACEHOLDER_LOCATION_RE.match(text)
     if match is None:
         return None
@@ -385,7 +401,8 @@ def chinese_to_int(s: str) -> int:
 
 
 def _apply_location(block: ParsedSceneBlock, location_line: str) -> None:
-    loc = parse_location_header_relaxed(location_line)
+    loc = (parse_location_header_relaxed(location_line)
+           or parse_location_header_relaxed(f"场景：{location_line}"))
     if not loc:
         return
     block.location, block.time_of_day, block.interior_exterior = loc

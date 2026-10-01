@@ -105,6 +105,48 @@ describe("EpisodeImportDialog", () => {
     language.value = "zh";
   });
 
+  it("reviews the submission separately and preserves choices when going back", async () => {
+    preview.mutateAsync.mockResolvedValue({ ok: true, data: { ...base, files: [item({})] } });
+    commit.mutateAsync.mockResolvedValue({ ok: true, task_type: "episode_import" });
+    renderDialog();
+    await upload();
+    await userEvent.click(screen.getByRole("button", { name: "确认导入" }));
+    expect(commit.mutateAsync).not.toHaveBeenCalled();
+    expect(screen.getByText(/新增 1 集/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "返回检查" }));
+    expect(screen.getByTestId("episode-import-row")).toHaveTextContent("E01.md");
+    await userEvent.click(screen.getByRole("button", { name: "确认导入" }));
+    await userEvent.click(screen.getByRole("button", { name: "提交导入" }));
+    expect(commit.mutateAsync).toHaveBeenCalledOnce();
+  });
+
+  it("previews pasted scripts through the same file API and protects unsubmitted content", async () => {
+    preview.mutateAsync.mockResolvedValue({ ok: true, data: { ...base, files: [item({})] } });
+    const onClose = renderDialog();
+    await userEvent.click(screen.getByRole("button", { name: "粘贴正文" }));
+    await userEvent.type(screen.getByRole("textbox"), "第1集：雨夜相逢");
+    await userEvent.click(screen.getByRole("button", { name: "检查导入内容" }));
+    expect(preview.mutateAsync.mock.calls[0][0][0]).toBeInstanceOf(File);
+    expect(preview.mutateAsync.mock.calls[0][0][0].name).toBe("粘贴剧本.txt");
+    await userEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(onClose).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "继续编辑" }));
+    expect(screen.getByTestId("episode-import-row")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "返回选择" }));
+    expect(screen.getByRole("textbox")).toHaveValue("第1集：雨夜相逢");
+  });
+
+  it("allows correcting a recognized number and rechecks existing episode conflicts", async () => {
+    preview.mutateAsync.mockResolvedValue({ ok: true, data: { ...base, files: [item({})] } });
+    renderDialog(vi.fn(), [2]);
+    await upload();
+    await userEvent.clear(screen.getByLabelText("E01.md 集号"));
+    await userEvent.type(screen.getByLabelText("E01.md 集号"), "2");
+    expect(screen.getByRole("button", { name: "确认导入" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("radio", { name: "覆盖 E01.md" }));
+    expect(screen.getByRole("button", { name: "确认导入" })).toBeEnabled();
+  });
+
   it("previews all selected files and displays them in episode order", async () => {
     preview.mutateAsync.mockResolvedValue({
       ok: true,
@@ -201,6 +243,7 @@ describe("EpisodeImportDialog", () => {
     expect(within(rows[1]).getByText("合集.docx · 第 2 集")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "确认导入" }));
+    await userEvent.click(screen.getByRole("button", { name: "提交导入" }));
     expect(commit.mutateAsync).toHaveBeenCalledWith({
       preview_id: "preview-1",
       expected_revision: 7,
@@ -381,6 +424,7 @@ describe("EpisodeImportDialog", () => {
 
     expect(await screen.findByText("解析失败")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "确认导入" }));
+    await userEvent.click(screen.getByRole("button", { name: "提交导入" }));
     expect(commit.mutateAsync).toHaveBeenCalledWith({
       preview_id: "preview-1",
       expected_revision: 7,
@@ -397,6 +441,7 @@ describe("EpisodeImportDialog", () => {
     await upload();
     await userEvent.click(await screen.findByRole("radio", { name: "跳过 E01.md" }));
     await userEvent.click(screen.getByRole("button", { name: "确认导入" }));
+    await userEvent.click(screen.getByRole("button", { name: "提交导入" }));
 
     expect(commit.mutateAsync).not.toHaveBeenCalled();
     expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -415,6 +460,7 @@ describe("EpisodeImportDialog", () => {
     renderDialog();
     await upload();
     await userEvent.click(await screen.findByRole("button", { name: "确认导入" }));
+    await userEvent.click(screen.getByRole("button", { name: "提交导入" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("预检已过期，请重新选择文件预检");
   });
@@ -427,6 +473,7 @@ describe("EpisodeImportDialog", () => {
     render(<EpisodeImportDialog project="demo" open onOpenChange={vi.fn()} onCommitted={onCommitted} />);
     await upload();
     await userEvent.click(await screen.findByRole("button", { name: "确认导入" }));
+    await userEvent.click(screen.getByRole("button", { name: "提交导入" }));
     expect(onCommitted).toHaveBeenCalledWith(accepted);
   });
 
@@ -439,6 +486,7 @@ describe("EpisodeImportDialog", () => {
     await upload();
     await userEvent.click(await screen.findByRole("button", { name: "全部跳过" }));
     await userEvent.click(screen.getByRole("button", { name: "确认导入" }));
+    await userEvent.click(screen.getByRole("button", { name: "提交导入" }));
     expect(commit.mutateAsync).not.toHaveBeenCalled();
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
@@ -456,6 +504,7 @@ describe("EpisodeImportDialog", () => {
     await userEvent.type(screen.getByLabelText("a.md 集号"), "2");
     await userEvent.click(screen.getByRole("radio", { name: "跳过 b.md" }));
     await userEvent.click(screen.getByRole("button", { name: "确认导入" }));
+    await userEvent.click(screen.getByRole("button", { name: "提交导入" }));
 
     expect(commit.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ resolutions: [
       { file_id: "a", episode_number: 2, action: "import" },

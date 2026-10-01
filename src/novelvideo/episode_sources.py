@@ -177,11 +177,21 @@ def split_episode_candidates(
     filename: str, content: str
 ) -> tuple[EpisodeCandidate, ...]:
     """Split a collection document on dedicated episode heading lines."""
-    boundaries = tuple(
-        match
-        for match in _EPISODE_HEADING_PATTERN.finditer(content)
-        if _heading_number(match) is not None
-    )
+    boundaries = []
+    for match in _EPISODE_HEADING_PATTERN.finditer(content):
+        number = _heading_number(match)
+        if number is None:
+            continue
+        # 小云雀 repeats the episode prefix on every scene. Only a change
+        # of episode starts a new import; ordinary duplicate headings still
+        # surface as conflicts instead of being silently merged.
+        scene_heading = re.fullmatch(
+            r"\s*\ufeff?\s*(?:#{1,6}\s*)?第[零〇一二两三四五六七八九十百千\d]+集\s+\d+[-－]\d+\s*",
+            match.group(),
+        )
+        if scene_heading and boundaries and _heading_number(boundaries[-1]) == number:
+            continue
+        boundaries.append(match)
     if len(boundaries) < 2:
         return (build_episode_candidate(filename, content),)
 

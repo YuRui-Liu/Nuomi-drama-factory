@@ -195,6 +195,14 @@ vi.mock("@/lib/queries/production-assets", () => ({
 }));
 
 describe("CharacterStateVersions", () => {
+  it("previews candidates without adopting or altering QC", async () => {
+    const onPreview = vi.fn();
+    render(<CharacterStateVersions project="p" characterName="林默" identityId="linmo-duty" onPreview={onPreview} />);
+    expect(onPreview).toHaveBeenCalledWith(expect.stringContaining("linmo-duty.png"));
+    await userEvent.setup().click(screen.getAllByRole("button", { name: "查看大图" })[1]);
+    expect(onPreview).toHaveBeenLastCalledWith(expect.stringContaining("state-v2.png"));
+    expect(adoptMock).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     adoptMock.mockReset();
     deleteMock.mockReset();

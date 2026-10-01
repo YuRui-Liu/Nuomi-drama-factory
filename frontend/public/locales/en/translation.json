@@ -730,6 +730,7 @@
     "costs": "Project costs",
     "taskCenter": "Task Center",
     "aiAssistant": "Nuomi Assistant",
+    "studios": "Creative Studios",
     "freezone": "Creation Canvas"
   },
   "characters": {
@@ -875,7 +876,7 @@
         "front_face_detected": "A face was detected in the front body view",
         "front_face_detectedV3": "A head or face was detected in the headless front body view",
         "back_face_visible": "The face is visible in the back view",
-        "state_inconsistent": "Character state is inconsistent across views",
+        "state_inconsistent": "Character state differs across views or from the requested appearance",
         "non_neutral_presentation": "The background or lighting is not neutral",
         "style_mismatch": "Style does not match the project settings",
         "dead_eyes": "Eyes lack a natural, lively appearance",
@@ -992,8 +993,8 @@
       "costumeRefHint": "Optional: upload a reference image to lock outfit style and colour. Leave blank to rely on text only.",
       "deleteCostume": "Delete wardrobe reference",
       "costumeDeleted": "Wardrobe reference deleted",
-      "ageVariantTitle": "Age variant (optional)",
-      "ageVariantHint": "Use only when this identity differs from the character's base age group and needs its own face (e.g. child, elder).",
+      "ageVariantTitle": "Appearance variant (age, infection, etc.)",
+      "ageVariantHint": "Describe face changes for age, infection or other states while preserving the recognizable character. Same-age states can have their own face details.",
       "showVariant": "Show age variant settings",
       "hideVariant": "Hide age variant settings",
       "inheritFromCharacter": "Inherit from character",
@@ -1014,7 +1015,7 @@
       "confirmGenBody": "Generated {{count}} times in a row. Proceed?",
       "renameIdentity": "Edit identity name",
       "renameHint": "Renaming also changes related file paths.",
-      "variantOnly": "Age variants only",
+      "variantOnly": "Add identity face details or choose a different age group first",
       "uploadPortraitTip": "Upload identity face portrait (age variant only)",
       "generatePortraitTip": "AI generate identity face portrait (age variant only)"
     },
@@ -3537,6 +3538,7 @@
       "placeholderScript": "Script",
       "betaTag": "Beta",
       "videoCompose": "Video Compose",
+      "musicDesk": "Music Desk",
       "videoDirector": "Video Director"
     },
     "videoDirector": {

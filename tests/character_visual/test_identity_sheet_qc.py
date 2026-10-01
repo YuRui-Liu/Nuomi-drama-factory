@@ -9,6 +9,27 @@ def _qc_module():
     return importlib.import_module("novelvideo.character_visual.identity_sheet_qc")
 
 
+def test_authored_infection_state_takes_precedence_over_healthy_appearance_defaults():
+    from novelvideo.character_visual.identity_sheet import (
+        IdentitySheetStyleFamily, build_identity_sheet_v3_prompt,
+    )
+    state = "人形感染态：灰白皮肤、无神双眼，保留原本五官"
+    generation = build_identity_sheet_v3_prompt(
+        character_name="秦", character_tag="infected", appearance=state,
+        project_style="2d", style_instructions="", avoid_instructions="",
+        ethnicity="", has_costume_reference=False,
+    )
+    review = _qc_module()._build_prompt(
+        style="2d", style_family=IdentitySheetStyleFamily.TWO_D,
+        expected_appearance=state,
+    )
+    for prompt in (generation, review):
+        assert state in prompt
+        assert "Authored or confirmed pallor, dead eyes, injuries" in prompt
+        assert "Do not restore a healthy or beautified appearance" in prompt
+        assert "Unintended anatomy changes and accidental cropping remain defects" in prompt
+
+
 def test_generation_and_qc_allow_clean_headless_neck_cross_section():
     from novelvideo.character_visual.identity_sheet import (
         IdentitySheetStyleFamily, build_identity_sheet_v3_prompt,
@@ -103,9 +124,15 @@ async def test_qc_uses_shared_vision_gateway_and_parses_fenced_json(monkeypatch)
         media_type="image/webp",
         style="anime_2d",
         model_override="vision-model",
+        expected_appearance="已选短发，灰色夹克",
     )
 
     assert report.passed is True
+    import hashlib
+    assert report.qc_input_snapshot['prompt'] == captured['prompt']
+    assert report.qc_input_snapshot['expected_appearance'] == '已选短发，灰色夹克'
+    assert report.qc_input_snapshot['image_sha256'] == hashlib.sha256(b'sheet').hexdigest()
+    assert report.model_dump(mode='json')['qc_input_snapshot'] == report.qc_input_snapshot
     assert report.issues == []
     assert report.style_family.value == "2d"
     assert captured["model_override"] == "vision-model"
@@ -504,3 +531,21 @@ async def test_qc_rejects_empty_image_before_calling_gateway(monkeypatch):
         await qc.assess_identity_sheet_quality(image_data=b"", style="2D")
 
     assert called is False
+@pytest.mark.parametrize('species', ['', 'cat'])
+def test_qc_uses_visible_gutters_not_nominal_crop_coordinates(species):
+    from novelvideo.character_visual.identity_sheet_qc import _build_prompt
+    from novelvideo.character_visual.identity_sheet import IdentitySheetStyleFamily
+    prompt = _build_prompt(style='3D', style_family=next(iter(IdentitySheetStyleFamily)), nonhuman_species=species)
+    assert 'actual visible gutters' in prompt
+    assert 'not crop coordinates' in prompt
+    assert 'Never count the rear-view head as a front-view head' in prompt
+    assert 'body_cropped' in prompt and 'front_face_detected' in prompt
+    assert 'either panel boundary at 40% and 70%' not in prompt
+
+
+def test_qc_policy_cache_key_changes_with_region_policy(monkeypatch):
+    from novelvideo.character_visual import identity_sheet_qc as module
+    before = module.identity_sheet_qc_policy_fingerprint()
+    build = module._build_prompt
+    monkeypatch.setattr(module, '_build_prompt', lambda **kw: build(**kw) + '\nnew region policy')
+    assert module.identity_sheet_qc_policy_fingerprint() != before

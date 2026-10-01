@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from novelvideo.narrative_groups.planned_binding_service import (
 from novelvideo.narrative_groups.planned_bindings import PlannedReferenceBinding
 from novelvideo.production_workflow import AdoptionStatus, ProductionWorkflowStore
 from novelvideo.api.schemas import NarrativeReferenceResolutionRequest
+from novelvideo.task_backend.runners.narrative_group import _snapshot_generation_input
 from pydantic import ValidationError
 
 
@@ -521,6 +523,73 @@ async def test_preview_matches_legacy_scene_required_key_to_structured_binding(
 
 
 @pytest.mark.asyncio
+async def test_preview_accepts_scene_alias_as_published_requirement(tmp_path: Path) -> None:
+    """A plan requirement named by a library alias is not "unpublished".
+
+    The imported catalogue records 修简铺门口 as an alias of 修简铺; the plan may
+    use either name, so the alias must match the canonical published binding
+    instead of warning that a required reference is missing.
+    """
+
+    binding = _binding(
+        asset_kind="scene_base",
+        entity_id="修简铺",
+        asset_slot_id="scene:修简铺:base:master",
+        display_label="修简铺",
+        group_ids=("group-01",),
+        beat_ids=("beat-07",),
+        shot_ids=("shot-07",),
+    )
+
+    class AliasedStore(_BindingStore):
+        async def list_scenes(self) -> list[object]:
+            return [
+                SimpleNamespace(
+                    name="修简铺",
+                    base_scene_id="",
+                    variant_id="",
+                    aliases=["L001", "修简铺门口"],
+                )
+            ]
+
+    workflow = ProductionWorkflowStore(tmp_path / "state" / "production_workflow.json")
+    workflow.register_candidate_version(
+        slot_id="scene:修简铺:base:master",
+        asset_kind="scene_base",
+        version_id="master-1",
+        asset_path=str(_image(tmp_path / "assets" / "scenes" / "修简铺" / "master.png")),
+        source_attempt_id="attempt-scene",
+        qc_passed=True,
+        generation_metadata=None,
+        actor="test",
+        at=datetime.now(UTC),
+    )
+    kwargs = {
+        "store": AliasedStore([binding]),
+        "workflow_store": workflow,
+        "project_id": "p1",
+        "episode_number": 1,
+        "group_id": "group-01",
+        "project_dir": tmp_path,
+        "active_plan_revision_id": "director-r3",
+    }
+
+    aliased = await resolve_planned_reference_preview(
+        required_binding_keys=frozenset({("scene_base", "修简铺门口", "")}),
+        **kwargs,
+    )
+    unknown = await resolve_planned_reference_preview(
+        required_binding_keys=frozenset({("scene_base", "不存在的场景", "")}),
+        **kwargs,
+    )
+
+    assert aliased.warnings == ()
+    assert unknown.warnings == (
+        "当前导演方案仍有未发布的必需引用：scene_base:不存在的场景",
+    )
+
+
+@pytest.mark.asyncio
 async def test_snapshot_rejects_revision_after_current_version_changes(tmp_path: Path) -> None:
     binding = _binding()
     store = _BindingStore([binding])
@@ -751,6 +820,69 @@ async def test_snapshot_freezes_version_digest_and_scope(tmp_path: Path) -> None
     assert image.group_ids == ("group-01",)
     assert image.beat_ids == ("beat-07",)
     assert image.shot_ids == ("shot-07",)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_projects_shared_binding_ids_to_the_rendered_group(
+    tmp_path: Path,
+) -> None:
+    """A binding shared by several groups freezes with THIS group's ids only.
+
+    Regression: ``planned_reference_bindings`` stores the union of every served
+    group's beat/shot ids, while the grid runner requires each frozen image's ids
+    to be a subset of the rendered group's reference scope (narrative_group.py
+    ``_snapshot_generation_input``). A shared asset therefore failed every grid
+    render with REFERENCE_SNAPSHOT_INVALID before any model call.
+    """
+    binding = _binding(
+        group_ids=("group-01", "group-02"),
+        beat_ids=("beat-01", "beat-02"),
+        shot_ids=("shot-01-01", "shot-02-02"),
+    )
+    store = _BindingStore([binding])
+    workflow = _workflow(tmp_path, binding)
+    preview = await resolve_planned_reference_preview(
+        store,
+        workflow,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-02",
+        project_dir=tmp_path,
+    )
+
+    snapshot = await build_planned_reference_snapshot(
+        store,
+        workflow,
+        project_id="p1",
+        episode_number=1,
+        group_id="group-02",
+        project_dir=tmp_path,
+        selected_binding_ids=(binding.binding_id,),
+        upload_ids=(),
+        reference_revision=preview.reference_revision,
+        group_scope={"beat_ids": ["beat-02"], "shot_ids": ["shot-02-02"]},
+    )
+
+    image = snapshot.images[0]
+    assert image.beat_ids == ("beat-02",)
+    assert image.shot_ids == ("shot-02-02",)
+
+    # The frozen snapshot must survive the grid runner's own revalidation for the
+    # group being rendered — that is the contract the failure violated.
+    payload = _planned_runner_payload(
+        tmp_path, Path(image.image_path), sha256=image.sha256
+    )
+    payload["group_id"] = "group-02"
+    payload["beats"] = [
+        {"id": "shot-02-02", "beat_number": 2, "action": "the prop returns"}
+    ]
+    payload["reference_scope"] = {"beat_ids": ["beat-02"], "shot_ids": ["shot-02-02"]}
+    snapshot_payload = asdict(snapshot)
+    payload["reference_resolution"] = snapshot_payload
+
+    generation = _snapshot_generation_input(payload, snapshot_payload)
+    assert generation.references == (image.image_path,)
+    assert generation.reference_audit["snapshot_id"] == snapshot.id
 
 
 @pytest.mark.asyncio

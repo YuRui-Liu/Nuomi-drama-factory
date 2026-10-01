@@ -4,6 +4,7 @@ import asyncio
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 from unittest.mock import AsyncMock
 
 import pytest
@@ -77,7 +78,10 @@ async def test_headless_argv_carries_task_and_dsh_home_env(
     assert argv[0] == "/app/dsh"
     assert argv[0] == deepseek_harness.dsh_command()
     assert argv[1:3] == ("--profile", "headless")
-    assert argv[3].startswith("system\n\ntask\n")
+    # Nuomi only asks dsh for structured JSON, never for agentic work, so every
+    # tool plugin is disabled by an overlay patch (see the regression test below).
+    assert argv[3:5] == ("--patch", str(isolated_harness_home / deepseek_harness.DSH_TOOL_FREE_PATCH_NAME))
+    assert argv[5].startswith("system\n\ntask\n")
     # headless 只接受一个 task 参数：模型/推理强度必须走 settings.yaml。
     assert "--model" not in argv and "--effort" not in argv
     env = spawn.call_args.kwargs["env"]
@@ -196,7 +200,8 @@ async def test_schema_is_appended_only_for_structured_output(monkeypatch, dsh):
 
     await runtime().run_structured(prompt="task", system_prompt="system", output_type=Answer)
 
-    request = spawn.call_args.args[3]
+    # argv = [dsh, --profile, headless, --patch, <file>, <request>]
+    request = spawn.call_args.args[5]
     assert request.startswith("system\n\ntask\n")
     assert "Return only JSON matching this schema:" in request
     assert '"value"' in request
@@ -204,7 +209,7 @@ async def test_schema_is_appended_only_for_structured_output(monkeypatch, dsh):
     # str 输出不应拼接任何 Schema。
     proc.communicate.return_value = (b"plain text", b"")
     assert await runtime().run_structured(prompt="task", output_type=str) == "plain text"
-    assert "schema" not in spawn.call_args.args[3]
+    assert "schema" not in spawn.call_args.args[5]
 
 
 @pytest.mark.asyncio
@@ -312,6 +317,58 @@ def test_dsh_bin_is_preferred_over_path(monkeypatch, tmp_path):
         deepseek_harness.shutil, "which", lambda _name: "/usr/local/bin/dsh"
     )
     assert deepseek_harness.dsh_command() == str(explicit.resolve())
+
+
+@pytest.mark.asyncio
+async def test_unsupported_reasoning_effort_retries_without_the_effort(
+    monkeypatch, dsh, isolated_harness_home
+):
+    """dsh exits before working when the routed model rejects the effort.
+
+    One unsupported preset must not take down every text task, so the runtime
+    retries once and lets the model use its own default effort.
+    """
+
+    monkeypatch.setattr(
+        deepseek_harness,
+        "_resolve_default_model",
+        lambda _snapshot: ("deepseek-v4-flash-vision-exp", "medium"),
+    )
+    rejected = stub_process(
+        returncode=1,
+        stderr=(
+            b'dsh: UNSUPPORTED_REASONING_EFFORT: provider "deepseek-official" '
+            b'model "deepseek-v4-flash-vision-exp" does not support reasoning '
+            b'effort "medium"\n'
+        ),
+    )
+    accepted = stub_process(b'{"value":"ok"}')
+    spawn = AsyncMock(side_effect=[rejected, accepted])
+    monkeypatch.setattr(deepseek_harness.asyncio, "create_subprocess_exec", spawn)
+
+    result = await runtime().run_structured(prompt="task", output_type=Answer)
+
+    assert result.value == "ok"
+    assert spawn.await_count == 2
+    settings = (isolated_harness_home / "settings.yaml").read_text(encoding="utf-8")
+    assert "reasoningEffort" not in settings
+
+
+@pytest.mark.asyncio
+async def test_other_exec_failures_are_not_retried(
+    monkeypatch, dsh, isolated_harness_home
+):
+    proc = stub_process(
+        returncode=1,
+        stderr=b'dsh: MISSING_CREDENTIAL: no API key for provider "deepseek-official"\n',
+    )
+    spawn = AsyncMock(return_value=proc)
+    monkeypatch.setattr(deepseek_harness.asyncio, "create_subprocess_exec", spawn)
+
+    with pytest.raises(KnowledgeRuntimeError):
+        await runtime().run_structured(prompt="task", output_type=Answer)
+
+    assert spawn.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -647,3 +704,126 @@ def test_build_text_task_runtime_keeps_existing_branches():
         )
     )
     assert type(model_api).__name__ == "ModelApiStructuredRuntime"
+
+
+@pytest.mark.asyncio
+async def test_structured_calls_disable_every_model_facing_tool(
+    monkeypatch, dsh, isolated_harness_home
+):
+    """Regression: 假鹿蜀/h3 视频任务超时。
+
+    The H3 episode prompt optimizer ran as a full coding agent and spent 52 bash,
+    26 grep and 22 read calls over 598s before DSH_EXEC_TIMEOUT_SECONDS killed
+    it; the group then failed with "produced no plan for segment(s) ...".
+    A structured call must not be able to touch the filesystem or the shell.
+    """
+
+    proc = stub_process(b'{"value":"ok"}')
+    monkeypatch.setattr(
+        deepseek_harness.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+    )
+
+    await runtime().run_structured(prompt="task", output_type=Answer)
+
+    patch_path = isolated_harness_home / deepseek_harness.DSH_TOOL_FREE_PATCH_NAME
+    assert patch_path.is_file()
+    patch = patch_path.read_text(encoding="utf-8")
+    for plugin in (
+        "tool-bash",
+        "tool-pwsh",
+        "tool-jobs",
+        "tool-fs",
+        "tool-fs-search",
+        "tool-skill",
+        "tool-subagent",
+        "tool-subagent-control",
+        "tool-workflow",
+        "tool-goal",
+        "tool-ralph",
+        "tool-web",
+    ):
+        assert f"- id: {plugin}\n  disabled: true" in patch
+
+
+@pytest.mark.asyncio
+async def test_tool_free_patch_is_written_once_and_repaired(
+    monkeypatch, dsh, isolated_harness_home
+):
+    isolated_harness_home.mkdir(parents=True, exist_ok=True)
+    patch_path = isolated_harness_home / deepseek_harness.DSH_TOOL_FREE_PATCH_NAME
+    patch_path.write_text("# stale\n", encoding="utf-8")
+    proc = stub_process(b'{"value":"ok"}')
+    monkeypatch.setattr(
+        deepseek_harness.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+    )
+
+    await runtime().run_structured(prompt="task", output_type=Answer)
+
+    assert patch_path.read_text(encoding="utf-8") == deepseek_harness.DSH_TOOL_FREE_PATCH
+
+
+@pytest.mark.asyncio
+async def test_timeout_names_the_execution_budget(monkeypatch, dsh, isolated_harness_home):
+    monkeypatch.setenv("DSH_EXEC_TIMEOUT_SECONDS", "1234")
+    proc = SimpleNamespace(
+        returncode=None, communicate=AsyncMock(side_effect=asyncio.TimeoutError)
+    )
+    monkeypatch.setattr(
+        deepseek_harness.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+    )
+    monkeypatch.setattr(deepseek_harness, "terminate_process_tree", AsyncMock())
+
+    with pytest.raises(asyncio.TimeoutError) as error:
+        await runtime().run_structured(prompt="task", output_type=Answer)
+
+    # Type is preserved so upstream keeps treating it as a soft failure, but the
+    # message must say which limit was hit.
+    assert "1234" in str(error.value)
+    assert "DSH_EXEC_TIMEOUT_SECONDS" in str(error.value)
+
+
+class StrictKind(BaseModel):
+    kind: Literal["a"]
+
+
+@pytest.mark.asyncio
+async def test_rejected_payload_names_the_field_and_the_rule(
+    monkeypatch, dsh, isolated_harness_home
+):
+    """Regression: the h3 optimizer's DSH_OUTPUT_INVALID hid the real rule.
+
+    The payload was valid JSON violating a cross-field rule, so the fixed message
+    left both the operator and the retry with nothing to act on.
+    """
+
+    proc = stub_process(b'{"kind": "b"}')
+    monkeypatch.setattr(
+        deepseek_harness.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+    )
+
+    with pytest.raises(KnowledgeRuntimeError) as error:
+        await runtime().run_structured(prompt="task", output_type=StrictKind)
+
+    assert error.value.code == "DSH_OUTPUT_INVALID"
+    assert "kind" in str(error.value)
+    assert "Input should be 'a'" in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_rejected_payload_never_echoes_the_model_text(
+    monkeypatch, dsh, isolated_harness_home
+):
+    # pydantic's error items carry `input`, and the JSON decoder's message carries
+    # a document snippet: neither may reach the error.
+    proc = stub_process(b'{"kind": "TOPSECRET"}')
+    monkeypatch.setattr(
+        deepseek_harness.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+    )
+    with pytest.raises(KnowledgeRuntimeError) as error:
+        await runtime().run_structured(prompt="task", output_type=StrictKind)
+    assert "TOPSECRET" not in str(error.value)
+
+    proc = stub_process(b'{"kind": "TOPSECRET", ')
+    with pytest.raises(KnowledgeRuntimeError) as error:
+        await runtime().run_structured(prompt="task", output_type=StrictKind)
+    assert "TOPSECRET" not in str(error.value)

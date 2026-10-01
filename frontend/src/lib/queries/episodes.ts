@@ -34,6 +34,21 @@ export interface EpisodeUpdatePayload {
   identity_default_map?: Record<string, string>;
 }
 
+export function useSaveEpisodeAssetBindings(project: string, episodeNum: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { identity_ids: string[]; scene_ids: string[]; prop_ids: string[] }) =>
+      api.put(p`api/v1/projects/${project}/episodes/${episodeNum}/asset-bindings`, { json: data })
+        .json<OkResponse<Episode> | ErrorResponse>(),
+    onSuccess: (res) => {
+      if (!res.ok) return;
+      cacheEpisodeUpdate(qc, project, res.data);
+      qc.invalidateQueries({ queryKey: queryKeys.episodeDetail(project, episodeNum) });
+      qc.invalidateQueries({ queryKey: queryKeys.episodes(project) });
+    },
+  });
+}
+
 export function useEpisodes(project: string) {
   return useQuery({
     queryKey: queryKeys.episodes(project),

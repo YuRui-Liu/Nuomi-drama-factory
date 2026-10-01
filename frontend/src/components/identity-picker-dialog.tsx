@@ -121,6 +121,7 @@ export function IdentityPickerDialog({
   onChange,
   onPlan,
   planPending,
+  planDisabled = false,
   planCostDisplay,
 }: {
   open: boolean;
@@ -132,6 +133,7 @@ export function IdentityPickerDialog({
   onChange: (next: string[], defaultMap: DefaultIdentityMap) => void;
   onPlan: () => void;
   planPending: boolean;
+  planDisabled?: boolean;
   planCostDisplay?: string | null;
 }) {
   const { t } = useTranslation();
@@ -216,7 +218,7 @@ export function IdentityPickerDialog({
             variant="outline"
             size="sm"
             onClick={onPlan}
-            disabled={planPending}
+            disabled={planPending || planDisabled}
             className="mr-auto h-8 gap-1.5 rounded-[8px] border-white/12 bg-white/[0.05] px-3 text-sm font-normal text-foreground/82 shadow-none hover:border-white/24 hover:bg-white/[0.08] hover:text-foreground [&_svg]:text-foreground/75"
           >
             {planPending ? (

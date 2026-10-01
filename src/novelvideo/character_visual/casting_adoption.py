@@ -20,49 +20,25 @@ def _checkpoint(point):
 
 
 def adoption_requirements(candidate):
-    """The UI renders exactly the findings/sentinels the server will require."""
+    """Optional QC never adds acknowledgement or waiting requirements."""
     blocked = None
     if candidate.generation_status != 'succeeded':
         blocked = 'generation_not_succeeded'
-    elif candidate.review_status == 'running':
-        blocked = 'review_running'
-    if candidate.review_status == 'completed':
-        required = [f.finding_id for f in candidate.report.findings if f.verdict != 'conforms']
-        if not candidate.report.findings:
-            required = ['review_unjudgeable']
-    elif candidate.review_status == 'running':
-        required = []
-    else:
-        required = ['review_failed' if candidate.review_status == 'failed' else 'review_not_started']
-    return {'expected_review_attempt_id': candidate.review_attempt_id, 'required_acknowledgements': required,
-        'override_reason_required': bool(required), 'blocked_reason': blocked}
+    return {'expected_review_attempt_id': candidate.review_attempt_id, 'required_acknowledgements': [],
+        'override_reason_required': False, 'blocked_reason': blocked}
 
 
 def _review_decision(candidate, command):
-    if candidate.review_attempt_id != command.expected_review_attempt_id:
-        raise ValueError('review attempt changed; reload candidate before adoption')
-    if candidate.review_status == 'running':
-        raise ValueError('review is running; wait before adoption')
+    # Adoption binds the image/snapshot; an optional review may finish at any
+    # time without revoking that choice. Record the latest result in the audit.
+    if candidate.generation_status != 'succeeded':
+        raise ValueError('generation_not_succeeded')
     if candidate.review_status == 'completed':
-        attempt = next((a for a in candidate.review_attempts if a.attempt_id == candidate.review_attempt_id), None)
-        if attempt is None or attempt.status != 'completed' or attempt.report != candidate.report:
-            raise ValueError('review attempt report mismatch')
         warnings = [f.finding_id for f in candidate.report.findings if f.verdict != 'conforms']
         if not candidate.report.findings:
             warnings = ['review_unjudgeable']
-        allowed = {f.finding_id for f in candidate.report.findings} | set(warnings)
     else:
-        warnings = ['review_failed' if candidate.review_status == 'failed' else 'review_not_started']
-        allowed = set(warnings)
-        if candidate.review_status == 'failed':
-            attempt = next((a for a in candidate.review_attempts if a.attempt_id == candidate.review_attempt_id), None)
-            if attempt is None or attempt.status != 'failed':
-                raise ValueError('review attempt failure mismatch')
-    acknowledged = set(command.acknowledged_findings)
-    if not acknowledged.issubset(allowed):
-        raise ValueError('acknowledged findings do not belong to this review')
-    if warnings and (not set(warnings).issubset(acknowledged) or not str(command.override_reason or '').strip()):
-        raise ValueError('acknowledge every review warning and supply an explicit override reason')
+        warnings = ['review_' + candidate.review_status]
     return warnings
 
 
@@ -168,6 +144,8 @@ async def adopt_candidate(*, ctx, character_id, identity_id=None, command, actor
                 if workspace.character_id != character_id or workspace.profile.character_id != character_id or workspace.profile.name != character_id:
                     raise ValueError('workspace character ownership mismatch')
                 draft = casting_service.stage_workspace(workspace, identity_id)
+                source_revision = casting_source.character_source_revision(documents, source_revision,
+                    character_id, expected_revision=draft.casting_revision.source_revision if draft.casting_revision else None)
                 names = casting_source.attested_names(workspace.profile, documents)
                 for fact in draft.profile.facts:
                     casting_source.verified_fact(fact, documents, names, source_revision, strict=True)

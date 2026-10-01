@@ -184,8 +184,29 @@ async def test_add_identity_persists_age_group(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_add_identity_preserves_authored_infected_face_and_body(tmp_path, monkeypatch):
+    from novelvideo.api.routes import characters
+
+    character = NovelCharacter(name="秦", face_prompt="原本面孔")
+    store = _CharacterStore(character)
+    _patch_character_project(monkeypatch, characters, tmp_path, store)
+    response = await characters.add_identity(
+        project="demo", name="秦", user={"username": "admin"},
+        body=IdentityCreate(identity_name="感染态", appearance_details="破损制服",
+            face_prompt="保留原本五官，灰白皮肤与无神双眼", body_type="原本人形体型"),
+    )
+    identity = store.added_identities[0]
+    assert identity.face_prompt == "保留原本五官，灰白皮肤与无神双眼"
+    assert identity.body_type == "原本人形体型"
+    assert response["data"]["face_prompt"] == identity.face_prompt
+    assert response["data"]["body_type"] == identity.body_type
+    assert character.face_prompt == "原本面孔"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("species", ["", "狸状异兽"])
 async def test_generate_identity_image_qc_failure_preserves_canonical_and_candidate(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, species
 ):
     from novelvideo.api.routes import characters
     from novelvideo.generators import image_generator
@@ -197,6 +218,8 @@ async def test_generate_identity_image_qc_failure_preserves_canonical_and_candid
         appearance_details="青色长衫",
     )
     character = NovelCharacter(name="秦", age_group="youth")
+    from novelvideo.character_voice_facts import VoiceFacts
+    character.voice_facts = VoiceFacts(species=species, provenance="source")
     character.identities = [identity]
     store = _CharacterStore(character)
     _patch_character_project(monkeypatch, characters, tmp_path, store)
@@ -206,11 +229,14 @@ async def test_generate_identity_image_qc_failure_preserves_canonical_and_candid
     old_bytes = _write_png(canonical, (10, 20, 30))
 
     async def fake_generate(**kwargs):
+        assert kwargs["nonhuman_species"] == species
         _write_png(Path(kwargs["output_path"]), (200, 180, 160))
         _write_png(Path(kwargs["output_path"]).with_name(f'{Path(kwargs["output_path"]).stem}_body_temp.png'), (1, 2, 3))
         return {"success": True, "layout_version": IDENTITY_SHEET_LAYOUT_VERSION}
 
     async def fail_qc(**_kwargs):
+        assert _kwargs["nonhuman_species"] == species
+        assert _kwargs["expected_appearance"] == identity.appearance_details
         return _quality_report("front_face_detected", "state_inconsistent")
 
     monkeypatch.setattr(image_generator, "generate_identity_image_unified", fake_generate)
@@ -363,8 +389,9 @@ async def test_generate_identity_image_qc_exception_preserves_canonical(tmp_path
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("age,face,error", [("child", "", "年龄变体"), ("youth", "灰白皮肤", "面部变体")])
 async def test_generate_age_identity_requires_identity_portrait_before_transport(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, age, face, error
 ):
     from novelvideo.api.routes import characters
     from novelvideo.generators import image_generator
@@ -373,7 +400,8 @@ async def test_generate_age_identity_requires_identity_portrait_before_transport
         identity_id="秦_幼年",
         character_name="秦",
         identity_name="幼年",
-        age_group="child",
+        age_group=age,
+        face_prompt=face,
         appearance_details="粗布短衫",
     )
     character = NovelCharacter(name="秦", age_group="youth")
@@ -398,9 +426,36 @@ async def test_generate_age_identity_requires_identity_portrait_before_transport
 
     assert response == {
         "ok": False,
-        "error": "年龄变体必须先生成或上传 Identity Portrait",
+        "error": f"{error}必须先生成或上传 Identity Portrait",
     }
     assert called is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("face", ["", "灰白皮肤与无神双眼"])
+async def test_api_same_age_sheet_uses_identity_portrait(tmp_path, monkeypatch, face):
+    from PIL import Image
+    from novelvideo.api.routes import characters
+    from novelvideo.generators import image_generator
+    from novelvideo.utils.path_resolver import canonical_identity_portrait_path
+
+    variant = canonical_identity_portrait_path(tmp_path, "秦", "感染态")
+    variant.parent.mkdir(parents=True)
+    Image.new("RGB", (32, 32)).save(variant)
+    character = NovelCharacter(name="秦", age_group="youth")
+    character.identities = [CharacterIdentity(identity_id="秦_感染态", character_name="秦",
+        identity_name="感染态", age_group="youth", face_prompt=face, appearance_details="破损制服")]
+    store = _CharacterStore(character)
+    _patch_character_project(monkeypatch, characters, tmp_path, store)
+    captured = {}
+    async def capture(**kwargs):
+        captured.update(kwargs)
+        return {"success": False, "error": "captured transport"}
+    monkeypatch.setattr(image_generator, "generate_identity_image_unified", capture)
+    response = await characters.generate_identity_image(project="demo", name="秦",
+        identity_id="秦_感染态", user={"username": "admin"})
+    assert response["error"] == "captured transport"
+    assert captured["reference_image_path"] == str(variant)
 
 
 @pytest.mark.asyncio
@@ -415,6 +470,7 @@ async def test_generate_identity_unified_keeps_bool_default_and_opt_in_structure
             pass
 
         async def generate_identity_with_reference(self, **_kwargs):
+            assert _kwargs["nonhuman_species"] == "狸状异兽"
             return SimpleNamespace(success=True, error=None)
 
     monkeypatch.setattr(nanobanana_character, "NanoBananaCharacterGenerator", FakeGenerator)
@@ -424,6 +480,7 @@ async def test_generate_identity_unified_keeps_bool_default_and_opt_in_structure
         "reference_image_path": str(tmp_path / "portrait.png"),
         "output_path": str(tmp_path / "candidate.png"),
         "model": "nanobanana",
+        "nonhuman_species": "狸状异兽",
     }
 
     legacy = await image_generator.generate_identity_image_unified(**kwargs)
@@ -498,6 +555,12 @@ async def test_upload_identity_portrait_returns_project_context_url(tmp_path, mo
     character = NovelCharacter(name="秦")
     character.identities = [identity]
     store = _CharacterStore(character)
+    monkeypatch.setattr(
+        characters, "_save_identity_portrait_reference",
+        lambda ctx, project_dir, name, identity_id, portrait: store.identity_updates.append(
+            (name, identity_id, {"portrait_image": str(portrait)})
+        ),
+    )
 
     async def fake_resolve_character_project(
         project: str, user: dict, *, required_role: str = "editor"

@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { AssetCreationPresetFields, assetPresetContext, type AssetCreationPreset } from "@/components/assets/asset-creation-presets";
 import {
   AlertTriangle,
   ExternalLink,
@@ -41,7 +42,6 @@ import {
   useCharacterAssetHistory,
   useCharacterIdentities,
   useCharacterVisualWorkspace,
-  useConfirmCharacterVisualBible,
   useCharacters,
   useCreateCharacter,
   useCreateIdentity,
@@ -57,7 +57,6 @@ import {
   useRestoreCharacterAsset,
   useUpdateCharacter,
   useUpdateCharacterExtractionLock,
-  useUpdateCharacterVisualWorkspace,
   useUpdateIdentity,
   useUploadCostumeImage,
   useUploadIdentityImage,
@@ -78,13 +77,22 @@ import { useTaskController } from "@/hooks/use-task-controller";
 import { useTaskStream } from "@/hooks/use-task-stream";
 import { TaskControllerProvider } from "@/components/episode/task-controller-provider";
 import { SlidingTabs } from "@/components/nav/sliding-tabs";
-import { CharacterSearch, filterCharacters } from "@/components/assets/character-search";
+import { CharacterSearch, filterCharacters, type CharacterReadinessFilter } from "@/components/assets/character-search";
 import { AssetImportDialog } from "@/components/assets/asset-import-dialog";
+import { AssetExtractionDialog } from "@/features/script-creation/prop-extraction-dialog";
 import { CharacterImageSourceSelect } from "@/components/assets/character-image-source-select";
 import { CharacterStatsStrip } from "@/components/assets/character-stats-strip";
 import { CharacterVoicePanel } from "@/components/assets/character-voice-panel";
+import { VoiceAcceptancePanel } from "@/components/assets/voice-acceptance-panel";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { CharacterVisualProfile } from "@/components/assets/character-visual-profile";
+import { CharacterCastingPanel } from "@/components/assets/character-casting-panel";
+import { useCharacterCasting } from "@/lib/queries/character-casting";
 import { CharacterStateVersions } from "@/components/assets/character-state-versions";
+import { CharacterCostume } from "@/features/studios/character-costume";
+import { StudioShortcut } from "@/features/studios/studio-shortcut";
+import { useCharacterSwitch } from "@/features/studios/character-draft-bridge";
+import "@/components/assets/asset-workspace.css";
 import { NarratorVoicePanel } from "@/components/assets/narrator-voice-panel";
 import { ProjectStyleChip } from "@/components/assets/project-style-chip";
 import { ScenesPanel } from "@/components/assets/scenes-panel";
@@ -122,7 +130,6 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { SaveStatus } from "@/components/save-status";
 import { saveScopes, trackSave } from "@/stores/save-status-store";
-import { useAuthStore } from "@/stores/auth-store";
 import { SidebarListSkeleton } from "@/components/skeletons";
 import {
   AlertDialog,
@@ -545,6 +552,7 @@ function CharactersPageHeader({
   buildCharactersCostDisplay,
   onAdd,
   onImport,
+  onExtract,
   project,
   activeTab,
   setImageModel,
@@ -554,6 +562,7 @@ function CharactersPageHeader({
   buildCharactersCostDisplay?: string | null;
   onAdd: () => void;
   onImport: () => void;
+  onExtract: () => void;
   project: string;
   activeTab: AssetTab;
   setImageModel: (model: string) => void;
@@ -562,7 +571,7 @@ function CharactersPageHeader({
   const isCharactersTab = activeTab === "characters";
 
   return (
-    <div className="flex shrink-0 flex-col gap-3 border-b border-border/30 bg-background px-9 py-5 lg:flex-row lg:items-center lg:justify-between">
+    <div className="flex shrink-0 flex-col gap-3 border-b border-border/30 bg-background px-4 py-3 lg:flex-row lg:items-center lg:justify-between lg:px-6">
       <div className="flex min-w-0 items-start gap-3">
         <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
           <Waves className="size-[18px]" />
@@ -583,7 +592,7 @@ function CharactersPageHeader({
               />
             )}
           </div>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
+          <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">
             {t(`characters.assetSubtitles.${activeTab}`)}
           </p>
         </div>
@@ -592,6 +601,7 @@ function CharactersPageHeader({
       <div className="flex shrink-0 flex-wrap items-center gap-2 lg:justify-end">
         {isCharactersTab && (
           <>
+            <Button variant="outline" size="sm" onClick={onExtract} className={SUBTLE_HEADER_ACTION_BUTTON_CLASS}>从创作人物表提取</Button>
             <CharacterImageSourceSelect
               project={project}
               className="shrink-0"
@@ -654,7 +664,7 @@ function AssetTabs({
   ];
 
   return (
-    <div className="flex shrink-0 justify-center border-b border-border/30 bg-background px-9 py-3">
+    <div className="flex shrink-0 justify-start overflow-x-auto border-b border-border/30 bg-background px-4 py-2 lg:px-6">
       <SlidingTabs
         items={tabs.map(({ value: tab, icon }) => ({
           value: tab,
@@ -694,6 +704,7 @@ function CharacterListItem({
     <button
       type="button"
       onClick={onSelect}
+      aria-pressed={selected}
       className={cn(
         "flex w-full items-center gap-2.5 rounded-[8px] border px-2.5 py-2 text-left transition-colors",
         "hover:border-white/10 hover:bg-white/[0.035]",
@@ -956,6 +967,8 @@ function PortraitBlock({
   onAttempt,
   canGeneratePortrait,
   visualBiblePrerequisiteMessage,
+  onOpenCasting,
+  castingEnabled = false,
 }: {
   character: Character;
   project: string;
@@ -964,6 +977,8 @@ function PortraitBlock({
   onAttempt: () => void;
   canGeneratePortrait: boolean;
   visualBiblePrerequisiteMessage: string;
+  onOpenCasting?: () => void;
+  castingEnabled?: boolean;
 }) {
   const { t } = useTranslation();
   const genPortrait = useGeneratePortraitAsync(project, character.name);
@@ -1012,6 +1027,10 @@ function PortraitBlock({
   };
 
   const handleGenerateRequest = () => {
+    if (onOpenCasting) {
+      onOpenCasting();
+      return;
+    }
     if (!canGeneratePortrait) {
       toast.error(visualBiblePrerequisiteMessage);
       return;
@@ -1030,20 +1049,21 @@ function PortraitBlock({
         <LightboxImage
           src={resolveMediaUrl(character.portrait_url) ?? ""}
           alt={character.name}
-          className="aspect-square w-full max-w-[180px] rounded-[8px]"
+          className="asset-base-portrait w-full rounded-[8px]"
+          fit="contain"
         />
       ) : (
-        <div className="flex aspect-square w-full max-w-[180px] items-center justify-center rounded-[8px] border border-dashed border-border bg-background/40">
+        <div data-portrait-preview className="flex aspect-square w-full max-w-[180px] items-center justify-center rounded-[8px] border border-dashed border-border bg-background/40">
           <ImageIcon className="size-10 text-muted-foreground/40" />
         </div>
       )}
-      <div className="flex w-full max-w-[180px] flex-col gap-1.5">
+      <div data-portrait-actions className="flex w-full max-w-[180px] flex-col gap-1.5">
         <Button
           size="sm"
           variant="outline"
           onClick={handleGenerateRequest}
           disabled={genBusy}
-          title={canGeneratePortrait ? undefined : visualBiblePrerequisiteMessage}
+          title={onOpenCasting ? "前往剧情选角，生成候选后确认定角" : canGeneratePortrait ? undefined : visualBiblePrerequisiteMessage}
           className="relative h-7 w-full gap-1 rounded-[8px] px-2 text-xs"
         >
           {genBusy ? (
@@ -1051,16 +1071,17 @@ function PortraitBlock({
           ) : (
             <Sparkles className="size-3" />
           )}
-          {character.portrait_url
+          {onOpenCasting ? "前往选角" : character.portrait_url
             ? t("characters.portrait.regenerate")
             : t("characters.summary.generateNew")}
-          <CreditCostInline display={portraitCost} />
+          {!onOpenCasting && <CreditCostInline display={portraitCost} />}
         </Button>
         <Button
           size="sm"
           variant="outline"
           onClick={() => fileInputRef.current?.click()}
-          disabled={uploadPortrait.isPending}
+          disabled={uploadPortrait.isPending || castingEnabled}
+          title={castingEnabled ? "已启用剧情选角，请生成候选并确认定角" : undefined}
           className="h-7 w-full gap-1 rounded-[8px] px-2 text-xs"
         >
           <Upload className="size-3" />
@@ -1232,8 +1253,8 @@ function DetailsFormCard({
   };
 
   return (
-    <div className="min-w-0">
-      <div className="grid grid-cols-1 gap-5 @[900px]:grid-cols-[minmax(200px,0.78fr)_minmax(220px,0.86fr)_minmax(0,1.55fr)]">
+    <div className="@container min-w-0">
+      <div className="grid grid-cols-1 gap-5 @[500px]:grid-cols-2">
         {/* Column 1: base attributes */}
         <div className="space-y-3">
           <Field label={t("characters.basics.name")}>
@@ -1332,7 +1353,7 @@ function DetailsFormCard({
         </div>
 
         {/* Column 3: prompts */}
-        <div className="min-w-0 space-y-3">
+        <div className="min-w-0 space-y-3 @[500px]:col-span-2">
           <Field label={t("characters.basics.description")}>
             <textarea
               className={cn(CHARACTER_TEXTAREA_CLASS, "min-h-[96px]")}
@@ -1361,6 +1382,7 @@ function IdentityCard({
   references = [],
   onAttempt,
   canGeneratePortrait,
+  onOpenCasting,
 }: {
   identity: Identity;
   project: string;
@@ -1373,8 +1395,11 @@ function IdentityCard({
   references?: BeatReference[];
   onAttempt: () => void;
   canGeneratePortrait: boolean;
+  onOpenCasting?: (identityId: string) => void;
 }) {
   const { t } = useTranslation();
+  const casting = useCharacterCasting(project, characterName, identity.identity_id);
+  const castingEnabled = !!(casting.data?.data.revision || casting.data?.data.current?.candidate_id || casting.data?.data.limitation_reason);
   const updateIdentity = useUpdateIdentity(project, characterName);
   const deleteIdentity = useDeleteIdentity(project, characterName);
   const deleteIdentityImage = useDeleteIdentityImage(project, characterName);
@@ -1419,6 +1444,8 @@ function IdentityCard({
   const identityAge = identity.age_group ?? "";
   const isAgeVariant =
     !!identityAge && identityAge !== (characterAgeGroup ?? "");
+  const hasFaceVariant = isAgeVariant || !!identity.face_prompt?.trim();
+  const [identityFace, setIdentityFace] = useState(identity.face_prompt ?? "");
 
   const [appearance, setAppearance] = useState(
     identity.appearance_details ?? "",
@@ -1455,12 +1482,14 @@ function IdentityCard({
   useEffect(() => {
     setAppearance(identity.appearance_details ?? "");
     setBodyType(identity.body_type ?? "");
+    setIdentityFace(identity.face_prompt ?? "");
     setRenameValue(identity.identity_name);
   }, [
     identity.identity_id,
     identity.identity_name,
     identity.appearance_details,
     identity.body_type,
+    identity.face_prompt,
     identity.age_group,
     identity.portrait_image_url,
   ]);
@@ -1493,6 +1522,15 @@ function IdentityCard({
           body_type: bodyType,
         },
       });
+      toast.success(t("characters.toasts.identityUpdated"));
+    } catch {
+      toast.error(t("common.error"));
+    }
+  };
+
+  const handleSaveIdentityFace = async () => {
+    try {
+      await updateIdentity.mutateAsync({ identityId: identity.identity_id, data: { face_prompt: identityFace.trim() } });
       toast.success(t("characters.toasts.identityUpdated"));
     } catch {
       toast.error(t("common.error"));
@@ -1563,11 +1601,15 @@ function IdentityCard({
   };
 
   const handleGenPortrait = () => {
+    if (onOpenCasting) {
+      onOpenCasting(identity.identity_id);
+      return;
+    }
     if (!canGeneratePortrait) {
       toast.error("请先确认 VisualBible");
       return;
     }
-    if (!isAgeVariant) {
+    if (!hasFaceVariant) {
       toast.error(t("characters.identities.variantOnly"));
       return;
     }
@@ -1971,6 +2013,11 @@ function IdentityCard({
                   />
                 </div>
               </div>
+              <div className="space-y-2">
+                <Label htmlFor={`identity-face-${identity.identity_id}`} className="text-xs text-muted-foreground">身份面部设定</Label>
+                <textarea id={`identity-face-${identity.identity_id}`} value={identityFace} onChange={event => setIdentityFace(event.target.value)} rows={3} className={CHARACTER_TEXTAREA_CLASS} placeholder="保留原角色可辨认的面部身份，填写原文支持的年龄、感染或其他面部变化。" />
+                <Button type="button" size="sm" variant="outline" onClick={handleSaveIdentityFace} disabled={updateIdentity.isPending || identityFace === (identity.face_prompt ?? "")}>保存身份面部设定</Button>
+              </div>
               {/* Identity-level face portrait */}
               <div className="space-y-2">
                 <Label className="text-xs text-muted-foreground">
@@ -1987,7 +2034,7 @@ function IdentityCard({
                     <div
                       className={cn(
                         "flex size-14 items-center justify-center rounded-[8px] border border-dashed border-border bg-background/40",
-                        !isAgeVariant && "opacity-50",
+                        !hasFaceVariant && "opacity-50",
                       )}
                     >
                       <UserSquare2 className="size-5 text-muted-foreground/40" />
@@ -1996,7 +2043,7 @@ function IdentityCard({
                   <TooltipProvider delay={200}>
                     <div className="flex flex-col gap-1.5">
                       <span className="text-xs leading-snug text-muted-foreground/70">
-                        {!isAgeVariant
+                        {!hasFaceVariant
                           ? t("characters.identities.variantOnly")
                           : identity.portrait_image_url
                             ? t("characters.identities.portraitReady")
@@ -2015,8 +2062,7 @@ function IdentityCard({
                                 disabled={
                                   genPortrait.isPending ||
                                   identityPortraitTask.started ||
-                                  !isAgeVariant ||
-                                  !canGeneratePortrait
+                                  (!onOpenCasting && (!hasFaceVariant || !canGeneratePortrait))
                                 }
                               >
                                 {genPortrait.isPending ||
@@ -2025,15 +2071,17 @@ function IdentityCard({
                                 ) : (
                                   <Sparkles className="size-3" />
                                 )}
-                                {identity.portrait_image_url
+                                {onOpenCasting ? "前往选角" : identity.portrait_image_url
                                   ? t("characters.identities.regenerate")
                                   : t("characters.identities.generate")}
-                                <CreditCostInline display={identityCost} />
+                                {!onOpenCasting && <CreditCostInline display={identityCost} />}
                               </Button>
                             }
                           />
                           <TooltipContent>
-                            {!isAgeVariant
+                            {onOpenCasting
+                              ? "前往剧情选角，并选择对应身份阶段"
+                              : !hasFaceVariant
                               ? t("characters.identities.variantOnly")
                               : !canGeneratePortrait
                                 ? "请先确认 VisualBible"
@@ -2048,7 +2096,7 @@ function IdentityCard({
                                 variant="outline"
                                 className="h-7 gap-1 rounded-[8px] px-2 text-xs"
                                 onClick={() => {
-                                  if (!isAgeVariant) {
+                                  if (!hasFaceVariant) {
                                     toast.error(
                                       t("characters.identities.variantOnly"),
                                     );
@@ -2057,7 +2105,7 @@ function IdentityCard({
                                   portraitInputRef.current?.click();
                                 }}
                                 disabled={
-                                  uploadPortrait.isPending || !isAgeVariant
+                                  uploadPortrait.isPending || !hasFaceVariant || castingEnabled
                                 }
                               >
                                 {uploadPortrait.isPending ? (
@@ -2070,9 +2118,11 @@ function IdentityCard({
                             }
                           />
                           <TooltipContent>
-                            {!isAgeVariant
+                            {!hasFaceVariant
                               ? t("characters.identities.variantOnly")
-                              : t("characters.identities.uploadPortraitTip")}
+                              : castingEnabled
+                                ? "已启用剧情选角，请生成候选并确认定角"
+                                : t("characters.identities.uploadPortraitTip")}
                           </TooltipContent>
                         </Tooltip>
                         <CharacterAssetHistoryButton
@@ -2082,7 +2132,7 @@ function IdentityCard({
                           identityId={identity.identity_id}
                           historyUrl={identity.portrait_history_url}
                           restoreUrl={identity.restore_url}
-                          disabled={!isAgeVariant}
+                          disabled={!hasFaceVariant}
                         />
                       </div>
                     </div>
@@ -2175,7 +2225,7 @@ function IdentityCard({
                     ? t("characters.identities.ready")
                     : t("characters.identities.noAttempts")}
         </span>
-        {isAgeVariant && (
+        {hasFaceVariant && (
           <span className="text-muted-foreground/80">
             · {t("characters.identities.portraitStatus")}:{" "}
             {identity.portrait_image_url
@@ -2345,12 +2395,16 @@ function IdentitiesGridSection({
   imageModel,
   onAttempt,
   canGeneratePortrait,
+  active = true,
+  onOpenCasting,
 }: {
   character: Character;
   project: string;
   imageModel?: string;
   onAttempt: () => void;
   canGeneratePortrait: boolean;
+  active?: boolean;
+  onOpenCasting?: (identityId: string) => void;
 }) {
   const { t } = useTranslation();
   const { data: identitiesRes } = useCharacterIdentities(
@@ -2360,6 +2414,8 @@ function IdentitiesGridSection({
   const deepLink = useAssetsDeepLink();
   const createIdentity = useCreateIdentity(project, character.name);
   const identities = identitiesRes?.data ?? [];
+  const [selectedIdentity, setSelectedIdentity] = useState<string | null>(deepLink.type === "identity" ? deepLink.id : null);
+  useEffect(() => { setSelectedIdentity(deepLink.type === "identity" ? deepLink.id : null); }, [character.name, deepLink.type, deepLink.id]);
   const identityRefs = useMemo(
     () => identities.map((identity) => ({ type: "identity" as const, id: identity.identity_id })),
     [identities],
@@ -2369,15 +2425,19 @@ function IdentitiesGridSection({
   });
   const gridRef = useAssetFocus(
     deepLink.type === "identity" ? deepLink.id : null,
-    identities.length > 0,
+    active && identities.length > 0,
   );
   const [newName, setNewName] = useState("");
   const [newAgeGroup, setNewAgeGroup] = useState("");
   const [newAppearance, setNewAppearance] = useState("");
+  const [identityPreset, setIdentityPreset] = useState<AssetCreationPreset>("normal");
+  const [identityContext, setIdentityContext] = useState("");
   const [addIdentityOpen, setAddIdentityOpen] = useState(false);
 
   useEffect(() => {
     setNewName("");
+    setIdentityPreset("normal");
+    setIdentityContext("");
     setNewAgeGroup("");
     setNewAppearance("");
     setAddIdentityOpen(false);
@@ -2393,9 +2453,12 @@ function IdentitiesGridSection({
       await createIdentity.mutateAsync({
         identity_name: newName.trim(),
         age_group: newAgeGroup || undefined,
-        appearance_details: newAppearance.trim() || undefined,
+        appearance_details: [newAppearance.trim(), assetPresetContext(identityPreset, identityContext)].filter(Boolean).join("\n\n") || undefined,
+        face_prompt: assetPresetContext(identityPreset, identityContext) || undefined,
       });
       setNewName("");
+      setIdentityPreset("normal");
+      setIdentityContext("");
       setNewAgeGroup("");
       setNewAppearance("");
       setAddIdentityOpen(false);
@@ -2409,6 +2472,8 @@ function IdentitiesGridSection({
     setAddIdentityOpen(open);
     if (!open) {
       setNewName("");
+      setIdentityPreset("normal");
+      setIdentityContext("");
       setNewAgeGroup("");
       setNewAppearance("");
     }
@@ -2457,8 +2522,9 @@ function IdentitiesGridSection({
           </span>
         </button>
       ) : (
-        <div ref={gridRef} className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-          {identities.map((id) => (
+        <div ref={gridRef} className="space-y-4">
+          <div className="flex flex-wrap gap-2">{identities.map(id => <button key={id.identity_id} type="button" aria-pressed={(identities.some(item => item.identity_id === selectedIdentity) ? selectedIdentity : identities[0]?.identity_id) === id.identity_id} onClick={() => setSelectedIdentity(id.identity_id)} className="rounded-md border px-3 py-2 text-xs aria-pressed:border-primary aria-pressed:text-primary">{id.identity_name || id.identity_id}</button>)}</div>
+          {identities.filter(id => id.identity_id === (identities.some(item => item.identity_id === selectedIdentity) ? selectedIdentity : identities[0]?.identity_id)).map((id) => (
             <div key={id.identity_id} data-asset-id={id.identity_id}>
               <IdentityCard
                 identity={id}
@@ -2472,6 +2538,7 @@ function IdentitiesGridSection({
                 references={refDetail.isError ? [] : refDetail.referencesFor("identity", id.identity_id)}
                 onAttempt={onAttempt}
                 canGeneratePortrait={canGeneratePortrait}
+                onOpenCasting={onOpenCasting}
               />
             </div>
           ))}
@@ -2480,7 +2547,7 @@ function IdentitiesGridSection({
 
       <Dialog open={addIdentityOpen} onOpenChange={handleDialogOpenChange}>
         <DialogContent
-          className={cn(CHARACTER_DIALOG_CONTENT_CLASS, "sm:max-w-lg")}
+          className={cn(CHARACTER_DIALOG_CONTENT_CLASS, "sm:max-w-lg max-h-[85dvh] overflow-y-auto")}
         >
           <DialogHeader className="relative gap-2">
             <DialogTitle className="text-base font-medium tracking-tight">
@@ -2494,6 +2561,7 @@ function IdentitiesGridSection({
             }}
             className="relative space-y-3.5"
           >
+            <AssetCreationPresetFields identity preset={identityPreset} onPresetChange={setIdentityPreset} context={identityContext} onContextChange={setIdentityContext} />
             <div className="space-y-1.5">
               <Label className="text-xs font-medium text-muted-foreground">
                 {t("characters.identities.name")}
@@ -2612,15 +2680,18 @@ function DetailPanel({
     project,
     character?.name ?? "",
   );
-  const updateVisualWorkspace = useUpdateCharacterVisualWorkspace(
-    project,
-    character?.name ?? "",
-  );
-  const confirmVisualBible = useConfirmCharacterVisualBible(
-    project,
-    character?.name ?? "",
-  );
+  const casting = useCharacterCasting(project, character?.name ?? "");
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const detailLink = useAssetsDeepLink();
+  const [detailTab, setDetailTab] = useState("profile");
+  const identitiesQuery = useCharacterIdentities(project, character?.name ?? "");
+  const characterSwitch = useCharacterSwitch();
+  const [castingIdentityId, setCastingIdentityId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDetailTab("profile");
+    setCastingIdentityId(null);
+  }, [character?.name, detailLink.type, detailLink.id]);
 
   // Reset scroll position when selected character changes
   useEffect(() => {
@@ -2675,34 +2746,14 @@ function DetailPanel({
     })),
   ];
 
-  const handleSelectProposal = async (proposalId: string) => {
-    try {
-      await updateVisualWorkspace.mutateAsync({
-        selected_proposal_id: proposalId,
-      });
-      toast.success("视觉提案已选择");
-    } catch (err) {
-      toast.error(backendErrorToastMessage(err, t));
-    }
-  };
-
-  const handleConfirmVisualBible = async () => {
-    try {
-      const confirmedBy = useAuthStore.getState().username?.trim() || "local-user";
-      await confirmVisualBible.mutateAsync(confirmedBy);
-      toast.success("VisualBible 已确认");
-    } catch (err) {
-      toast.error(backendErrorToastMessage(err, t));
-    }
-  };
-
   return (
     <aside className="flex h-full w-full flex-col overflow-hidden bg-background">
       <div
         ref={scrollContainerRef}
-        className="@container flex-1 space-y-3 overflow-y-auto p-4"
+        className="@container min-h-0 flex-1 overflow-y-auto p-4 lg:px-6"
       >
-        <section className="rounded-[10px] border border-white/[0.06] bg-white/[0.018] p-4">
+        <div className="mx-auto max-w-7xl space-y-3">
+        <section className="rounded-xl border border-border bg-card/40 px-4 py-3">
           <CharacterHeaderRow
             character={character}
             project={project}
@@ -2710,28 +2761,70 @@ function DetailPanel({
             mainCopy={mainCopy}
             onDeleted={onDeleted}
           />
-          <div className="mt-5 grid grid-cols-1 gap-5 @[900px]:grid-cols-[180px_minmax(0,1fr)]">
-            <div className="w-full max-w-[180px] @[900px]:max-w-none">
-              <PortraitBlock
-                character={character}
-                project={project}
-                imageModel={imageModel}
-                attemptCount={attemptCount}
-                onAttempt={onAttempt}
-                canGeneratePortrait={canGeneratePortrait}
-                visualBiblePrerequisiteMessage={visualBiblePrerequisiteMessage}
-              />
-            </div>
-            <div className="min-w-0">
-              <DetailsFormCard
-                character={character}
-                project={project}
-                onRenamed={onRenamed}
-              />
-            </div>
-          </div>
         </section>
+        {characterSwitch.dialog}
+        <Tabs value={detailTab} onValueChange={(value) => characterSwitch.request(() => setDetailTab(String(value)))} className="gap-5">
+          <TabsList aria-label="角色详情" className="asset-workspace-tabs sticky top-0 z-10 w-full justify-start bg-background group-data-horizontal/tabs:h-auto">
+            <TabsTrigger value="profile">身份</TabsTrigger>
+            <TabsTrigger value="portrait">肖像</TabsTrigger>
+            <TabsTrigger value="costume">服装</TabsTrigger>
+            <TabsTrigger value="visual">剧情选角</TabsTrigger>
+            <TabsTrigger value="voice">声音</TabsTrigger>
+            <TabsTrigger value="history">历史</TabsTrigger>
+          </TabsList>
+        <TabsContent value="profile" keepMounted className="data-[hidden]:hidden">
+          <section className="rounded-lg border border-border bg-card/40 p-5">
+            <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+              <div><h3 className="font-semibold">角色身份与基础资料</h3><p className="mt-1 text-xs text-muted-foreground">原文事实、身份阶段与外观参考分别管理。</p></div>
+              <StudioShortcut project={project} studio="character" character={character.name} returnTo={window.location.pathname + window.location.search} label="进入角色造型室" />
+            </div>
+            <DetailsFormCard character={character} project={project} onRenamed={onRenamed} />
+          </section>
+          <div className="mt-5">
+            <IdentitiesGridSection character={character} project={project} imageModel={imageModel} onAttempt={onAttempt} canGeneratePortrait={canGeneratePortrait} active={detailTab === "profile"} onOpenCasting={(identityId) => { setCastingIdentityId(identityId); setDetailTab("visual"); }} />
+          </div>
+        </TabsContent>
+        <TabsContent value="portrait" keepMounted className="data-[hidden]:hidden">
+          <div className="grid grid-cols-1 gap-6 @[700px]:grid-cols-[minmax(0,1.2fr)_minmax(260px,1fr)]">
+            <section className="asset-portrait-workspace rounded-lg border border-border bg-card/40 p-4">
+              <PortraitBlock character={character} project={project} imageModel={imageModel} attemptCount={attemptCount} onAttempt={onAttempt} canGeneratePortrait={canGeneratePortrait} visualBiblePrerequisiteMessage={visualBiblePrerequisiteMessage} onOpenCasting={() => { setCastingIdentityId(null); setDetailTab("visual"); }} castingEnabled={!!(casting.data?.data.revision || casting.data?.data.current?.candidate_id || casting.data?.data.limitation_reason)} />
+            </section>
+            <section className="space-y-5 rounded-lg border border-border bg-card/40 p-5">
+              <div><p className="text-xs text-muted-foreground">角色基础肖像</p><h3 className="mt-1 text-xl font-semibold">{character.name}</h3></div>
+              <p className="whitespace-pre-wrap text-sm leading-7 text-muted-foreground">{character.description || "尚未填写角色描述，可前往身份页完善。"}</p>
+              <div className="rounded-md border-l-2 border-primary bg-primary/5 p-3 text-xs leading-6 text-muted-foreground">生成先进入剧情选角候选；比较并确认定角后更新当前形象。身份阶段的脸部参考独立保留。</div>
+              <Button variant="outline" onClick={() => setDetailTab("visual")}>比较选角候选</Button>
+              <StudioShortcut project={project} studio="character" character={character.name} returnTo={window.location.pathname + window.location.search} label="打开角色造型室" />
+            </section>
+          </div>
+        </TabsContent>
+        <TabsContent value="costume" className="asset-costume-workspace data-[hidden]:hidden">
+          <CharacterCostume project={project} name={character.name} />
+        </TabsContent>
+        <TabsContent value="history" className="data-[hidden]:hidden">
+          <section className="space-y-5 rounded-lg border border-border bg-card/40 p-5">
+            <div><h3 className="font-semibold">参考版本与历史</h3><p className="mt-2 text-sm text-muted-foreground">按参考槽位查看与恢复，已有分镜和视频不会自动重生成。</p></div>
+            <div className="flex items-center justify-between gap-3 border-b border-border pb-4"><span className="text-sm">角色基础肖像</span><CharacterAssetHistoryButton project={project} characterName={character.name} kind="portrait" historyUrl={character.history_url} restoreUrl={character.restore_url} /></div>
+            {(identitiesQuery.data?.data ?? []).map((identity) => (
+              <section key={identity.identity_id} className="space-y-3 rounded-md border border-border p-4">
+                <h4 className="text-sm font-medium">{identity.identity_name}</h4>
+                <div className="flex flex-wrap gap-2">
+                  <CharacterAssetHistoryButton project={project} characterName={character.name} kind="identity" identityId={identity.identity_id} historyUrl={identity.history_url} restoreUrl={identity.restore_url} />
+                  <CharacterAssetHistoryButton project={project} characterName={character.name} kind="identity_portrait" identityId={identity.identity_id} historyUrl={identity.portrait_history_url} restoreUrl={identity.restore_url} />
+                  <CharacterAssetHistoryButton project={project} characterName={character.name} kind="identity_costume" identityId={identity.identity_id} historyUrl={identity.costume_history_url} restoreUrl={identity.restore_url} />
+                </div>
+                <CharacterStateVersions project={project} characterName={character.name} identityId={identity.identity_id} legacyAssetPath={identity.image_path} />
+              </section>
+            ))}
+          </section>
+        </TabsContent>
+        <TabsContent value="visual" keepMounted className="data-[hidden]:hidden">
+        <CharacterCastingPanel key={`${project}/${character.name}`} project={project} name={character.name} imageModel={imageModel} identityId={castingIdentityId} onIdentityChange={setCastingIdentityId} />
+        <details className="mt-5 rounded-xl border border-border/70 p-4">
+        <summary className="cursor-pointer text-sm text-muted-foreground">现有设定（只读）</summary>
         <CharacterVisualProfile
+          readOnly
+          className="mt-4"
           biography={visualWorkspace?.profile.biography ?? character.description ?? ""}
           facts={visualFacts}
           visualProposal={
@@ -2749,11 +2842,7 @@ function DetailPanel({
             qualityIssues: proposal.quality_issues ?? [],
           }))}
           selectedProposalId={visualWorkspace?.selected_proposal_id}
-          onSelectProposal={handleSelectProposal}
-          isSelectingProposal={updateVisualWorkspace.isPending}
           visualBibleStatus={visualBible?.status}
-          onConfirmVisualBible={handleConfirmVisualBible}
-          isConfirmingVisualBible={confirmVisualBible.isPending}
           visualIdentity={{
             face: visualBible?.face_shape ?? undefined,
             hair: visualBible?.hair_style ?? undefined,
@@ -2767,16 +2856,28 @@ function DetailPanel({
             ([state, description]) => `${state}：${description}`,
           )}
         />
+        </details>
+        </TabsContent>
+        <TabsContent value="voice" keepMounted className="data-[hidden]:hidden">
         <CharacterVoicePanel character={character} project={project} />
-        <IdentitiesGridSection
-          character={character}
-          project={project}
-          imageModel={imageModel}
-          onAttempt={onAttempt}
-          canGeneratePortrait={canGeneratePortrait}
-        />
+        </TabsContent>
+
+        </Tabs>
+        </div>
       </div>
     </aside>
+  );
+}
+
+function VoiceSampleArchive({ project }: { project: string }) {
+  return (
+    <details className="mt-6 w-full max-w-3xl rounded-xl border border-border p-4">
+      <summary className="cursor-pointer text-sm font-medium">历史声音样本</summary>
+      <p className="my-3 text-xs leading-5 text-muted-foreground">
+        查看独立保存的历史样本。角色声音的生成、试听和采用，请前往对应角色的「声音」页。
+      </p>
+      <VoiceAcceptancePanel project={project} />
+    </details>
   );
 }
 
@@ -2824,6 +2925,7 @@ function ProjectVoicesPanel({
             </div>
           )}
         </section>
+        <VoiceSampleArchive project={project} />
       </div>
     );
   }
@@ -2836,6 +2938,7 @@ function ProjectVoicesPanel({
           allowFirstPersonProjectVoice={allowFirstPersonProjectVoice}
         />
       </div>
+      <VoiceSampleArchive project={project} />
     </div>
   );
 }
@@ -2853,11 +2956,20 @@ function AddCharacterDialog({
 }) {
   const { t } = useTranslation();
   const createChar = useCreateCharacter(project);
+  const [preset, setPreset] = useState<AssetCreationPreset>("normal");
+  const [designContext, setDesignContext] = useState("");
   const { register, handleSubmit, reset, watch, setValue } =
     useForm<AddCharacterForm>({
     resolver: zodResolver(addCharacterSchema),
   });
   const roleValue = watch("role") ?? "";
+  useEffect(() => {
+    if (!open) {
+      reset();
+      setPreset("normal");
+      setDesignContext("");
+    }
+  }, [open, reset]);
   const genderValue = watch("gender") ?? "";
   const inputClass =
     "h-10 rounded-[8px] border-white/12 bg-white/[0.04] px-3 text-sm placeholder:text-muted-foreground/70 focus-visible:border-white/25 focus-visible:ring-2 focus-visible:ring-white/8 dark:bg-white/[0.04]";
@@ -2867,7 +2979,13 @@ function AddCharacterDialog({
 
   const onSubmit = async (data: AddCharacterForm) => {
     try {
-      await createChar.mutateAsync(data);
+      const context = assetPresetContext(preset, designContext);
+      await createChar.mutateAsync({
+        ...data,
+        description: [data.description?.trim(), context].filter(Boolean).join("\n\n") || undefined,
+        face_prompt: context || undefined,
+        extraction_locked: true,
+      });
       reset();
       onOpenChange(false);
       toast.success(t("characters.toasts.created"));
@@ -2879,7 +2997,7 @@ function AddCharacterDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className={cn(CHARACTER_DIALOG_CONTENT_CLASS, "sm:max-w-xl")}
+        className={cn(CHARACTER_DIALOG_CONTENT_CLASS, "sm:max-w-xl max-h-[85dvh] overflow-y-auto")}
       >
         <DialogHeader className="gap-2">
           <DialogTitle className="text-lg font-medium tracking-tight">
@@ -2896,6 +3014,7 @@ function AddCharacterDialog({
             </Label>
             <Input {...register("name")} autoFocus className={inputClass} />
           </div>
+          <AssetCreationPresetFields preset={preset} onPresetChange={setPreset} context={designContext} onContextChange={setDesignContext} />
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label className={labelClass}>
@@ -3020,6 +3139,8 @@ function CharactersSplit({
   mainCopy,
   searchQuery,
   onSearchQueryChange,
+  readinessFilter,
+  onReadinessFilterChange,
   selectedName,
   setSelectedName,
   selectedChar,
@@ -3040,6 +3161,8 @@ function CharactersSplit({
   mainCopy: CharacterMainCopy;
   searchQuery: string;
   onSearchQueryChange: (value: string) => void;
+  readinessFilter: CharacterReadinessFilter;
+  onReadinessFilterChange: (value: CharacterReadinessFilter) => void;
   selectedName: string | null;
   setSelectedName: (name: string | null) => void;
   selectedChar: Character | null;
@@ -3051,7 +3174,7 @@ function CharactersSplit({
 }) {
   const { t } = useTranslation();
   const isExtracting = buildStarted && taskStream.status !== "idle";
-  const searchActive = searchQuery.trim().length > 0;
+  const searchActive = searchQuery.trim().length > 0 || readinessFilter !== "all";
   const listScrollRef = useRef<HTMLDivElement | null>(null);
   const previousCharacterCountRef = useRef(characters.length);
 
@@ -3089,6 +3212,14 @@ function CharactersSplit({
             totalCount={totalCharacters}
             placeholder={t("characters.searchPlaceholder")}
           />
+          <div className="mt-2 flex gap-1" role="group" aria-label="角色完成状态">
+            {([['all', '全部'], ['portrait', '待补形象'], ['voice', '待配音']] as const).map(([value, label]) => (
+              <button key={value} type="button" aria-pressed={readinessFilter === value} onClick={() => onReadinessFilterChange(value)} className={cn("rounded-md px-2 py-1.5 text-xs transition-colors focus-visible:outline-primary", readinessFilter === value ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted")}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <p aria-live="polite" className="mt-2 px-1 text-[11px] text-muted-foreground">显示 {characters.length} / {totalCharacters} 个角色</p>
         </div>
       )}
       <div ref={listScrollRef} className="flex-1 overflow-y-auto p-3">
@@ -3141,8 +3272,9 @@ function CharactersSplit({
               {t("characters.filter.noMatch")}
             </h2>
             <p className="max-w-[15rem] text-xs leading-5 text-muted-foreground">
-              {t("characters.searchPlaceholder")}
+              调整筛选条件，或清除搜索查看全部角色。
             </p>
+            <Button size="sm" variant="outline" className="mt-3" onClick={() => { onSearchQueryChange(""); onReadinessFilterChange("all"); }}>清除筛选</Button>
           </div>
         ) : (
           <div className="flex flex-col gap-3">
@@ -3183,18 +3315,18 @@ function CharactersSplit({
 
   if (!isDesktop) {
     return (
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex max-h-[45vh] w-full shrink-0 flex-col overflow-hidden border-b border-border">
+      <div className="flex min-h-[640px] shrink-0 flex-1 flex-col overflow-hidden">
+        <div className="flex max-h-[24vh] w-full shrink-0 flex-col overflow-hidden border-b border-border">
           {listPane}
         </div>
-        <div className="min-w-0 flex-1">{detailPane}</div>
+        <div className="min-h-0 min-w-0 flex-1 overflow-hidden">{detailPane}</div>
       </div>
     );
   }
 
   return (
     <div className="min-h-0 flex-1 flex overflow-hidden bg-background">
-      <div className="flex w-80 shrink-0 flex-col overflow-hidden border-r border-border/30 bg-background">
+      <div className="flex w-64 shrink-0 flex-col overflow-hidden border-r border-border/30 bg-background xl:w-72">
         {listPane}
       </div>
       <div className="min-w-0 flex-1 overflow-hidden bg-background">
@@ -3207,7 +3339,7 @@ function CharactersSplit({
 function CharactersPageContent() {
   const { t } = useTranslation();
   const { project } = Route.useParams();
-  const { data: charsRes, isLoading } = useCharacters(project);
+  const { data: charsRes, isLoading, refetch: refetchCharacters } = useCharacters(project);
   const { data: projectRes } = useProject(project);
   const { data: imageSelectionRes } = useCharacterImageSelection(project);
   const buildChars = useBuildCharacters(project);
@@ -3224,6 +3356,7 @@ function CharactersPageContent() {
   const [rebuildDialogOpen, setRebuildDialogOpen] = useState(false);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [extractDialogOpen, setExtractDialogOpen] = useState(false);
   const [attempts, setAttempts] = useState<Record<string, number>>({});
   const deepLink = useAssetsDeepLink();
   const ownerIndex = useIdentityOwnerIndex(project);
@@ -3232,6 +3365,7 @@ function CharactersPageContent() {
     deepLink.type ? TAB_BY_ASSET_TYPE[deepLink.type] : readStoredAssetTab(project),
   );
   const [searchQuery, setSearchQuery] = useState("");
+  const [readinessFilter, setReadinessFilter] = useState<CharacterReadinessFilter>("all");
   const [imageModel, setImageModel] = useState("");
 
   const taskStream = useTaskStream({
@@ -3259,8 +3393,8 @@ function CharactersPageContent() {
     projectConfig?.spine_template,
   );
   const filteredCharacters = useMemo(
-    () => filterCharacters(characters, searchQuery),
-    [characters, searchQuery],
+    () => filterCharacters(characters, searchQuery, readinessFilter),
+    [characters, searchQuery, readinessFilter],
   );
 
   useEffect(() => {
@@ -3304,6 +3438,8 @@ function CharactersPageContent() {
   useEffect(() => {
     if (!identityDeepLinkId || !identityOwner) return;
     if (appliedIdentityDeepLink.current === identityDeepLinkId) return;
+    setSearchQuery("");
+    setReadinessFilter("all");
     setSelectedName(identityOwner);
     appliedIdentityDeepLink.current = identityDeepLinkId;
   }, [identityDeepLinkId, identityOwner]);
@@ -3335,13 +3471,14 @@ function CharactersPageContent() {
 
   return (
     <AssetHeaderActionsSlotProvider>
-      <div className="-m-6 flex h-[calc(100%+3rem)] flex-col overflow-hidden">
+      <div className="-m-6 flex h-[calc(100%+3rem)] flex-col overflow-x-hidden overflow-y-auto lg:overflow-hidden">
       <CharactersPageHeader
         onRebuild={() => setRebuildDialogOpen(true)}
         rebuildDisabled={buildChars.isPending || buildStarted}
         buildCharactersCostDisplay={buildCharactersCostDisplay}
         onAdd={() => setAddDialogOpen(true)}
         onImport={() => setImportDialogOpen(true)}
+        onExtract={() => setExtractDialogOpen(true)}
         project={project}
         activeTab={assetTab}
         setImageModel={setImageModel}
@@ -3351,9 +3488,10 @@ function CharactersPageContent() {
 
       {assetTab === "characters" ? (
         <>
-          <div className="shrink-0 border-b border-border/30 bg-background px-3 py-3 lg:px-9">
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/30 bg-background px-4 py-1.5 lg:px-6">
             <CharacterStatsStrip
               characters={characters}
+              identityCounts={ownerIndex.identityCounts}
               mainCharacterLabel={mainCopy.label}
             />
           </div>
@@ -3369,6 +3507,8 @@ function CharactersPageContent() {
             mainCopy={mainCopy}
             searchQuery={searchQuery}
             onSearchQueryChange={setSearchQuery}
+            readinessFilter={readinessFilter}
+            onReadinessFilterChange={setReadinessFilter}
             selectedName={selectedName}
             setSelectedName={setSelectedName}
             selectedChar={selectedChar}
@@ -3437,6 +3577,7 @@ function CharactersPageContent() {
           onOpenChange={setImportDialogOpen}
         />
       ) : null}
+      {extractDialogOpen && <AssetExtractionDialog assetType="character" project={project} onClose={() => setExtractDialogOpen(false)} onImported={() => { void refetchCharacters(); }} />}
       </div>
     </AssetHeaderActionsSlotProvider>
   );

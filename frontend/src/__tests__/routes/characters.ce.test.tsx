@@ -17,6 +17,9 @@ const extractionLockMutationMock = vi.hoisted(() => vi.fn());
 const visualWorkspaceMutationMock = vi.hoisted(() => vi.fn());
 const confirmVisualBibleMutationMock = vi.hoisted(() => vi.fn());
 const generatePortraitMutationMock = vi.hoisted(() => vi.fn());
+const createCharacterMock = vi.hoisted(() => vi.fn());
+const createIdentityMock = vi.hoisted(() => vi.fn());
+const updateIdentityMock = vi.hoisted(() => vi.fn());
 const characterVisualState = vi.hoisted(() => ({
   extractionLocked: false,
   selectedProposalId: null as string | null,
@@ -25,6 +28,13 @@ const characterVisualState = vi.hoisted(() => ({
     | "confirmed"
     | "superseded"
     | undefined,
+}));
+
+vi.mock("@/lib/queries/character-casting", () => ({
+  useCharacterCasting: () => ({ data: { ok: true, data: { revision: null, current: null } } }),
+}));
+vi.mock("@/components/assets/character-casting-panel", () => ({
+  CharacterCastingPanel: ({ identityId }: { identityId?: string | null }) => <div>剧情驱动选角<span data-testid="casting-stage">{identityId ?? "base"}</span></div>,
 }));
 
 vi.mock("@/lib/runtime-config", () => ({
@@ -232,7 +242,7 @@ vi.mock("@/lib/queries/characters", () => ({
     mutateAsync: buildCharactersMutationMock,
     isPending: false,
   }),
-  useCreateCharacter: mutation,
+  useCreateCharacter: () => ({ mutateAsync: createCharacterMock, isPending: false }),
   useUpdateCharacter: mutation,
   useDeleteCharacter: mutation,
   useCharacterAssetHistory: () => ({ data: undefined, isLoading: false }),
@@ -255,8 +265,8 @@ vi.mock("@/lib/queries/characters", () => ({
       ],
     },
   }),
-  useCreateIdentity: mutation,
-  useUpdateIdentity: mutation,
+  useCreateIdentity: () => ({ mutateAsync: createIdentityMock, isPending: false }),
+  useUpdateIdentity: () => ({ mutateAsync: updateIdentityMock, isPending: false }),
   useDeleteIdentity: mutation,
   useDeleteIdentityImage: mutation,
   useDeleteIdentityCostume: mutation,
@@ -321,6 +331,11 @@ beforeAll(async () => {
   });
 });
 
+vi.mock("@/lib/queries/voice-acceptance", () => ({
+  useVoiceAcceptance: () => ({ data: { ok: true, data: [] }, isLoading: false }),
+  useReviewVoiceAcceptance: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
+
 function renderCharactersPage() {
   const Component = Route.options.component as ComponentType;
   return render(
@@ -331,10 +346,86 @@ function renderCharactersPage() {
 }
 
 describe("characters page CE generation credit gating", () => {
+  it("edits same-age identity face details and enables its portrait upload", async () => {
+    renderCharactersPage();
+    const face = screen.getByLabelText("身份面部设定");
+    expect(face).toHaveValue("sharp eyes");
+    await userEvent.clear(face);
+    await userEvent.type(face, "保留原脸，左颊伤痕");
+    await userEvent.click(screen.getByRole("button", { name: "保存身份面部设定" }));
+    await waitFor(() => expect(updateIdentityMock).toHaveBeenCalledWith({ identityId: "id-middle", data: { face_prompt: "保留原脸，左颊伤痕" } }));
+    const portrait = screen.getByText("characters.identities.portraitTitle").parentElement!;
+    expect(within(portrait).getByRole("button", { name: "characters.identities.upload" })).toBeEnabled();
+  });
+  it("saves one reusable crowd template with editable context without generating media", async () => {
+    renderCharactersPage();
+    await userEvent.click(screen.getByRole("button", { name: "characters.addCharacter" }));
+    const dialog = screen.getByRole("dialog");
+    await userEvent.type(within(dialog).getAllByRole("textbox")[0], "街头丧尸模板");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "丧尸群演模板" }));
+    await userEvent.type(within(dialog).getByLabelText("原文设定与外观细节"), "旧工作服，无特定眼睛颜色");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "独立丧尸角色" }));
+    expect(within(dialog).getByLabelText("原文设定与外观细节")).toHaveValue("旧工作服，无特定眼睛颜色");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "丧尸群演模板" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "common.confirm" }));
+    await waitFor(() => expect(createCharacterMock).toHaveBeenCalledWith(expect.objectContaining({
+      name: "街头丧尸模板", extraction_locked: true,
+      description: expect.stringContaining("丧尸群演模板"),
+      face_prompt: expect.stringContaining("旧工作服，无特定眼睛颜色"),
+    })));
+    expect(createCharacterMock.mock.calls[0][0].face_prompt).toContain("单个代表人物");
+    expect(generatePortraitMutationMock).not.toHaveBeenCalled();
+  });
+
+  it("clears cancelled presets and creates infected forms as separate identities", async () => {
+    renderCharactersPage();
+    await userEvent.click(screen.getByRole("button", { name: "characters.identities.addNew" }));
+    let dialog = screen.getByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "感染 / 丧尸形态" }));
+    await userEvent.type(within(dialog).getByLabelText("原文设定与外观细节"), "伤痕在左颊");
+    await userEvent.click(within(dialog).getByRole("button", { name: "common.cancel" }));
+    await userEvent.click(screen.getByRole("button", { name: "characters.identities.addNew" }));
+    dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("radio", { name: "普通身份" })).toBeChecked();
+    expect(within(dialog).getByLabelText("原文设定与外观细节")).toHaveValue("");
+    await userEvent.type(within(dialog).getByPlaceholderText("characters.identities.newNamePlaceholder"), "感染后");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "感染 / 丧尸形态" }));
+    await userEvent.type(within(dialog).getByLabelText("原文设定与外观细节"), "伤痕在左颊");
+    await userEvent.click(within(dialog).getByRole("button", { name: "common.confirm" }));
+    await waitFor(() => expect(createIdentityMock).toHaveBeenCalledWith(expect.objectContaining({
+      identity_name: "感染后", face_prompt: expect.stringContaining("伤痕在左颊"),
+      appearance_details: expect.stringContaining("保留原角色可辨认的面部身份"),
+    })));
+    expect(createCharacterMock).not.toHaveBeenCalled();
+  });
+  it("opens the approved asset workspace on identity and keeps portrait, costume, casting, voice and history independently reachable", async () => {
+    renderCharactersPage();
+    expect(await screen.findByRole("tab", { name: "身份" })).toHaveAttribute("aria-selected", "true");
+    for (const name of ["肖像", "服装", "剧情选角", "声音", "历史"]) {
+      expect(screen.getByRole("tab", { name })).toBeInTheDocument();
+    }
+    await userEvent.click(screen.getByRole("tab", { name: "肖像" }));
+    expect(screen.getByRole("button", { name: "前往选角" })).toBeVisible();
+    await userEvent.click(screen.getByRole("tab", { name: "历史" }));
+    expect(screen.getByText("按参考槽位查看与恢复，已有分镜和视频不会自动重生成。")).toBeVisible();
+  });
+  it("keeps role voice work in the role and moves independent samples to the voice archive", async () => {
+    renderCharactersPage();
+    expect(await screen.findByRole("tab", { name: "声音" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "声音验收" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "查看历史声音样本" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "characters.assetTabs.voices" }));
+    await userEvent.click(screen.getByText("历史声音样本"));
+    await userEvent.click(screen.getByRole("button", { name: "查看历史声音样本" }));
+    expect(screen.getByRole("dialog", { name: "历史声音样本" })).toBeInTheDocument();
+  });
   beforeEach(async () => {
     await i18n.changeLanguage("en");
     runtimeState.isCeRuntime = true;
     toastErrorMock.mockClear();
+    createCharacterMock.mockReset();
+    createIdentityMock.mockReset();
+    updateIdentityMock.mockReset();
     buildCharactersMutationMock.mockReset();
     taskStreamOptionsMock.mockClear();
     extractionLockMutationMock.mockReset();
@@ -358,17 +449,19 @@ describe("characters page CE generation credit gating", () => {
   it("hides portrait and identity generation costs and keeps credit styling out of CE dialogs", async () => {
     const user = userEvent.setup();
     renderCharactersPage();
+    await user.click(await screen.findByRole("tab", { name: "肖像" }));
 
     expect(await screen.findAllByText("Li Qing")).not.toHaveLength(0);
     expect(
       await screen.findByRole("button", {
-        name: "characters.summary.generateNew",
+        name: "前往选角",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Middle")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Middle", hidden: true })).toBeInTheDocument();
 
     expect(screen.queryByText("12 credits")).not.toBeInTheDocument();
 
+    await user.click(screen.getByRole("tab", { name: "身份" }));
     const identityGenerate = screen
       .getAllByRole("button", { name: "characters.identities.generate" })
       .find((button) => !button.hasAttribute("disabled"));
@@ -426,17 +519,17 @@ describe("characters page CE generation credit gating", () => {
     },
   );
 
-  it("locks character extraction and selects one of three visual proposals", async () => {
+  it("locks character extraction and keeps previous visual proposals read only", async () => {
     const user = userEvent.setup();
     const firstRender = renderCharactersPage();
 
     await user.click(await screen.findByRole("button", { name: "锁定角色" }));
     expect(extractionLockMutationMock).toHaveBeenCalledWith(true);
 
-    await user.click(screen.getByRole("button", { name: /Urban sharpness/ }));
-    expect(visualWorkspaceMutationMock).toHaveBeenCalledWith({
-      selected_proposal_id: "proposal-b",
-    });
+    await user.click(screen.getByRole("tab", { name: "剧情选角" }));
+    await user.click(screen.getByText("现有设定（只读）"));
+    expect(screen.getByRole("button", { name: /Urban sharpness/ })).toBeDisabled();
+    expect(visualWorkspaceMutationMock).not.toHaveBeenCalled();
     expect(screen.getByText("推荐")).toBeInTheDocument();
 
     firstRender.unmount();
@@ -446,56 +539,63 @@ describe("characters page CE generation credit gating", () => {
     expect(extractionLockMutationMock).toHaveBeenLastCalledWith(false);
   });
 
-  it("guides pending automatic proposals through selection before confirmation", async () => {
+  it("guides portrait actions to the casting panel", async () => {
     const user = userEvent.setup();
     renderCharactersPage();
+    expect(await screen.findByRole("tab", { name: "身份" })).toHaveAttribute("aria-selected", "true");
+    await user.click(screen.getByRole("tab", { name: "肖像" }));
 
     const generateButton = await screen.findByRole("button", {
-      name: "characters.summary.generateNew",
+      name: "前往选角",
     });
     expect(generateButton).toBeEnabled();
     await user.click(generateButton);
 
-    expect(toastErrorMock).toHaveBeenCalledWith(
-      "请先选择视觉提案，再确认 VisualBible",
-    );
+    expect(screen.getByText("剧情驱动选角")).toBeVisible();
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(generatePortraitMutationMock).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole("button", { name: "选择推荐提案" }),
-    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "选择推荐提案" })).not.toBeInTheDocument();
+  });
+  it("routes identity portrait entry with its stable ID and base entry with null", async () => {
+    const user = userEvent.setup();
+    renderCharactersPage();
+    await user.click(await screen.findByRole("tab", { name: "身份" }));
+    await user.click(screen.getByRole("button", { name: "前往选角" }));
+    expect(screen.getByTestId("casting-stage")).toHaveTextContent("id-middle");
+    await user.click(screen.getByRole("tab", { name: "肖像" }));
+    await user.click(screen.getByRole("button", { name: "前往选角" }));
+    expect(screen.getByTestId("casting-stage")).toHaveTextContent("base");
   });
 
-  it("opens confirmation and generates after the VisualBible is confirmed", async () => {
+  it("uses casting even when the legacy VisualBible is confirmed", async () => {
     const user = userEvent.setup();
     characterVisualState.selectedProposalId = "proposal-a";
     characterVisualState.visualBibleStatus = "confirmed";
     renderCharactersPage();
+    await user.click(await screen.findByRole("tab", { name: "肖像" }));
 
     const generateButton = await screen.findByRole("button", {
-      name: "characters.summary.generateNew",
+      name: "前往选角",
     });
     expect(generateButton).toBeEnabled();
     await user.click(generateButton);
 
-    const dialog = await screen.findByRole("alertdialog");
-    await user.click(
-      within(dialog).getByRole("button", { name: "common.confirm" }),
-    );
-
-    await waitFor(() =>
-      expect(generatePortraitMutationMock).toHaveBeenCalledTimes(1),
-    );
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(generatePortraitMutationMock).not.toHaveBeenCalled();
+    expect(screen.getByText("剧情驱动选角")).toBeVisible();
+    await user.click(screen.getByText("现有设定（只读）"));
     expect(screen.getByText("VisualBible 已确认")).toBeInTheDocument();
   });
 
-  it("confirms a draft VisualBible from the visual profile", async () => {
+  it("does not expose the old VisualBible confirmation alongside casting", async () => {
     const user = userEvent.setup();
     characterVisualState.selectedProposalId = "proposal-a";
     characterVisualState.visualBibleStatus = "draft";
     renderCharactersPage();
 
-    await user.click(await screen.findByRole("button", { name: "确认 VisualBible" }));
-    expect(confirmVisualBibleMutationMock).toHaveBeenCalledTimes(1);
+    await user.click(await screen.findByRole("tab", { name: "剧情选角" }));
+    await user.click(screen.getByText("现有设定（只读）"));
+    expect(screen.queryByRole("button", { name: "确认 VisualBible" })).not.toBeInTheDocument();
+    expect(confirmVisualBibleMutationMock).not.toHaveBeenCalled();
   });
 });

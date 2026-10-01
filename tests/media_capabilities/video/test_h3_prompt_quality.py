@@ -14,6 +14,7 @@ from novelvideo.media_capabilities.video.h3_prompt_quality import (
     inspect_h3_plan,
     inspect_h3_prompt,
     normalize_h3_action_timeline,
+    normalize_h3_active_characters,
 )
 from novelvideo.media_capabilities.video.h3_prompt_compiler import (
     compile_h3_director_plan,
@@ -132,13 +133,12 @@ def _plan(*, description: str, action_end: int = 120) -> H3DirectorPlan:
         "The camera slowly moves while the actor reacts.",
     ],
 )
-def test_quality_gate_rejects_vague_motion(description):
+def test_quality_gate_warns_on_vague_motion(description):
     report = inspect_h3_plan(_plan(description=description))
 
-    assert report.passed is False
+    assert report.passed is True
     assert "vague_action" in report.codes
-    with pytest.raises(H3PromptQualityError, match="vague_action"):
-        report.raise_for_failure()
+    report.raise_for_failure()
 
 
 def test_quality_gate_reports_action_timeline_gap_without_constructing_invalid_plan():
@@ -189,10 +189,10 @@ def test_quality_gate_passes_specific_full_duration_action_plan():
         "He walks forward until he reaches the doorway.",
     ],
 )
-def test_quality_gate_rejects_actions_missing_pacing_or_visible_result(description):
+def test_quality_gate_warns_on_actions_missing_pacing_or_visible_result(description):
     report = inspect_h3_plan(_plan(description=description))
 
-    assert report.passed is False
+    assert report.passed is True
     assert "incomplete_action_detail" in report.codes
 
 
@@ -256,10 +256,10 @@ def test_quality_gate_accepts_detailed_multistep_chinese_actions(description):
 
 
 @pytest.mark.parametrize("description", ["他向前走。", "她自然地反应。"])
-def test_quality_gate_still_rejects_short_chinese_actions(description):
+def test_quality_gate_warns_on_short_chinese_actions(description):
     report = inspect_h3_plan(_plan(description=description))
 
-    assert report.passed is False
+    assert report.passed is True
     assert "incomplete_action_detail" in report.codes
 
 
@@ -515,8 +515,8 @@ def test_rigid_quality_gate_passes_complete_v2_plan():
     report = inspect_h3_plan(_rigid_plan(), context=_context())
 
     assert report.passed is True
-    assert report.version == 9
-    assert H3_PROMPT_QUALITY_VERSION == 9
+    assert report.version == 12
+    assert H3_PROMPT_QUALITY_VERSION == 12
 
 
 def test_v3_rigid_plan_passes_real_gate_and_compiler_chain():
@@ -1013,6 +1013,37 @@ def test_subject_action_requires_explicit_moving_entities():
     )
 
     assert "action_moving_entities_required" in report.codes
+
+
+@pytest.mark.parametrize("phase", ["settle", "end_lock"])
+def test_terminal_still_hold_does_not_require_moving_entities(phase):
+    plan = _rigid_plan()
+    action = plan.shots[0].actions[1].model_copy(update={
+        "phase": phase, "description": "Hold the settled positions; Lin remains still.",
+        "moving_entities": (),
+    })
+    shot = plan.shots[0].model_copy(update={"actions": (plan.shots[0].actions[0], action)})
+    report = inspect_h3_plan(plan.model_copy(update={"shots": (shot,)}), context=_context())
+    assert "action_moving_entities_required" not in report.codes
+
+
+@pytest.mark.parametrize("source,allowed", [
+    ("水箱接缝渗水，水滴落入接水盆。", True),
+    ("Water droplets fall from the leaking tank seam.", True),
+    ("Lin waits at the dry corridor door.", False),
+])
+def test_environment_motion_requires_source_evidence(source, allowed):
+    plan = _rigid_plan()
+    action = plan.shots[0].actions[1].model_copy(update={"moving_entities": ("water droplets",)})
+    shot = plan.shots[0].model_copy(update={"actions": (plan.shots[0].actions[0], action)})
+    physics = plan.rigid_prompt.physics.model_copy(update={
+        "moving_entities": ("water droplets",),
+        "statements": ("Water droplets fall under gravity and lose momentum on basin contact.",),
+    })
+    rigid = plan.rigid_prompt.model_copy(update={"physics": physics})
+    report = inspect_h3_plan(plan.model_copy(update={"shots": (shot,), "rigid_prompt": rigid}),
+                             context=_context(visual_description=source))
+    assert ("unknown_moving_entity" not in report.codes) is allowed
 
 
 def test_action_entity_cannot_be_omitted_from_physics_plan():
@@ -1707,3 +1738,138 @@ def test_static_and_default_camera_motion_do_not_count_as_action_beats(
     )
 
     assert "h3.action_beat_overload" not in report.codes
+
+
+# ── active-character reconciliation ───────────────────────────────────────────
+# Regression (h3 reference run, shots 03-01/03-02): the model dropped the
+# off-screen speaker 收简人 from rigid_prompt.scene_context.active_characters only
+# — blocking and character_acting still listed all three — and the group was
+# rejected with first_frame_character_mismatch + character_acting_missing.
+
+
+def _plan_missing_scene_context_cast() -> H3DirectorPlan:
+    plan = _rigid_plan()
+    scene = plan.rigid_prompt.scene_context
+    return plan.model_copy(
+        update={
+            "rigid_prompt": plan.rigid_prompt.model_copy(
+                update={
+                    "scene_context": scene.model_copy(
+                        update={"active_characters": (), "exact_character_count": 0}
+                    )
+                }
+            )
+        }
+    )
+
+
+def test_scene_context_cast_drop_is_reconciled_before_the_gate():
+    plan = _plan_missing_scene_context_cast()
+    context = _context(active_character_ids=("lin",))
+
+    # Rejected as produced …
+    report = inspect_h3_plan(plan, context=context)
+    assert "first_frame_character_mismatch" in report.codes
+    assert "character_acting_missing" in report.codes
+
+    # … and repaired deterministically, because the supplied cast is authoritative.
+    fixed = normalize_h3_active_characters(plan, active_character_ids=("lin",))
+
+    assert fixed.rigid_prompt.scene_context.active_characters == ("lin",)
+    assert fixed.rigid_prompt.scene_context.exact_character_count == 1
+    assert inspect_h3_plan(fixed, context=context).passed is True
+
+
+def test_character_reconciliation_never_invents_blocking_or_acting():
+    plan = _rigid_plan()
+    rigid = plan.rigid_prompt
+
+    # Blocking does not cover the supplied cast: a subject record describes the
+    # frame, so it can never be invented here.
+    thin_blocking = plan.model_copy(
+        update={
+            "rigid_prompt": rigid.model_copy(
+                update={
+                    "spatial_blocking": tuple(
+                        record.model_copy(update={"subjects": ()})
+                        for record in rigid.spatial_blocking
+                    )
+                }
+            )
+        }
+    )
+    assert (
+        normalize_h3_active_characters(thin_blocking, active_character_ids=("lin",))
+        == thin_blocking
+    )
+
+    # Nor can an acting plan be invented.
+    no_acting = plan.model_copy(
+        update={"rigid_prompt": rigid.model_copy(update={"character_acting": ()})}
+    )
+    assert (
+        normalize_h3_active_characters(no_acting, active_character_ids=("lin",))
+        == no_acting
+    )
+
+
+def test_character_reconciliation_is_a_no_op_when_already_consistent():
+    plan = _rigid_plan()
+
+    assert normalize_h3_active_characters(plan, active_character_ids=("lin",)) == plan
+    # No supplied cast (free-form segment) leaves the model's own reading alone.
+    assert normalize_h3_active_characters(plan, active_character_ids=()) == plan
+    assert (
+        normalize_h3_active_characters(
+            plan.model_copy(update={"rigid_prompt": None}), active_character_ids=("lin",)
+        )
+        == plan.model_copy(update={"rigid_prompt": None})
+    )
+
+
+def test_character_count_is_derived_when_source_and_scene_cast_agree():
+    plan = _rigid_plan()
+    rigid = plan.rigid_prompt
+    plan = plan.model_copy(update={"rigid_prompt": rigid.model_copy(update={
+        "scene_context": rigid.scene_context.model_copy(update={"exact_character_count": 0}),
+        "character_acting": (),
+    })})
+    fixed = normalize_h3_active_characters(plan, active_character_ids=("lin",))
+    assert fixed.rigid_prompt.scene_context.exact_character_count == 1
+    assert fixed.rigid_prompt.character_acting == ()
+    assert "character_acting_missing" in inspect_h3_plan(fixed, context=_context(active_character_ids=("lin",))).codes
+
+
+def test_real_gate_chain_reconciles_a_dropped_scene_context_cast():
+    """The production entry point must apply the reconciliation, not just tests."""
+
+    payload = _plan_missing_scene_context_cast().model_dump(mode="python")
+    payload.update(
+        schema_version=3,
+        first_frame_anchor=H3FrameAnchor(
+            sha256="a" * 64,
+            description="Lin stands beside the corridor door.",
+        ),
+    )
+    plan = H3DirectorPlan.model_validate(payload)
+    segment = H3DirectorSegment(
+        segment_id="segment-1",
+        beat_number=1,
+        prompt="Lin turns toward the corridor door.",
+        duration_seconds=5,
+        first_frame="first-frame.png",
+    )
+
+    # Before the fix this raised H3PromptQualityError with
+    # first_frame_character_mismatch + character_acting_missing.
+    result = compile_and_gate_h3_plan(
+        plan,
+        segment=segment,
+        context=_context(),
+        mode=H3Mode.I2VA,
+        input_hash="f" * 64,
+    )
+
+    assert result.quality_report.passed is True
+    assert result.plan.rigid_prompt.scene_context.active_characters == ("lin",)
+    assert result.plan.rigid_prompt.scene_context.exact_character_count == 1

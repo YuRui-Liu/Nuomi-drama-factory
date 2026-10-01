@@ -1,0 +1,28 @@
+/* Asset workspaces follow the approved V6 list / focused detail layout. */
+.asset-scene-reference-focus [data-scene-preview]{height:clamp(180px,calc(100dvh - 510px),520px);aspect-ratio:auto}
+.asset-scene-reference-focus [data-reference-slot]>div:last-child{gap:8px}
+.asset-scene-reference-focus [data-reference-slot]>div:last-child>button{min-height:32px}
+.asset-workspace-tabs{display:flex;gap:6px;overflow-x:auto;border-bottom:1px solid var(--border);padding-bottom:10px;scrollbar-width:thin}
+.asset-workspace-tabs [role=tab]{white-space:nowrap;border:1px solid transparent;border-radius:6px;padding:8px 14px;background:transparent;color:var(--muted-foreground);font-size:13px}
+.asset-workspace-tabs [aria-selected=true]{background:color-mix(in srgb,var(--primary) 8%,transparent);border-color:color-mix(in srgb,var(--primary) 60%,transparent);color:var(--primary)}
+.asset-workspace-tabs [role=tab]:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+.asset-portrait-workspace button.cursor-zoom-in,.asset-portrait-workspace [data-portrait-preview]{max-width:none;aspect-ratio:4/5;max-height:440px}
+.asset-portrait-workspace [data-portrait-actions]{max-width:none;flex-direction:row;flex-wrap:wrap}
+.asset-portrait-workspace [data-portrait-actions]>button{width:auto;min-height:36px;flex:1}
+.asset-costume-workspace .studio-casting{display:grid;grid-template-columns:minmax(280px,1fr) minmax(300px,1.1fr);gap:24px;align-items:start}
+.asset-costume-workspace .studio-casting-config{order:2;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:20px}
+.asset-costume-workspace .studio-casting-stage{order:1;min-width:0;overflow:hidden;border:1px solid var(--border);border-radius:8px;background:var(--card)}
+.asset-costume-workspace .studio-casting-picture{min-height:260px;display:grid;place-items:center;padding:12px;background:var(--background)}
+.asset-costume-workspace .studio-casting-picture img{max-height:400px;width:100%;object-fit:contain}
+.asset-costume-workspace .costume-versions{padding:16px}
+.asset-scene-card[data-view=world] [data-reference-slot]{display:none}
+.asset-scene-card[data-view=references] [data-world-assets]{display:none}
+.asset-prop-detail{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(260px,1fr);gap:24px;padding:20px;align-items:start}
+.asset-prop-detail>[data-slot=card-header]{grid-column:2;grid-row:1;padding:4px 0}
+.asset-prop-detail>[data-slot=card-content]{grid-column:1;grid-row:1;padding:0}
+.asset-prop-detail [data-slot=card-title]{font-size:20px}
+.asset-prop-detail [data-slot=card-header] p{font-size:13px;line-height:1.7;-webkit-line-clamp:unset}
+@media(max-width:850px){.asset-costume-workspace .studio-casting,.asset-prop-detail{grid-template-columns:1fr}.asset-costume-workspace .studio-casting-config,.asset-costume-workspace .studio-casting-stage{order:initial}.asset-prop-detail>[data-slot=card-header],.asset-prop-detail>[data-slot=card-content]{grid-column:auto;grid-row:auto}}
+
+.asset-portrait-workspace .asset-base-portrait{width:100%;max-width:none;height:clamp(200px,calc(100dvh - 490px),440px);aspect-ratio:auto;margin-inline:auto}
+.asset-portrait-workspace [data-portrait-preview]{height:clamp(200px,calc(100dvh - 490px),440px);aspect-ratio:auto}

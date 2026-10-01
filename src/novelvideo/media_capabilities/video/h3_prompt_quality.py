@@ -26,8 +26,43 @@ if TYPE_CHECKING:
     from .h3_timeline import H3DirectorSegment
 
 
-H3_PROMPT_QUALITY_VERSION = 9
+H3_PROMPT_QUALITY_VERSION = 12
+# Only these language/creative heuristics are advisory. New codes fail closed.
+H3_ADVISORY_CODES = frozenset({
+    "vague_action", "incomplete_action_detail", "global_state_scope",
+    "action_phase_regression", "dialogue_in_action_timing",
+    "location_landmarks_required", "physics_required", "physics_incomplete",
+    "physics_entity_description_missing", "quality_requirements_required",
+    "positive_constraints_required", "h3.action_beat_overload",
+    # An incomplete lexical inventory cannot prove an invented subject:
+    # fixed mechanisms and environmental motion are not held props.
+    "unknown_moving_entity", "action_moving_entities_required",
+})
 _MODEL_CONFIG = ConfigDict(frozen=True, extra="forbid")
+# Natural motion is not a held prop. Only accept these bounded identifiers
+# when the current source describes the same phenomenon (never nearby beats).
+_ENVIRONMENT_ENTITY_ALIASES = (
+    ("water droplet", "water droplets", "water drop", "water drops", "水滴"),
+    ("dust", "dust particles", "灰尘", "尘埃", "粉尘"),
+    ("rain", "raindrops", "雨滴", "雨水"),
+    ("smoke", "烟雾", "浓烟"),
+    ("snow", "snowflakes", "雪花"),
+)
+
+
+def _source_environment_entities(context, entities: set[str]) -> set[str]:
+    if context is None:
+        return set()
+    source = " ".join((context.visual_description, context.narration)).casefold()
+    return {
+        entity for entity in entities
+        for aliases in _ENVIRONMENT_ENTITY_ALIASES
+        if entity.strip().casefold() in aliases
+        and any(re.search(r"(?<![a-z])" + re.escape(alias) + r"(?![a-z])", source)
+                for alias in aliases)
+    }
+
+
 _WIRE_METADATA_FIELDS = frozenset({"mode", "duration_seconds", "final_shot_number"})
 _BASE_WIRE_FIELD_ORDER = tuple(
     name for name in H3BaseWire.model_fields if name not in _WIRE_METADATA_FIELDS
@@ -120,7 +155,7 @@ class H3PromptQualityIssue(BaseModel):
     code: str
     message: str
     field: str | None = None
-    severity: Literal["error"] = "error"
+    severity: Literal["error", "warning"] = "error"
     location: str | None = None
 
     @model_validator(mode="before")
@@ -129,6 +164,7 @@ class H3PromptQualityIssue(BaseModel):
         if not isinstance(value, Mapping):
             return value
         data = dict(value)
+        data["severity"] = "warning" if data.get("code") in H3_ADVISORY_CODES else "error"
         field = data.get("field")
         location = data.get("location")
         if field is not None and location is not None and field != location:
@@ -144,6 +180,12 @@ class H3PromptQualityReport(BaseModel):
     passed: bool
     issues: tuple[H3PromptQualityIssue, ...] = ()
     version: int = H3_PROMPT_QUALITY_VERSION
+
+    @model_validator(mode="after")
+    def derive_passed_from_issues(self):
+        if self.issues:
+            object.__setattr__(self, "passed", not any(issue.severity == "error" for issue in self.issues))
+        return self
 
     @property
     def codes(self) -> tuple[str, ...]:
@@ -788,6 +830,69 @@ def inspect_h3_plan(
     return H3PromptQualityReport(passed=not issues, issues=tuple(issues))
 
 
+def normalize_h3_active_characters(
+    plan: H3DirectorPlan, *, active_character_ids: tuple[str, ...]
+) -> H3DirectorPlan:
+    """Reconcile the three sections that must list the same active characters.
+
+    ``scene_context.active_characters``, every shot's
+    ``spatial_blocking[].subjects`` and ``character_acting`` are all required to
+    equal the supplied ``active_character_ids`` exactly, but the director prompt
+    never said so: a production run dropped one speaking-but-off-screen
+    character (收简人, 画外左侧声源) from ``scene_context`` only and the whole
+    group was rejected with ``first_frame_character_mismatch`` +
+    ``character_acting_missing``.
+
+    Only ``scene_context`` is rewritten, and only when the two richer sections
+    already agree with the supplied set: blocking and acting entries describe
+    the frame, so they are never invented here.
+    """
+
+    supplied = tuple(
+        dict.fromkeys(str(value) for value in active_character_ids if str(value).strip())
+    )
+    rigid = plan.rigid_prompt
+    if not supplied or rigid is None:
+        return plan
+    supplied_set = set(supplied)
+    scene = rigid.scene_context
+    # Count is redundant metadata when the explicit source and scene sets
+    # already agree. Correct only that arithmetic; missing acting/blocking
+    # remains independently rejected by the semantic gate below.
+    if set(scene.active_characters) == supplied_set:
+        return plan.model_copy(update={"rigid_prompt": rigid.model_copy(update={
+            "scene_context": scene.model_copy(update={"exact_character_count": len(supplied)})
+        })})
+    if {item.character_id for item in rigid.character_acting} != supplied_set:
+        return plan
+    blocking_sets = [
+        {subject.character_id for subject in record.subjects}
+        for record in rigid.spatial_blocking
+    ]
+    if not blocking_sets or any(record != supplied_set for record in blocking_sets):
+        return plan
+    scene = rigid.scene_context
+    if (
+        set(scene.active_characters) == supplied_set
+        and scene.exact_character_count == len(supplied)
+    ):
+        return plan
+    return plan.model_copy(
+        update={
+            "rigid_prompt": rigid.model_copy(
+                update={
+                    "scene_context": scene.model_copy(
+                        update={
+                            "active_characters": supplied,
+                            "exact_character_count": len(supplied),
+                        }
+                    )
+                }
+            )
+        }
+    )
+
+
 def normalize_h3_action_timeline(plan: H3DirectorPlan) -> H3DirectorPlan:
     """Close mechanical action gaps while preserving semantic action order."""
     normalized_shots = []
@@ -837,7 +942,8 @@ def _inspect_rigid_prompt(
         _add(
             issues,
             "character_count_mismatch",
-            "exact character count and active character IDs must agree",
+            f"character mismatch: expected={list(context_ids) if context_ids else list(active_set)}, "
+            f"actual={list(active)}, exact_character_count={rigid.scene_context.exact_character_count}",
             "rigid_prompt.scene_context",
         )
     reference_tags = tuple(reference.tag for reference in rigid.active_references)
@@ -930,6 +1036,20 @@ def _inspect_rigid_prompt(
                 "frame-zero blocking characters must exactly match active characters",
                 f"rigid_prompt.spatial_blocking.{shot_id}.subjects",
             )
+
+    shots_by_id = {shot.shot_id: shot for shot in plan.shots}
+    for block in rigid.spatial_blocking:
+        shot = shots_by_id.get(block.shot_id)
+        if shot is None:
+            continue
+        held = {prop for subject in block.subjects for prop in subject.held_props}
+        for attachment in block.prop_attachments:
+            field = f"rigid_prompt.spatial_blocking.{block.shot_id}.prop_attachments"
+            if not shot.start_frame <= attachment.start_frame < attachment.end_frame <= shot.end_frame:
+                _add(issues, "prop_attachment_timing", "attachment interval must belong to its shot", field)
+            if attachment.start_frame == shot.start_frame and attachment.prop_id in held:
+                _add(issues, "prop_attachment_holder_conflict",
+                     "an attached prop cannot also be held by a character at the opening", field)
 
     expected_duration = plan.total_frames / plan.fps
     if not math.isclose(
@@ -1033,6 +1153,11 @@ def _inspect_rigid_prompt(
             action_entities.update(action.moving_entities)
             if (
                 action.phase != "establish"
+                and not (
+                    action.phase in {"settle", "end_lock"}
+                    and re.match(r"(?:hold\b|remain\b|保持|定格)",
+                                 action.description.strip(), re.IGNORECASE)
+                )
                 and action.change_domain == "subject_or_prop"
                 and not action.moving_entities
             ):
@@ -1085,11 +1210,12 @@ def _inspect_rigid_prompt(
     allowed_characters = context_active if context_active else active_set
     allowed_moving_entities = allowed_characters | visible_props
     all_moving_entities = action_entities | set(rigid.physics.moving_entities)
+    allowed_moving_entities |= _source_environment_entities(context, all_moving_entities)
     if not all_moving_entities.issubset(allowed_moving_entities):
         _add(
             issues,
             "unknown_moving_entity",
-            "moving entities must be active characters or visible held props",
+            "motion inventory includes entities outside the lexical character/held-prop/environment index; review fixed mechanisms and source grounding",
             "rigid_prompt.physics.moving_entities",
         )
     physics_text = " ".join(rigid.physics.statements)

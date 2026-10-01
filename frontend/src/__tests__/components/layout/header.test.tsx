@@ -13,9 +13,9 @@ vi.mock("@/api/techniqueLibrary", () => ({
   setTechniqueFavorite: vi.fn(),
 }));
 
-
 const runtimeState = vi.hoisted(() => ({ authRequired: true, isCe: false }));
-const modelGatewayState = vi.hoisted(() => ({ enabledCalls: [] as boolean[] }));
+const modelGatewayState = vi.hoisted(() => ({ enabledCalls: [] as boolean[], query: {} as Record<string, unknown> }));
+const connectionState = vi.hoisted(() => ({ runtime: {} as Record<string, unknown>, providers: {} as Record<string, unknown> }));
 const authState = vi.hoisted(() => ({ username: "local", logout: vi.fn() }));
 const resetUserSessionStateMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
@@ -44,8 +44,13 @@ vi.mock("@/lib/runtime-config", () => ({
 vi.mock("@/lib/queries/model-gateway", () => ({
   useModelGatewayConfig: (enabled: boolean) => {
     modelGatewayState.enabledCalls.push(enabled);
-    return { data: undefined };
+    return modelGatewayState.query;
   },
+}));
+
+vi.mock("@/lib/queries/knowledge-runtime", () => ({
+  useKnowledgeRuntimeStatus: () => connectionState.runtime,
+  useMediaProviderAccounts: () => connectionState.providers,
 }));
 
 vi.mock("@/components/settings/settings-dialog", () => ({
@@ -198,6 +203,9 @@ describe("Header runtime gating", () => {
     runtimeState.authRequired = true;
     runtimeState.isCe = false;
     modelGatewayState.enabledCalls.length = 0;
+    modelGatewayState.query = {};
+    connectionState.runtime = { data: { ready: true } };
+    connectionState.providers = { data: [{ provider_type: "grsai", credential_configured: true }, { provider_type: "runninghub", credential_configured: true }] };
     authState.username = "local";
     authState.logout.mockReset();
     resetUserSessionStateMock.mockReset();
@@ -252,22 +260,47 @@ describe("Header runtime gating", () => {
     expect(modelGatewayState.enabledCalls[modelGatewayState.enabledCalls.length - 1]).toBe(true);
   });
 
-  it("uses a non-overlapping desktop grid and a scrollable narrow-screen navigation row", () => {
+  it("does not require an optional compatibility gateway", () => {
+    runtimeState.isCe = true;
+    modelGatewayState.query = { data: { data: { effective: { configured: false }, mediaRelay: { configured: true } } } };
+    renderHeader();
+    expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
+  });
+
+  it("names missing services and opens settings from the warning", async () => {
+    runtimeState.isCe = true;
+    connectionState.providers = { data: [{ provider_type: "grsai", credential_configured: true }] };
+    renderHeader();
+    fireEvent.click(await screen.findByRole("button", { name: "待配置：RunningHub" }));
+    expect(screen.getByRole("dialog", { name: "Settings dialog" })).toBeInTheDocument();
+  });
+
+  it("does not mislabel pending or failed requests as missing configuration", async () => {
+    runtimeState.isCe = true;
+    connectionState.runtime = { isPending: true };
+    connectionState.providers = { isError: true };
+    modelGatewayState.query = { isPending: true };
+    renderHeader();
+    expect(await screen.findByRole("button", { name: "读取失败：媒体服务" })).toBeInTheDocument();
+    expect(screen.queryByText(/待配置：/)).not.toBeInTheDocument();
+  });
+
+  it("lets navigation use available width and wrap without clipping links", () => {
     renderHeader({ project: "demo" });
 
     expect(screen.getByRole("banner")).toHaveClass(
       "grid",
-      "grid-cols-[minmax(0,1fr)_minmax(240px,2fr)_minmax(0,1fr)]",
-      "max-lg:grid-rows-[56px_40px]",
+      "grid-cols-[auto_minmax(0,1fr)_auto]",
     );
     expect(screen.getByRole("navigation", { name: "Project navigation" })).toHaveClass(
       "min-w-0",
-      "overflow-x-auto",
+      "flex-wrap",
       "max-lg:col-span-2",
       "max-lg:row-start-2",
     );
     expect(screen.getByRole("navigation", { name: "Project navigation" })).not.toHaveClass(
       "absolute",
+      "overflow-x-auto",
     );
   });
 

@@ -129,7 +129,8 @@ class ReadOnlyPlannedBindingStore:
             with sqlite3.connect(uri, uri=True) as connection:
                 connection.row_factory = sqlite3.Row
                 rows = connection.execute(
-                    "SELECT name, base_scene_id, variant_id FROM scenes ORDER BY name"
+                    "SELECT name, base_scene_id, variant_id, aliases_json "
+                    "FROM scenes ORDER BY name"
                 ).fetchall()
         except sqlite3.Error:
             return []
@@ -138,6 +139,7 @@ class ReadOnlyPlannedBindingStore:
                 "name": _text(row["name"]),
                 "base_scene_id": _text(row["base_scene_id"]),
                 "variant_id": _text(row["variant_id"]),
+                "aliases": _scene_aliases(row["aliases_json"]),
             }
             for row in rows
         ]
@@ -215,6 +217,22 @@ def _items(values: Iterable[Any] | Mapping[Any, Any]) -> tuple[Any, ...]:
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _scene_aliases(value: Any) -> tuple[str, ...]:
+    """Alternate names recorded on a scene row, ignoring malformed values."""
+
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return ()
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            return ()
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return ()
+    return tuple(item for item in (_text(entry) for entry in value) if item)
 
 
 def _append_unique(
@@ -408,6 +426,7 @@ def _requirements(
     known_scene_ids: set[str] | None = None,
 ) -> tuple[_ProjectedRequirement, ...]:
     scope = _group_scope(groups)
+    scenes_by_group = {_text(_get(group, "id")): _text(_get(group, "scene_anchor")) for group in groups}
     result: list[_ProjectedRequirement] = []
     positions: dict[tuple[str, str, str], int] = {}
     for shot in shots:
@@ -415,7 +434,22 @@ def _requirements(
         group_ids, group_beats = scope.get(shot_id, ((), ()))
         shot_beats = tuple(_get(shot, "dramatic_beat_ids", ()) or ())
         beat_ids = _append_unique(group_beats, shot_beats)
-        for source in _get(shot, "asset_requirements", ()) or ():
+        sources = list(_get(shot, "asset_requirements", ()) or ())
+        # Structured blocking declares visible characters; shot.subject/action
+        # are prose and must never be used to guess characters or props.
+        cinematography = _get(shot, "cinematography")
+        if cinematography is not None:
+            declared_noncharacters = {_text(_get(item, "entity_key")) for item in sources
+                                      if _get(item, "kind") in {"prop", "scene_base", "scene_state"}}
+            for subject in _get(cinematography, "subjects", ()) or ():
+                name = _text(_get(subject, "subject_id"))
+                if name and name not in declared_noncharacters:
+                    sources.append({"kind": "character_identity", "entity_key": name, "required": True})
+            for group_id in group_ids:
+                scene = scenes_by_group.get(group_id, "")
+                if scene and scene.lower() not in {"unspecified", "unknown"}:
+                    sources.append({"kind": "scene_base", "entity_key": scene, "required": True})
+        for source in sources:
             source_kind = _text(_get(source, "kind"))
             entity_key = _text(_get(source, "entity_key"))
             if not entity_key:
@@ -502,16 +536,69 @@ def _binding_requirement_key(
     return binding.asset_kind, binding.entity_id, ""
 
 
+def _scene_alias_map(scenes: Iterable[Any]) -> dict[str, str]:
+    """Map every recorded scene alias to its canonical scene name."""
+
+    aliases: dict[str, str] = {}
+    for scene in scenes:
+        name = _text(_get(scene, "name"))
+        if not name:
+            continue
+        for alias in _scene_aliases(_get(scene, "aliases")):
+            if alias != name:
+                aliases.setdefault(alias, name)
+    return aliases
+
+
+def _alias_resolved_requirement_key(
+    required_key: "BindingRequirementKey",
+    scene_aliases: Mapping[str, str],
+) -> "BindingRequirementKey":
+    kind, base_entity_id, entity_id = required_key
+    if not scene_aliases:
+        return required_key
+    return (
+        kind,
+        scene_aliases.get(base_entity_id, base_entity_id),
+        scene_aliases.get(entity_id, entity_id),
+    )
+
+
 def _required_binding_is_published(
     required_key: BindingRequirementKey,
     bindings: Sequence[PlannedReferenceBinding],
+    *,
+    scene_aliases: Mapping[str, str] | None = None,
 ) -> bool:
     published_required = {
         _binding_requirement_key(item) for item in bindings if item.required
     }
     if required_key in published_required:
         return True
+    if scene_aliases and (
+        _alias_resolved_requirement_key(required_key, scene_aliases)
+        in published_required
+    ):
+        # The plan may name a scene by an alias of the library entry it resolves
+        # to (修简铺门口 is 修简铺); the published binding carries the canonical
+        # name, so the alias still counts as published.
+        return True
     kind, base_entity_id, raw_entity_id = required_key
+    if kind == "character_identity" and base_entity_id and not raw_entity_id:
+        # Director requirements may name a character; published bindings resolve
+        # that name to one concrete identity. Match the authoritative slot owner,
+        # never infer ownership by splitting an identity ID on underscores.
+        return any(
+            item.required and item.asset_kind == "character_identity"
+            and (
+                item.asset_slot_id == f"character:{base_entity_id}:state:{item.entity_id}"
+                or (
+                    item.asset_slot_id == f"character:{base_entity_id}:portrait"
+                    and item.resolution == "explicit_fallback"
+                )
+            )
+            for item in bindings
+        )
     if kind != "scene_variant" or base_entity_id or not raw_entity_id:
         return False
     return any(
@@ -591,13 +678,27 @@ def _binding(
         else:
             slot_id = ""
     elif requirement.kind == "scene_base":
-        candidates = [
+        top_level_scenes = [
             scene
             for scene in scenes
-            if _text(_get(scene, "name")) == requirement.entity_key
-            and not _text(_get(scene, "base_scene_id"))
+            if not _text(_get(scene, "base_scene_id"))
             and not _text(_get(scene, "variant_id"))
         ]
+        candidates = [
+            scene
+            for scene in top_level_scenes
+            if _text(_get(scene, "name")) == requirement.entity_key
+        ]
+        if not candidates:
+            # The imported scene library records alternate names as aliases: the
+            # doorway 修简铺门口 is 修简铺. A plan requirement that names an alias
+            # names the same space, so resolve it to the canonical scene instead
+            # of reporting a missing asset for a scene that cannot exist.
+            candidates = [
+                scene
+                for scene in top_level_scenes
+                if requirement.entity_key in _scene_aliases(_get(scene, "aliases"))
+            ]
         if len(candidates) == 1:
             scene = candidates[0]
             entity_id = _text(_get(scene, "name"))
@@ -1398,11 +1499,15 @@ def _preview_from_bindings(
     ):
         raise StaleReferenceBinding("planned references do not match active director plan")
     warnings: tuple[str, ...] = ()
+    missing: list[BindingRequirementKey] = []
     if required_binding_keys is not None:
+        scene_aliases = _scene_alias_map(scenes)
         missing = sorted(
             key
             for key in required_binding_keys
-            if not _required_binding_is_published(key, bindings)
+            if not _required_binding_is_published(
+                key, bindings, scene_aliases=scene_aliases
+            )
         )
         if missing:
             labels = ", ".join(
@@ -1413,6 +1518,22 @@ def _preview_from_bindings(
     resolved = tuple(
         _resolve_binding(item, workflow_store, root, scenes) for item in bindings
     )
+    # Missing publication is a visible unresolved requirement, not an empty
+    # reference picker. These read-only placeholders cannot become selections.
+    unresolved = tuple(
+        ResolvedPlannedReference(
+            binding_id="unpublished-" + hashlib.sha256(
+                json.dumps([project_id, episode_number, group_id, active_plan_revision_id, key], ensure_ascii=False).encode()
+            ).hexdigest()[:24],
+            asset_kind=key[0], entity_id=key[1] or key[2],
+            display_label=":".join(part for part in key[1:] if part),
+            variant_id=key[2] if key[0] == "scene_variant" else "",
+            required=True, status="missing_asset", resolution="auto_matched",
+            selected_by_default=False, asset_slot_id="", group_ids=(group_id,),
+            warning="必需引用尚未发布，请重新规划并生成对应素材。",
+        )
+        for key in missing
+    )
     return PlannedReferencePreview(
         reference_revision=_reference_revision(
             bindings,
@@ -1421,10 +1542,36 @@ def _preview_from_bindings(
             group_id=group_id,
             required_binding_keys=required_binding_keys,
         ),
-        bindings=resolved,
+        bindings=resolved + unresolved,
         max_images=max_images,
         warnings=warnings,
     )
+
+
+def _scoped_ids(group_scope: Mapping[str, Any] | None, key: str) -> set[str] | None:
+    """Allowed ids for one id space, or None when no scope was supplied."""
+    if group_scope is None:
+        return None
+    values = group_scope.get(key)
+    if not isinstance(values, (list, tuple, set, frozenset)):
+        return set()
+    return {str(item) for item in values}
+
+
+def _project_to_group_scope(
+    values: tuple[str, ...], allowed: set[str] | None
+) -> tuple[str, ...]:
+    """Keep only the ids the rendered group actually uses.
+
+    A binding row stores the union of every group it serves (one planned prop can
+    belong to groups 01/02/07), but the grid runner revalidates each frozen image
+    against the rendered group's own scope and rejects anything outside it. Freeze
+    the group-scoped projection instead of the union, or every shared asset fails
+    with REFERENCE_SNAPSHOT_INVALID before a single model call.
+    """
+    if allowed is None:
+        return values
+    return tuple(item for item in values if str(item) in allowed)
 
 
 def _planned_snapshot_image(
@@ -1433,6 +1580,7 @@ def _planned_snapshot_image(
     *,
     project_id: str,
     episode_number: int,
+    group_scope: Mapping[str, Any] | None = None,
 ) -> PlannedSnapshotReferenceImage:
     return PlannedSnapshotReferenceImage(
         requirement_id=item.binding_id,
@@ -1442,14 +1590,18 @@ def _planned_snapshot_image(
         image_path=str(project_dir / item.relative_path),
         resolution="matched",
         entity_id=item.entity_id,
-        shot_ids=item.shot_ids,
+        shot_ids=_project_to_group_scope(
+            item.shot_ids, _scoped_ids(group_scope, "shot_ids")
+        ),
         binding_id=item.binding_id,
         asset_slot_id=item.asset_slot_id,
         version_id=item.version_id,
         relative_path=item.relative_path,
         sha256=item.sha256,
         group_ids=item.group_ids,
-        beat_ids=item.beat_ids,
+        beat_ids=_project_to_group_scope(
+            item.beat_ids, _scoped_ids(group_scope, "beat_ids")
+        ),
         project_id=project_id,
         episode_number=episode_number,
     )
@@ -1470,8 +1622,15 @@ async def build_planned_reference_snapshot(
     max_images: int = 9,
     active_plan_revision_id: str | None = None,
     required_binding_keys: frozenset[BindingRequirementKey] | None = None,
+    group_scope: Mapping[str, Any] | None = None,
 ) -> ReferenceDecisionSnapshot:
-    """Re-resolve and freeze exactly selected bindings and temporary uploads."""
+    """Re-resolve and freeze exactly selected bindings and temporary uploads.
+
+    ``group_scope`` is the rendered group's own reference scope (its dramatic
+    beat ids and shot ids). When supplied, each frozen image keeps only the ids
+    that belong to this group, because a shared binding row carries the union of
+    every group it serves.
+    """
     if len(set(selected_binding_ids)) != len(selected_binding_ids):
         raise InvalidPlannedReference("duplicate selected binding IDs")
     if len(set(upload_ids)) != len(upload_ids):
@@ -1523,6 +1682,7 @@ async def build_planned_reference_snapshot(
             root,
             project_id=project_id,
             episode_number=episode_number,
+            group_scope=group_scope,
         )
         for item in chosen
     ]

@@ -217,6 +217,34 @@ def test_contract_fixture_isolates_ce_task_concurrency_settings(tmp_path):
     assert is_ce_effective() is True
 
 
+@pytest.mark.asyncio
+async def test_parallel_admission_does_not_block_async_sqlite_lock_owner(tmp_path, _task_ports, monkeypatch):
+    monkeypatch.setenv('ST_PROJECT_USER_MAX_ACTIVE_DEFAULT_TASKS', '10')
+    monkeypatch.setattr('novelvideo.ports.local.tasks.project_lane_effective_active_limit', lambda *a, **kw: 10)
+    ctx = _ctx(tmp_path, 'admission_lock')
+    _task_ports.list_tasks_for_project(ctx)  # Initialize schema before holding the writer lock.
+    backend = InlineTaskBackend()
+    monkeypatch.setattr(backend, '_submit_lane_job', lambda job: None)
+    monkeypatch.setattr('novelvideo.ports.local.tasks._ensure_builtin_runners_registered', lambda: None)
+    monkeypatch.setattr('novelvideo.ports.local.tasks.get_project_task_runner_registration', lambda name: None)
+    conn = sqlite3.connect(ctx.state_dir/'data.db')
+    conn.execute('BEGIN IMMEDIATE')
+    async def release_writer():
+        await asyncio.sleep(0.05)
+        conn.commit()
+    release = asyncio.create_task(release_writer())
+    try:
+        queued = await asyncio.wait_for(asyncio.gather(*[
+            backend.enqueue_project_task(ctx, task_type='narrative_group_grid', episode=1,
+                scope=f'group_{i}', queue_kind='default') for i in range(10)
+        ]), timeout=3)
+        assert len({q.task_state.task_id for q in queued}) == 10
+    finally:
+        conn.rollback()
+        conn.close()
+        await release
+
+
 def test_runtime_lane_store_admission_is_transactional_across_instances(tmp_path):
     database_path = tmp_path / "runtime" / "tasks.db"
     first = SQLiteLaneLeaseStore(database_path)

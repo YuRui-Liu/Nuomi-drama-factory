@@ -29,6 +29,7 @@ const knowledgeRuntimeMockState = vi.hoisted(() => ({
     tts_indextts2_voice_clone: string;
   } | undefined,
   saveProvider: vi.fn(),
+  saveRuntime: vi.fn(),
   recognize: vi.fn(),
   recognizePending: false,
   concurrencyOpen: undefined as boolean | undefined,
@@ -101,7 +102,7 @@ vi.mock("@/lib/queries/knowledge-runtime", () => {
     isFetching: false,
     refetch: vi.fn(),
   }),
-  useSaveKnowledgeRuntimeSettings: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useSaveKnowledgeRuntimeSettings: () => ({ mutateAsync: knowledgeRuntimeMockState.saveRuntime, isPending: false }),
   useRecognizeCodex: () => ({
     mutate: knowledgeRuntimeMockState.recognize,
     isPending: knowledgeRuntimeMockState.recognizePending,
@@ -114,6 +115,7 @@ vi.mock("@/lib/queries/knowledge-runtime", () => {
 });
 
 import { KnowledgeRuntimeSection } from "@/components/settings/knowledge-runtime-section";
+import { SettingsDraftProvider } from "@/components/settings/settings-draft-context";
 
 beforeEach(() => {
   knowledgeRuntimeMockState.codex = {
@@ -128,6 +130,7 @@ beforeEach(() => {
   };
   knowledgeRuntimeMockState.recognize.mockReset().mockResolvedValue(undefined);
   knowledgeRuntimeMockState.saveProvider.mockReset().mockResolvedValue(undefined);
+  knowledgeRuntimeMockState.saveRuntime.mockReset().mockResolvedValue(undefined);
   vi.mocked(toast.error).mockClear();
   vi.mocked(toast.success).mockClear();
   knowledgeRuntimeMockState.recognizePending = false;
@@ -140,6 +143,61 @@ beforeEach(() => {
     tts_qwen3_voice_design: "",
     tts_indextts2_voice_clone: "",
   };
+});
+
+it("tracks an Ollama draft and keeps edits made while saving dirty", async () => {
+  const dirty = vi.fn();
+  let resolveSave!: () => void;
+  knowledgeRuntimeMockState.saveRuntime.mockImplementation(() => new Promise<void>((resolve) => { resolveSave = resolve; }));
+  render(<SettingsDraftProvider onDirtyChange={dirty}><KnowledgeRuntimeSection open /></SettingsDraftProvider>);
+  await waitFor(() => expect(dirty).toHaveBeenLastCalledWith(false));
+  fireEvent.change(screen.getByLabelText("Embedding 模型"), { target: { value: "bge-m3:latest" } });
+  await waitFor(() => expect(dirty).toHaveBeenLastCalledWith(true));
+  fireEvent.click(screen.getByRole("button", { name: "测试并保存" }));
+  fireEvent.change(screen.getByLabelText("Ollama 地址"), { target: { value: "http://localhost:2233" } });
+  resolveSave();
+  await waitFor(() => expect(toast.success).toHaveBeenCalled());
+  expect(dirty).toHaveBeenLastCalledWith(true);
+  expect(screen.getByLabelText("Ollama 地址")).toHaveValue("http://localhost:2233");
+});
+
+it("keeps provider drafts after failed save and clears them only after success", async () => {
+  const dirty = vi.fn();
+  knowledgeRuntimeMockState.saveProvider.mockRejectedValueOnce(new Error("offline"));
+  render(<SettingsDraftProvider onDirtyChange={dirty}><KnowledgeRuntimeSection open /></SettingsDraftProvider>);
+  fireEvent.change(screen.getByLabelText("RunningHub API Key"), { target: { value: "test-key" } });
+  await waitFor(() => expect(dirty).toHaveBeenLastCalledWith(true));
+  fireEvent.click(screen.getAllByRole("button", { name: "保存" })[1]);
+  await waitFor(() => expect(toast.error).toHaveBeenCalledWith("offline"));
+  expect(dirty).toHaveBeenLastCalledWith(true);
+  expect(screen.getByLabelText("RunningHub API Key")).toHaveValue("test-key");
+  fireEvent.click(screen.getAllByRole("button", { name: "保存" })[1]);
+  await waitFor(() => expect(dirty).toHaveBeenLastCalledWith(false));
+});
+
+it("does not replace edited workflows when the server refreshes", async () => {
+  const dirty = vi.fn();
+  const ui = <SettingsDraftProvider onDirtyChange={dirty}><KnowledgeRuntimeSection open /></SettingsDraftProvider>;
+  const { rerender } = render(ui);
+  fireEvent.change(screen.getByLabelText("MiniMax H3 图生视频 Workflow ID"), { target: { value: "my-new-workflow" } });
+  knowledgeRuntimeMockState.runningHubWorkflows = { ...knowledgeRuntimeMockState.runningHubWorkflows!, video_minimax_h3: "remote-change" };
+  rerender(<SettingsDraftProvider onDirtyChange={dirty}><KnowledgeRuntimeSection open /></SettingsDraftProvider>);
+  expect(screen.getByLabelText("MiniMax H3 图生视频 Workflow ID")).toHaveValue("my-new-workflow");
+  await waitFor(() => expect(dirty).toHaveBeenLastCalledWith(true));
+});
+
+it("keeps a new API key typed while an earlier provider save is in flight", async () => {
+  const dirty = vi.fn();
+  let resolveSave!: () => void;
+  knowledgeRuntimeMockState.saveProvider.mockImplementation(() => new Promise<void>((resolve) => { resolveSave = resolve; }));
+  render(<SettingsDraftProvider onDirtyChange={dirty}><KnowledgeRuntimeSection open /></SettingsDraftProvider>);
+  fireEvent.change(screen.getByLabelText("RunningHub API Key"), { target: { value: "first-key" } });
+  fireEvent.click(screen.getAllByRole("button", { name: "保存" })[1]);
+  fireEvent.change(screen.getByLabelText("RunningHub API Key"), { target: { value: "new-key" } });
+  resolveSave();
+  await waitFor(() => expect(toast.success).toHaveBeenCalled());
+  expect(screen.getByLabelText("RunningHub API Key")).toHaveValue("new-key");
+  expect(dirty).toHaveBeenLastCalledWith(true);
 });
 
 it("uses the director MiniMax H3 workflow before saved workflow settings load", () => {

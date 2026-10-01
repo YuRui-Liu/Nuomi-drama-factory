@@ -9,6 +9,76 @@ class Runtime:
         return {"after": "新台词✨", "reason": "冲突更清晰"}
 
 
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+def test_xyq_scene_scope_preserves_metadata_and_exact_offsets(newline):
+    from novelvideo.script_creation.rewrite import _range
+    first = newline.join(['第2集 2-1', '场景：屋内 夜', '人物：甲', '△甲停笔。', '甲：等等。', ''])
+    second = newline.join(['第二集 2-2', '场景：屋外 夜', '人物：甲', '△甲出门。'])
+    prefix = '# 第二集😀' + newline + newline
+    text = prefix + first + second
+    start, end = _range(text, 'scene', text.index('等等'), text.index('等等'))
+    assert text[start:end] == first
+    assert start == len(prefix)
+    assert end == len(prefix + first)
+
+
+@pytest.mark.parametrize('kind,expected', [('episode_script', '# 短剧节奏'), ('people', '# 人物与对白')])
+async def test_rewrite_uses_document_kind_methods_without_reformatting_selection(tmp_path, kind, expected):
+    store = DocumentStore(tmp_path / 'data.db')
+    await store.initialize()
+    doc = await store.create(kind=kind, title='正文', markdown='甲：等等。', client_mutation_id='create')
+    service = RewriteService(store)
+    job = await service.start(document_id=doc.id, base_revision_id=doc.current_revision_id,
+                              start=0, end=len(doc.revision.markdown), scope='selection', mode='subtext', instruction='',
+                              preserve='', client_mutation_id='rewrite')
+    class CapturingRuntime(Runtime):
+        async def run_structured(self, **kwargs):
+            self.call = kwargs
+            return await super().run_structured(**kwargs)
+    runtime = CapturingRuntime()
+    await service.execute(job['id'], runtime=runtime, task_id='task')
+    assert expected in runtime.call['system_prompt']
+    assert '保持原文已有场号与格式' in runtime.call['system_prompt']
+    assert '只返回 JSON' in runtime.call['prompt']
+    assert '第1集 1-1' not in runtime.call['prompt']
+
+
+async def test_rewrite_custom_skill_replaces_default_once_for_target_kind(tmp_path, monkeypatch):
+    from novelvideo.agent_teams.models import ExecutionSnapshot, MethodConfig, ResourceRef, ResourceVersion
+    from novelvideo.agent_teams.runtime import method_scope
+    from novelvideo.text_task_runtime.models import AgentTaskRoute
+
+    store = DocumentStore(tmp_path / 'data.db')
+    await store.initialize()
+    doc = await store.create(kind='people', title='人物', markdown='甲很谨慎。', client_mutation_id='create')
+    service = RewriteService(store)
+    job = await service.start(document_id=doc.id, base_revision_id=doc.current_revision_id,
+                              start=0, end=len(doc.revision.markdown), scope='selection', mode='custom',
+                              instruction='', preserve='', client_mutation_id='rewrite')
+    resource = ResourceVersion(id='custom', revision=1, kind='skill', owner='u',
+                               content='独特人物方法', content_hash='h')
+    method = ExecutionSnapshot(id='s', project_id='p', template_id='t', template_revision=1,
+                               active_revision=1, role_id='writer', subtask_id='people',
+                               input_revision='r', input_hash='h', resolved_model=AgentTaskRoute(model='custom-model'),
+                               resolved_method=MethodConfig(skills=(ResourceRef(id='custom', revision=1),)),
+                               resource_snapshots=(resource,))
+    class CapturingRuntime(Runtime):
+        snapshot = None
+        async def run_structured(self, **kwargs):
+            self.call = kwargs
+            return await super().run_structured(**kwargs)
+    chosen = CapturingRuntime()
+    def build(route):
+        assert route.model == 'custom-model'
+        return chosen
+    monkeypatch.setattr('novelvideo.agent_teams.adapters.build_text_task_runtime', build)
+    with method_scope([method], project_id='p', task_type='script_creation_rewrite'):
+        await service.execute(job['id'], runtime=Runtime(), task_id='task')
+    assert chosen.call['prompt'].count('独特人物方法') == 1
+    assert '# 人物与对白' not in chosen.call['system_prompt']
+    assert '保持原文已有场号与格式' in chosen.call['system_prompt']
+
+
 async def test_rewrite_selected_second_occurrence_and_cross_block(tmp_path):
     store = DocumentStore(tmp_path / "data.db")
     await store.initialize()

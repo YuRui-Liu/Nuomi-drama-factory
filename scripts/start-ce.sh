@@ -6,7 +6,13 @@ root_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root_dir"
 
 api_port="${NOVELVIDEO_API_PORT:-8780}"
-api_host="${NOVELVIDEO_API_HOST:-0.0.0.0}"
+# Loopback by default. The `novelvideo api` command couples FileAuthPort's
+# exposure decision to the address actually passed to Uvicorn (see
+# src/novelvideo/cli.py), so binding 0.0.0.0 without ST_LOCAL_API_TOKEN makes
+# every CE session probe return 401 and the SPA bounces to /login forever.
+# NOVELVIDEO_PUBLIC_HOST cannot override that from here. Bind a LAN address only
+# on purpose, together with ST_LOCAL_API_TOKEN.
+api_host="${NOVELVIDEO_API_HOST:-127.0.0.1}"
 frontend_port="${SUPERTALE_FE_PORT:-5173}"
 frontend_host="${SUPERTALE_FE_HOST:-0.0.0.0}"
 api_ready_timeout="${NOVELVIDEO_API_READY_TIMEOUT:-90}"
@@ -68,11 +74,9 @@ export ST_CONTROL_PLANE_DSN=
 export ST_REDIS_URL=
 export ST_CELERY_BROKER_URL=
 export ST_CELERY_RESULT_BACKEND=
-# The script binds on all interfaces for compatibility with local containers,
-# but its browser-facing origin is loopback.  FileAuthPort uses the public host
-# (rather than the bind address) to decide whether a local token is required.
-# Without this distinction, every unauthenticated CE /auth/me probe returns 401.
-export NOVELVIDEO_PUBLIC_HOST="${NOVELVIDEO_PUBLIC_HOST:-127.0.0.1}"
+# The browser-facing origin is loopback whenever the API binds loopback (the
+# default above). `novelvideo api` derives NOVELVIDEO_PUBLIC_HOST from --host
+# itself, so exporting it here would be overwritten and must not be relied on.
 # CE is normally served over plain HTTP in local development; allow the
 # HttpOnly cookie to work there if a caller explicitly uses the login route.
 export ST_COOKIE_SECURE="${ST_COOKIE_SECURE:-0}"
@@ -88,6 +92,17 @@ export VITE_EDITION=ce
 
 if [ "${NEWAPI_API_KEY:-}" = "your_newapi_token" ] || [ -z "${NEWAPI_API_KEY:-}" ]; then
   echo "Warning: NEWAPI_API_KEY is not configured. API can start, but AI generation will fail." >&2
+fi
+
+if [ -z "${ST_LOCAL_API_TOKEN:-}" ]; then
+  case "$api_host" in
+    127.*|localhost|::1|"[::1]") ;;
+    *)
+      echo "Warning: NOVELVIDEO_API_HOST=$api_host is not a loopback address and ST_LOCAL_API_TOKEN is empty." >&2
+      echo "         Every session probe will return 401 and the browser will loop on /login." >&2
+      echo "         Set ST_LOCAL_API_TOKEN before exposing the API beyond this machine." >&2
+      ;;
+  esac
 fi
 
 if ! command -v ffmpeg >/dev/null 2>&1; then
@@ -124,6 +139,21 @@ until curl -fsS --max-time 2 "$api_ready_url" >/dev/null 2>&1; do
   sleep 1
 done
 echo "API is ready."
+
+# /api/v1/config answers even when every session probe is rejected, so readiness
+# alone is not enough: verify that the SPA can actually establish a CE session.
+# Without this check a misconfigured bind only surfaces as an endless /login
+# redirect loop in the browser.
+if [ -z "${ST_LOCAL_API_TOKEN:-}" ]; then
+  auth_probe_url="http://127.0.0.1:${api_port}/api/v1/auth/me"
+  auth_status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$auth_probe_url" 2>/dev/null || true)"
+  if [ "$auth_status" = "401" ]; then
+    echo "Startup check failed: GET ${auth_probe_url} returned 401 while CE advertises auth_required=false." >&2
+    echo "The frontend would loop on /login. The API is bound to '${api_host}' without ST_LOCAL_API_TOKEN." >&2
+    echo "Fix: unset NOVELVIDEO_API_HOST to use the loopback default, or set ST_LOCAL_API_TOKEN." >&2
+    exit 1
+  fi
+fi
 
 echo "Starting SuperTale CE frontend at http://127.0.0.1:${frontend_port}"
 echo "Frontend API target comes from frontend/.env"

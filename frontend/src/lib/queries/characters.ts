@@ -122,7 +122,7 @@ export function useBuildCharacters(project: string) {
 export function useCreateCharacter(project: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { name: string; role?: string; gender?: string; is_main?: boolean; description?: string; face_prompt?: string }) =>
+    mutationFn: (data: { name: string; role?: string; gender?: string; is_main?: boolean; description?: string; face_prompt?: string; extraction_locked?: boolean }) =>
       api.post(p`api/v1/projects/${project}/characters`, { json: data }).json<OkResponse<Character>>(),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.characters(project) }),
   });
@@ -135,7 +135,7 @@ export function useUpdateCharacter(project: string, name: string) {
       api
         .patch(p`api/v1/projects/${project}/characters/${name}`, { json: data })
         .json<OkResponse<CharacterUpdateResponse>>(),
-    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.characters(project) }),
+    onSuccess: () => invalidateCharacterVoiceQueries(qc, project, name),
   });
 }
 
@@ -391,13 +391,25 @@ export function useRecordCharacterVoiceSample(project: string, name: string) {
 
 export function useDesignCharacterVoiceSample(project: string, name: string) {
   return useMutation({
-    mutationFn: ({ slot }: { slot: string }) =>
+    mutationFn: ({ slot, ...body }: { slot: string; voice_description?: string; audition_text?: string; voice_spec?: Record<string, unknown> }) =>
       api
         .post(
           p`api/v1/projects/${project}/characters/${name}/voice-samples/${slot}/design`,
-          { json: {}, timeout: ASSET_BUILD_SUBMIT_TIMEOUT_MS },
+          { json: body, timeout: ASSET_BUILD_SUBMIT_TIMEOUT_MS },
         )
         .json<TaskResponse | ErrorResponse>(),
+  });
+}
+
+export function useApproveCharacterVoiceCandidate(project: string, name: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ candidateId, reason }: { candidateId: string; reason: string }) =>
+      jsonWithBackendError<OkResponse<unknown> | ErrorResponse>(api.post(
+        p`api/v1/projects/${project}/characters/${name}/voice-candidates/${candidateId}/approve`,
+        { json: { reason, confirm: true }, throwHttpErrors: false },
+      )),
+    onSuccess: () => invalidateCharacterVoiceQueries(qc, project, name),
   });
 }
 
@@ -510,6 +522,9 @@ export function useIdentityOwnerIndex(project: string) {
 
   return {
     ownerOf: (identityId: string) => ownerById.get(identityId) ?? null,
+    identities: Array.from(ownerById, ([id, owner]) => ({ id, owner })),
+    isError: charactersRes.isError || identityQueries.some((q) => q.isError),
+    identityCounts: Object.fromEntries(names.map((name, index) => [name, identitiesByCharacter[index]?.length ?? 0])),
     isLoading: charactersRes.isLoading || identityQueries.some((q) => q.isLoading),
   };
 }
@@ -517,7 +532,7 @@ export function useIdentityOwnerIndex(project: string) {
 export function useCreateIdentity(project: string, name: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { identity_name: string; age_group?: string; appearance_details?: string }) =>
+    mutationFn: (data: { identity_name: string; age_group?: string; appearance_details?: string; face_prompt?: string; body_type?: string }) =>
       api.post(p`api/v1/projects/${project}/characters/${name}/identities`, { json: data }).json<OkResponse<Identity>>(),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.identities(project, name) }),
   });

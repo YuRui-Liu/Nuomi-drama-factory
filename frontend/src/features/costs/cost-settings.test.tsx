@@ -23,6 +23,7 @@ it('lazily fetches rules, validates numbers, preserves decimal strings, and surf
     setup();
     expect(reads).toBe(0);
     fireEvent.click(screen.getByRole('button', { name: '计价规则' }));
+    fireEvent.click(screen.getByText('高级：自定义计价规则'));
     await screen.findByLabelText('规则 ID');
     fireEvent.change(screen.getByLabelText('规则 ID'), { target: { value: 'rule' } });
     fireEvent.change(screen.getByLabelText('版本'), { target: { value: 'v1' } });

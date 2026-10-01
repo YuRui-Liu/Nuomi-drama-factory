@@ -87,7 +87,7 @@ export function GroupEditor({ revision, disabled, onCommand }: {
                     >移至下一组</Button>
                   )}</div>
                   {shot.intent && <p className="mt-1 text-muted-foreground">意图：{shot.intent.narrative_purpose} · 观众注意：{shot.intent.audience_attention}</p>}
-                  {(shot.asset_requirements?.length ?? 0) > 0 && <p className="mt-1 text-muted-foreground">资产需求：{shot.asset_requirements?.map((item) => `${item.kind}:${item.visible_change || item.entity_key}`).join("；")}</p>}
+                  {(shot.asset_requirements?.length ?? 0) > 0 && <p className="mt-1 text-muted-foreground">资产需求：{shot.asset_requirements?.map((item) => `${item.kind}:${item.entity_key}${item.visible_change ? `（${item.visible_change}）` : ""}`).join("；")}</p>}
                 </div>
               ))}
             </div>

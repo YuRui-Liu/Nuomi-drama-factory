@@ -12,6 +12,52 @@ from novelvideo.api.schemas import CharacterUpdate
 from novelvideo.models import CharacterIdentity, NovelCharacter
 
 
+def test_character_create_does_not_default_to_youth():
+    from novelvideo.api.schemas import CharacterCreate
+    assert CharacterCreate(name="未知角色").age_group == ""
+
+
+@pytest.mark.asyncio
+async def test_design_uses_requested_age_and_freezes_profile(tmp_path, monkeypatch):
+    from novelvideo.api.routes import characters
+    from novelvideo.api.schemas import CharacterVoiceDesignRequest
+
+    role = SimpleNamespace(
+        name="阿远", age_group="youth", gender="male", role="守夜人", description="黑衣",
+        voice_facts=SimpleNamespace(vocalization_mode="dialogue", voice_traits="温和清晰", conflicts=[]),
+        reference_audio_path="old.wav", reference_audio_sha256="old", voice_samples_by_age_group={},
+    )
+    store = _CharacterStore([role])
+    _patch_project(monkeypatch, characters, tmp_path, store)
+    captured = {}
+
+    async def enqueue(ctx, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(task_state=SimpleNamespace(task_id="voice-1"), backend="local", queue="default")
+
+    monkeypatch.setattr(characters, "get_task_backend", lambda: SimpleNamespace(enqueue_project_task=enqueue))
+    result = await characters.design_character_voice_sample("demo", "阿远", "elder", CharacterVoiceDesignRequest(), {})
+    assert result["ok"]
+    assert "老年" in captured["payload"]["voice_description"]
+    assert "青年" not in captured["payload"]["voice_description"]
+    assert captured["payload"]["profile_digest"]
+    assert role.age_group == "youth"
+
+
+@pytest.mark.asyncio
+async def test_design_refuses_nonverbal_before_enqueue(tmp_path, monkeypatch):
+    from novelvideo.api.routes import characters
+    from novelvideo.api.schemas import CharacterVoiceDesignRequest
+
+    role = SimpleNamespace(name="朏朏", voice_facts=SimpleNamespace(vocalization_mode="nonverbal"))
+    _patch_project(monkeypatch, characters, tmp_path, _CharacterStore([role]))
+    def no_queue():
+        pytest.fail("nonverbal character must not enqueue human TTS")
+    monkeypatch.setattr(characters, "get_task_backend", no_queue)
+    result = await characters.design_character_voice_sample("demo", "朏朏", "default", CharacterVoiceDesignRequest(), {})
+    assert result.status_code == 422
+
+
 class _CharacterStore:
     def __init__(self, characters: list[NovelCharacter]):
         self.characters = {character.name: character for character in characters}

@@ -657,3 +657,41 @@ async def detect_chapters(project: str, user: dict = Depends(get_api_user)):
         "ok": True,
         "data": build_chapter_preview(novel_text),
     }
+
+
+@router.put("/projects/{project}/episodes/{episode_num}/asset-bindings")
+async def update_episode_asset_bindings(
+    project: str, episode_num: int, body: dict[str, list[str]],
+    user: dict = Depends(get_api_user),
+):
+    """Replace this episode's references without deleting project assets or media."""
+    resolved = await resolve_project_scope(project, user, required_role="editor")
+    store = (await make_sqlite_store_for_context(resolved.ctx) if resolved.ctx
+             else await make_sqlite_store(resolved.username, resolved.project_name))
+    episode = store.get_episode(episode_num)
+    if episode is None:
+        return {"ok": False, "error": f"Episode {episode_num} not found"}
+    fields = ("identity_ids", "scene_ids", "prop_ids")
+    if set(body) != set(fields):
+        return {"ok": False, "error": "All three asset binding lists are required"}
+    selected = {key: list(dict.fromkeys(body[key])) for key in fields}
+    valid = {
+        "identity_ids": {identity.identity_id for character in store.get_all_characters()
+                         for identity in character.identities},
+        "scene_ids": {scene.name for scene in await store.list_scenes()},
+        "prop_ids": {prop.name for prop in await store.list_props()},
+    }
+    for key in fields:
+        missing = set(selected[key]) - valid[key]
+        if missing:
+            return {"ok": False, "error": f"Unknown project assets ({key}): {', '.join(sorted(missing))}"}
+    scenes = {item["scene_id"]: item for item in _dump_episode_items(episode.scene_menu)}
+    props = {item["prop_id"]: item for item in _dump_episode_items(episode.prop_menu)}
+    await store.update_episode(
+        episode_num, identity_ids=selected["identity_ids"],
+        identity_default_map={name: identity for name, identity in episode.identity_default_map.items()
+                              if identity in selected["identity_ids"]},
+        scene_menu=[scenes.get(name, {"scene_id": name}) for name in selected["scene_ids"]],
+        prop_menu=[props.get(name, {"prop_id": name}) for name in selected["prop_ids"]],
+    )
+    return {"ok": True, "data": _episode_detail_payload(store.get_episode(episode_num), episode_num)}

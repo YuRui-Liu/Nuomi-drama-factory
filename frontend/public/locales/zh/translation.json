@@ -730,6 +730,7 @@
     "costs": "项目费用",
     "taskCenter": "任务中心",
     "aiAssistant": "糯米助手",
+    "studios": "创作工作室",
     "freezone": "创作画布"
   },
   "characters": {
@@ -875,7 +876,7 @@
         "front_face_detected": "正面身体仍检测到脸部",
         "front_face_detectedV3": "无头正面身体仍检测到头部或脸部",
         "back_face_visible": "背面人物发生回头",
-        "state_inconsistent": "正背面角色状态不一致",
+        "state_inconsistent": "视图间或与造型要求不一致",
         "non_neutral_presentation": "背景或光线不是中性展示",
         "style_mismatch": "风格与项目设置不一致",
         "dead_eyes": "眼神缺乏生命感",
@@ -992,8 +993,8 @@
       "costumeRefHint": "可选：上传参考图锁定服装款式与颜色；留空则仅用文字描述。",
       "deleteCostume": "删除服装参考",
       "costumeDeleted": "服装参考图已删除",
-      "ageVariantTitle": "年龄变体（可选）",
-      "ageVariantHint": "仅当此身份与角色基础年龄段不同、面部需要单独描述时使用（如幼年、老年）。",
+      "ageVariantTitle": "身份外观变体（年龄、感染等）",
+      "ageVariantHint": "为年龄、感染等形态单独描述面部变化，同时保留原角色可辨认的身份。同龄形态也可填写面部设定。",
       "showVariant": "显示年龄变体设置",
       "hideVariant": "隐藏年龄变体设置",
       "inheritFromCharacter": "沿用角色设置",
@@ -1014,7 +1015,7 @@
       "confirmGenBody": "已连续生成 {{count}} 次，确认继续生成吗？",
       "renameIdentity": "编辑身份名称",
       "renameHint": "修改后将刷新相关图片路径（文件名会一并改变）。",
-      "variantOnly": "仅年龄变体可用",
+      "variantOnly": "请先填写身份面部设定或选择不同年龄段",
       "uploadPortraitTip": "上传身份肖像（年龄变体专用）",
       "generatePortraitTip": "AI 生成身份面部特写（年龄变体专用）"
     },
@@ -3537,6 +3538,7 @@
       "placeholderScript": "脚本",
       "betaTag": "Beta",
       "videoCompose": "视频合成",
+      "musicDesk": "配乐台",
       "videoDirector": "视频导演"
     },
     "videoDirector": {

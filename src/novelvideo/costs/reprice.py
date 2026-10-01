@@ -12,6 +12,8 @@ class RepriceService:
         self.store = store
 
     def _quote(self, attempt):
+        if attempt.provider == 'runninghub':
+            return None  # Package credits are tracked independently of CNY.
         if attempt.submission_status != 'submitted' or not attempt.usage_source:
             return None
         if attempt.execution_status in ('failed', 'cancelled', 'unknown') and attempt.usage_source == 'request':

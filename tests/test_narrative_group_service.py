@@ -238,6 +238,20 @@ def test_group_beats_respects_scene_and_time_continuity():
     assert [group.beat_ids for group in groups] == [("1", "2"), ("3",), ("4",)]
 
 
+def test_failed_admission_only_releases_queued_matching_revision(tmp_path):
+    from novelvideo.narrative_groups.service import fail_unowned_image_enqueue
+    groups = group_beats([{'id':'1'}])
+    save_groups(tmp_path, 1, groups)
+    advance_revision(tmp_path, 1, 'ng-01', 'render')
+    assert not fail_unowned_image_enqueue(tmp_path, 1, 'ng-01', 'render', 2)
+    assert fail_unowned_image_enqueue(tmp_path, 1, 'ng-01', 'render', 1)
+    assert load_groups(tmp_path, 1)[0].stages['render'].status == 'failed'
+    record_stage_result(tmp_path, 1, 'ng-01', 'render', expected_revision=1,
+        status='completed', grid_asset='finished.png')
+    assert not fail_unowned_image_enqueue(tmp_path, 1, 'ng-01', 'render', 1)
+    assert load_groups(tmp_path, 1)[0].stages['render'].grid_asset == 'finished.png'
+
+
 def test_stage_result_persists_assets_error_and_status(tmp_path):
     groups = group_beats([{"id": "1"}, {"id": "2"}])
     save_groups(tmp_path, 1, groups)

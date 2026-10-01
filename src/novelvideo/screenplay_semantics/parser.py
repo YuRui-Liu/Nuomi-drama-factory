@@ -9,12 +9,14 @@ import re
 from novelvideo.screenplay_semantics.models import Scene, SourceBlock, SourceBlockKind, SourceRange
 from novelvideo.utils.screenplay_scene_parser import (
     LABELED_CHARACTER_RE,
+    LABELED_LOCATION_RE,
     SPEAKER_LINE_RE,
     ParsedSourceLine,
     enumerate_screenplay_lines,
     is_scene_start_line,
     parse_character_line,
     parse_scene_blocks,
+    parse_location_header_relaxed,
 )
 
 
@@ -22,6 +24,18 @@ from novelvideo.utils.screenplay_scene_parser import (
 class ParsedScreenplayDocument:
     scenes: tuple[Scene, ...]
     metadata_blocks: tuple[SourceBlock, ...]
+
+
+def split_speaker_delivery(label: str) -> tuple[str, str]:
+    """Separate authored delivery (including OS) from a speaker's identity.
+
+    This does not infer visible cast: a broadcast remains an audio source,
+    while named offscreen speech retains its character identity.
+    """
+    match = re.fullmatch(r"\s*(.+?)\s*[（(]([^（）()]*)[）)]\s*", label)
+    if match:
+        return match[1].strip(), match[2].strip()
+    return label.strip(), ""
 
 
 def _block(line: ParsedSourceLine, ordinal: int, kind: SourceBlockKind) -> SourceBlock:
@@ -36,6 +50,14 @@ def _block(line: ParsedSourceLine, ordinal: int, kind: SourceBlockKind) -> Sourc
 
 def _content_kind(text: str) -> SourceBlockKind:
     stripped = text.strip()
+    field = _screenplay_field(stripped)
+    if field:
+        label, body = field
+        if label in {"人物", "出场人物", "角色"}:
+            return "cast"
+        if not body:
+            return "formatting"
+        return "dialogue" if label == "对白" else "action"
     if stripped.startswith(("（", "(")) and stripped.endswith(("）", ")")):
         return "parenthetical"
     if re.match(r"^(?:切至|转场|淡出|淡入|黑场|字幕)[：:]?", stripped):
@@ -45,6 +67,30 @@ def _content_kind(text: str) -> SourceBlockKind:
     if stripped.startswith(("△", "▲", "【")):
         return "action"
     return "action"
+
+
+def _screenplay_field(text: str) -> tuple[str, str] | None:
+    # Normalize markup only for classification; source evidence stays verbatim.
+    normalized = re.sub(r"^\s*(?:[-*+]\s+|#{1,6}\s+)?", "", text).replace("**", "").strip()
+    match = re.match(r"^(人物|出场人物|角色|动作|对白|结尾钩子)\s*[：:]\s*(.*)$", normalized)
+    return (match[1], match[2]) if match else None
+
+
+def recover_scene_fields(scene: Scene) -> Scene:
+    """Recover old misclassified fields without changing IDs or source evidence."""
+    characters = list(scene.characters)
+    blocks = []
+    for block in scene.blocks:
+        field = _screenplay_field(block.text)
+        if field:
+            label, body = field
+            if label in {"人物", "出场人物", "角色"}:
+                for character in parse_character_line(f"人物：{body}"):
+                    if character not in characters:
+                        characters.append(character)
+            block = block.model_copy(update={"kind": _content_kind(block.text)})
+        blocks.append(block)
+    return scene.model_copy(update={"characters": tuple(characters), "blocks": tuple(blocks)})
 
 
 def _metadata_kind(text: str, *, in_frontmatter: bool) -> SourceBlockKind:
@@ -122,6 +168,15 @@ def parse_screenplay_document(text: str) -> ParsedScreenplayDocument:
         if current_header is None and in_frontmatter:
             metadata.append(_block(line, len(metadata) + 1, "frontmatter"))
             continue
+        if (current_header is not None and not current_blocks
+                and not current_location and LABELED_LOCATION_RE.match(value)):
+            location = parse_location_header_relaxed(value)
+            if location:
+                current_location, current_time, interior = location
+                current_interior = {"内": "interior", "外": "exterior"}.get(interior, "unspecified")
+                metadata.append(_block(line, len(metadata) + 1, "formatting"))
+                last_scene_line = line.number
+                continue
         if value and is_scene_start_line(value):
             flush_scene()
             current_header = line
@@ -147,11 +202,14 @@ def parse_screenplay_document(text: str) -> ParsedScreenplayDocument:
             continue
         if not value:
             continue
-        cast = LABELED_CHARACTER_RE.match(value)
+        field = _screenplay_field(value)
+        cast_value = f"{field[0]}：{field[1]}" if field else value
+        cast = LABELED_CHARACTER_RE.match(cast_value)
         if cast and not current_blocks:
-            for character in parse_character_line(value):
+            for character in parse_character_line(cast_value):
                 if character not in current_characters:
                     current_characters.append(character)
+            metadata.append(_block(line, len(metadata) + 1, "cast"))
             last_scene_line = line.number
             continue
         current_blocks.append(_block(line, len(current_blocks) + 1, _content_kind(value)))

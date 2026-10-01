@@ -19,20 +19,26 @@ const CHARACTER_SEARCH_FIELDS = [
 type SearchField = (typeof CHARACTER_SEARCH_FIELDS)[number];
 type SearchableValue = string | readonly (string | null | undefined)[] | null | undefined;
 
-export type SearchableCharacter = Partial<Record<SearchField, SearchableValue>>;
+export type CharacterReadinessFilter = "all" | "portrait" | "voice";
+export type SearchableCharacter = Partial<Record<SearchField, SearchableValue>> & {
+  portrait_path?: string | null;
+  portrait_url?: string | null;
+  reference_audio_path?: string | null;
+};
 
 export function filterCharacters<T extends SearchableCharacter>(
   characters: readonly T[],
   query: string,
+  readiness: CharacterReadinessFilter = "all",
 ): T[] {
   const needle = query.trim().toLowerCase();
-  if (!needle) return [...characters];
-
-  return characters.filter((character) =>
-    CHARACTER_SEARCH_FIELDS.some((field) =>
+  return characters.filter((character) => {
+    if (readiness === "portrait" && (character.portrait_path?.trim() || character.portrait_url?.trim())) return false;
+    if (readiness === "voice" && character.reference_audio_path?.trim()) return false;
+    return !needle || CHARACTER_SEARCH_FIELDS.some((field) =>
       normalizeSearchValue(character[field]).includes(needle),
-    ),
-  );
+    );
+  });
 }
 
 function normalizeSearchValue(value: SearchableValue): string {

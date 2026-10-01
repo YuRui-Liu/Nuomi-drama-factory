@@ -11,7 +11,8 @@ export function BeatEditor({ beats, selectedId, disabled, onSelect, onSplit, onM
   onUpdate?: (beat: DramaticBeat, updates: Partial<DramaticBeat>) => void;
 }) {
   return <section className="min-w-0 overflow-y-auto p-3" aria-label="戏剧节拍编辑">
-    <h3 className="mb-3 text-xs font-semibold text-muted-foreground">Dramatic Beat</h3>
+    <h3 className="mb-3 text-xs font-semibold text-muted-foreground">剧情节拍 · 选择片段进行校对</h3>
+    {beats.length === 0 && <p className="rounded-lg border border-dashed border-white/10 p-4 text-sm text-muted-foreground">本场尚无剧情节拍。请检查场次状态，解析失败时可重试本场。</p>}
     <div className="space-y-3">{beats.map((beat, index) => <article key={beat.id} className={`rounded-xl border p-3 ${beat.id === selectedId ? "border-primary/60 bg-primary/[0.08]" : "border-white/10 bg-white/[0.02]"}`}>
       <button type="button" className="w-full text-left" onClick={() => onSelect(beat.id)}>
         <strong className="text-sm">{beat.ordinal}. {beat.turn || beat.action}</strong>
@@ -22,7 +23,7 @@ export function BeatEditor({ beats, selectedId, disabled, onSelect, onSplit, onM
           <p><span className="text-foreground/70">情绪：</span>{beat.emotional_shift} · {beat.estimated_duration_seconds}s</p>
         </div>
       </button>
-      <div className="mt-2 flex gap-2">
+      <div className="mt-2 flex flex-wrap gap-2">
         <Button size="sm" variant="outline" disabled={disabled} onClick={() => onSplit(beat)}><Scissors />拆分节拍</Button>
         {index < beats.length - 1 && <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onMerge(beat, beats[index + 1])}><Merge />合并下一节拍</Button>}
         <Button size="sm" variant="ghost" aria-label={`上移 ${beat.id}`} disabled={disabled || index === 0} onClick={() => {
@@ -54,4 +55,3 @@ export function BeatEditor({ beats, selectedId, disabled, onSelect, onSplit, onM
     </article>)}</div>
   </section>;
 }
-

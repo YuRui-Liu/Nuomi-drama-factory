@@ -405,4 +405,34 @@ async def activate_director_plan(
                 "error": str(exc),
             },
         ) from exc
+    try:
+        await _refresh_plan_references(ctx, episode, revision.revision_id)
+    except (ValueError, RuntimeError, OSError) as exc:
+        # Activation is durable. Never misreport it as rolled back or silently
+        # relabel old bindings; the scoped refresh endpoint is safe to retry.
+        raise HTTPException(409, detail={
+            "code": "DIRECTOR_PLAN_ACTIVATED_REFERENCE_REFRESH_REQUIRED",
+            "active_revision_id": revision.revision_id,
+            "message": "导演方案已激活，引用刷新未完成。请重试该版本的 references/refresh。",
+        }) from exc
     return {"ok": True, "data": _dump_revision(revision)}
+
+
+async def _refresh_plan_references(ctx, episode, revision_id):
+    from novelvideo.narrative_groups.reference_refresh import refresh_active_references
+    store = await make_sqlite_store_for_context(ctx)
+    try:
+        return await refresh_active_references(ctx, store, _build_director_plan_store(ctx), episode, revision_id)
+    finally:
+        await store.close()
+
+
+@router.post("/projects/{project}/episodes/{episode}/director-plans/{revision_id}/references/refresh")
+async def refresh_director_references(project: str, episode: int, revision_id: str,
+    user: dict = Depends(require_scope("tasks:submit"))):
+    ctx = await _resolve(project, user, role="editor")
+    try:
+        count = await _refresh_plan_references(ctx, episode, revision_id)
+    except ValueError as exc:
+        raise HTTPException(409, detail={"code": "DIRECTOR_PLAN_REFERENCE_REFRESH_CONFLICT", "error": str(exc)}) from exc
+    return {"ok": True, "data": {"revision_id": revision_id, "binding_count": count}}

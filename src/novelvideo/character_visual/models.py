@@ -68,6 +68,8 @@ class CharacterNarrativeProfile(BaseModel):
     dramatic_function: str = ""
     facts: list[CharacterNarrativeFact] = Field(default_factory=list)
     source_warnings: list[str] = Field(default_factory=list)
+    # Authored design context is not evidence for source facts or past events.
+    authoring_context: list[dict[str, str]] = Field(default_factory=list)
 
     def visual_constraints(self) -> list[CharacterNarrativeFact]:
         return [
@@ -165,6 +167,7 @@ class CharacterVisualWorkspace(BaseModel):
     identity_selected_proposal_ids: dict[str, str | None] = Field(default_factory=dict)
     identity_visual_bibles: dict[str, CharacterVisualBible] = Field(default_factory=dict)
     casting_limitation_reasons: dict[str, str] = Field(default_factory=dict)
+    casting_design_budgets: dict[str, dict] = Field(default_factory=dict)
 
 
 def classify_legacy_visual_field(

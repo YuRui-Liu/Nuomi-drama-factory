@@ -1,4 +1,5 @@
 import { apiCall } from "@/api/client";
+import type { PropExtractionRun, AssetExtractionRun } from "./types";
 import type { NarrativeEntity, NarrativeAsset, NarrativeAssetType, EntityInput, ScriptDocument, ScriptDocumentKind, ScriptRevision, GenerationRun, GenerationQueued, GenerationCandidate, ScriptProposal, RewriteJob, ConsistencyRun, ConsistencyIssue, HandoffPrepareRequest, ScriptHandoff } from "./types";
 
 const root = (project: string) => `projects/${encodeURIComponent(project)}/script-creation`;
@@ -6,6 +7,20 @@ const docPath = (project: string, id: string) => `${root(project)}/documents/${e
 const mutation = () => crypto.randomUUID();
 
 export const scriptCreationApi = {
+  revalidateAssetExtraction: (project: string, id: string) =>
+    apiCall<AssetExtractionRun>(`${root(project)}/asset-extractions/${encodeURIComponent(id)}/revalidate`, { method: "post", retry: { limit: 0 } }),
+  listAssetExtractions: (project: string, assetType: NarrativeAssetType, documentId: string) => apiCall<AssetExtractionRun[]>(`${root(project)}/asset-extractions?asset_type=${assetType}&document_id=${encodeURIComponent(documentId)}`),
+  getAssetExtraction: (project: string, _assetType: NarrativeAssetType, id: string) => apiCall<AssetExtractionRun>(`${root(project)}/asset-extractions/${encodeURIComponent(id)}`),
+  startAssetExtraction: (project: string, assetType: NarrativeAssetType, body: { document_id: string; base_revision_id: string; client_mutation_id: string }) =>
+    apiCall<AssetExtractionRun>(`${root(project)}/asset-extractions`, { method: "post", retry: { limit: 0 }, json: { ...body, asset_type: assetType } }),
+  confirmAssetExtraction: (project: string, _assetType: NarrativeAssetType, id: string, body: { base_revision_id: string; candidate_ids: string[]; client_mutation_id: string }) =>
+    apiCall<AssetExtractionRun>(`${root(project)}/asset-extractions/${encodeURIComponent(id)}/confirm`, { method: "post", retry: { limit: 0 }, json: body }),
+  listPropExtractions: (project: string, documentId: string) => apiCall<PropExtractionRun[]>(`${root(project)}/prop-extractions?document_id=${encodeURIComponent(documentId)}`),
+  getPropExtraction: (project: string, id: string) => apiCall<PropExtractionRun>(`${root(project)}/prop-extractions/${encodeURIComponent(id)}`),
+  startPropExtraction: (project: string, body: { document_id: string; base_revision_id: string; client_mutation_id: string }) =>
+    apiCall<PropExtractionRun>(`${root(project)}/prop-extractions`, { method: "post", retry: { limit: 0 }, json: body }),
+  confirmPropExtraction: (project: string, id: string, body: { base_revision_id: string; candidate_ids: string[]; client_mutation_id: string }) =>
+    apiCall<PropExtractionRun>(`${root(project)}/prop-extractions/${encodeURIComponent(id)}/confirm`, { method: "post", retry: { limit: 0 }, json: body }),
   listEntities: (project: string) => apiCall<NarrativeEntity[]>(`${root(project)}/entities`),
   listEntityAssets: (project: string, assetType: NarrativeAssetType) => apiCall<NarrativeAsset[]>(`${root(project)}/assets?asset_type=${assetType}`),
   putEntity: (project: string, body: EntityInput) => apiCall<NarrativeEntity>(`${root(project)}/entities`, { method: "post", retry: { limit: 0 }, json: body }),

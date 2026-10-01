@@ -1,11 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { scriptCreationApi } from "./api";
+import { AssetExtractionDialog } from "./prop-extraction-dialog";
 import type { EntityAppearance, EntityInput, EntityRelation, NarrativeAsset, NarrativeAssetType, NarrativeEntity, ScriptDocument } from "./types";
 
 const kinds: Record<string, NarrativeAssetType> = { people: "character", scenes: "scene", props: "prop" };
 const field = "w-full rounded border border-white/15 bg-[#17191D] p-2 text-xs text-white";
 const action = "rounded border border-white/15 px-2 py-1.5 text-xs disabled:opacity-35";
 const message = (cause: unknown) => cause instanceof Error ? cause.message : "操作失败，请重试";
+const heading = (markdown: string) => markdown.match(/^\s{0,3}(#{1,6})\s+([^\n]+?)(?:\s+#+)?\s*(?:\n|$)/);
+function sectionText(document: ScriptDocument | null, id: string) {
+  const blocks = document?.revision.blocks ?? [];
+  const start = blocks.findIndex((item) => item.id === id);
+  if (start < 0) return "";
+  const level = heading(blocks[start].markdown)?.[1].length;
+  let end = start + 1;
+  if (level) while (end < blocks.length) {
+    const nextLevel = heading(blocks[end].markdown)?.[1].length;
+    if (nextLevel && nextLevel <= level) break;
+    end++;
+  }
+  return blocks.slice(start, end).map((item) => item.markdown.trim()).join("\n\n");
+}
 
 export function EntityPanel({ project, document, documents, allSaved }: { project: string; document: ScriptDocument | null; documents: ScriptDocument[]; allSaved: boolean }) {
   const [entities, setEntities] = useState<NarrativeEntity[]>([]);
@@ -14,6 +29,7 @@ export function EntityPanel({ project, document, documents, allSaved }: { projec
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<NarrativeEntity | "new" | null>(null);
+  const [extractOpen, setExtractOpen] = useState(false);
   const [block, setBlock] = useState("");
   const [name, setName] = useState("");
   const [asset, setAsset] = useState("");
@@ -27,6 +43,16 @@ export function EntityPanel({ project, document, documents, allSaved }: { projec
   const pending = useRef<{ payload: string; mutation: string } | null>(null);
   const generation = useRef(0);
   const assetType = document ? kinds[document.kind] : undefined;
+  const headings = (document?.revision.blocks ?? []).flatMap((item) => {
+    const match = heading(item.markdown);
+    return match ? [{ id: item.id, name: match[2], level: match[1].length }] : [];
+  });
+  const topLevel = Math.min(...headings.map((item) => item.level));
+  // Level-one headings organize the document; nested details remain in each design.
+  const entryLevel = topLevel === 1 && headings.some((item) => item.level > topLevel)
+    ? Math.min(...headings.filter((item) => item.level > topLevel).map((item) => item.level)) : topLevel;
+  const entries = headings.filter((item) => item.level === entryLevel);
+  const unregistered = entries.filter((entry) => !entities.some((item) => item.document_id === document?.id && item.block_id === entry.id));
   const refresh = useCallback(async () => {
     const seq = ++generation.current;
     setLoading(true); setError("");
@@ -37,17 +63,26 @@ export function EntityPanel({ project, document, documents, allSaved }: { projec
     finally { if (seq === generation.current) setLoading(false); }
   }, [project, assetType]);
   useEffect(() => { void refresh(); return () => { generation.current++; }; }, [refresh, document?.current_revision_id]);
-  const open = (item: NarrativeEntity | "new") => {
+  const selectEntry = (id: string) => {
+    const entry = entries.find((item) => item.id === id);
+    setBlock(id); setName(entry?.name ?? ""); setAssetName(entry?.name ?? "");
+    setDescription(sectionText(document, id)); setAsset("");
+  };
+  const open = (item: NarrativeEntity | "new", entryId?: string) => {
     setEditing(item); setError(""); pending.current = null;
-    setBlock(item === "new" ? document?.revision.blocks[0]?.id ?? "" : item.block_id);
+    setBlock(item === "new" ? entryId ?? unregistered[0]?.id ?? "" : item.block_id);
     setName(item === "new" ? "" : item.name);
     setAsset(item === "new" || item.asset_missing ? "" : item.asset_id ?? "");
-    setCreate(false); setAssetName(""); setDescription("");
+    const unlinked = item === "new" || !item.asset_id || item.asset_missing;
+    setCreate(unlinked);
+    setAssetName(item === "new" || !unlinked ? "" : item.name);
+    setDescription(unlinked && item !== "new" ? sectionText(document, item.block_id) : "");
+    if (item === "new") selectEntry(entryId ?? unregistered[0]?.id ?? "");
     setRelations(item === "new" ? [] : item.relations.map(({ kind, entity_id }) => ({ kind, entity_id })));
     setAppearances(item === "new" ? [] : item.appearances.map(({ stale: _, ...value }) => value));
   };
   const save = async () => {
-    if (!document || !editing || !allSaved || busy) return;
+    if (!document || !editing || !allSaved || busy || (!create && !asset) || (create && !assetName.trim())) return;
     const body: Omit<EntityInput, "client_mutation_id"> = { document_id: document.id, base_revision_id: document.current_revision_id,
       block_id: block, name, ...(editing === "new" ? {} : { entity_id: editing.entity_id }), relations, appearances,
       ...(create ? { create_text: { name: assetName, description } } : asset ? { asset_id: asset } : {}) };
@@ -71,8 +106,11 @@ export function EntityPanel({ project, document, documents, allSaved }: { projec
     {loading && <p role="status">正在加载资产关联…</p>}
     {error && <div role="alert" className="mb-3 text-amber-200">{error} <button className={action} onClick={() => void refresh()}>重试</button></div>}
     {!assetType && <p>在文档树中选择人物、场景或道具设计。</p>}
+    {assetType && <button className={action + " mb-3 text-[#E5FF5C]"} disabled={!allSaved || busy} onClick={() => setExtractOpen(true)}>从创作{{ character: "人物", scene: "场景", prop: "道具" }[assetType]}表提取</button>}
+    {extractOpen && assetType && document && <AssetExtractionDialog key={document.id} assetType={assetType} project={project} document={document} allSaved={allSaved} onClose={() => setExtractOpen(false)} onImported={() => { void refresh(); }} />}
     {assetType && <>
-      <button className={action + " mb-3 text-[#E5FF5C]"} disabled={!allSaved || loading || busy || !document?.revision.blocks.length} onClick={() => open("new")}>登记设计条目</button>
+      {assetType !== "prop" && <button className={action + " mb-3 text-[#E5FF5C]"} disabled={!allSaved || loading || busy || !unregistered.length} onClick={() => open("new")}>登记设计条目</button>}
+      {assetType !== "prop" && unregistered.map((entry) => <div key={entry.id} className="mb-3 rounded border border-white/10 p-3"><strong className="text-white">{entry.name}</strong><p className="mt-1 text-white/45">尚未登记资产关联</p><button className={action + " mt-2"} disabled={!allSaved || loading || busy} onClick={() => open("new", entry.id)}>登记 / 关联 {entry.name}</button></div>)}
       {entities.filter((item) => item.document_id === document?.id).map((item) => <div key={item.entity_id} className="mb-3 rounded border border-white/10 p-3">
         <strong className="text-white">{item.name}</strong><p className="mt-1 text-white/45">{item.asset_name ? `关联资产：${item.asset_name}` : item.asset_id ? "已关联资产" : "尚未关联资产"}</p>
         {item.asset_missing && <p className="mt-1 text-red-300">资产已删除或不可用</p>}
@@ -85,7 +123,7 @@ export function EntityPanel({ project, document, documents, allSaved }: { projec
     </>}
     {editing && <section role="dialog" aria-label="关联设计条目" className="mt-3 space-y-3 rounded border border-[#E5FF5C]/25 bg-black/20 p-3">
       <p className="text-[#E5FF5C]">确认当前条目与关联版本</p>
-      <label className="block">正文条目<select className={field} aria-label="正文条目" value={block} disabled={editing !== "new"} onChange={(event) => setBlock(event.target.value)}>{document?.revision.blocks.map((item) => <option key={item.id} value={item.id}>{item.markdown.slice(0, 80)}</option>)}</select></label>
+      <label className="block">正文条目<select className={field} aria-label="正文条目" value={block} disabled={editing !== "new"} onChange={(event) => selectEntry(event.target.value)}>{editing === "new" ? unregistered.map((item) => <option key={item.id} value={item.id}>{item.name}</option>) : <option value={editing.block_id}>{editing.name}</option>}</select></label>
       <label className="block">条目名称<input className={field} aria-label="条目名称" value={name} onChange={(event) => setName(event.target.value)} /></label>
       <label className="block"><input type="checkbox" checked={create} onChange={(event) => setCreate(event.target.checked)} /> 新建文字资产记录</label>
       {create ? <><input className={field} aria-label="新资产名称" placeholder="资产名称（必须未使用）" value={assetName} onChange={(event) => setAssetName(event.target.value)} /><textarea className={field} aria-label="文字资产描述" placeholder="文字描述" value={description} onChange={(event) => setDescription(event.target.value)} /></> : <label className="block">选择现有资产<select aria-label="选择现有资产" className={field} value={asset} onChange={(event) => setAsset(event.target.value)}><option value="">保留当前状态</option>{assets.map((item) => <option key={item.asset_id} value={item.asset_id}>{item.name}</option>)}</select></label>}
@@ -99,7 +137,8 @@ export function EntityPanel({ project, document, documents, allSaved }: { projec
         {appearances.map((ref, index) => <div key={index}>{ref.kind === "first_appearance" ? "首次出场" : "关键场景"} · {ref.status === "planned" ? `计划第 ${ref.episode_number} 集` : `已写入 · ${documents.find((d) => d.id === ref.document_id)?.title ?? "分集"}`} <button className={action} onClick={() => setAppearances(appearances.filter((_, i) => i !== index))}>移除</button></div>)}
       </div>
       <p className="text-white/40">确认前请核对：当前正文仍描述同一条目；已删除条目不能借同名恢复关联。</p>
-      <div className="flex gap-2"><button className={action + " bg-[#E5FF5C] text-black"} disabled={!allSaved || busy || !name.trim() || !block || (create && !assetName.trim())} onClick={() => void save()}>{busy ? "保存中…" : "保存关联"}</button><button className={action} disabled={busy} onClick={() => setEditing(null)}>取消</button></div>
+      {!create && !asset && <p className="text-amber-200">请选择已有资产或新建文字资产；仅登记条目不会出现在资产中心。</p>}
+      <div className="flex gap-2"><button className={action + " bg-[#E5FF5C] text-black"} disabled={!allSaved || busy || !name.trim() || !block || (!create && !asset) || (create && !assetName.trim())} onClick={() => void save()}>{busy ? "保存中…" : "保存关联"}</button><button className={action} disabled={busy} onClick={() => setEditing(null)}>取消</button></div>
     </section>}
   </div>;
 }

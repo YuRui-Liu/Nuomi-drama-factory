@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.chapter_preview import (
@@ -12,7 +12,8 @@ from novelvideo.api.chapter_preview import (
     load_novel_text,
 )
 from novelvideo.api.deps import resolve_project_scope
-from novelvideo.api.deps import get_cognee_store
+from novelvideo.api.deps import get_sqlite_store, make_cognee_store_for_context
+from novelvideo.api.ingest_graph import GraphPatch, build_structured_graph, read_graph, update_graph
 from novelvideo.api.schemas import IngestStart
 from novelvideo.knowledge_pipeline import knowledge_pipeline_from_state_dir
 from novelvideo.project_config import (
@@ -21,6 +22,7 @@ from novelvideo.project_config import (
     save_project_config,
 )
 from novelvideo.ports import get_task_backend
+from novelvideo.ports.project import role_allows
 from novelvideo.task_identity import project_task_state_key
 from novelvideo.utils.document_parsers import (
     DocumentParseError,
@@ -43,10 +45,36 @@ router = APIRouter()
 @router.get("/projects/{project}/ingest/graph")
 async def get_ingest_knowledge_graph(
     project: str,
-    store=Depends(get_cognee_store),
+    store=Depends(get_sqlite_store),
+    user: dict = Depends(get_api_user),
 ):
-    """Return the imported project's real Cognee graph for visualization."""
-    snapshot = await store.get_graph_snapshot()
+    """Return source-backed structure or the legacy Cognee visualization."""
+    resolved = await resolve_project_scope(project, user, required_role="viewer")
+    if knowledge_pipeline_from_state_dir(resolved.state_dir) == "structured_v1":
+        snapshot = read_graph(resolved.state_dir, await build_structured_graph(store))
+        snapshot["editable"] = role_allows(resolved.ctx.effective_role, "editor")
+    else:
+        legacy = await make_cognee_store_for_context(resolved.ctx)
+        try:
+            snapshot = await legacy.get_graph_snapshot()
+        finally:
+            await legacy.close()
+        snapshot.update(editable=False, edit_semantics="read_only", knowledge_pipeline="cognee_legacy")
+    return {"ok": True, "data": snapshot}
+
+
+@router.patch("/projects/{project}/ingest/graph")
+async def patch_ingest_knowledge_graph(
+    project: str,
+    body: GraphPatch,
+    store=Depends(get_sqlite_store),
+    user: dict = Depends(get_api_user),
+):
+    """Save graph annotations atomically; production assets remain authoritative."""
+    resolved = await resolve_project_scope(project, user, required_role="editor")
+    if knowledge_pipeline_from_state_dir(resolved.state_dir) != "structured_v1":
+        raise HTTPException(422, "旧版知识图谱暂不支持编辑")
+    snapshot = update_graph(resolved.state_dir, await build_structured_graph(store), body)
     return {"ok": True, "data": snapshot}
 
 

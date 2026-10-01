@@ -1555,6 +1555,13 @@ def test_group_video_optimizes_each_segment_concurrently_before_one_director_sub
             {"id": "beat-2", "beat_number": 2, "video_prompt": "她停在门口。", "dialogue": "我会回来。", "speaker": "小雨", "tone": "克制"},
         ]
 
+    async def voice_characters(_ctx):
+        return [SimpleNamespace(name=name, aliases=[], voice_facts=SimpleNamespace(
+            voice_traits=voice, conflicts=[])) for name, voice in
+            [("阿明", "adult male Mandarin voice"), ("小雨", "adult female Mandarin voice")]]
+
+    monkeypatch.setattr(narrative_group_video, "_load_speaker_voice_characters", voice_characters)
+
     async def generate(ctx, *, segments, output_path, **_kwargs):
         submitted.append((ctx, segments, output_path))
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -1696,7 +1703,7 @@ def test_group_video_quality_failure_fails_before_transport(tmp_path, monkeypatc
             raise H3PromptQualityError(H3PromptQualityReport(
                 passed=False,
                 issues=(H3PromptQualityIssue(
-                    code="vague_action", message="bad plan", location="shots.0"
+                    code="h3.mode_invalid", message="bad plan", location="shots.0"
                 ),),
             ))
 
@@ -1725,7 +1732,7 @@ def test_group_video_quality_failure_fails_before_transport(tmp_path, monkeypatc
     assert error_payload["error_code"] == "H3_PROMPT_QUALITY_REJECTED"
     assert error_payload["transport_called"] is False
     assert error_payload["quality_report"]["issues"] == [{
-        "code": "vague_action",
+        "code": "h3.mode_invalid",
             "message": "bad plan",
             "field": "shots.0",
             "severity": "error",
@@ -2165,6 +2172,10 @@ def test_group_video_incomplete_snapshot_rebuilds_without_claiming_replay(
         ("observe", "input_hash"),
         ("observe", "quality_failed"),
         ("observe", "invalid_wire"),
+        ("observe", "qc_recovery"),
+        ("observe", "qc_missing"),
+        ("observe", "qc_interrupted"),
+        ("observe", "qc_reference_changed"),
     ],
 )
 def test_same_revision_replay_validates_snapshot_before_reusing_optimizer_result(
@@ -2340,6 +2351,8 @@ def test_same_revision_replay_validates_snapshot_before_reusing_optimizer_result
     narrative_group_video.run_narrative_group_video(envelope, ctx)
     manifest_path = load_groups(tmp_path, 1)[0].stages["video"].manifest_asset
     first = load_h3_director_manifest(manifest_path)
+    if tamper and tamper.startswith("qc_"):
+        assert len({entry.physical_video for entry in first.entries}) == 2
     snapshot = tuple(
         (
             entry.segment.prompt,
@@ -2350,6 +2363,7 @@ def test_same_revision_replay_validates_snapshot_before_reusing_optimizer_result
     )
     first_optimizer_calls = optimizer_calls
     first_prepare_calls = prepare_calls
+    first_provider_calls = provider_calls
 
     if tamper is not None:
         entry = first.entries[0]
@@ -2379,18 +2393,43 @@ def test_same_revision_replay_validates_snapshot_before_reusing_optimizer_result
             replacement = entry.model_copy(update={
                 "segment": entry.segment.model_copy(update={"prompt": "人物转身"})
             })
+        elif tamper and tamper.startswith("qc_"):
+            first = first.model_copy(update={
+                "status": "quality_mismatch",
+                "cinematography_reviews": ({"phase": "generated", "status": "unavailable"},),
+            })
+            from novelvideo.task_backend.runners import narrative_group_video_recovery
+            monkeypatch.setattr(narrative_group_video_recovery, "probe_video", lambda _path: {
+                "width": 720, "height": 1280, "duration": entry.segment.duration_seconds,
+            })
+            if tamper == "qc_missing":
+                Path(entry.physical_video).unlink()
+            if tamper == "qc_reference_changed":
+                first = first.model_copy(update={"provider_workflow_id": "different-provider-workflow"})
         first = first.model_copy(update={
             "entries": (replacement, *first.entries[1:])
         })
         save_h3_director_manifest(manifest_path, first)
+    if tamper == "qc_interrupted":
+        from novelvideo.task_backend.cancel import TaskCancelled
+        from novelvideo.task_backend.runners import narrative_group_video_recovery
+        original_probe = narrative_group_video_recovery.probe_video
+
+        def interrupted(_path):
+            raise TaskCancelled()
+
+        monkeypatch.setattr(narrative_group_video_recovery, "probe_video", interrupted)
+        with pytest.raises(TaskCancelled):
+            narrative_group_video.run_narrative_group_video(envelope, ctx)
+        monkeypatch.setattr(narrative_group_video_recovery, "probe_video", original_probe)
     narrative_group_video.run_narrative_group_video(envelope, ctx)
     replayed = load_h3_director_manifest(manifest_path)
 
-    if tamper is None:
+    if tamper is None or tamper.startswith("qc_"):
         assert optimizer_calls == first_optimizer_calls
         assert prepare_calls == first_prepare_calls
     else:
-        assert optimizer_calls == first_optimizer_calls + 2
+        assert optimizer_calls == first_optimizer_calls + 1
         assert prepare_calls == first_prepare_calls + 1
     assert tuple(
         (
@@ -2400,7 +2439,14 @@ def test_same_revision_replay_validates_snapshot_before_reusing_optimizer_result
         )
         for entry in replayed.entries
     ) == snapshot
-    assert all(len(entry.attempts) == 2 for entry in replayed.entries)
+    if tamper in {"qc_recovery", "qc_interrupted"}:
+        assert provider_calls == first_provider_calls
+        assert all(len(entry.attempts) == 1 for entry in replayed.entries)
+        assert replayed.cinematography_reviews == first.cinematography_reviews
+    elif tamper == "qc_missing":
+        assert provider_calls == first_provider_calls + 1
+    else:
+        assert all(len(entry.attempts) == 2 for entry in replayed.entries)
 
 
 @pytest.mark.parametrize("fail_boundary", ["callback", "completed"])
@@ -3835,7 +3881,7 @@ def test_blocked_policy_rejects_before_transport_and_records_failure_once(
     assert all(entry.status == "quality_rejected" for entry in manifest.entries)
 
 
-@pytest.mark.parametrize("rejected_phase", [None, "reference", "generated"])
+@pytest.mark.parametrize("rejected_phase", [None, "reference", "generated", "reference_unavailable", "generated_unavailable"])
 def test_enforce_uses_compiled_bundle_prompt_at_adapter_boundary(
     tmp_path, monkeypatch, rejected_phase
 ):
@@ -3855,6 +3901,8 @@ def test_enforce_uses_compiled_bundle_prompt_at_adapter_boundary(
 
     async def review(phase, **kwargs):
         reviews.append(phase)
+        if rejected_phase == f"{phase}_unavailable":
+            raise RuntimeError("QC service unavailable")
         assert set(kwargs["shots_by_id"]) == {"beat-1", "beat-2"}
         if phase == "reference":
             monkeypatch.setattr(narrative_group_video, "_load_active_director_plan",
@@ -3967,20 +4015,7 @@ def test_enforce_uses_compiled_bundle_prompt_at_adapter_boundary(
         ctx,
     )
 
-    if rejected_phase == "reference":
-        with pytest.raises(narrative_group_video.H3ContinuityQualityError, match="no video submitted"):
-            invoke()
-        assert submitted == []
-        return
     result = invoke()
-    if rejected_phase == "generated":
-        assert result["status"] == "partial_failure"
-        assert result["qc_passed"] is False
-        assert len(submitted) == 2
-        assert Path(result["video_asset"]).exists()
-        from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
-        assert all(entry.status == "quality_mismatch" for entry in load_h3_director_manifest(result["manifest_asset"]).entries)
-        return
     assert result["status"] == "completed"
     assert [request.segments[0].prompt for request in submitted] == [
         "bundle:beat-1",
@@ -3995,6 +4030,114 @@ def test_enforce_uses_compiled_bundle_prompt_at_adapter_boundary(
     assert manifest.entries[0].compiled_bundle == {"prompt": "bundle:beat-1"}
     assert reviews == ["reference", "generated"]
     assert len(manifest.cinematography_reviews) == 2
+    assert all(entry.status == "completed" for entry in manifest.entries)
+    if rejected_phase:
+        assert any(item["status"] != "passed" for item in manifest.cinematography_reviews)
+
+
+def test_observe_keeps_paid_clip_when_generated_review_is_unusable(
+    tmp_path, monkeypatch
+):
+    """A failed post-generation review must not discard an already-paid clip.
+
+    The generated-phase review runs an external vision agent after the provider
+    was charged. Under a non-blocking policy it is a quality signal, exactly like
+    the reference-phase review, so the clip has to survive to the stage result.
+    """
+
+    from novelvideo.media_capabilities.video.adapters import (
+        NarrativeGroupVideoResult,
+    )
+    from novelvideo.task_backend.runners import narrative_group_video
+
+    _seed_group(tmp_path)
+    submitted = []
+
+    async def review(phase, **_kwargs):
+        return [
+            {
+                "status": "failed" if phase == "generated" else "passed",
+                "evidence": [{"frame_label": phase, "observation": "observed"}],
+                "issues": (
+                    [{"dimension": "blocking", "description": "direction conflict"}]
+                    if phase == "generated"
+                    else []
+                ),
+            }
+        ]
+
+    monkeypatch.setattr(
+        narrative_group_video, "_review_cinematography", review, raising=False
+    )
+
+    async def get_beats(_ctx, _episode):
+        return [
+            {"id": "beat-1", "beat_number": 1, "video_prompt": "old one"},
+            {"id": "beat-2", "beat_number": 2, "video_prompt": "old two"},
+        ]
+
+    async def optimize(segments, _beats, **_kwargs):
+        return [
+            segment.model_copy(update={"prompt": f"legacy:{segment.segment_id}"})
+            for segment in segments
+        ]
+
+    class Adapter:
+        async def generate_narrative_group(self, _ctx, request):
+            submitted.append(request)
+            Path(request.output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(request.output_path).write_bytes(b"video")
+            return NarrativeGroupVideoResult(
+                output_path=request.output_path,
+                provider_task_id="provider-1",
+                actual_mode="i2va",
+                provider_parameters={"width": 720, "height": 1280},
+                actual_output={"width": 720, "height": 1280},
+            )
+
+    monkeypatch.setattr(narrative_group_video, "_load_canonical_beats", get_beats)
+    _patch_test_workflow(monkeypatch, narrative_group_video)
+    monkeypatch.setattr(
+        narrative_group_video,
+        "_load_active_director_plan",
+        lambda *_args: SimpleNamespace(groups=()),
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "_optimize_missing_prompts",
+        optimize,
+    )
+    monkeypatch.setattr(
+        narrative_group_video,
+        "_video_workflow_adapters",
+        lambda: SimpleNamespace(resolve=lambda _key: Adapter()),
+    )
+    ctx = SimpleNamespace(
+        output_dir=str(tmp_path),
+        runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state",
+        project_id="demo",
+    )
+
+    result = narrative_group_video.run_narrative_group_video(
+        {
+            "episode": 1,
+            "payload": {
+                "group_id": "ng-01",
+                "revision": 1,
+                "workflow_parameters": {
+                    "resolution": "720p",
+                    "continuity_policy": "observe",
+                },
+                "cinematography_review_required": True,
+            },
+        },
+        ctx,
+    )
+
+    assert result["status"] == "completed"
+    assert len(submitted) == 2
+    assert Path(result["video_asset"]).exists()
 
 
 def test_segment_risk_merge_preserves_s2_i2_m2_c2_independently():
@@ -4090,7 +4233,7 @@ def test_observe_mode_mismatch_keeps_shadow_bundle_empty_with_diagnostic(
         continuity_by_segment=prepared,
     ))
 
-    assert result[0].prompt == "old prompt"
+    assert result[0].prompt == "shadow prompt"
     assert prepared["shot-1"].bundle is None
     assert "shadow_mode_replan_required" in (
         evidence["shot-1"]["mode_decision"]["reason_codes"]
@@ -4104,7 +4247,7 @@ def test_observe_mode_mismatch_keeps_shadow_bundle_empty_with_diagnostic(
         ("guard", OSError("temporary shadow outage")),
     ],
 )
-def test_shadow_optimizer_error_fails_open_to_legacy_adapter_input(
+def test_observe_and_guard_do_not_run_a_second_optimizer(
     tmp_path, monkeypatch, policy, shadow_error
 ):
     from novelvideo.media_capabilities.video.adapters import (
@@ -4200,14 +4343,13 @@ def test_shadow_optimizer_error_fails_open_to_legacy_adapter_input(
 
     assert result["status"] == "completed"
     assert submitted == ["legacy:beat-1", "legacy:beat-2"]
+    assert calls == 1
     from novelvideo.media_capabilities.video.h3_timeline import (
         load_h3_director_manifest,
     )
 
     manifest = load_h3_director_manifest(result["manifest_asset"])
-    assert f"continuity_observe_failed:{type(shadow_error).__name__}" in (
-        manifest.entries[0].mode_decision["reason_codes"]
-    )
+    assert not manifest.entries[0].mode_decision.get("reason_codes")
     assert str(shadow_error) not in str(manifest.model_dump(mode="json"))
 
 
@@ -4294,6 +4436,8 @@ def _execute_policy_boundary(
     ):
         nonlocal optimize_calls
         optimize_calls += 1
+        if shadow_error is not None:
+            raise shadow_error
         if continuity_by_segment is None:
             return [
                 segment.model_copy(update={"prompt": "legacy prompt"})
@@ -4424,13 +4568,14 @@ def test_enforce_prepare_exception_is_fail_closed_before_transport(
     assert len(outcome.stage_failures) == 1
 
 
-def test_enforce_shadow_compile_exception_is_fail_closed_before_transport(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("policy", ["legacy", "observe", "guard", "enforce"])
+def test_planning_exception_is_fail_closed_before_transport(
+    tmp_path, monkeypatch, policy
 ):
     outcome = _execute_policy_boundary(
         tmp_path,
         monkeypatch,
-        policy="enforce",
+        policy=policy,
         shadow_error=RuntimeError("compile failed"),
     )
 
@@ -4440,7 +4585,18 @@ def test_enforce_shadow_compile_exception_is_fail_closed_before_transport(
     assert len(outcome.stage_failures) == 1
 
 
-def test_observe_blocker_transports_legacy_prompt_and_keeps_evidence(
+@pytest.mark.parametrize("policy", ["observe", "guard", "enforce"])
+@pytest.mark.parametrize("kind", ["TaskCancelled", "TaskTimedOut", "TaskLeaseLost"])
+def test_continuity_terminal_signal_never_starts_planning(tmp_path, monkeypatch, policy, kind):
+    from novelvideo.task_backend import cancel
+    error = getattr(cancel, kind)()
+    outcome = _execute_policy_boundary(tmp_path, monkeypatch, policy=policy, prepare_error=error)
+    assert outcome.error is error
+    assert outcome.optimize_calls == 0
+    assert outcome.requests == []
+
+
+def test_observe_blocker_transports_single_plan_and_keeps_evidence(
     tmp_path, monkeypatch
 ):
     from novelvideo.media_capabilities.video.h3_timeline import (
@@ -4455,20 +4611,22 @@ def test_observe_blocker_transports_legacy_prompt_and_keeps_evidence(
     )
 
     assert outcome.error is None
-    assert outcome.requests[0].segments[0].prompt == "legacy prompt"
+    assert outcome.requests[0].segments[0].prompt == "bundle prompt"
+    assert outcome.optimize_calls == 1
     manifest = load_h3_director_manifest(outcome.result["manifest_asset"])
     assert manifest.entries[0].risk_report["blockers"] == [
         "shot_rewrite_required"
     ]
 
 
-def test_guard_without_blocker_transports_legacy_prompt(tmp_path, monkeypatch):
+def test_guard_without_blocker_transports_single_plan(tmp_path, monkeypatch):
     outcome = _execute_policy_boundary(
         tmp_path, monkeypatch, policy="guard"
     )
 
     assert outcome.error is None
-    assert outcome.requests[0].segments[0].prompt == "legacy prompt"
+    assert outcome.requests[0].segments[0].prompt == "bundle prompt"
+    assert outcome.optimize_calls == 1
 
 
 @pytest.mark.parametrize(

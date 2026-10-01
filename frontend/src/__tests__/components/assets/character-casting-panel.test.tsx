@@ -145,7 +145,7 @@ beforeEach(() => {
     }),
   );
 });
-function mount() {
+function mount(studioBridge = false) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -157,12 +157,69 @@ function mount() {
           project="demo"
           name="hero"
           imageModel="portrait-model"
+          studioBridge={studioBridge}
         />
       </QueryClientProvider>,
     ),
   };
 }
 describe("story-grounded casting", () => {
+  it('previews studio candidate thumbnails without adopting or generating media', async () => {
+    mount(true);
+    const thumbnail = await screen.findByRole('button', {name:'预览候选 1'});
+    expect(screen.getByRole('img', {name:'当前角色形象大图'})).toHaveAttribute('src','/current.png');
+    fireEvent.click(thumbnail);
+    expect(screen.getByRole('img', {name:'候选形象大图'})).toHaveAttribute('src','/candidate.png');
+    expect(screen.getByText('检查结果与确认定角')).toBeInTheDocument();
+    await userEvent.click(screen.getByText('检查结果与确认定角'));
+    const scrollRegion = screen.getByRole('region', { name: '形象与定角检查' });
+    expect(within(scrollRegion).getByRole('img', { name: '候选形象大图' })).toBeVisible();
+    expect(within(scrollRegion).getByRole('button', { name: '确认定角' })).toBeVisible();
+    expect(scrollRegion).not.toContainElement(screen.getByLabelText('角色候选版本'));
+    fireEvent.click(screen.getByRole('button', {name:'当前形象缩略图 当前形象'}));
+    expect(screen.getByRole('img', {name:'当前角色形象大图'})).toHaveAttribute('src','/current.png');
+    expect(writes).toHaveLength(0);
+  });
+  it("publishes studio dirty state and handles broadcast save failures", async () => {
+    const failed = vi.fn(); const events: boolean[] = [];
+    const listener = (event: Event) => events.push((event as CustomEvent).detail.dirty);
+    window.addEventListener("studio-dirty", listener); window.addEventListener("studio-save-failed-character", failed);
+    server.use(http.patch(base, () => HttpResponse.json({ detail: "conflict" }, { status: 409 })));
+    const view = mount(true);
+    await screen.findByText("查看选角依据与原文事实");
+    fireEvent.change(screen.getByLabelText("脸型造型决定"), { target: { value: "圆脸" } });
+    expect(events[events.length - 1]).toBe(true);
+    window.dispatchEvent(new Event("studio-save-character"));
+    await waitFor(() => expect(failed).toHaveBeenCalledOnce());
+    expect(events[events.length - 1]).toBe(true);
+    view.unmount(); window.removeEventListener("studio-dirty", listener); window.removeEventListener("studio-save-failed-character", failed);
+  });
+  it("keeps the current identity until its edits are saved or discarded", async () => {
+    let saved = false;
+    server.use(http.patch(base, () => { saved = true; return HttpResponse.json({ ok: true, data: {} }); }));
+    const view = mount(true);
+    await screen.findByText("查看选角依据与原文事实");
+    fireEvent.change(screen.getByLabelText("脸型造型决定"), { target: { value: "圆脸" } });
+    fireEvent.change(screen.getByLabelText("身份阶段"), { target: { value: "old-id" } });
+    expect(screen.getByLabelText("身份阶段")).toHaveValue("");
+    fireEvent.click(screen.getByText("继续编辑"));
+    expect(screen.getByLabelText("脸型造型决定")).toHaveValue("圆脸");
+    fireEvent.change(screen.getByLabelText("身份阶段"), { target: { value: "old-id" } });
+    fireEvent.click(screen.getByText("保存后切换"));
+    await waitFor(() => expect(screen.getByLabelText("身份阶段")).toHaveValue("old-id"));
+    expect(saved).toBe(true); view.unmount();
+  });
+  it("puts the current image first and reveals source evidence on demand without submitting work", async () => {
+    mount();
+    const current = await screen.findByAltText("当前定角");
+    const evidence = screen.getByText("查看选角依据与原文事实");
+    expect(evidence.closest("details")).not.toHaveAttribute("open");
+    expect(current.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await userEvent.click(evidence);
+    expect(evidence.closest("details")).toHaveAttribute("open");
+    expect(screen.getByText("广播站主持人")).toBeVisible();
+    expect(writes).toEqual([]);
+  });
   it("explains excluded narrative without disabling a verified draft", async () => {
     const data = workspace();
     server.use(http.get(base, () => HttpResponse.json({ ok: true, data: {
@@ -317,16 +374,44 @@ describe("story-grounded casting", () => {
     await screen.findByText("设计已保存，可生成候选。");
     expect(screen.getByRole("button", { name: "生成候选" })).toBeEnabled();
   });
+  it.each([1, 2, 3])("allows %i proposals with advisory diagnostics without automatically reviewing", async (count) => {
+    server.use(http.get(base, () => HttpResponse.json({ ok: true, data: workspace({
+      proposals: proposals.slice(0, count).map((proposal) => ({
+        ...proposal, recommended: false, quality_issues: ['structure_collision:p1'],
+      })),
+    }) })));
+    mount();
+    await screen.findByRole('heading', { name: '纪实' });
+    expect(screen.getByRole('button', { name: '选择纪实' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '生成候选' })).toBeEnabled();
+    expect(screen.getAllByText('structure_collision:p1')[0]).toBeVisible();
+    expect(writes).toEqual([]);
+  });
+  it("shows scoped diagnostics only on their proposal while retaining global and blocking warnings", async () => {
+    server.use(http.get(base, () => HttpResponse.json({ ok: true, data: workspace({
+      proposals: proposals.map((proposal) => ({ ...proposal, quality_issues: ["p1:generic_beauty:forbidden", "p2:changed_explicit_fact:gender", "proposal_ids:duplicate"] })),
+    }) })));
+    mount();
+    const first = (await screen.findByRole("heading", { name: "纪实" })).closest("article")!;
+    const second = screen.getByRole("heading", { name: "克制" }).closest("article")!;
+    const third = screen.getByRole("heading", { name: "锐利" }).closest("article")!;
+    expect(within(first).queryByText(/泛化美化用语/)).not.toBeInTheDocument();
+    expect(within(second).getByText(/泛化美化用语/)).toBeVisible();
+    expect(within(third).getByText("p2:changed_explicit_fact:gender")).toBeVisible();
+    expect(screen.getAllByText("proposal_ids:duplicate")).toHaveLength(3);
+    expect(writes).toEqual([]);
+  });
   it("reads three proposals with evidence and creative labels without starting paid work", async () => {
     mount();
     expect(
-      await screen.findByRole("heading", { name: "选角依据" }),
+      await screen.findByText("查看选角依据与原文事实"),
     ).toBeInTheDocument();
     for (const title of ["纪实", "克制", "锐利"])
       expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
     expect(screen.getAllByText("原文事实").length).toBeGreaterThan(0);
     expect(screen.getAllByText("设计解释").length).toBeGreaterThan(0);
     expect(screen.getAllByText("自由选择").length).toBeGreaterThan(0);
+    await userEvent.click(screen.getByText("查看选角依据与原文事实"));
     await userEvent.click(screen.getByText("查看来源原文"));
     expect(screen.getByText("她拨开齐肩黑发")).toBeVisible();
     expect(screen.queryByText("compiled secret")).not.toBeInTheDocument();
@@ -389,7 +474,7 @@ describe("story-grounded casting", () => {
         ),
       );
       mount();
-      await screen.findByRole("heading", { name: "选角依据" });
+      await screen.findByText("查看选角依据与原文事实");
       expect(screen.getByRole("button", { name: "重新选角" })).toBeDisabled();
       expect(screen.getByRole("button", { name: "生成候选" })).toBeDisabled();
       expect(screen.getByRole("button", { name: "选择候选 1" })).toBeDisabled();
@@ -572,7 +657,7 @@ describe("story-grounded casting", () => {
       ),
     );
     mount();
-    await screen.findByRole("heading", { name: "选角依据" });
+    await screen.findByText("查看选角依据与原文事实");
     expect(screen.getByRole("button", { name: "重新选角" })).toBeEnabled();
     expect(screen.getByText("方案整理：已完成")).toBeInTheDocument();
   });

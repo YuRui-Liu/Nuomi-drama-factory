@@ -35,7 +35,7 @@ from .h3_wire import (
 from .models import H3Mode
 
 
-H3_PROMPT_COMPILER_VERSION = 4
+H3_PROMPT_COMPILER_VERSION = 5
 _SHOT_SCOPED = TypeVar("_SHOT_SCOPED", H3SpatialBlockingPlan, H3OpticsPlan)
 _PURE_COUNT_ASSERTION_RE = re.compile(
     r"^(?:(?:show|keep|use|preserve)\s+)?(?:exactly\s+)?"
@@ -60,12 +60,6 @@ def has_unscoped_boundary_state(value: str) -> bool:
 
 def project_director_plan_to_wire(plan: H3DirectorPlan) -> H3Wire:
     """Project an internal director plan onto its mode-specific official wire."""
-    for lock in plan.continuity_locks:
-        if has_unscoped_boundary_state(lock):
-            raise ValueError(
-                "Boundary states must be placed in the scoped ACTION timeline, "
-                "not global continuity locks; regenerate this director plan."
-            )
     description = _compile_playback_description(plan)
     common = {
         "mode": plan.mode,
@@ -368,7 +362,13 @@ def _compile_spatial_fact(blocking: H3SpatialBlockingPlan) -> str:
         + (f", holding {', '.join(subject.held_props)}" if subject.held_props else "")
         for subject in blocking.subjects
     )
-    return _sentence(f"{blocking.summary} {subjects}")
+    attachments = " ".join(
+        f"During frames {item.start_frame}–{item.end_frame}, the same {item.prop_id} "
+        f"is physically attached to {item.anchor} at {item.attachment_point}; "
+        "its attachment follows that anchor, not nearby people or carried containers."
+        for item in blocking.prop_attachments
+    )
+    return _sentence(f"{blocking.summary} {subjects} {attachments}".strip())
 
 
 def _compile_optics_fact(optics: H3OpticsPlan) -> str:

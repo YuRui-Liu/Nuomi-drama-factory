@@ -228,8 +228,16 @@ def _snapshot_generation_input(
                 panels = ", ".join(str(number) for number in panel_numbers) or "all relevant"
                 asset_kind = str(raw.get("asset_kind") or "")
                 if asset_kind == "character_identity":
-                    character_name = entity_id.split("_", 1)[0]
+                    slot_parts = str(raw.get("asset_slot_id") or "").split(":")
+                    character_name = (slot_parts[1] if len(slot_parts) >= 3
+                                      and slot_parts[0] == "character"
+                                      else entity_id.split("_", 1)[0])
                     subject = f"character {character_name}, identity {entity_id}"
+                    if slot_parts[-1:] == ["portrait"]:
+                        subject += ("; face identity only, not a wardrobe reference; "
+                                    "use source wardrobe descriptions for clothing")
+                    elif len(slot_parts) == 4 and slot_parts[2] == "state":
+                        subject += "; identity and wardrobe reference"
                 elif asset_kind.startswith("scene_"):
                     subject = f"scene {entity_id}"
                 elif asset_kind == "prop":
@@ -284,30 +292,31 @@ def _grid_prompt(
     style_prompt: str = "",
     reference_mappings: tuple[str, ...] = (),
 ) -> str:
+    from novelvideo.narrative_groups.image_prompt import panel_description
+
     layout = payload.get("layout") or {}
     beats = list(payload.get("beats") or [])
     stage = str(payload.get("stage") or "render")
     visual = "black-and-white storyboard sketch" if stage == "sketch" else "final image"
     panels = []
     for index, beat in enumerate(beats, start=1):
-        description = (
-            beat.get("visual_description")
-            or beat.get("shot_description")
-            or beat.get("action")
-            or beat.get("content")
-            or beat.get("description")
-            or beat.get("title")
-            or "continue the scene"
-        )
+        description = panel_description(beat)
         panel_tag = str(payload.get("panel_tag") or "").strip()
         suffix = f"; panel style: {panel_tag}" if panel_tag else ""
         panels.append(f"Panel {index}: {description}{suffix}")
     grid_rules = (
         f"Create one clean {layout.get('rows', 1)}x{layout.get('columns', 1)} storyboard grid. "
+        f"This means exactly {layout.get('rows', 1)} row(s) and {layout.get('columns', 1)} column(s). "
         f"Every individual cell must be composed at {payload.get('aspect_ratio') or '9:16'} aspect ratio. "
         f"Each cell is a separate {visual}; preserve character, location, lighting and time continuity. "
-        "Use equal cells in reading order, no borders, captions, labels, text, collage overlap, or extra panels.\n"
+        "Use equal cells in reading order, no borders, captions, labels, invented text, collage overlap, or extra panels.\n"
     )
+    if int(layout.get("rows", 1)) == 1 and int(layout.get("columns", 1)) > 1:
+        grid_rules += (
+            "Arrange panels side by side in ONE horizontal row, left to right; never stack panels "
+            "vertically. Only vertical divisions are allowed. Each panel must show one complete "
+            "single-camera frame, never a collage or a before/after inset.\n"
+        )
     strong_lock = str(payload.get("constraint_mode") or "") == "strong_sketch"
     if strong_lock:
         grid_rules += (
@@ -388,6 +397,10 @@ def _normalize_generation_batch_payload(
 
 
 def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
+    if payload.get("single_storyboard_repair"):
+        from novelvideo.task_backend.runners.storyboard_repair import single_generation_input
+
+        return single_generation_input(payload)
     snapshot = payload.get("reference_resolution")
     if snapshot is not None and not isinstance(snapshot, Mapping):
         raise ReferenceSnapshotInvalid()
@@ -469,27 +482,6 @@ def _provider_grid_aspect_ratio(payload: Mapping[str, Any], model: str) -> str:
     desired = left / right
     supported = (("2:3", 2 / 3), ("1:1", 1.0), ("3:2", 3 / 2))
     return min(supported, key=lambda item: abs(item[1] - desired))[0]
-
-
-_NON_GRAPHIC_REPLACEMENTS = (
-    (re.compile(r"沾满血迹|沾着血迹|沾血|血迹"), "带有深色灰尘污渍"),
-    (re.compile(r"鲜血|流血|血液"), "深色污渍"),
-    (re.compile(r"血肉模糊|肢解|断肢|内脏"), "被深色阴影遮挡的区域"),
-    (re.compile(r"尸体|尸骸"), "远处静止的模糊物体"),
-    (re.compile(r"丧尸"), "门外若隐若现的模糊身影"),
-    (re.compile(r"\b(?:blood|bloody|gore|gory|corpse)\b", re.IGNORECASE), "dark dust stain"),
-)
-
-
-def _non_graphic_retry_prompt(prompt: str) -> str:
-    safe = prompt
-    for pattern, replacement in _NON_GRAPHIC_REPLACEMENTS:
-        safe = pattern.sub(replacement, safe)
-    return (
-        "PG-rated suspense illustration with indirect environmental tension. "
-        "Use clean clothing, neutral dust, and deep shadows; keep every person intact and safely framed.\n"
-        f"{safe}"
-    )
 
 
 def _normalize_image_aspect(path: Path, aspect_ratio: str) -> None:
@@ -596,17 +588,12 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
             poll_interval_seconds=poll_interval,
             timeout_seconds=timeout_seconds,
         )
-    except GrsaiPolicyViolation:
-        policy_retry = True
-        request = request.model_copy(
-            update={"prompt": _non_graphic_retry_prompt(request.prompt)}
-        )
-        execution = await execute_grsai_generation(
-            runtime,
-            request,
-            poll_interval_seconds=poll_interval,
-            timeout_seconds=timeout_seconds,
-        )
+    except GrsaiPolicyViolation as exc:
+        raise GrsaiPolicyViolation(
+            "图像供应商拒绝了本次生成；原始提示词未改写，未自动重试。"
+            "请检查供应商限制并由用户明确调整生成内容后重试。"
+            f" 供应商信息：{exc}"
+        ) from exc
     task_id = execution.task_id
     image_bytes = execution.content
     try:
@@ -621,6 +608,33 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(image_bytes)
+        # Legacy splitting rebuilds target in place. Keep the untouched provider
+        # response so a bad split can be repaired without another generation.
+        target.with_name(f"{target.stem}.provider.png").write_bytes(image_bytes)
+        from novelvideo.narrative_groups.storyboard_repair import save_prompt_snapshot
+        from novelvideo.narrative_groups.image_prompt import panel_description
+
+        prompt_snapshot = {
+            "original_prompt": request.prompt,
+            "prompt": str(payload.get("repair_prompt") or ""),
+            "feedback": str(payload.get("repair_feedback") or ""),
+            "panel_prompts": {
+                str(beat.get("id") or beat.get("beat_id") or beat.get("beat_number") or ""):
+                panel_description(beat)
+                for beat in payload.get("beats") or ()
+            },
+            "references": [{"path": path, "sha256": sha256(Path(path).read_bytes()).hexdigest()}
+                           for path in generation_input.references],
+            "reference_mappings": (
+                (["storyboard sketch grid"] if payload.get("constraint_mode") == "strong_sketch" else [])
+                + list(generation_input.reference_mappings)
+            ),
+            "image_projection": str(payload.get("image_projection") or "") if payload.get("use_style", True) else "",
+            "model": request.model, "provider_id": provider_id,
+            "provider_task_id": task_id,
+        }
+        save_prompt_snapshot(output_dir, target, prompt_snapshot)
+        save_prompt_snapshot(output_dir, target.with_name(f"{target.stem}.provider.png"), prompt_snapshot)
         actual_pixel_size = ""
         try:
             from io import BytesIO
@@ -634,6 +648,7 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
             actual_pixel_size = ""
         return {
             "grid_asset": str(target),
+            "prompt_snapshot": prompt_snapshot,
             "actual_provider": provider_id,
             "actual_model": request.model,
             "actual_mode": str(payload.get("stage") or "render"),
@@ -776,10 +791,29 @@ def _split_existing_grid(
 
         if len(raw_paths) < len(mapping):
             raise ValueError("grid has fewer cells than mapped shots")
+        # `beat_{NN}.png` is the legacy per-episode-beat frame slot: the manual
+        # shot repair flow and the single-beat runners read it by episode beat
+        # number. A narrative group renders several beats into one grid and its
+        # cells are shots, so cells are referenced through their own group- and
+        # revision-scoped path, and the legacy name may only be written when the
+        # cells really carry episode beat numbers. The old unconditional promote
+        # fell back to the group-local index (1, 2, ...), so every group wrote
+        # mislabeled frames over the others' — and cell_assets referenced them.
+        revision = int(payload["revision"])
+        trusted_beat_numbers = (
+            bool(mapping)
+            and len(beats) >= len(mapping)
+            and all(
+                isinstance(item, Mapping) and _beat_number(item, 0) > 0
+                for item in beats[: len(mapping)]
+            )
+        )
         for index, raw_path in enumerate(raw_paths[:len(mapping)]):
-            target = promote_dir / f"beat_{beat_nums[index]:02d}.png"
-            shutil.copy2(raw_path, target)
-            cell_paths.append(str(target))
+            if trusted_beat_numbers:
+                shutil.copy2(raw_path, promote_dir / f"beat_{beat_nums[index]:02d}.png")
+            group_cell = promote_dir / f"{group_slug}_r{revision}_cell_{index:02d}.png"
+            shutil.copy2(raw_path, group_cell)
+            cell_paths.append(str(group_cell))
         cleaned_cell_size = (
             "x".join(str(value) for value in cleanup_reports[0]["output_size"])
             if cleanup_reports
@@ -868,7 +902,8 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
     payload = _normalize_generation_batch_payload(envelope.get("payload") or {})
     if payload.get("storyboard_contract_version") == 1:
         if not split_only:
-            payload.setdefault("generation_id", str(envelope.get("task_id") or ""))
+            payload.setdefault("generation_id", str(
+                envelope.get("__run_task_id") or envelope.get("task_id") or ""))
         if (not split_only and not payload.get("generation_id")) or not payload.get("project_id"):
             raise ValueError("versioned storyboard requires project and generation identity")
     episode = int(envelope.get("episode") or payload.get("episode") or 0)
@@ -917,6 +952,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
                     split_input = capture_storyboard_split_input(generated["grid_asset"], payload, Path(ctx.output_dir))
                     payload["expected_grid_sha256"] = split_input.grid_sha256
                 for field in (
+                    "prompt_snapshot",
                     "reference_count", "reference_warnings", "reference_audit",
                     "source_sketch_revision", "constraint_mode",
                     "requested_image_size", "requested_pixel_size",
@@ -938,6 +974,23 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
             result.update(generation_metadata)
             result["degraded"] = degraded
         error = "; ".join(str(item.get("message") or item) for item in result.get("errors") or [])
+        from novelvideo.narrative_groups.storyboard_repair import load_prompt_snapshot, save_prompt_snapshot
+
+        if result.get("grid_asset"):
+            snapshot = load_prompt_snapshot(project_dir, result["grid_asset"])
+            if not snapshot:
+                grid_path = Path(result["grid_asset"])
+                snapshot = load_prompt_snapshot(project_dir, grid_path.with_name(f"{grid_path.stem}.provider.png"))
+            # Legacy splitting can normalize the grid in place. Its untouched
+            # provider response still identifies the exact generation input.
+            if not snapshot and not split_only:
+                snapshot = result.get("prompt_snapshot") or {}
+            if snapshot:
+                for cell in result.get("cell_assets") or ():
+                    shot = str(cell.get("shot_id") or cell.get("beat_id") or "")
+                    save_prompt_snapshot(project_dir, cell["path"], {
+                        **snapshot, "prompt": (snapshot.get("panel_prompts") or {}).get(shot, ""),
+                    })
         record_stage_result(
             project_dir,
             episode,
@@ -999,6 +1052,15 @@ def run_narrative_group_split(envelope: dict[str, Any], ctx: ProjectContext) -> 
 
 register_project_task_runner("narrative_group_grid", run_narrative_group_grid)
 register_project_task_runner("narrative_group_split", run_narrative_group_split)
+
+
+def run_narrative_storyboard_repair(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
+    from novelvideo.task_backend.runners.storyboard_repair import execute_repair
+
+    return asyncio.run(execute_repair(envelope, ctx))
+
+
+register_project_task_runner("narrative_storyboard_repair", run_narrative_storyboard_repair)
 
 
 __all__ = ["run_narrative_group_grid", "run_narrative_group_split"]

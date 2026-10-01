@@ -41,7 +41,9 @@ export function GroupVideoParameters({
   const size = OUTPUT_SIZES[value as keyof typeof OUTPUT_SIZES];
 
   return (
-    <div className="rounded-lg border border-white/10 bg-black/10 p-3" data-video-parameters>
+    <details className="rounded-lg border border-white/10 bg-black/10 p-3" data-video-parameters>
+      <summary className="cursor-pointer text-sm"><span className="font-medium">视频参数</span><span className="ml-3 text-xs text-muted-foreground">{overridden ? "当前组覆盖" : "项目默认"} · {value}</span></summary>
+      <p className="my-3 text-xs text-muted-foreground">调整清晰度仅作用于当前叙事组；选择「设为项目默认」后，未单独覆盖的组将使用此设置。</p>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <p className="text-xs font-medium text-foreground">{resolution.label}</p>
@@ -77,6 +79,6 @@ export function GroupVideoParameters({
         <Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => void onRestoreDefault("resolution")}>恢复项目默认</Button>
         <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={() => void onPromoteDefault("resolution", value)}>设为项目默认</Button>
       </div>}
-    </div>
+    </details>
   );
 }

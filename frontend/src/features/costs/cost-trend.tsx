@@ -25,7 +25,7 @@ export function CostTrend({ snapshot }: { snapshot: ProjectCostSnapshot }) {
   const description = (point: CostTrendPoint) => `${point.date} · ${series.map(item => `${t(`costs.${item.label}`, item.fallback)}：${amount(point[item.key])}`).join(' · ')} · ${t('costs.unpricedCalls', '待核算调用')}：${point.unpriced_count} · ${completeness(point)}`;
   const hasMoney = snapshot.summary.priced_count > 0 && points.some(point => series.some(item => point[item.key] !== null));
   const state = snapshot.summary.display_state;
-  const emptyText = state === 'subscription_only' ? t('costs.trendSubscription', '订阅覆盖，暂无按量费用曲线') : state === 'unpriced_only' ? t('costs.trendUnpriced', '费用待核算，暂无可绘制金额') : t('costs.trendEmpty', '暂无费用记录');
+  const emptyText = snapshot.summary.cny_attempt_count === 0 ? t('costs.noCnyTrend', '暂无人民币支出趋势；RH 币按套餐独立统计') : state === 'subscription_only' ? t('costs.trendSubscription', '订阅覆盖，暂无按量费用曲线') : state === 'unpriced_only' ? t('costs.trendUnpriced', '费用待核算，暂无可绘制金额') : t('costs.trendEmpty', '暂无费用记录');
   const width = Math.max(680, 120 + (points.length - 1) * 48);
   const height = 260;
   const max = Math.max(1, ...points.flatMap(point => series.map(item => point[item.key] ?? 0)));

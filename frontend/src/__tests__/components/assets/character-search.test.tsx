@@ -40,6 +40,16 @@ const characters = [
 ];
 
 describe("filterCharacters", () => {
+  it("combines production readiness with search and recognizes stored portrait paths", () => {
+    const cast = [
+      { name: "Hero", portrait_path: "hero.png", reference_audio_path: "" },
+      { name: "Hero young", portrait_url: " ", reference_audio_path: "voice.wav" },
+      { name: "Guide", portrait_url: "/guide.png", reference_audio_path: "voice.wav" },
+    ];
+    expect(filterCharacters(cast, "hero", "portrait").map((item) => item.name)).toEqual(["Hero young"]);
+    expect(filterCharacters(cast, "", "voice").map((item) => item.name)).toEqual(["Hero"]);
+    expect(filterCharacters(cast, "guide", "voice")).toEqual([]);
+  });
   it("returns every character for blank search text", () => {
     expect(filterCharacters(characters, "")).toEqual(characters);
     expect(filterCharacters(characters, "   ")).toEqual(characters);

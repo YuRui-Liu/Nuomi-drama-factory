@@ -128,15 +128,28 @@ def _build_face_portrait_prompt(
             f"{_strip_known_style_prefix(face_details)}"
         )
 
+    composition = (
+        "Composition: show the complete hair, both ears, the entire face, the full chin, "
+        "and the complete neck, with a small amount of upper-shoulder outline; keep any "
+        "collar confined to roughly the bottom 10-15% of the square frame."
+    )
+    if normalized_gender is None:
+        # Unknown gender is not a species classification. Avoid injecting a human
+        # bust/costume into animal, mechanical, or gender-neutral human identities.
+        composition = (
+            "Composition: frame the complete head and its natural outline, following only "
+            "the anatomy in the confirmed identity details. Do not infer species from "
+            "unspecified gender. Do not add human anatomy to non-human subjects. "
+            "Do not invent clothing, collars, neckwear, or accessories; include them "
+            "only when explicitly present in the confirmed identity details. "
+            "For an unclothed animal, show natural fur or skin through the bottom edge."
+        )
+
     return " ".join(
         [
             "Square 1:1 close identity portrait on a neutral clean background.",
             gender_constraint,
-            (
-                "Composition: show the complete hair, both ears, the entire face, the full chin, "
-                "and the complete neck, with a small amount of upper-shoulder outline; keep any "
-                "collar confined to roughly the bottom 10-15% of the square frame."
-            ),
+            composition,
             (
                 "Strict framing exclusion: no chest, lower shoulders, torso, large areas of "
                 "clothing, hands, or props; no text or watermark."
@@ -281,6 +294,23 @@ async def _run_character_image(
     identity_name = str(payload.get("identity_name") or "")
     style = str(payload.get("style") or "")
     output_dir = Path(str(payload.get("output_dir") or ctx.output_dir))
+    casting_candidate = None
+    if mode == "casting_candidate":
+        from novelvideo.character_visual.casting_store import CastingCandidateStore
+
+        if output_dir.absolute() != Path(ctx.output_dir).absolute():
+            raise ValueError("casting output directory must match project context")
+        if envelope.get("project_id") not in (None, ctx.project_id) or payload.get("project_id") not in (None, ctx.project_id):
+            raise ValueError("casting project context mismatch")
+        casting_store = CastingCandidateStore(ctx.output_dir, state_dir=ctx.state_dir, project_id=ctx.project_id)
+        casting_store.safe_path(output_dir)
+        casting_candidate = casting_store.get(str(payload.get("candidate_id") or ""))
+        if casting_candidate is None:
+            raise ValueError("casting candidate not found")
+        if (casting_candidate.character_id, casting_candidate.identity_id) != (character_name, identity_id or None):
+            raise ValueError("casting candidate ownership mismatch")
+        if payload.get("model") and payload["model"] != casting_candidate.requested_model:
+            raise ValueError("casting requested model mismatch")
     task_type = str(envelope.get("task_type") or payload.get("task_type") or "character_portrait")
     scope = envelope.get("scope") or payload.get("scope")
     manager = get_task_manager()
@@ -297,6 +327,9 @@ async def _run_character_image(
         )
 
     update(0.10, "加载角色数据...")
+    from novelvideo.character_visual.casting_recovery import recover_casting_adoptions
+
+    recover_casting_adoptions(output_dir, ctx.state_dir)
     store = SQLiteStore(ctx.owner_project_label, output_dir=str(output_dir), state_dir=str(ctx.state_dir))
     await store.initialize()
     await store.load_graph_state()
@@ -320,7 +353,7 @@ async def _run_character_image(
         runtime = load_grsai_runtime_configuration(
             get_media_capability_store(), get_media_credential_resolver()
         )
-        requested_model = str(payload.get("model") or "").strip()
+        requested_model = str((casting_candidate.requested_model if casting_candidate else payload.get("model")) or "").strip()
         project_model = str(
             project_config.get("character_image_selection") or ""
         ).strip()
@@ -336,12 +369,39 @@ async def _run_character_image(
         model = resolution.model
         from novelvideo.character_visual import CharacterVisualWorkspaceStore
 
-        visual_bible = CharacterVisualWorkspaceStore(output_dir).get_confirmed_bible(
+        visual_store = CharacterVisualWorkspaceStore(output_dir, state_dir=ctx.state_dir)
+        workspace = visual_store.get(character.name)
+        if mode in {"portrait", "identity_portrait"} and workspace and (workspace.casting_revision or workspace.identity_casting_revisions):
+            raise RuntimeError("CHARACTER_CASTING_REQUIRED: generate and explicitly adopt a casting candidate")
+        visual_bible = visual_store.get_confirmed_bible(
             character.name
         )
 
         update(0.25, "准备生成参数...")
-        if mode == "portrait":
+        if mode == "casting_candidate":
+            from .character_casting import generate_casting_candidate
+            from novelvideo.task_state import get_current_project_task_id
+
+            if identity_id and _find_identity(character, identity_id, "") is None:
+                raise ValueError("casting identity no longer exists")
+            actual_task_id = get_current_project_task_id()
+            if not actual_task_id:
+                raise ValueError("casting generation requires authoritative task context")
+            async def before_publish_candidate():
+                await store.load_graph_state()
+                live_character = store.get_character(character_name)
+                if live_character is None or (identity_id and _find_identity(live_character, identity_id, "") is None):
+                    raise ValueError("casting character or identity no longer exists")
+            return {
+                "mode": mode, "character_name": character.name, "identity_id": identity_id,
+                **await generate_casting_candidate(
+                    ctx=ctx, candidate_id=casting_candidate.candidate_id,
+                    character_id=character.name, identity_id=identity_id or None,
+                    task_id=actual_task_id, submission_token=payload.get("submission_token"),
+                    resolution=resolution, generate=_generate_grsai_image, before_publish=before_publish_candidate,
+                ),
+            }
+        elif mode == "portrait":
             if visual_bible is None:
                 raise _visual_bible_required_error(character.name)
             portrait_prompt = _character_portrait_prompt(
@@ -367,6 +427,7 @@ async def _run_character_image(
             )
         elif mode == "identity_portrait":
             output_path = await _generate_identity_portrait(
+                ctx=ctx,
                 store=store,
                 character=character,
                 ethnicity=ethnicity,
@@ -381,6 +442,7 @@ async def _run_character_image(
             )
         elif mode == "identity_image":
             state_generation = await _generate_identity_image(
+                state_dir=ctx.state_dir,
                 character=character,
                 ethnicity=ethnicity,
                 identity_id=identity_id,
@@ -495,6 +557,7 @@ async def _generate_identity_portrait(
     task_type: str,
     scope: str,
     update,
+    ctx: ProjectContext | None = None,
 ) -> Path:
     identity = _find_identity(character, identity_id, identity_name)
     if identity is None:
@@ -504,7 +567,13 @@ async def _generate_identity_portrait(
         compile_visual_prompt_snapshot,
     )
 
-    visual_bible = CharacterVisualWorkspaceStore(output_dir).get_confirmed_bible(
+    from novelvideo.character_visual.casting_recovery import (
+        assert_legacy_portrait_mutation_allowed, update_identity_portrait_reference,
+    )
+    state_dir = Path(ctx.state_dir) if ctx is not None else Path(getattr(store, "state_dir", output_dir / "_state"))
+    with production_workflow_project_lock(state_dir):
+        assert_legacy_portrait_mutation_allowed(output_dir, state_dir, character.name, identity.identity_id)
+    visual_bible = CharacterVisualWorkspaceStore(output_dir, state_dir=state_dir).get_confirmed_bible(
         character.name
     )
     if visual_bible is None:
@@ -518,11 +587,21 @@ async def _generate_identity_portrait(
     variant_parts = [
         base_prompt,
         f"Identity age group: {identity.age_group}" if identity.age_group else "",
+        ("Identity-specific facial state (takes precedence over conflicting healthy appearance "
+         "in the base design; preserve recognizable facial identity): " + identity.face_prompt)
+        if str(identity.face_prompt or "").strip() else "",
     ]
     face_prompt = ". ".join(part for part in variant_parts if part)
+    from novelvideo.character_visual.casting_recovery import resolve_casting_media_path
+    parent_portrait = resolve_casting_media_path(
+        output_dir, state_dir, output_dir / "assets" / "characters" / character.name / "portrait.png",
+    )
+    parent_references = [str(parent_portrait)] if Path(parent_portrait).is_file() else []
     safe_name = _safe_asset_name(identity.identity_name)
     id_dir = output_dir / "assets" / "characters" / character.name / "identities"
-    portrait_path = id_dir / f"{character.name}_{safe_name}_portrait.png"
+    from novelvideo.utils.path_resolver import canonical_identity_portrait_path
+
+    portrait_path = canonical_identity_portrait_path(output_dir, character.name, identity.identity_name)
     temp_dir = id_dir / f".tmp_identity_portrait_{safe_name}_{_asset_suffix()}"
     temp_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -538,13 +617,17 @@ async def _generate_identity_portrait(
             ),
             output_path=temp_dir / "reference_01.png",
             aspect_ratio="1:1",
+            reference_paths=parent_references,
         )
-        _replace_canonical_asset(generated, portrait_path)
-        await store.update_character_identity(
-            character.name,
-            identity.identity_id,
-            portrait_image=str(portrait_path),
-        )
+        with production_workflow_project_lock(state_dir):
+            assert_legacy_portrait_mutation_allowed(output_dir, state_dir, character.name, identity.identity_id)
+            from novelvideo.character_visual.casting_recovery import assert_casting_path_mutation_allowed
+
+            assert_casting_path_mutation_allowed(output_dir, state_dir, portrait_path)
+            _replace_canonical_asset(generated, portrait_path)
+            update_identity_portrait_reference(output_dir, state_dir, character.name, identity.identity_id, str(portrait_path))
+        if hasattr(store, "load_graph_state"):
+            await store.load_graph_state()
         return portrait_path
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -583,6 +666,9 @@ def _register_character_state_candidate(
     staged_canonical: Path | None = None
     state_dir = Path(ctx.state_dir)
     with production_workflow_project_lock(state_dir):
+        from novelvideo.character_visual.casting_recovery import assert_casting_path_mutation_allowed
+
+        assert_casting_path_mutation_allowed(output_dir, state_dir, generation.canonical_path)
         if generation.quality_report.passed:
             generation.canonical_path.parent.mkdir(parents=True, exist_ok=True)
             staged_canonical = generation.canonical_path.with_name(
@@ -675,7 +761,14 @@ async def _generate_identity_image(
     task_type: str,
     scope: str,
     update,
+    state_dir: Path | None = None,
 ) -> CharacterStateGeneration:
+    from novelvideo.character_visual.casting_recovery import (
+        recover_casting_adoptions, resolve_casting_media_path,
+    )
+
+    state_dir = state_dir or output_dir / "_state"
+    recover_casting_adoptions(output_dir, state_dir)
     from novelvideo.utils.path_resolver import (
         compute_identity_costume_path,
         compute_identity_portrait_path,
@@ -685,7 +778,8 @@ async def _generate_identity_image(
     if identity is None:
         raise RuntimeError(f"找不到身份: {identity_id or identity_name}")
 
-    appearance_details = str(identity.appearance_details or "").strip()
+    from novelvideo.character_visual.identity_constraints import effective_identity_appearance
+    appearance_details = effective_identity_appearance(output_dir, character, identity)
     costume_image = compute_identity_costume_path(
         output_dir, character.name, identity.identity_name
     ) or str(identity.costume_image or "")
@@ -710,9 +804,12 @@ async def _generate_identity_image(
 
     identity_age = str(identity.age_group or "").strip()
     char_age = str(character.age_group or "youth").strip() or "youth"
-    if identity_age and identity_age != char_age:
+    is_age_variant = bool(identity_age and identity_age != char_age)
+    is_face_variant = is_age_variant or bool(str(identity.face_prompt or "").strip()) or has_identity_portrait
+    if is_face_variant:
         if not has_identity_portrait:
-            raise RuntimeError("年龄变体必须先生成或上传 Identity Portrait")
+            label = "年龄变体" if is_age_variant else "面部变体"
+            raise RuntimeError(f"{label}必须先生成或上传 Identity Portrait")
         identity_prompt = "" if has_costume_image else appearance_details
         reference_image_path = identity_portrait
     else:
@@ -722,8 +819,14 @@ async def _generate_identity_image(
         identity_prompt = "" if has_costume_image else appearance_details
         reference_image_path = str(portrait_path)
 
+    reference_image_path = str(resolve_casting_media_path(
+        output_dir, state_dir, Path(reference_image_path),
+    ))
     update(0.45, "调用图像模型生成身份图...")
     references = [reference_image_path] + ([costume_image] if has_costume_image else [])
+    from novelvideo.character_visual.species import confirmed_nonhuman_species
+
+    nonhuman_species = confirmed_nonhuman_species(character)
     prompt = build_identity_sheet_v3_prompt(
             character_name=character.name,
             character_tag=str(identity.character_tag or character.name),
@@ -735,6 +838,7 @@ async def _generate_identity_image(
             avoid_instructions="no identity drift, no inconsistent clothing",
             ethnicity=ethnicity,
             has_costume_reference=has_costume_image,
+            nonhuman_species=nonhuman_species,
             project_dir=output_dir,
         )
     await _generate_grsai_image(
@@ -755,6 +859,8 @@ async def _generate_identity_image(
         image_data=output_path.read_bytes(),
         style=style,
         project_dir=output_dir,
+        expected_appearance=appearance_details,
+        nonhuman_species=nonhuman_species,
         **qc_options,
     )
     return CharacterStateGeneration(

@@ -30,6 +30,10 @@ class CostStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection(write=True) as db:
             for statement in (
+                '''CREATE TABLE IF NOT EXISTS cost_historical_receipts (
+                project_id TEXT NOT NULL, provider TEXT NOT NULL, external_id TEXT NOT NULL,
+                credit TEXT NOT NULL, observed_at TEXT NOT NULL, source TEXT NOT NULL,
+                PRIMARY KEY(provider,external_id))''',
                 '''CREATE TABLE IF NOT EXISTS cost_reprice_previews (
                 id TEXT PRIMARY KEY, project_id TEXT NOT NULL, body_json TEXT NOT NULL,
                 applied INTEGER NOT NULL DEFAULT 0)''',
@@ -329,6 +333,10 @@ class CostStore:
             ids = {a.attempt_id for a in attempts}
             costs = {r[0]: CostValue.model_validate_json(r[1]) for r in db.execute('SELECT attempt_id,body_json FROM current_costs') if r[0] in ids}
             return dict(attempts=attempts, costs=costs, cost_details=self._cost_details(db, ids),
+                        historical_receipts=[dict(r) for r in db.execute('''SELECT h.* FROM cost_historical_receipts h
+                            WHERE NOT EXISTS (SELECT 1 FROM cost_attempts a WHERE a.provider=h.provider
+                                AND a.external_id=h.external_id AND a.project_id<>h.project_id)'''
+                            + (' AND h.project_id=?' if project_id else ''), (project_id,) if project_id else ())],
                         rules=[PriceRule.model_validate_json(r[0]) for r in db.execute('SELECT body_json FROM price_versions')],
                         subscriptions=[Subscription.model_validate_json(r[0]) for r in db.execute('SELECT body_json FROM subscriptions')],
                         coverage=[Coverage.model_validate_json(r[0]) for r in db.execute('SELECT body_json FROM coverage' + (' WHERE project_id=?' if project_id else ''), (project_id,) if project_id else ())])

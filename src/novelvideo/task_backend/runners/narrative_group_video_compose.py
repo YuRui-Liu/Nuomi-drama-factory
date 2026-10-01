@@ -230,7 +230,7 @@ async def _load_canonical_beats(ctx: ProjectContext, episode: int) -> list[dict[
 
 
 async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
-    """Run only final composition; director generation is intentionally absent."""
+    """Prepare requested cloned dialogue, then compose without video generation."""
     payload = dict(envelope.get("payload") or {})
     episode = int(envelope.get("episode") or payload.get("episode") or 0)
     group_id = str(payload["group_id"])
@@ -239,6 +239,21 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
     state = stage_payload(project_dir, episode, group_id, "video")
     if int(state["revision"]) != revision:
         return {"status": "stale", "group_id": group_id, "revision": revision}
+
+    if payload.get("prepare_external_audio"):
+        from novelvideo.task_state import get_task_manager
+        get_task_manager().update_progress_for_project(
+            ctx, "narrative_group_video_compose", episode,
+            progress=0.05, current_task="准备角色声音克隆与环境音轨…",
+        )
+        from novelvideo.audio.narrative_group_dubbing import prepare_external_audio
+        await prepare_external_audio(ctx, episode, group_id, revision, int(payload["span_index"]))
+        from novelvideo.narrative_groups.service import load_materialized_groups
+        from novelvideo.api.routes.narrative_groups import _episode_group_audio_ready
+        groups = load_materialized_groups(project_dir, episode)
+        if any(group.stages["video"].status != "completed" for group in groups) or not _episode_group_audio_ready(project_dir, episode, groups):
+            return {"group_id": group_id, "revision": revision, "audio_prepared": True,
+                    "recomposition_deferred": True}
 
     from novelvideo.task_backend.runners.video import run_compose_episode
 

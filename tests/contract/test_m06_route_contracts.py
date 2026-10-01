@@ -305,6 +305,7 @@ def m06_client_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         return f"/static/projects/{_PROJECT_ID}/{rel_path}"
 
     monkeypatch.setattr(ingest, "resolve_project_scope", resolve_project_scope)
+    monkeypatch.setattr(ingest, "make_cognee_store_for_context", make_store_for_context)
     monkeypatch.setattr(freezone, "resolve_project_context", resolve_project_context)
     monkeypatch.setattr(freezone, "make_sqlite_store_for_context", make_store_for_context)
     monkeypatch.setattr(freezone, "make_cognee_store_for_context", make_store_for_context)
@@ -361,7 +362,7 @@ def m06_client_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         async def override_cognee_store():
             yield store
 
-        app.dependency_overrides[ingest.get_cognee_store] = override_cognee_store
+        app.dependency_overrides[ingest.get_sqlite_store] = override_cognee_store
         return TestClient(app), task_backend, task_manager, project_dir, assets, store
 
     return build

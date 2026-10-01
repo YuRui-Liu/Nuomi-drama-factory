@@ -28,6 +28,30 @@ from novelvideo.task_backend.runners.identity import (
 from tests.director_plan.test_store import make_revision
 
 
+@pytest.mark.asyncio
+async def test_missing_active_plan_fails_before_identity_model_or_store_initialization(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+    import novelvideo.cognee as cognee
+    import novelvideo.sqlite_store as sqlite_module
+    from novelvideo.task_backend.runners import identity as runner
+
+    model_call = AsyncMock()
+    cognee_constructor = Mock(side_effect=AssertionError("Cognee must not initialize"))
+    sqlite_constructor = Mock(side_effect=AssertionError("SQLite must not initialize"))
+    monkeypatch.setattr(IdentityPlanner, "build_identity_plan_draft", model_call)
+    monkeypatch.setattr(cognee, "CogneeStore", cognee_constructor)
+    monkeypatch.setattr(sqlite_module, "SQLiteStore", sqlite_constructor)
+    monkeypatch.setattr(runner, "get_task_manager", lambda: Mock())
+    ctx = SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path, owner_project_label="test")
+
+    with pytest.raises(ValueError, match="ACTIVE_DIRECTOR_PLAN_REQUIRED"):
+        await runner._run_identity_planner({"episode": 1}, ctx)
+
+    model_call.assert_not_awaited()
+    cognee_constructor.assert_not_called()
+    sqlite_constructor.assert_not_called()
+
+
 def _character(name: str, *identities: CharacterIdentity) -> NovelCharacter:
     character = NovelCharacter(name=name)
     character.identities = list(identities)

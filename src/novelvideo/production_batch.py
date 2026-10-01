@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 import re
+from threading import Lock
 from typing import Any
 
 
@@ -47,6 +49,7 @@ class _Producer:
         self.submissions = 0
         self.aspect_ratio = aspect_ratio
         self.retry_failed = retry_failed
+        self.submission_lock = Lock()
 
     def read(self, path: str) -> Any:
         response = self.request("GET", path)
@@ -55,10 +58,11 @@ class _Producer:
         return response.get("data")
 
     def submit(self, path: str, body: dict | None = None, *, task: bool = True) -> dict:
-        if self.submissions >= self.max_submissions:
-            raise BatchFailure("submission_limit: batch submission limit reached")
-        # Count attempts, including ambiguous transport failures. Never automatically retry POST.
-        self.submissions += 1
+        with self.submission_lock:
+            if self.submissions >= self.max_submissions:
+                raise BatchFailure("submission_limit: batch submission limit reached")
+            # Count ambiguous attempts too; parallel groups must share the same budget.
+            self.submissions += 1
         response = self.request("POST", path, body)
         if response.get("ok") is not True:
             raise BatchFailure("api_error: submission failed")
@@ -211,10 +215,19 @@ def run_batch(
     through: str = "compose", with_sketch: bool = False,
     max_submissions: int = 100, aspect_ratio: str = "9:16",
     retry_failed: bool = False, emit: Callable = lambda _event: None,
+    concurrency: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Run each independent group; collect failures and compose only complete episodes."""
     if through not in {"render", "video", "compose"} or aspect_ratio not in {"9:16", "16:9"}:
         raise ValueError("Unsupported stage or aspect ratio")
+    limits = concurrency if concurrency is not None else {"sketch": 1, "render": 1, "video": 1}
+    if any(type(value) is not int or value < 1 for value in limits.values()):
+        raise ValueError("Concurrency must contain positive integers")
+    emit_lock = Lock()
+    output = emit
+    def emit(event):
+        with emit_lock:
+            output(event)
     producer = _Producer(request, wait_task, emit, max_submissions=max_submissions,
                          aspect_ratio=aspect_ratio, retry_failed=retry_failed)
     results = []
@@ -228,22 +241,28 @@ def run_batch(
             groups = producer.groups(episode)
             if not groups:
                 raise BatchFailure("groups_missing: active plan contains no groups")
-            for group in groups:
-                group_id = str(group["id"])
-                group_result: dict[str, Any] = {"group_id": group_id, "stages": {}}
+            item["groups"] = [{"group_id": str(group["id"]), "stages": {}} for group in groups]
+            changed: dict[str, bool] = {}
+            def produce_stage(group_result, stage):
+                group_id = group_result["group_id"]
                 try:
-                    upstream_changed = False
-                    for stage in stages:
-                        group_result["stages"][stage] = producer.stage(
-                            episode, group_id, stage, force=upstream_changed,
-                        )
-                        upstream_changed = group_result["stages"][stage] == "completed"
-                        emit({"event": "stage", "episode": episode, "group_id": group_id,
-                              "stage": stage, "status": group_result["stages"][stage]})
+                    group_result["stages"][stage] = producer.stage(
+                        episode, group_id, stage, force=changed.get(group_id, False),
+                    )
+                    changed[group_id] = group_result["stages"][stage] == "completed"
+                    emit({"event": "stage", "episode": episode, "group_id": group_id,
+                          "stage": stage, "status": group_result["stages"][stage]})
                 except BatchFailure as exc:
                     group_result["error"] = str(exc)
-                    item["status"] = "blocked"
-                item["groups"].append(group_result)
+            for stage in stages:
+                eligible = [group for group in item["groups"] if "error" not in group]
+                # Stage barriers keep group images before videos; failed groups never bypass images.
+                with ThreadPoolExecutor(max_workers=limits.get(stage, 1)) as pool:
+                    futures = [pool.submit(produce_stage, group, stage) for group in eligible]
+                    for future in futures:
+                        future.result()
+            if any("error" in group for group in item["groups"]):
+                item["status"] = "blocked"
             if through == "compose" and item["status"] == "completed":
                 # The final API has no source revision fingerprint. Recompose from current clips
                 # even if an older final exists, so interrupted runs cannot return stale exports.

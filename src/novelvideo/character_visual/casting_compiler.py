@@ -7,7 +7,7 @@ from typing import Any
 
 from .casting_brief import build_casting_dossier, validate_casting_decisions
 from .casting_models import CastingRevision, CastingSnapshot
-from .casting_proposals import HUMAN_SPECIES, selected_casting_species, validate_casting_proposal
+from .casting_proposals import HUMAN_SPECIES, selected_casting_species, validate_casting_proposal, blocking_casting_issues
 from .models import CharacterDesignProposal, CharacterNarrativeProfile
 
 
@@ -47,6 +47,7 @@ def compile_casting_snapshot(revision: CastingRevision, proposal: CharacterDesig
     issues = validate_casting_proposal(profile, proposal, revision.identity_id,
         source_revision=revision.source_revision, style_revision=style)
     issues += validate_casting_decisions(profile, revision.decisions, revision.identity_id)
+    issues = blocking_casting_issues(issues)
     if issues:
         raise ValueError("invalid casting: " + "; ".join(issues))
     constraints = [f"{f.field}: {f.value}" for f in dossier.hard_constraints if f.field in _PORTRAIT_FIELDS]

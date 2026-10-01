@@ -302,8 +302,8 @@ def test_compiles_ordered_references_with_i2v_and_fl2v_frames() -> None:
         payload["global"]["prompt"].index(item) for item in headings
     )
     assert [item["taskType"] for item in payload["segments"]] == [
-        "Ref-I2V",
-        "Ref-FL2V",
+        "i2v",
+        "fl2v",
     ]
     assert payload["shots"][0]["startImage"] == {
         "imageFile": "https://frames.example/opening-start.png"
@@ -715,7 +715,7 @@ def test_normalizes_string_and_mapping_frame_uploads() -> None:
 
 @pytest.mark.parametrize(
     ("mode", "expected_task_type"),
-    [("auto", "Ref-I2V"), ("i2va", "Ref-I2V"), ("fl2va", "Ref-FL2V")],
+    [("auto", "i2v"), ("i2va", "i2v"), ("fl2va", "fl2v")],
 )
 def test_preserves_product_modes(mode: str, expected_task_type: str) -> None:
     last_frame = "last.png" if mode == "fl2va" else None
@@ -730,3 +730,12 @@ def test_preserves_product_modes(mode: str, expected_task_type: str) -> None:
     )
 
     assert data["segments"][0]["taskType"] == expected_task_type
+    # Node 12 rejects any task type outside the modes it implements.
+    assert data["segments"][0]["taskType"] in {
+        "fl2v",
+        "i2v",
+        "r2v",
+        "rv2v",
+        "t2v",
+        "v2v",
+    }

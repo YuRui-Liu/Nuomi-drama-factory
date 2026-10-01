@@ -6,6 +6,7 @@ import i18n from "@/i18n";
 import enTranslation from "../../../../../public/locales/en/translation.json";
 import zhTranslation from "../../../../../public/locales/zh/translation.json";
 import { NarrativeGroupWorkbench } from "@/components/episode/narrative-workbench/narrative-group-workbench";
+import { useEpisodeWorkbenchStore, episodeWorkbenchScopeKey } from '@/stores/episode-workbench-store';
 import type { PlannedNarrativeGroupGenerationSelection } from "@/lib/queries/narrative-groups";
 
 const m = vi.hoisted(() => ({
@@ -74,10 +75,19 @@ vi.mock("@/components/episode/narrative-workbench/group-video-stage",()=>({
  groupFrameSummary:()=>({allHaveFirst:true,allHaveLast:false}),
 }));
 vi.mock("@/components/episode/narrative-workbench/group-video-reference-dialog",()=>({GroupVideoReferenceDialog:({open,onSaved,onDirtyChange}:any)=>open?<div role="dialog" aria-label="管理视频参考图"><button onClick={()=>onDirtyChange(true)}>修改描述</button><button onClick={()=>onSaved({revision:8,max_images:5,candidates:[],selected:[{reference_id:"hero",subject_description:"Hero"}],warnings:[]})}>保存参考图</button></div>:null}));
-vi.mock("@/components/episode/narrative-workbench/narrative-group-list",()=>({NarrativeGroupList:()=>null}));
+vi.mock("@/components/episode/narrative-workbench/narrative-group-list",async (importOriginal)=>({...await importOriginal<typeof import("@/components/episode/narrative-workbench/narrative-group-list")>(),NarrativeGroupList:()=>null}));
 vi.mock("@/stores/aspect-ratio-store",()=>({useProjectAspectRatio:()=>({orientation:m.orientation,spec:{},setOrientation:m.setOrientation})}));
 
 describe("NarrativeGroupWorkbench references",()=>{
+ it('separates storyboard and video stages without changing selected group', () => {
+  const view = render(<NarrativeGroupWorkbench project="p" episode={1} view="image" />);
+  expect(screen.getByRole('button', {name:'生成'})).toBeInTheDocument();
+  expect(screen.queryByRole('button', {name:'生成组合视频'})).not.toBeInTheDocument();
+  view.rerender(<NarrativeGroupWorkbench project="p" episode={1} view="video" />);
+  expect(screen.queryByRole('button', {name:'生成'})).not.toBeInTheDocument();
+  expect(screen.getByRole('button', {name:'生成组合视频'})).toBeInTheDocument();
+  expect(screen.getByRole('region', {name:'视频生成参数'})).toBeInTheDocument();
+ });
  beforeAll(async()=>{
   if(!i18n.isInitialized) await i18n.init({lng:"zh",fallbackLng:"zh",resources:{en:{translation:enTranslation},zh:{translation:zhTranslation}}});
   i18n.addResourceBundle("en","translation",enTranslation,true,true);
@@ -101,6 +111,17 @@ describe("NarrativeGroupWorkbench references",()=>{
   m.uploadReference.mockResolvedValue({ok:true,data:{upload_id:"upload-1",url:"/upload-1.png"}});
   m.setOrientation.mockImplementation((next: "portrait" | "landscape")=>{m.orientation=next;});
  });
+it('selects the exact task deep-linked group after its data loads', async () => {
+ const previous = window.location.href;
+ try {
+  window.history.replaceState({}, '', '?group=g2');
+  m.groups = [];
+  const view = render(<NarrativeGroupWorkbench project="task-link" episode={3} />);
+  m.groups = [group, group2];
+  view.rerender(<NarrativeGroupWorkbench project="task-link" episode={3} />);
+  await waitFor(() => expect(useEpisodeWorkbenchStore.getState().narrativeGroupSelectionByScope[episodeWorkbenchScopeKey({project:'task-link',episode:3})]).toBe('g2'));
+ } finally { window.history.replaceState({}, '', previous); }
+});
  it("passes the real route identifiers to prompt review only after opening",async()=>{
   const user=userEvent.setup();
   m.groups=[{...group,stages:{...group.stages,video:{status:"completed",revision:1,manifest_asset:"/media/group.manifest.json"}}}];
@@ -191,6 +212,9 @@ describe("NarrativeGroupWorkbench references",()=>{
   const view=render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
   fireEvent.click(screen.getByRole("button",{name:"9:16"}));
   await waitFor(()=>expect(m.updateProject).toHaveBeenCalledWith({aspect_ratio:"2:3"}));
+  await waitFor(()=>expect(m.success).toHaveBeenCalledWith("画幅已变更，请重新生成并激活镜头方案", expect.objectContaining({action:expect.objectContaining({label:"前往镜头方案"})})));
+  m.success.mock.calls[m.success.mock.calls.length - 1][1].action.onClick();
+  expect(m.navigate).toHaveBeenCalledWith({to:"/projects/$project/episodes/$episode/script",params:{project:"p",episode:"1"}});
   expect(m.setOrientation).toHaveBeenCalledWith("portrait");
 
   view.rerender(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
@@ -323,8 +347,21 @@ describe("NarrativeGroupWorkbench references",()=>{
   await props.onGenerate({video_model:"runninghub:minimax-h3-ref",h3_mode:"auto"});
   expect(m.generateVideo).not.toHaveBeenCalled();
  });
- it("retries a segment with the complete synchronized Ref request",async()=>{
+ it("counts stored references while the video reference preview is unavailable",async()=>{
+  // Regression: the counter only read the preview response, so a failed or
+  // still-loading preview rendered "已选 0/5" and silently resolved auto mode to
+  // I2VA on a workflow whose reference policy is required.
   m.mediaDefaults={...m.mediaDefaults,video_model:"runninghub:minimax-h3-ref"};
+  m.videoModels=[{id:"runninghub:minimax-h3-ref",label:"Ref",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto",reference_policy:{required:true,min_images:1,max_images:5,source_kinds:["character_identity"]}}];
+  m.groups=[{...group,video_inputs:[{beat_id:"1",has_first_frame:true,has_last_frame:false}],video_reference_settings:{revision:7,references:[{reference_id:"hero",subject_description:"Hero"},{reference_id:"fox",subject_description:"Fox"}]}}];
+  m.referencePreviewQuery.mockReturnValue({data:undefined,isLoading:true,isFetching:true,isError:false,error:null,refetch:vi.fn()});
+  render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
+  const props=m.stageProps.mock.calls[m.stageProps.mock.calls.length-1]?.[0];
+  expect(props.reference?.count).toBe(2);
+  // The generate gate still requires a loaded, valid preview.
+  expect(props.reference?.valid).toBe(false);
+ });
+ it("retries a segment with the complete synchronized Ref request",async()=>{  m.mediaDefaults={...m.mediaDefaults,video_model:"runninghub:minimax-h3-ref"};
   m.videoModels=[{id:"runninghub:minimax-h3-ref",label:"Ref",provider:"runninghub",available:true,supported_modes:["auto"],default_mode:"auto",reference_policy:{required:true,min_images:1,max_images:5,source_kinds:["character_identity"]}}];
   m.groups=[{...group,stages:{...group.stages,video:{status:"failed",revision:6}},video_plan:{revision:3,source:"recommended",units:[],total_duration_seconds:0},video_settings:{revision:5,workflow_id:"runninghub:minimax-h3-ref",overrides:{}},video_reference_settings:{revision:7,references:[]},video_segments:[{id:"seg1",group_id:"g1",shot_ids:["s1"],duration_seconds:5,continuity_reason:"",audio_mode:"project_default",style_snapshot_id:"s",status:"failed"}]}];
   m.referencePreviewQuery.mockReturnValue({data:{ok:true,data:{revision:7,max_images:5,candidates:[],selected:[{reference_id:"hero",subject_description:"Hero"}],warnings:[]}},isLoading:false,isFetching:false,isError:false,error:null,refetch:vi.fn()});

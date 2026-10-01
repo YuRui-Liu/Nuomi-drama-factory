@@ -10,6 +10,132 @@ def source_module():
     return casting_source
 
 
+def test_character_revision_ignores_unrelated_authoring_but_tracks_own_and_global():
+    m = source_module()
+    own = m.SourceDocument('character:甲', '甲外型', 'a', kind='authoring_context', character_name='甲')
+    other = m.SourceDocument('character:乙', '乙外型', 'b', kind='authoring_context', character_name='乙')
+    outline = m.SourceDocument('outline:o', '末世', 'o', kind='authoring_context')
+    docs = {x.document_id: x for x in (own, outline)}
+    original = m.character_source_revision(docs, 'global-1', '甲')
+    assert m.character_source_revision({**docs, other.document_id: other}, 'global-2', '甲') == original
+    assert m.character_source_revision({**docs, own.document_id: m.SourceDocument('character:甲', '甲新外型', 'a2', kind='authoring_context', character_name='甲')}, 'global-3', '甲') != original
+    assert m.character_source_revision({own.document_id: own}, 'global-4', '甲') != original
+
+
+def test_legacy_revision_only_reused_with_exact_digest_proof():
+    m = source_module()
+    own = m.SourceDocument('character:甲', '甲外型', 'a', kind='authoring_context', character_name='甲')
+    added = m.SourceDocument('character-design:乙', '乙外型', 'b', kind='authoring_context', character_name='乙')
+    documents = {own.document_id: own}
+    old = m._source_documents_revision(documents)
+    current = {**documents, added.document_id: added}
+    assert m.character_source_revision(current, m._source_documents_revision(current), '甲', expected_revision=old) == old
+    changed = {**current, own.document_id: m.SourceDocument('character:甲', '变更', 'changed', kind='authoring_context', character_name='甲')}
+    assert m.character_source_revision(changed, m._source_documents_revision(changed), '甲', expected_revision=old) != old
+
+
+def test_legacy_revision_proves_bulk_import_additions_without_enumeration():
+    m = source_module()
+    own = m.SourceDocument('character:甲', '甲', 'a', kind='authoring_context', character_name='甲')
+    original = {own.document_id: own}
+    for i in range(7):
+        key = f'character-design:{i}'
+        original[key] = m.SourceDocument(key, '设定', str(i), kind='authoring_context', character_name='乙')
+    current = dict(original)
+    for i in range(8):
+        key = f'character-import:{i}'
+        current[key] = m.SourceDocument(key, '设定', str(i), kind='authoring_context', character_name='乙')
+    old = m._source_documents_revision(original)
+    assert m.character_source_revision(current, m._source_documents_revision(current), '甲', expected_revision=old) == old
+
+
+@pytest.mark.asyncio
+async def test_text_character_context_reaches_design_without_becoming_source_fact(tmp_path):
+    import json
+    from novelvideo.sqlite_store import SQLiteStore
+    from novelvideo.models import NovelCharacter
+    from novelvideo.character_visual.casting_brief import build_casting_dossier
+    m = source_module()
+    store = SQLiteStore('test', output_dir=str(tmp_path))
+    await store.initialize()
+    try:
+        await store.add_character(NovelCharacter(name='岑砚', description='身份：旧城测绘员；近未来末世。'))
+        await store.add_character(NovelCharacter(name='别人', description='古代文士。'))
+        documents, revision = await m.load_sources(tmp_path, store)
+        profile = await m.ground_profile(CharacterNarrativeProfile(character_id='岑砚', name='岑砚'),
+            documents, revision, runtime=None)
+        dossier = build_casting_dossier(profile, None, revision, '3D国漫')
+        assert '旧城测绘员' in json.dumps(dossier.narrative, ensure_ascii=False)
+        assert '古代文士' not in json.dumps(dossier.narrative, ensure_ascii=False)
+        assert profile.facts == []
+        assert dossier.hard_constraints == []
+        assert profile.authoring_context[0]['kind'] == 'authoring_context'
+        m.assert_live_sources(SimpleNamespace(output_dir=tmp_path), store, documents, '岑砚', None)
+        await store.add_character(NovelCharacter(name='别人', description='另一个人的新设定'))
+        m.assert_live_sources(SimpleNamespace(output_dir=tmp_path), store, documents, '岑砚', None)
+        await store.add_character(NovelCharacter(name='岑砚', description='已改职业'))
+        with pytest.raises(ValueError, match='source changed'):
+            m.assert_live_sources(SimpleNamespace(output_dir=tmp_path), store, documents, '岑砚', None)
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_linked_character_design_and_outline_have_current_revision_provenance(tmp_path):
+    from novelvideo.sqlite_store import SQLiteStore
+    from novelvideo.script_creation.store import DocumentStore
+    from novelvideo.script_creation.entities import EntityService
+    m = source_module()
+    assets = SQLiteStore('test', output_dir=str(tmp_path))
+    await assets.initialize()
+    try:
+        store = DocumentStore(assets.db_path)
+        await store.initialize()
+        entities = EntityService(store)
+        await entities.initialize()
+        people = await store.create(kind='people', title='人物', markdown='## 岑砚\n身份：旧城测绘员', client_mutation_id='people')
+        await entities.put(document_id=people.id, base_revision_id=people.current_revision_id,
+            block_id=people.revision.blocks[0].id, name='岑砚',
+            create_text={'name': '岑砚'}, client_mutation_id='link')
+        outline = await store.create(kind='outline', title='世界设定', markdown='近未来末世', client_mutation_id='outline')
+        docs, revision = await m.load_sources(tmp_path, assets)
+        profile = await m.ground_profile(CharacterNarrativeProfile(character_id='岑砚', name='岑砚'), docs, revision, runtime=None)
+        assert {c['text'] for c in profile.authoring_context} == {'## 岑砚\n身份：旧城测绘员', '近未来末世'}
+        assert {c['revision'] for c in profile.authoring_context} == {people.current_revision_id, outline.current_revision_id}
+        await store.save(people.id, base_revision_id=people.current_revision_id,
+            markdown='## 岑砚\n尚未确认的新设定', client_mutation_id='edit')
+        with pytest.raises(ValueError, match='source changed'):
+            m.assert_live_sources(SimpleNamespace(output_dir=tmp_path), assets, docs, '岑砚', None)
+        fresh, _ = await m.load_sources(tmp_path, assets)
+        assert not any(k.startswith('character-design:') for k in fresh)
+    finally:
+        await assets.close()
+
+
+def test_authoring_context_cannot_be_relocated_into_trusted_source_facts():
+    from novelvideo.character_visual.models import CharacterNarrativeFact, SourceSpan
+    m = source_module()
+    fact = CharacterNarrativeFact(fact_id='f', field='age_range', value='十九岁', evidence='甲十九岁。',
+        confidence=1, source_span=SourceSpan(start_line=1, end_line=1), source_start=0, source_end=5,
+        source_document='character:甲')
+    documents = {'character:甲': m.SourceDocument('character:甲', '甲十九岁。', 'hash', kind='authoring_context', character_name='甲')}
+    assert m.verified_fact(fact, documents, ['甲'], 'hash') is None
+
+
+@pytest.mark.asyncio
+async def test_authored_character_does_not_require_appearance_in_imported_episode():
+    m = source_module()
+    documents = {
+        'episode:0001': m.SourceDocument('episode:0001', '乙推开门。', 'episode-hash'),
+        'character:甲': m.SourceDocument('character:甲', '甲是旧城测绘员。', 'character-hash',
+            kind='authoring_context', character_name='甲'),
+    }
+    profile = await m.ground_profile(CharacterNarrativeProfile(character_id='甲', name='甲'),
+        documents, 'revision', runtime=None)
+    assert profile.facts == []
+    assert profile.authoring_context[0]['text'] == '甲是旧城测绘员。'
+
+
 def test_extraction_schema_names_backend_fields_and_requires_literal_values():
     m = source_module()
     from pydantic import ValidationError

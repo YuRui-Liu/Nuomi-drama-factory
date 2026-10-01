@@ -96,7 +96,7 @@ def production_direction_errors(shot: "ShotPlan") -> tuple[str, ...]:
         item.entity_key for item in shot.asset_requirements
         if item.kind in {"character_identity", "character_state"}
     }
-    if character_ids and {item.subject_id for item in facts.subjects} != character_ids:
+    if {item.subject_id for item in facts.subjects} != character_ids:
         errors.append("blocking_subject_mismatch")
     if facts.source == "director_plan" and not set(facts.source_ids).issubset(shot.source_span_ids):
         errors.append("cinematography_source_mismatch")

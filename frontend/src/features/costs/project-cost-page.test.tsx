@@ -9,10 +9,23 @@ import { initReactI18next } from 'react-i18next';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/__mocks__/msw/server';
 import { ProjectCostPage } from './project-cost-page';
+import { CostSummary } from './cost-summary';
+import type { ProjectCostSnapshot } from '@/types/project-costs';
 vi.mock('@/lib/api', () => ({ api: ky.create({ baseUrl: 'http://localhost:3000/' }) }));
 beforeAll(async () => { await i18next.use(initReactI18next).init({ lng: 'zh', resources: {}, interpolation: { escapeValue: false } }); });
 
 afterEach(cleanup);
+it('shows confirmed RH package credits independently without an exchange-rate warning', () => {
+  const data = snapshot('one', true) as ProjectCostSnapshot;
+  data.summary.cny_attempt_count = 0;
+  data.summary.unpriced_count = 0;
+  data.historical_credits = { provider: 'runninghub', credit: '509', task_count: 5, date_known: false };
+  render(<CostSummary snapshot={data} />);
+  expect(screen.getByText('509 RH 币')).toBeInTheDocument();
+  expect(screen.getByText('RunningHub 套餐消费（已确认）')).toBeInTheDocument();
+  expect(screen.getByTestId('cost-total')).toHaveTextContent('暂无人民币费用记录');
+  expect(screen.queryByText(/尚未换算|监测起点|监测存在缺口/)).not.toBeInTheDocument();
+});
 it.each(['pending', 'failed', 'unknown'])('excludes %s submission money from current detail while retaining audit history', async submission => {
   setup();
   const attempt = { attempt_id: 'excluded', project_id: 'one', provider: 'runninghub', account_id: 'main', model: 'test-model', media_type: 'image', occurred_at: '2026-09-24T02:00:00Z', task_id: null, resource_id: null, external_id: null, execution_status: 'unknown', submission_status: submission, usage: { call: '1' }, usage_source: 'request', workflow: null, specifications: [] };

@@ -16,6 +16,7 @@ from novelvideo.director_plan.models import ShotPlan
 from novelvideo.media_capabilities.video.h3_reference_runtime import H3FrozenFrame
 from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
 from novelvideo.text_task_runtime.runtime import StructuredTextRuntime
+from novelvideo.task_backend.cancel import TaskCancelled, TaskTimedOut, TaskLeaseLost
 from .visual_review import MAX_FRAME_PIXELS, VisualReviewReport, review_cinematography
 
 
@@ -160,6 +161,8 @@ async def review_reference_inputs(
                     frames[role] = path
                 rows.append((segment, frames, shots))
             return await _review(rows, runtime, cache_dir, "reference")
+    except (TaskCancelled, TaskTimedOut, TaskLeaseLost):
+        raise
     except Exception:
         return _unavailable()
 
@@ -206,5 +209,7 @@ async def review_generated_segments(
                 frames = await asyncio.to_thread(_extract_frames, Path(source), directory)
                 rows.append((segment, frames, shots))
             return await _review(rows, runtime, cache_dir, "actual")
+    except (TaskCancelled, TaskTimedOut, TaskLeaseLost):
+        raise
     except Exception:
         return _unavailable()

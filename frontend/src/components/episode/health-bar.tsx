@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 
-import { SlidingTabs } from "@/components/nav/sliding-tabs";
 import { useBeatStates } from "@/hooks/use-beat-states";
 import { TOP_TABS } from "@/lib/episode-nav";
 import type { TopTabDef } from "@/lib/episode-nav";
@@ -19,6 +18,7 @@ export function HealthBar({ project, episode }: EpisodeNavProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const search = useSearch({ strict: false }) as Record<string, unknown>;
   const params = { project, episode: String(episode) };
   const activeTab =
     TOP_TABS.find(
@@ -29,29 +29,17 @@ export function HealthBar({ project, episode }: EpisodeNavProps) {
             pathname.endsWith("/audio") ||
             pathname.endsWith("/video"))),
     ) ?? TOP_TABS[0];
-  const items = TOP_TABS.map((tab) => ({
-    value: tab.id,
-    icon: tab.icon,
-    label: t(tab.labelKey),
-    testId: `episode-health-${tab.id}`,
-  }));
+  const stages = [
+    { id: 'script', label: '叙事组脚本', route: '/script' },
+    { id: 'image', label: '分镜生图', route: '/beats', sub: 'render' },
+    { id: 'video', label: '视频生成', route: '/beats', sub: 'video' },
+    { id: 'compose', label: '整集合成', route: '/compose' },
+  ] as const;
+  const selected = activeTab.id === 'beats' ? search.sub === 'video' ? 'video' : 'image' : activeTab.id;
 
   return (
-    <nav className="border-b border-border/30 bg-background px-9 py-3">
-      <SlidingTabs
-        items={items}
-        value={activeTab.id}
-        aria-label={t("nav.episodes")}
-        className="justify-center"
-        onValueChange={(next) => {
-          const tab = TOP_TABS.find((item) => item.id === next);
-          if (!tab) return;
-          void navigate({
-            to: `/projects/$project/episodes/$episode${tab.routeSegment}`,
-            params,
-          });
-        }}
-      />
+    <nav aria-label={t("nav.episodes")} className="flex shrink-0 gap-6 overflow-x-auto border-b border-border/30 bg-background px-5 sm:px-9">
+      {stages.map((stage, index) => <button key={stage.id} type="button" aria-current={selected === stage.id ? 'page' : undefined} data-testid={`episode-health-${stage.id}`} className={cn('shrink-0 border-b-2 px-1 py-3 text-sm transition-colors', selected === stage.id ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground')} onClick={() => void navigate({to: `/projects/$project/episodes/$episode${stage.route}`, params, search: ('sub' in stage ? {sub: stage.sub} : {}) as never})}><span className="mr-2 text-[11px] opacity-60">0{index + 1}</span>{stage.label}</button>)}
     </nav>
   );
 }

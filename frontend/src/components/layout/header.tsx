@@ -39,6 +39,7 @@ import { useAppStore } from "@/stores/app-store";
 import { authRequired, isCeRuntime } from "@/lib/runtime-config";
 import { resetUserSessionState } from "@/lib/reset-region-state";
 import { useModelGatewayConfig } from "@/lib/queries/model-gateway";
+import { useKnowledgeRuntimeStatus, useMediaProviderAccounts } from "@/lib/queries/knowledge-runtime";
 import { useReleaseNotifications } from "@/lib/queries/release-notifications";
 import {
   markUpgradeSeen,
@@ -94,17 +95,32 @@ export function Header() {
     ? "zh"
     : "en";
   const modelGatewayConfig = useModelGatewayConfig(ceRuntime);
+  const runtimeStatus = useKnowledgeRuntimeStatus(ceRuntime);
+  const mediaProviders = useMediaProviderAccounts(ceRuntime);
   const releaseNotifications = useReleaseNotifications(i18n.resolvedLanguage ?? i18n.language);
   const releaseFeed = releaseNotifications.data?.data;
   void releaseNotificationStateVersion;
   const hasUnreadNotification = shouldShowUpgradeNudge(releaseFeed);
   const gatewayConfig = modelGatewayConfig.data?.data;
-  const hasSettingsWarning = Boolean(
-    ceRuntime &&
-      gatewayConfig &&
-      (gatewayConfig.effective.configured === false ||
-        gatewayConfig.mediaRelay?.configured === false),
-  );
+  const missingConnections: string[] = [];
+  const failedConnections: string[] = [];
+  if (runtimeStatus.isError) failedConnections.push("运行时");
+  else if (!runtimeStatus.isPending && runtimeStatus.data?.ready === false) missingConnections.push("运行时");
+  if (mediaProviders.isError) failedConnections.push("媒体服务");
+  else if (!mediaProviders.isPending && mediaProviders.data) {
+    for (const [type, label] of [["grsai", "GRSAI"], ["runninghub", "RunningHub"]]) {
+      if (!mediaProviders.data.some((provider) => provider.provider_type === type && provider.credential_configured)) missingConnections.push(label);
+    }
+  }
+  // The gateway itself is optional; only its media-storage status belongs in
+  // the global production checklist. Never infer missing config from no data.
+  if (modelGatewayConfig.isError) failedConnections.push("媒体存储");
+  else if (!modelGatewayConfig.isPending && gatewayConfig?.mediaRelay?.configured === false) missingConnections.push("媒体存储");
+  const settingsNotice = [
+    missingConnections.length ? `待配置：${missingConnections.join("、")}` : "",
+    failedConnections.length ? `读取失败：${failedConnections.join("、")}` : "",
+  ].filter(Boolean).join("；");
+  const hasSettingsWarning = ceRuntime && Boolean(settingsNotice);
   const settingsWarningBubble = useFloatingBubblePosition(
     settingsAnchorRef,
     hasSettingsWarning && !settingsOpen && !settingsWarningBubbleDismissed,
@@ -215,7 +231,7 @@ export function Header() {
 
   return (
     <div className="relative z-20 shrink-0 bg-background/58 text-sidebar-foreground backdrop-blur-xl">
-      <header className="relative grid min-h-14 grid-cols-[minmax(0,1fr)_minmax(240px,2fr)_minmax(0,1fr)] items-center gap-x-3 px-4 max-lg:grid-cols-[minmax(0,1fr)_auto] max-lg:grid-rows-[56px_40px]">
+      <header className="relative grid min-h-14 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 px-4 max-lg:grid-cols-[minmax(0,1fr)_auto]">
         <div className="col-start-1 row-start-1 flex min-w-0 items-center">
           <TooltipProvider delay={80}>
             <Tooltip>
@@ -377,7 +393,7 @@ export function Header() {
       {settingsWarningBubble
         ? createPortal(
             <div
-              className="fixed z-[9999] w-[112px] rounded-md border border-amber-400/45 bg-amber-400 py-1 pl-2 pr-6 text-[11px] font-medium leading-none text-black shadow-[0_8px_22px_rgba(0,0,0,0.36),0_0_12px_rgba(251,191,36,0.28)]"
+              className="fixed z-[9999] w-[240px] max-w-[calc(100vw-24px)] rounded-md border border-amber-400/45 bg-amber-400 py-1.5 pl-2 pr-6 text-[11px] font-medium leading-4 text-black shadow-[0_8px_22px_rgba(0,0,0,0.36),0_0_12px_rgba(251,191,36,0.28)]"
               style={{ left: settingsWarningBubble.left, top: settingsWarningBubble.top }}
               role="status"
             >
@@ -386,7 +402,7 @@ export function Header() {
                 style={{ left: settingsWarningBubble.arrowLeft }}
                 aria-hidden="true"
               />
-              <span className="block truncate">{t("header.settingsWarningBubble")}</span>
+              <button type="button" className="block w-full text-left hover:underline" onClick={() => setSettingsOpen(true)}>{settingsNotice}</button>
               <button
                 type="button"
                 className="absolute right-1 top-1/2 flex size-4 -translate-y-1/2 items-center justify-center rounded-full text-black/70 transition-colors hover:bg-black/10 hover:text-black"
@@ -423,7 +439,7 @@ function useFloatingBubblePosition(
         setPosition(null);
         return;
       }
-      const bubbleWidth = 112;
+      const bubbleWidth = Math.min(240, window.innerWidth - 24);
       const viewportPadding = 8;
       const idealLeft = rect.left + rect.width / 2 - bubbleWidth / 2;
       const left = Math.min(

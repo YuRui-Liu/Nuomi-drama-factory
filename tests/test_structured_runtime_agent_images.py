@@ -53,6 +53,54 @@ async def test_text_only_agent_does_not_add_images_keyword():
 
 
 @pytest.mark.asyncio
+async def test_malformed_structured_output_is_reasked_once():
+    from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
+
+    received = []
+
+    class Runtime:
+        snapshot = SimpleNamespace(model="test")
+
+        async def run_structured(self, **kwargs):
+            received.append(kwargs)
+            if len(received) == 1:
+                raise KnowledgeRuntimeError(
+                    "DeepSeek Harness 未返回符合要求的结构化结果。",
+                    code="DSH_OUTPUT_INVALID",
+                )
+            return {"count": 1}
+
+    agent = StructuredRuntimeAgent(Runtime(), output_type=Output, output_retries=1)
+
+    result = await agent.run("plan")
+
+    assert result.output["count"] == 1
+    assert len(received) == 2
+    assert "plan" in received[1]["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_failure_without_output_code_is_not_retried():
+    from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
+
+    received = []
+
+    class Runtime:
+        snapshot = SimpleNamespace(model="test")
+
+        async def run_structured(self, **kwargs):
+            received.append(kwargs)
+            raise KnowledgeRuntimeError("dsh 不可用", code="DSH_EXEC_FAILED")
+
+    agent = StructuredRuntimeAgent(Runtime(), output_type=Output, output_retries=2)
+
+    with pytest.raises(KnowledgeRuntimeError):
+        await agent.run("plan")
+
+    assert len(received) == 1
+
+
+@pytest.mark.asyncio
 async def test_invalid_images_fail_before_runtime_call():
     class Runtime:
         snapshot = SimpleNamespace(model="test")
@@ -80,3 +128,37 @@ async def test_image_rejection_does_not_fall_back_to_text():
     with pytest.raises(ValueError, match="vision unavailable"):
         await agent.run("inspect", images=[picture()])
     assert len(received) == 1
+
+
+@pytest.mark.asyncio
+async def test_schema_rejection_retry_carries_the_failing_field_and_rule():
+    """Regression: h3 视频任务 DSH_OUTPUT_INVALID。
+
+    The payload was valid JSON that broke a cross-field rule, so the old generic
+    "not schema-shaped JSON" re-ask told the model nothing and it repeated the
+    same violation. The runtime's structural detail must reach the retry prompt.
+    """
+
+    from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
+
+    received = []
+
+    class Runtime:
+        snapshot = SimpleNamespace(model="test")
+
+        async def run_structured(self, **kwargs):
+            received.append(kwargs)
+            if len(received) == 1:
+                raise KnowledgeRuntimeError(
+                    "DeepSeek Harness 未返回符合要求的结构化结果。"
+                    "（segments.0.director_plan: Value error, ref2va requires reference_summary）",
+                    code="DSH_OUTPUT_INVALID",
+                )
+            return {"count": 1}
+
+    agent = StructuredRuntimeAgent(Runtime(), output_type=Output, output_retries=1)
+
+    await agent.run("plan")
+
+    assert "ref2va requires reference_summary" in received[1]["prompt"]
+    assert "segments.0.director_plan" in received[1]["prompt"]

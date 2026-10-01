@@ -3,6 +3,7 @@
 import type { NodeTypes } from '@xyflow/react';
 
 import { AudioNode } from './AudioNode';
+import { MusicDeskNode } from './MusicDeskNode';
 import { BeatContextNode } from './BeatContextNode';
 import { GroupNode } from './GroupNode';
 import { ImageEditNode } from './ImageEditNode';
@@ -22,6 +23,7 @@ import { VideoNode } from './VideoNode';
 import { VideoStoryNode } from './VideoStoryNode';
 
 export const nodeTypes: NodeTypes = {
+  musicDeskNode: MusicDeskNode,
   audioNode: AudioNode,
   beatContextNode: BeatContextNode,
   exportImageNode: ImageNode,

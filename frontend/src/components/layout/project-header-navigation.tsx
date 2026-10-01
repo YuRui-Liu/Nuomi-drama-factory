@@ -183,7 +183,7 @@ export function ProjectHeaderNavigation({ project }: { project: string }) {
   return (
     <nav
       aria-label={t("nav.projectNavigation")}
-      className="col-start-2 row-start-1 flex h-14 min-w-0 items-stretch overflow-x-auto whitespace-nowrap max-lg:col-span-2 max-lg:col-start-1 max-lg:row-start-2 max-lg:h-10 max-lg:w-full"
+      className="col-start-2 row-start-1 flex min-h-14 min-w-0 flex-wrap items-stretch justify-center whitespace-nowrap max-lg:col-span-2 max-lg:col-start-1 max-lg:row-start-2 max-lg:min-h-10 max-lg:w-full"
     >
       {PROJECT_NAV_ITEMS.map((item) => {
         const sectionPath = item.to.replace("$project", encodeURIComponent(project));
@@ -200,7 +200,7 @@ export function ProjectHeaderNavigation({ project }: { project: string }) {
             params={{ project }}
             aria-current={active ? "page" : undefined}
             className={cn(
-              "relative inline-flex min-h-10 items-center px-3 text-xs font-medium transition-colors duration-150",
+              "relative inline-flex min-h-10 shrink-0 items-center px-3 text-xs font-medium transition-colors duration-150",
               "after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:bg-[var(--brand-accent)] after:transition-opacity",
               active
                 ? "text-foreground after:opacity-100"

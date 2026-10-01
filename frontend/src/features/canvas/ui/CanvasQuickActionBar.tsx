@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ComponentType } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Clock, HelpCircle, Keyboard, Plus } from 'lucide-react';
+import { PRODUCT_MANUAL_URL } from '@/lib/product-manual';
 
 import type { CanvasNodeType } from '@/features/canvas/domain/canvasNodes';
 import type { CanvasAsset } from '@/features/canvas/domain/canvasAssets';
@@ -11,15 +12,17 @@ import type { SkillDefinition } from '@/features/freezone/context/skillRoles';
 import { CanvasAddNodePanel } from './CanvasAddNodePanel';
 import { CanvasShortcutsPanel } from './CanvasShortcutsPanel';
 import { CanvasHistoryAssetsModal } from './CanvasHistoryAssetsModal';
+import { StudioCanvasPanel } from '@/features/studios/studio-canvas-panel';
 
 type QuickPanel = 'add' | 'history' | 'shortcuts' | 'help';
 
 // 悬停即开 / 离开延迟关闭的轻量 popover 面板（区别于 history 那种 modal）。
 const HOVER_POPOVER_PANELS: ReadonlySet<QuickPanel> = new Set(['add']);
 const ANCHORED_POPOVER_PANELS: ReadonlySet<QuickPanel> = new Set(['add', 'shortcuts']);
-const PRODUCT_MANUAL_URL = 'https://neo-flying.feishu.cn/docx/T2UgdVA4Fo1A5KxCh0vckDz3nTg';
 
 interface CanvasQuickActionBarProps {
+  project?: string | null;
+  selectedNodeId?: string | null;
   placement?: 'bottom-right' | 'top-right';
   skillItems: SkillDefinition[];
   onAddNode: (type: CanvasNodeType) => void;
@@ -62,6 +65,8 @@ const ACTIONS: QuickActionDef[] = [
 ];
 
 export function CanvasQuickActionBar({
+  project,
+  selectedNodeId,
   placement = 'bottom-right',
   skillItems,
   onAddNode,
@@ -182,6 +187,7 @@ export function CanvasQuickActionBar({
           )}
 
           <div className="flex h-12 items-center gap-2.5 rounded-[12px] border border-white/[0.08] bg-[#11151d]/95 px-1.5 shadow-[0_14px_36px_rgba(0,0,0,0.42)] backdrop-blur-md">
+            {project && <StudioCanvasPanel project={project} nodeId={selectedNodeId} onUseAsset={onUseAsset} />}
             {ACTIONS.map((action) => {
               const { key, icon: Icon, labelKey, tooltipKey, primary } = action;
               const active = openPanel === key;

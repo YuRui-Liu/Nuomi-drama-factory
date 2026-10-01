@@ -25,12 +25,33 @@ from pathlib import Path
 from typing import Any
 
 
+# The model IDs the WorkBuddy CLI actually advertises for `--model`. This is the
+# list printed by `codebuddy --help` and embedded in the product's local
+# `models` catalog; the server echoes the same set as "Currently supported
+# models for your account".
+#
+# Deliberately NOT included: "Hy3"/"Hy4 preview"/"Deepseek-V4.1-Flash". Those
+# belong to the separate *CodeBuddy* product (`Copilot` CLI, endpoint
+# copilot.tencent.com) and are rejected by the WorkBuddy CLI with
+# `400 model [...] service info not found`. IDs are also case-sensitive, so
+# "Hy3" is not "hy3". Entries here can still be entitlement-gated per account;
+# put the account's real list in `.codebuddy/models.json` `availableModels`.
 _WORKBUDDY_DEFAULT_MODELS = (
-    "Hy4 preview",
-    "Hy3",
-    "Deepseek-V4",
-    "Deepseek-V4.1-Flash",
     "default-model",
+    "gemini-3.1-pro",
+    "gemini-3.0-flash",
+    "gemini-3.5-flash",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-3.1-flash-lite",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-mini",
+    "deepseek-v3-2-volc",
+    "glm-5.0",
+    "kimi-k2.5",
 )
 _CODEX_DEFAULT_MODELS = (
     "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",

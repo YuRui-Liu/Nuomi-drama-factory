@@ -127,13 +127,10 @@ async def test_adopt_publishes_exact_image_bible_workflow_and_scoped_identity(ad
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('status,sentinel', [('not_started', 'review_not_started'), ('failed', 'review_failed')])
-async def test_unknown_review_needs_explicit_ack_and_reason(adoption_env, status, sentinel):
+async def test_unknown_review_is_advisory_without_ack_or_reason(adoption_env, status, sentinel):
     implementation()
     e = await adoption_env(review=status)
-    with pytest.raises(ValueError, match='acknowledge'):
-        await e.adopt()
-    command = e.command.model_copy(update={'acknowledged_findings': [sentinel], 'override_reason': '已人工核对候选形象并接受未完成审查风险'})
-    result = await e.adopt(command)
+    result = await e.adopt()
     from novelvideo.production_workflow import ProductionWorkflowStore
     _, versions = ProductionWorkflowStore(e.ctx.state_dir / 'production_workflow.json').get_slot('character:甲:portrait')
     assert versions[result['version_id']].qc_passed is False
@@ -175,10 +172,9 @@ async def test_stale_snapshot_and_review_attempt_and_reused_key_rejected(adoptio
     implementation()
     e = await adoption_env()
     e.candidates.begin_review('candidate', task_id='review-again', attempt_id='review-2')
-    with pytest.raises(ValueError, match='review'):
-        await e.adopt()
+    assert (await e.adopt())['adoption_status'] == 'adopted'
     e.candidates.fail_review('candidate', attempt_id='review-2', error='review_failed')
-    command = e.command.model_copy(update={'expected_review_attempt_id': 'review-2', 'acknowledged_findings': ['review_failed'], 'override_reason': '已人工检查并接受审查失败'})
+    command = e.command.model_copy(update={'idempotency_key': 'after-review', 'expected_review_attempt_id': 'review-2'})
     await e.adopt(command)
     with pytest.raises(ValueError, match='idempotency'):
         await e.adopt(command.model_copy(update={'override_reason': '换了另一个解释，但用了相同请求键'}))
@@ -246,15 +242,13 @@ async def test_structural_failures_cannot_be_overridden(adoption_env, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_every_deviation_and_unjudgeable_finding_requires_ack(adoption_env):
+async def test_every_deviation_and_unjudgeable_finding_is_retained_without_ack(adoption_env):
     implementation()
     e = await adoption_env(review='running')
     e.candidates.complete_review('candidate', attempt_id='review-1', report=CastingReviewReport(reviewer='ai', model='model', version='v1', findings=[
         CastingFinding(finding_id='deviation', dimension='facts', verdict='deviation', description='偏差'),
         CastingFinding(finding_id='hidden', dimension='design', verdict='unjudgeable', description='不可见')]))
-    with pytest.raises(ValueError, match='acknowledge'):
-        await e.adopt(e.command.model_copy(update={'acknowledged_findings': ['deviation'], 'override_reason': '已核对'}))
-    result = await e.adopt(e.command.model_copy(update={'acknowledged_findings': ['deviation', 'hidden'], 'override_reason': '已核对'}))
+    result = await e.adopt()
     from novelvideo.production_workflow import ProductionWorkflowStore
     _, versions = ProductionWorkflowStore(e.ctx.state_dir / 'production_workflow.json').get_slot('character:甲:portrait')
     v = versions[result['version_id']]
@@ -325,10 +319,8 @@ async def test_real_http_adoption_updates_current_and_exposes_review_contract(ad
         base = '/projects/project/characters/甲/casting'
         candidates = await client.get(base + '/candidates?identity_id=old')
         requirements = candidates.json()['data'][0]['adoption_requirements']
-        assert requirements['required_acknowledgements'] == ['review_not_started']
+        assert requirements['required_acknowledgements'] == []
         body = e.command.model_dump(mode='json')
-        assert (await client.post(base + '/candidates/candidate/adopt?identity_id=old', json=body)).status_code == 409
-        body.update(acknowledged_findings=['review_not_started'], override_reason='人工核对')
         response = await client.post(base + '/candidates/candidate/adopt?identity_id=old', json=body)
         assert response.status_code == 200, response.text
         current = await client.get(base + '?identity_id=old')

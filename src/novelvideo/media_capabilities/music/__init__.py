@@ -1,0 +1,1 @@
+"""Instrumental music generation providers."""

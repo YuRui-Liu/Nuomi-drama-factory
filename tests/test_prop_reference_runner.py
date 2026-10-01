@@ -4,6 +4,14 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_prop_visual_prompt_retains_business_and_source_context():
+    from novelvideo.task_backend.runners.prop_reference import _prop_reference_prompt
+    prompt = _prop_reference_prompt(style="3D", visual_prompt="磨损金属手电", description="检修员用于检查漏水，不是武器", owner="岑砚", notes="保持单颗灯珠", source_context="revision-r2：拇指可触及开关")
+    for value in ("磨损金属手电", "不是武器", "岑砚", "单颗灯珠", "revision-r2", "拇指可触及开关"):
+        assert value in prompt
+    assert "BUSINESS CONTEXT" in prompt
+
+
 def test_prop_canonical_replace_failure_rolls_back_workflow_and_canonical(
     monkeypatch, tmp_path
 ):
@@ -61,7 +69,10 @@ async def test_prop_reference_runner_registers_candidates_without_overwriting_cu
         name="手机",
         prop_type="document",
         visual_prompt="黑色旧手机，右上角裂纹；屏幕内容由后期叠加",
+        description="用于保存停水通知，不可当成武器", owner="岑砚", notes="左手可持握",
     )
+    monkeypatch.setattr("novelvideo.script_creation.asset_context.load_asset_authoring_context",
+        lambda db, kind, name: [{"source_revision_id": "authoring-r3", "text": "手机必须保留原有裂纹"}])
     calls: list[dict] = []
     slot_factory_calls: list[str] = []
 
@@ -154,6 +165,8 @@ async def test_prop_reference_runner_registers_candidates_without_overwriting_cu
     assert slot_factory_calls == ["手机", "手机"]
     assert "front, strict side, and back" in calls[0]["prompt"]
     assert "readable text" in calls[0]["prompt"]
+    for value in (prop.visual_prompt, prop.description, prop.owner, prop.notes, "authoring-r3", "手机必须保留原有裂纹"):
+        assert value in calls[0]["prompt"]
     assert all("versions" in str(call["output_path"]) for call in calls)
 
     from novelvideo.production_workflow import ProductionWorkflowStore

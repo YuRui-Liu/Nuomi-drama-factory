@@ -7,6 +7,8 @@ from typing import Any, Awaitable, Callable
 
 from pydantic import BaseModel, Field
 
+from novelvideo.utils.screenplay_scene_parser import parse_scene_blocks
+
 from .proposals import ProposalService, consistency_issue_for_proposal
 from .store import DocumentConflict, DocumentNotFound, DocumentValidation, DocumentStore, _digest, _id, _now
 
@@ -26,11 +28,22 @@ def _range(markdown: str, scope: str, start: int, end: int):
         raise DocumentValidation("选段范围无效，请重新选择")
     if scope == "selection":
         return start, end
-    matches = list(re.finditer(r"(?m)^#{2,3}[ \t]+(?:\d+[-－]\d+|\d+[｜|][^\n]+|场景[一二三四五六七八九十\d]+)[^\n]*$", markdown))
-    current = next((index for index, match in reversed(list(enumerate(matches))) if match.start() <= start), None)
+    # Resolve header line numbers, then map back to untouched source offsets.
+    # Keep legacy workspace headings not covered by the semantic scene parser.
+    offsets = []
+    position = 0
+    for line in markdown.splitlines(keepends=True):
+        offsets.append(position)
+        position += len(line)
+    starts = {offsets[scene.header_source_lines[0].number - 1]
+              for scene in parse_scene_blocks(markdown) if scene.header_source_lines}
+    starts.update(match.start() for match in re.finditer(
+        r"(?m)^#{2,3}[ \t]+(?:\d+[-－]\d+|\d+[｜|][^\n]+|场景[一二三四五六七八九十\d]+)[^\n]*$", markdown))
+    starts = sorted(starts)
+    current = next((index for index in reversed(range(len(starts))) if starts[index] <= start), None)
     if current is None:
         raise DocumentValidation("未找到当前场，请选择正文中的场次")
-    return matches[current].start(), matches[current + 1].start() if current + 1 < len(matches) else len(markdown)
+    return starts[current], starts[current + 1] if current + 1 < len(starts) else len(markdown)
 
 
 def _block_range(blocks, start, end):
@@ -263,8 +276,17 @@ class RewriteService:
         try:
             if cancel_check:
                 await cancel_check()
-            raw = await runtime.run_structured(prompt=prompt, output_type=RewriteOutput,
-                system_prompt="你是中文短剧编剧。仅修改指定范围，保留角色与剧情连续性；不输出原文以外的审查或交付流程。")
+            from novelvideo.agent_teams.adapters import method_runtime, craft_method
+            from .prompts import craft_guidance
+
+            document = await self.store.get(job['document_id'])
+            kind = document.kind
+            raw = await method_runtime('writer', kind, runtime).run_structured(
+                prompt=prompt, output_type=RewriteOutput,
+                system_prompt=("你是中文短剧编剧。仅修改指定范围，保留角色与剧情连续性；"
+                               "保持原文已有场号与格式，不给选段补整集标题、场景元数据或范围外内容。"
+                               "创作分析不混入 after 正文，改动理由只放 reason；不输出原文以外的审查或交付流程。\n\n"
+                               + craft_method('writer', kind, craft_guidance(kind))))
             output = RewriteOutput.model_validate(raw)
             if cancel_check:
                 await cancel_check()

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { render, screen, waitFor } from "@testing-library/react";
+import { render as renderBase, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nextProvider, initReactI18next } from "react-i18next";
@@ -17,6 +17,10 @@ import type { ReactNode } from "react";
 import { readFileSync } from "node:fs";
 
 const i18n = i18next.createInstance();
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@tanstack/react-router")>(),
+  useNavigate: () => vi.fn(),
+}));
 
 beforeAll(async () => {
   await i18n.use(initReactI18next).init({
@@ -375,6 +379,14 @@ vi.mock("sonner", () => ({
 
 import { IngestPageContent } from "@/routes/_app/projects.$project/ingest";
 
+// Legacy novel-flow assertions now enter the explicit novel workspace.
+function render(ui: ReactNode) {
+  const result = renderBase(ui);
+  const novel = screen.queryByRole("button", { name: "小说导入与解析" });
+  if (novel) fireEvent.click(novel);
+  return result;
+}
+
 function Wrapper({ children }: { children: ReactNode }) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -417,6 +429,27 @@ beforeEach(() => {
 });
 
 describe("IngestPage settings save", () => {
+  it("opens with results, keeps history separate, and saves configuration without importing", async () => {
+    mocks.chaptersData = { ok: true, data: { count: 1, chapters: [{ number: 1, title: "Episode 1", char_count: 10 }] } };
+    renderBase(<Wrapper><IngestPageContent project="demo" /></Wrapper>);
+    expect(screen.getByRole("heading", { name: "已有 1 集，准备继续创作" })).toBeInTheDocument();
+    expect(screen.queryByText("Supports .txt / .md / .docx")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "导入历史" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "编辑配置" }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("option", { name: "Anime" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存配置" }));
+    expect(mocks.updateProject).toHaveBeenCalledWith(expect.objectContaining({ visual_style: "anime" }));
+    expect(mocks.uploadNovel).not.toHaveBeenCalled();
+    expect(mocks.startIngest).not.toHaveBeenCalled();
+  });
+  it("shows structured graph even when chapter previews are unavailable", () => {
+    mocks.projectConfig.knowledge_pipeline = "structured_v1";
+    mocks.chaptersData = undefined;
+    render(<Wrapper><IngestPageContent project="demo" /></Wrapper>);
+    fireEvent.click(screen.getByRole("tab", { name: "知识图谱" }));
+    expect(screen.getByRole("heading", { name: "Knowledge Graph" })).toBeInTheDocument();
+  });
   it("wraps the ingest content with a task controller provider", () => {
     const routeSource = readFileSync(
       "src/routes/_app/projects.$project/ingest.tsx",
@@ -549,7 +582,7 @@ describe("IngestPage settings save", () => {
     expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
   });
 
-  it("opens multi-episode import with no existing episodes for an empty project", async () => {
+  it("preserves known episode conflicts even before chapters finish loading", async () => {
     const user = userEvent.setup();
     mocks.episodeImports = [{ episode_number: 7 }];
 
@@ -563,13 +596,12 @@ describe("IngestPage settings save", () => {
       screen.queryByRole("button", { name: "Append episode" }),
     ).not.toBeInTheDocument();
 
-    await user.click(
-      screen.getByRole("button", { name: "Multi-episode import" }),
-    );
+    await user.click(screen.getByRole("tab", { name: "导入概览" }));
+    await user.click(screen.getByRole("button", { name: "继续导入" }));
 
     expect(
       screen.getByRole("dialog", { name: "episode import dialog" }),
-    ).toHaveAttribute("data-existing-episodes", "");
+    ).toHaveAttribute("data-existing-episodes", "7");
   });
 
   it("keeps append and batch episode import actions available after episode one exists", async () => {
@@ -590,10 +622,9 @@ describe("IngestPage settings save", () => {
       </Wrapper>,
     );
 
-    expect(screen.getByRole("button", { name: "Append episode" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Batch import" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Append episode" }));
+    await user.click(screen.getByRole("tab", { name: "导入概览" }));
+    expect(screen.getByRole("button", { name: "进入剧集制作 →" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "继续导入" }));
     expect(screen.getByRole("dialog", { name: "episode import dialog" })).toHaveAttribute("data-existing-episodes", "1");
 
     await user.click(screen.getByRole("button", { name: "Complete episode import" }));
@@ -615,11 +646,13 @@ describe("IngestPage settings save", () => {
     mocks.clearEpisodeImportStale.mockResolvedValue({ ok: true, data: { cleared: true } });
     render(<Wrapper><IngestPageContent project="demo" /></Wrapper>);
 
-    expect(screen.getByRole("heading", { name: "Import history" })).toBeInTheDocument();
-    expect(screen.getByText("Target revision 4")).toBeInTheDocument();
-    expect(screen.getAllByText((_, element) => element?.textContent === "Episode 1 · Overwritten").length).toBeGreaterThan(0);
     await userEvent.click(screen.getByRole("button", { name: "Mark Beats updated" }));
     expect(mocks.clearEpisodeImportStale).toHaveBeenCalledWith({ episodeNumber: 1, stage: "beats", sourceRevision: 5 });
+    await userEvent.click(screen.getByRole("tab", { name: "导入历史" }));
+    expect(screen.getByRole("heading", { name: "导入历史" })).toBeInTheDocument();
+    expect(screen.getByText("版本 4")).toBeInTheDocument();
+    await userEvent.click(screen.getByText("版本 4"));
+    expect(screen.getByText("第 1 集 · 覆盖")).toBeInTheDocument();
   });
 
   it("shows every imported episode in the structure preview instead of stale legacy chapters", () => {
@@ -800,7 +833,7 @@ describe("IngestPage settings save", () => {
         <IngestPageContent project="demo" />
       </Wrapper>,
     );
-
+    fireEvent.click(screen.getByRole("tab", { name: "知识图谱" }));
     expect(
       screen.getByRole("heading", { name: "Knowledge Graph" }),
     ).toBeInTheDocument();

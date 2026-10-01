@@ -43,3 +43,24 @@ async def test_recast_rejects_changed_inputs_before_publication(tmp_path):
             runtime=SimpleNamespace(run_structured=design, snapshot=SimpleNamespace(task_role='knowledge_extraction')),
             assert_live=lambda: None)
     assert store.get(profile.character_id).casting_revision is None
+
+
+@pytest.mark.asyncio
+async def test_design_runtime_receives_authored_context_with_fact_boundary(tmp_path):
+    import json
+    m = service()
+    _, _, profile = inputs()
+    profile.authoring_context = [{'kind': 'authoring_context', 'text': '近未来末世；旧城测绘员'}]
+    store = CharacterVisualWorkspaceStore(tmp_path)
+    store.save(CharacterVisualWorkspace(character_id=profile.character_id, profile=profile))
+    async def design(**kw):
+        payload = json.loads(kw['prompt'])
+        assert payload['casting_dossier']['narrative']['authoring_context'] == profile.authoring_context
+        assert 'authoring_context' in kw['system_prompt']
+        assert '不是原文事实' in kw['system_prompt']
+        raise RuntimeError('captured design input')
+    with pytest.raises(RuntimeError, match='captured design input'):
+        await m.design_and_publish(store=store, character_id=profile.character_id, identity_id=None,
+            expected_revision=None, grounded_profile=profile, source_revision='source1', style='3D国漫',
+            runtime=SimpleNamespace(run_structured=design, snapshot=SimpleNamespace(task_role='knowledge_extraction')),
+            assert_live=lambda: None)

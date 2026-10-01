@@ -1,0 +1,24 @@
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, expect, it, vi } from 'vitest';
+import { emptyScene, type Scene } from './model';
+const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
+vi.mock('@/lib/api', () => ({ api: mocks }));
+import { AiPrevisPlanner } from './ai-previs-planner';
+beforeEach(() => { localStorage.clear(); vi.clearAllMocks(); });
+it('submits only on explicit click and reviews editable generated actions', async () => {
+  const scene: Scene = { ...emptyScene(), actors: [{ id: 'a', name: '演员', humanoid: true, position: [0, 0, 0], yaw: 0 }] };
+  const proposal: Scene = { ...scene, clips: [{ id: 'c', actorId: 'a', action: 'walk', start: 0, duration: 3, target: [4, 0, 0], yaw: 0 }] };
+  const response = { data: { request_id: 'req', status: 'completed', document: { data: proposal } } };
+  mocks.post.mockReturnValue({ json: async () => response }); mocks.get.mockReturnValue({ json: async () => response });
+  const adopt = vi.fn(); render(<AiPrevisPlanner project="test" scene={scene} disabled={false} onAdopt={adopt} />);
+  expect(mocks.post).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText('AI 预演需求'), { target: { value: '让他沿右边走到镜头前' } });
+  expect(mocks.post).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '生成 AI 预演建议（可能计费）' }));
+  await waitFor(() => expect(screen.getByLabelText('建议1-duration')).toBeInTheDocument());
+  fireEvent.change(screen.getByLabelText('建议1-duration'), { target: { value: '5' } });
+  expect(adopt).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '采纳已编辑的场景与动作' }));
+  expect(adopt.mock.calls[0][0].clips[0].duration).toBe(5);
+  expect(mocks.post).toHaveBeenCalledTimes(1);
+});

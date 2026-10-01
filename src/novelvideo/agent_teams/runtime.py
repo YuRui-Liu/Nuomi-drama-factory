@@ -44,7 +44,9 @@ def connected_subtasks():
 
 
 def task_methods(task_type):
-    if task_type == 'script_creation_generation':
+    if task_type in {'script_creation_generation', 'script_creation_rewrite'}:
+        # A rewrite chooses its document kind at execution; freeze the same
+        # writer methods as generation so later team edits cannot change it.
         return [('writer', k) for k in WRITER_KINDS]
     if task_type == 'screenplay_semantics':
         return [('script_parser', 'screenplay_semantics')]

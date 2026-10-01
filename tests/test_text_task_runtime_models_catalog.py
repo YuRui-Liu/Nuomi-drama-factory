@@ -21,15 +21,28 @@ def _write(path, payload):
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+WORKBUDDY_BUILTIN = [
+    "default-model",
+    "gemini-3.1-pro",
+    "gemini-3.0-flash",
+    "gemini-3.5-flash",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-3.1-flash-lite",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-mini",
+    "deepseek-v3-2-volc",
+    "glm-5.0",
+    "kimi-k2.5",
+]
+
+
 def test_falls_back_to_builtin_when_no_models_json():
     catalog = models_catalog.get_runtime_model_catalog()
-    assert catalog["workbuddy"] == [
-        "Hy4 preview",
-        "Hy3",
-        "Deepseek-V4",
-        "Deepseek-V4.1-Flash",
-        "default-model",
-    ]
+    assert catalog["workbuddy"] == WORKBUDDY_BUILTIN
     assert catalog["codex"] == [
         "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
         "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
@@ -92,13 +105,7 @@ def test_malformed_models_json_is_ignored(tmp_path):
     (tmp_path / ".codebuddy").mkdir()
     (tmp_path / ".codebuddy" / "models.json").write_text("{not json", encoding="utf-8")
     catalog = models_catalog.get_runtime_model_catalog()
-    assert catalog["workbuddy"] == [
-        "Hy4 preview",
-        "Hy3",
-        "Deepseek-V4",
-        "Deepseek-V4.1-Flash",
-        "default-model",
-    ]
+    assert catalog["workbuddy"] == WORKBUDDY_BUILTIN
 
 
 def test_model_api_runtime_does_not_consult_models_json(tmp_path):

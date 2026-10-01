@@ -22,6 +22,7 @@ export const CANVAS_NODE_TYPES = {
   audio: 'audioNode',
   videoStory: 'videoStoryNode',
   videoCompose: 'videoComposeNode',
+  musicDesk: 'musicDeskNode',
   script: 'scriptNode',
   pano360Viewer: 'pano360ViewerNode',
   threeDWorld: 'threeDWorldNode',
@@ -189,6 +190,12 @@ export interface VideoComposeNodeData extends NodeDisplayData {
    * `ComposeTimelineState`，这里存 unknown 以免领域层反向依赖 compose 特性层。
    */
   draftTimeline?: unknown;
+  [key: string]: unknown;
+}
+
+export interface MusicDeskNodeData extends NodeDisplayData {
+  sourceUrl?: string;
+  resultVideoUrl?: string | null;
   [key: string]: unknown;
 }
 
@@ -763,6 +770,7 @@ export type CanvasNodeData =
   | AudioNodeData
   | VideoStoryNodeData
   | VideoComposeNodeData
+  | MusicDeskNodeData
   | VideoDirectorNodeData
   | ScriptNodeData
   | Pano360ViewerNodeData

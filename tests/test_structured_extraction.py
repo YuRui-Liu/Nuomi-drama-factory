@@ -34,7 +34,7 @@ def test_structured_character_agent_uses_prompted_output_with_thinking(
     assert captured["model"] is model
     assert captured["model_settings"] is settings
     assert isinstance(captured["output_type"], PromptedOutput)
-    assert captured["output_type"].outputs is extraction_module.ChunkCharacterOutput
+    assert captured["output_type"].outputs is extraction_module.ChunkCharacterFacts
 
 
 @pytest.mark.asyncio
@@ -71,6 +71,7 @@ async def test_locked_characters_are_redacted_before_model_and_filtered_from_res
     result = await extraction_module.extract_characters_from_chunks(
         [chunk],
         agent=FakeAgent(),
+        design_agent=FakeAgent(),
         excluded_names={"周禾"},
     )
 
@@ -79,12 +80,16 @@ async def test_locked_characters_are_redacted_before_model_and_filtered_from_res
     assert result[0].biography == "追查广播站旧案的外采记者"
 
 
-def test_character_prompt_requires_profile_and_three_distinct_visual_proposals():
+def test_character_prompts_separate_facts_from_visual_design():
+    from novelvideo.character_design_stage import CHARACTER_DESIGN_SYSTEM_PROMPT
+
     prompt = extraction_module.CHARACTER_EXTRACTION_SYSTEM_PROMPT
     assert "人物小传" in prompt
-    assert "三套" in prompt
-    assert "identity_anchors" in prompt
+    assert "三套" not in prompt
+    assert "identity_anchors" not in prompt
     assert "不得根据姓名" in prompt
+    assert "三套" in CHARACTER_DESIGN_SYSTEM_PROMPT
+    assert "identity_anchors" in CHARACTER_DESIGN_SYSTEM_PROMPT
 
 
 @pytest.mark.asyncio
@@ -151,12 +156,12 @@ async def test_character_extraction_retries_quality_rejected_visual_proposals():
     class FakeAgent:
         async def run(self, prompt: str):
             prompts.append(prompt)
-            proposals = rejected if len(prompts) == 1 else accepted
+            if prompt != "石九进门":
+                return {"design_proposals": rejected if len(prompts) == 2 else accepted}
             return {
                 "characters": [
                     {
                         "name": "石九",
-                        "design_proposals": proposals,
                         "evidence": [{"quote": "石九", "kind": "mention"}],
                     }
                 ]
@@ -173,12 +178,12 @@ async def test_character_extraction_retries_quality_rejected_visual_proposals():
     )
 
     result = await extraction_module.extract_characters_from_chunks(
-        [chunk], agent=FakeAgent()
+        [chunk], agent=FakeAgent(), design_agent=FakeAgent()
     )
 
-    assert len(prompts) == 2
-    assert "individual_structure:required" in prompts[1]
-    assert "structure_collision:shi-03" in prompts[1]
+    assert len(prompts) == 3
+    assert "individual_structure:required" in prompts[2]
+    assert "structure_collision:shi-03" in prompts[2]
     assert result[0].design_proposals[0]["asymmetry_detail"] == "左眉尾有断眉"
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -22,6 +23,49 @@ class SourceDocument:
     content_hash: str
     revision: str = ''
     filename: str = ''
+    kind: str = 'source'
+    character_name: str = ''
+
+
+def _authoring_sources(db):
+    """Read current authored inputs separately from attested screenplay facts."""
+    documents = {}
+    def add(key, text, *, character='', revision='', filename=''):
+        if text.strip():
+            documents[key] = SourceDocument(key, text, source_sha256(text), revision,
+                filename, 'authoring_context', character)
+
+    for row in db.execute('SELECT name,description FROM characters ORDER BY name'):
+        add('character:' + row['name'], row['description'] or '', character=row['name'])
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if {'script_documents', 'script_revisions'} <= tables:
+        for row in db.execute("""SELECT d.id,d.title,r.id AS revision,r.markdown FROM script_documents d
+            JOIN script_revisions r ON r.id=d.current_revision_id WHERE d.kind='outline' ORDER BY d.id"""):
+            add('outline:' + row['id'], row['markdown'], revision=row['revision'], filename=row['title'])
+    if {'script_documents', 'script_revisions', 'script_entities', 'asset_registry'} <= tables:
+        for row in db.execute("""SELECT e.entity_id,e.block_id,a.current_name,d.title,r.id AS revision,r.blocks
+            FROM script_entities e JOIN asset_registry a ON a.asset_uuid=e.asset_id
+            JOIN script_documents d ON d.id=e.document_id
+            JOIN script_revisions r ON r.id=d.current_revision_id
+            WHERE e.asset_type='character' AND a.kind='character' AND a.deleted_at IS NULL
+            AND e.confirmed_revision=d.current_revision_id AND e.selected_revision=d.current_revision_id
+            ORDER BY e.entity_id"""):
+            block = next((b for b in json.loads(row['blocks']) if b['id'] == row['block_id']), None)
+            if block:
+                add('character-design:' + row['entity_id'], block.get('markdown', ''),
+                    character=row['current_name'], revision=row['revision'], filename=row['title'])
+    if {'script_prop_import_links', 'asset_registry', 'script_documents', 'script_revisions'} <= tables:
+        for row in db.execute("""SELECT l.id,l.source_block_id,a.current_name,d.title,r.id revision,r.blocks
+            FROM script_prop_import_links l JOIN asset_registry a ON a.asset_uuid=l.asset_id
+            JOIN script_documents d ON d.id=l.source_document_id
+            JOIN script_revisions r ON r.id=d.current_revision_id
+            WHERE a.kind='character' AND a.deleted_at IS NULL
+            AND l.source_revision_id=d.current_revision_id ORDER BY l.id"""):
+            block = next((b for b in json.loads(row['blocks']) if b['id'] == row['source_block_id']), None)
+            if block:
+                add('character-import:' + row['id'], block.get('markdown', ''),
+                    character=row['current_name'], revision=row['revision'], filename=row['title'])
+    return documents
 
 
 class ExtractedFact(BaseModel):
@@ -79,11 +123,48 @@ async def load_sources(project_dir, sqlite_store):
             raise ValueError('原文内容校验失败')
         documents[document_id] = SourceDocument(document_id, source.content, digest,
             str(source.source_revision), source.source_filename)
+    with sqlite3.connect(f'file:{sqlite_store.db_path}?mode=ro', uri=True) as db:
+        db.row_factory = sqlite3.Row
+        documents.update(_authoring_sources(db))
     if not documents:
-        raise ValueError('请先导入小说或分集原文，再重新选角')
-    revision = (documents['novel.txt'].content_hash if list(documents) == ['novel.txt'] else
-        snapshot_digest({k: (v.content_hash, v.revision, v.filename) for k, v in sorted(documents.items())}))
+        raise ValueError('请先填写角色小传、创作设定或导入原文，再重新选角')
+    revision = _source_documents_revision(documents)
     return documents, revision
+
+
+def _source_documents_revision(documents):
+    return (documents['novel.txt'].content_hash if list(documents) == ['novel.txt'] else
+        snapshot_digest({k: (v.content_hash, v.revision, v.filename, v.kind, v.character_name)
+            for k, v in sorted(documents.items())}))
+
+
+def character_source_revision(documents, global_revision, character_name, *, expected_revision=None):
+    """Scope authored dependencies; retain legacy hashes only with exact proof."""
+    if not any(v.kind == 'authoring_context' for v in documents.values()):
+        return global_revision
+    relevant = {k: v for k, v in documents.items()
+        if v.kind != 'authoring_context' or not v.character_name or v.character_name == character_name}
+    if expected_revision == global_revision:
+        return expected_revision
+    # Old drafts hashed every character. Prove compatibility by reconstructing
+    # that exact digest, removing only unrelated additions. Never drop source,
+    # outline, or this character's inputs. Bound work and fail closed otherwise.
+    foreign = [(k, v) for k, v in documents.items() if k not in relevant]
+    if expected_revision and not expected_revision.startswith('character-sources-v2:'):
+        # Common upgrade: existing character descriptions gain table links.
+        # This fast candidate is still checked against the complete old digest.
+        for prefixes in [('character-import:',), ('character-design:', 'character-import:')]:
+            without_foreign_links = {k: v for k, v in documents.items()
+                if k in relevant or not k.startswith(prefixes)}
+            if _source_documents_revision(without_foreign_links) == expected_revision:
+                return expected_revision
+    if expected_revision and not expected_revision.startswith('character-sources-v2:') and len(foreign) <= 12:
+        for mask in range(1 << len(foreign)):
+            candidate = dict(relevant)
+            candidate.update(pair for i, pair in enumerate(foreign) if mask & (1 << i))
+            if _source_documents_revision(candidate) == expected_revision:
+                return expected_revision
+    return 'character-sources-v2:' + _source_documents_revision(relevant)
 
 
 def assert_live_sources(ctx, sqlite_store, documents, character_id, identity_id):
@@ -105,6 +186,11 @@ def assert_live_sources(ctx, sqlite_store, documents, character_id, identity_id)
             doc = documents.get(f"episode:{row['episode_number']:04d}")
             if doc is None or (doc.content_hash, doc.revision, doc.filename) != (source_sha256(row['raw_content']), str(row['source_revision']), row['source_filename']):
                 raise ValueError('source changed during recast')
+        def relevant_authoring(items):
+            return {k: v for k, v in items.items() if v.kind == 'authoring_context'
+                and (not v.character_name or v.character_name == character_id)}
+        if relevant_authoring(_authoring_sources(db)) != relevant_authoring(documents):
+            raise ValueError('source changed during recast')
 
 
 def attested_names(profile, documents):
@@ -113,7 +199,7 @@ def attested_names(profile, documents):
         if not alias or alias == profile.name:
             continue
         pattern = re.escape(profile.name) + r'[^。\n]{0,20}(?:又名|别名|化名|人称)[^。\n]{0,4}' + re.escape(alias)
-        if any(re.search(pattern, doc.text) for doc in documents.values()):
+        if any(re.search(pattern, doc.text) for doc in documents.values() if doc.kind == 'source'):
             names.append(alias)
     return names
 
@@ -135,6 +221,9 @@ def _relocate_quote(evidence, documents, claimed_doc, claimed_start):
 
 
 def verified_fact(fact, documents, names, source_revision, *, strict=False):
+    # Authored setting and biography can guide creative choices, never attest
+    # a source fact. Keep relocation within the same evidence authority.
+    documents = {k: v for k, v in documents.items() if v.kind == 'source'}
     doc = documents.get(fact.source_document or 'novel.txt')
     start, end = fact.source_start, fact.source_end
     reason = None
@@ -253,6 +342,14 @@ async def reuse_artifact_facts(profile, documents, source_revision, sqlite_store
 
 
 async def ground_profile(profile, documents, source_revision, *, runtime, identity_id=None, artifact_facts=()):
+    authoring_context = [dict(kind=doc.kind, source_document=doc.document_id, text=doc.text,
+        content_hash=doc.content_hash, revision=doc.revision, title=doc.filename)
+        for doc in documents.values() if doc.kind == 'authoring_context'
+        and (not doc.character_name or doc.character_name == profile.name)]
+    documents = {k: v for k, v in documents.items() if v.kind == 'source'}
+    if not documents and authoring_context:
+        return CharacterNarrativeProfile(character_id=profile.character_id, name=profile.name,
+            authoring_context=authoring_context)
     if not documents:
         raise ValueError('请先导入原文，再重新选角')
     names = attested_names(profile, documents)
@@ -275,6 +372,9 @@ async def ground_profile(profile, documents, source_revision, *, runtime, identi
             if len(windows) >= 12:
                 break
         if not windows:
+            if authoring_context:
+                return CharacterNarrativeProfile(character_id=profile.character_id, name=profile.name,
+                    authoring_context=authoring_context)
             raise ValueError('原文中未找到该角色或有证据支持的别名；请检查角色名称')
         if runtime is None:
             raise ValueError('请先配置 knowledge_extraction 文本任务运行时')
@@ -307,4 +407,4 @@ async def ground_profile(profile, documents, source_revision, *, runtime, identi
         social_identity=fields.get('social_identity', ''), personality=[fields['personality']] if 'personality' in fields else [],
         relationships=[f.value for f in facts if f.field == 'relationship'],
         dramatic_function=fields.get('dramatic_function', ''), facts=list({f.fact_id: f for f in facts}.values()),
-        source_warnings=list(dict.fromkeys(warnings)))
+        source_warnings=list(dict.fromkeys(warnings)), authoring_context=authoring_context)

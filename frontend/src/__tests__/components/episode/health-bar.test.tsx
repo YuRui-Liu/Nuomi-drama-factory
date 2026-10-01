@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { EpisodeHealthSummary } from "@/components/episode/health-bar";
+import { EpisodeHealthSummary, HealthBar } from "@/components/episode/health-bar";
 import { useBeatStates } from "@/hooks/use-beat-states";
+const routing = vi.hoisted(() => ({ navigate: vi.fn(), sub: 'video' }));
+vi.mock('@tanstack/react-router', () => ({
+  useNavigate: () => routing.navigate,
+  useSearch: () => ({sub:routing.sub}),
+  useRouterState: ({select}: {select: (s: {location:{pathname:string}}) => unknown}) => select({location:{pathname:'/projects/p/episodes/2/beats'}}),
+}));
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -30,6 +36,15 @@ vi.mock("@/hooks/use-beat-states", () => ({
 const mockUseBeatStates = vi.mocked(useBeatStates);
 
 describe("EpisodeHealthSummary", () => {
+  it('offers the approved four stages and keeps video separate from storyboards', () => {
+    render(<HealthBar project="p" episode={2} />);
+    expect(screen.getByRole('button', {name:/视频生成/})).toHaveAttribute('aria-current','page');
+    fireEvent.click(screen.getByRole('button', {name:/分镜生图/}));
+    expect(routing.navigate).toHaveBeenLastCalledWith({to:'/projects/$project/episodes/$episode/beats',params:{project:'p',episode:'2'},search:{sub:'render'}});
+    fireEvent.click(screen.getByRole('button', {name:/叙事组脚本/}));
+    expect(routing.navigate).toHaveBeenLastCalledWith({to:'/projects/$project/episodes/$episode/script',params:{project:'p',episode:'2'},search:{}});
+    expect(screen.getByRole('button', {name:/整集合成/})).toBeInTheDocument();
+  });
   it("shows ready and blocked health for script, beats, and compose tabs", () => {
     mockUseBeatStates.mockReturnValue({
       states: {},

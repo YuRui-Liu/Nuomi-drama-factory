@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 
@@ -20,6 +21,8 @@ async def generate_qwen3_voice_sample(
     language: str = "Chinese",
     poll_interval: float = 2.0,
     max_polls: int = 180,
+    provider_task_id: str = "",
+    on_submitted: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[bytes, str]:
     """Submit, poll and download one Qwen3 voice-design audition."""
     audition_text = audition_text.strip()
@@ -35,9 +38,13 @@ async def generate_qwen3_voice_sample(
         {"nodeId": "15", "fieldName": "text", "fieldValue": voice_description},
     ]
     async with runtime.create_client() as client:
-        from novelvideo.costs.providers import requested_cost_context
-        with requested_cost_context('audio', usage={'character': str(len(audition_text))}):
-            task_id = await client.submit(workflow_id, node_info)
+        task_id = provider_task_id
+        if not task_id:
+            from novelvideo.costs.providers import requested_cost_context
+            with requested_cost_context('audio', usage={'character': str(len(audition_text))}):
+                task_id = await client.submit(workflow_id, node_info)
+            if on_submitted is not None:
+                await on_submitted(task_id)
         for _ in range(max_polls):
             snapshot = await client.query(task_id)
             if snapshot.status in {"failed", "cancelled"}:
@@ -48,7 +55,11 @@ async def generate_qwen3_voice_sample(
                 result = snapshot.results[0]
                 content = await client.download(result.url)
                 suffix = PurePosixPath(urlsplit(result.url).path).suffix.lower()
-                filename = f"voice{suffix if suffix in {'.wav', '.mp3', '.m4a', '.aac', '.ogg'} else '.wav'}"
+                # RunningHub may return native FLAC, including behind opaque URLs.
+                # Renaming compressed bytes to WAV is not audio conversion.
+                if content.startswith(b"fLaC"):
+                    suffix = ".flac"
+                filename = f"voice{suffix if suffix in {'.wav', '.mp3', '.m4a', '.aac', '.ogg', '.flac'} else '.wav'}"
                 return content, filename
             await asyncio.sleep(poll_interval)
     raise TimeoutError("RunningHub 音色设计等待超时")

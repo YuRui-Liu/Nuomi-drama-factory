@@ -639,7 +639,13 @@ def run_project_task_core_sync(
                         "agent_route_snapshot": clean_snapshot,
                     }
                     runtime_scope = text_task_runtime_scope(snapshot)
-                with runtime_scope:
+                from novelvideo.agent_teams.runtime import method_scope
+                methods = envelope.get("agent_team_snapshots", run_metadata.get("agent_team_snapshots", []))
+                if "agent_team_snapshots" in run_metadata and methods != run_metadata["agent_team_snapshots"]:
+                    raise ValueError("agent team envelope/metadata mismatch")
+                if methods:
+                    run_metadata["agent_team_snapshots"] = methods
+                with runtime_scope, method_scope(methods, project_id=ctx.project_id, task_type=task_type):
                     result = runner(envelope, ctx)
                 raise_if_local_task_stop_requested(run_task_id)
                 if execution_owner_id and not manager.heartbeat_task_lease(

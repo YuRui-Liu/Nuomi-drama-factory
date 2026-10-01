@@ -640,6 +640,12 @@ const skillNodeDefinition: CanvasNodeDefinition<SkillNodeData> = {
 };
 
 export const canvasNodeDefinitions: Record<CanvasNodeType, CanvasNodeDefinition> = {
+  [CANVAS_NODE_TYPES.musicDesk]: {
+    type: CANVAS_NODE_TYPES.musicDesk, menuLabelKey: 'node.menu.musicDesk', menuIcon: 'audio', visibleInMenu: true,
+    capabilities: {toolbar:false,promptInput:false},
+    connectivity: {sourceHandle:true,targetHandle:true,connectMenu:{fromSource:true,fromTarget:true}},
+    createDefaultData: () => ({displayName:'配乐台',resultVideoUrl:null}),
+  },
   [CANVAS_NODE_TYPES.upload]: uploadNodeDefinition,
   [CANVAS_NODE_TYPES.imageEdit]: imageEditNodeDefinition,
   [CANVAS_NODE_TYPES.imageGen]: imageGenNodeDefinition,
@@ -682,6 +688,7 @@ export function nodeHasTargetHandle(type: CanvasNodeType): boolean {
 // 一条建边路径绕过规则。不在表中的目标类型表示「不额外限制类型」，仅受 handle
 // 级默认规则约束。
 const UPSTREAM_SOURCE_WHITELIST: Partial<Record<CanvasNodeType, readonly CanvasNodeType[]>> = {
+  [CANVAS_NODE_TYPES.musicDesk]: [CANVAS_NODE_TYPES.video,CANVAS_NODE_TYPES.videoCompose],
   // 音频节点的上游只能是文本节点。
   [CANVAS_NODE_TYPES.audio]: [CANVAS_NODE_TYPES.textAnnotation],
   [CANVAS_NODE_TYPES.videoDirector]: [
@@ -734,11 +741,15 @@ export function getDownstreamSpawnTypes(
   const base = getConnectMenuNodeTypes('source');
   if (!originType) return base;
 
+  if (originType === CANVAS_NODE_TYPES.videoCompose) return [CANVAS_NODE_TYPES.musicDesk];
+  if (originType === CANVAS_NODE_TYPES.musicDesk) return [];
+
   if (originType === CANVAS_NODE_TYPES.video || originType === CANVAS_NODE_TYPES.videoDirector) {
     const allowed = new Set<CanvasNodeType>([
       CANVAS_NODE_TYPES.textAnnotation,
       CANVAS_NODE_TYPES.video,
       CANVAS_NODE_TYPES.videoCompose,
+      ...(originType === CANVAS_NODE_TYPES.video ? [CANVAS_NODE_TYPES.musicDesk] : []),
       CANVAS_NODE_TYPES.script,
     ]);
     return base.filter((type) => allowed.has(type));

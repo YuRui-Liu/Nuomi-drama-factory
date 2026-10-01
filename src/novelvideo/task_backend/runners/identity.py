@@ -381,11 +381,19 @@ def run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -> dict[
 
 
 async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
+    from novelvideo.director_plan.store import DirectorPlanStore
+
+    episode = int(envelope.get("episode") or (envelope.get("payload") or {}).get("episode") or 0)
+    director_plan_store = DirectorPlanStore(ctx.output_dir)
+    # Fail before initializing data services or spending tokens. Publication
+    # still rechecks under the activation lock after planning finishes.
+    if director_plan_store.load_active(episode) is None:
+        raise ValueError("ACTIVE_DIRECTOR_PLAN_REQUIRED")
+
     from novelvideo.agents.identity_planner import IdentityPlanner
     from novelvideo.cognee import CogneeStore
     from novelvideo.sqlite_store import SQLiteStore
 
-    episode = int(envelope.get("episode") or (envelope.get("payload") or {}).get("episode") or 0)
     manager = get_task_manager()
 
     def update(
@@ -452,9 +460,6 @@ async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -
     scenes = tuple(await sqlite_store.list_scenes())
     props = tuple(await sqlite_store.list_props())
 
-    from novelvideo.director_plan.store import DirectorPlanStore
-
-    director_plan_store = DirectorPlanStore(ctx.output_dir)
     with director_plan_store.lock_active_revision(episode) as director_plan:
         if director_plan is None:
             raise ValueError("ACTIVE_DIRECTOR_PLAN_REQUIRED")

@@ -17,7 +17,15 @@ from .h3_wire import H3ReferenceWire, compile_h3_wire
 
 H3_REFERENCE_TASK_TYPE = "r2v — 参考主体生视频(Reference to Video)"
 H3_REFERENCE_TIMELINE_MODE = "prompt_batch"
-H3_REFERENCE_COMPILER_VERSION = 6
+H3_REFERENCE_COMPILER_VERSION = 7
+# Node 12 (MiniMaxH3Director) validates every segment task type against this set
+# and rejects anything else: "Task 'Ref-I2V' is not supported on MiniMax H3
+# Director. Supported: fl2v, i2v, r2v, rv2v, t2v, v2v." A reference segment is
+# still driven by its frame anchors, so the frame-anchored modes are the correct
+# names; the historical "Ref-I2V"/"Ref-FL2V" strings were never accepted on the
+# remote workflow.
+H3_REFERENCE_SEGMENT_TASK_TYPES = ("i2v", "fl2v", "r2v")
+H3_LEGACY_REFERENCE_SEGMENT_TASK_TYPES = ("Ref-I2V", "Ref-FL2V")
 _REFERENCE_NUMBERING = re.compile(
     r"(?<![A-Za-z0-9_])(?:subject|picture)\W*\d+\b",
     re.IGNORECASE,
@@ -279,17 +287,24 @@ def _segment_mode(
     segment_id: str,
     last_frame: object,
 ) -> str:
+    """Task type Node 12 accepts for one reference segment.
+
+    The remote node only implements ``fl2v``, ``i2v``, ``r2v``, ``rv2v``, ``t2v``
+    and ``v2v``; reference segments are frame-anchored, so they report the
+    matching frame-anchored mode.
+    """
+
     if requested_mode == "auto":
-        return "Ref-FL2V" if last_frame else "Ref-I2V"
+        return "fl2v" if last_frame else "i2v"
     if requested_mode == "i2va":
         if last_frame:
             raise ValueError(
                 f"i2va mode does not allow a last frame for segment {segment_id}"
             )
-        return "Ref-I2V"
+        return "i2v"
     if not last_frame:
         raise ValueError(f"segment {segment_id} requires a last frame in fl2va mode")
-    return "Ref-FL2V"
+    return "fl2v"
 
 
 def build_h3_reference_timeline_payload(
@@ -306,9 +321,10 @@ def build_h3_reference_timeline_payload(
 ) -> str:
     """Compile a version-5 reference timeline without mutating request models.
 
-    The source workflow proves the pure R2V envelope. Mixed Ref-I2V/Ref-FL2V
-    segment values are intentionally a local compilation contract until a paid
-    provider smoke test establishes remote hybrid compatibility.
+    The source workflow proves the pure R2V envelope: global ``taskType`` is the
+    reference task, ``timelineMode`` is ``prompt_batch``, and Node 12 takes the
+    per-segment frame anchor through ``isStartFrame``/``isEndFrame``. Segment
+    ``taskType`` values are therefore restricted to the modes Node 12 implements.
     """
     references = _normalize_references(
         ordered_references,

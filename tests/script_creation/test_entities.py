@@ -234,3 +234,50 @@ async def test_new_relations_cannot_target_deleted_entries_but_old_ones_can_be_r
     assert removed["relations"] == []
     with pytest.raises(DocumentValidation):
         await service.put(**args, client_mutation_id="readd")
+
+
+@pytest.mark.parametrize("kind,field,design,expected", [
+    ("scenes", "environment_prompt", "- **空间布局：**北侧木柜，南侧窄门\n- **视觉/光线：**冷色侧光\n- **关键物件：**墙面旧钟", "空间布局：北侧木柜，南侧窄门\n视觉/光线：冷色侧光\n关键物件：墙面旧钟"),
+    ("props", "visual_prompt", "- **外观材质：**铜制方形印章，边缘磨损", "外观材质：铜制方形印章，边缘磨损"),
+])
+async def test_text_design_creates_renderable_fields_without_narrative(setup, kind, field, design, expected):
+    store, service, assets = setup
+    doc, ent = await entity(store, service, kind)
+    description = f"## A\n- **剧情作用：**揭露秘密\n{design}\n- **首次出场：**计划第六集\n- **连续性约束：**第七集被烧毁"
+    result = await service.put(entity_id=ent["entity_id"], document_id=doc.id,
+        base_revision_id=doc.current_revision_id, block_id=ent["block_id"], name="A",
+        create_text={"name": "A", "description": description}, client_mutation_id="design")
+    assert result["asset_record"][field] == expected
+    model = await (assets.get_scene("A") if kind == "scenes" else assets.get_prop("A"))
+    assert getattr(model, field) == expected
+    assert model.description == description
+    if kind == "scenes":
+        from novelvideo.generators.scene_reference_images import _scene_context
+        prompt = _scene_context(model)
+    else:
+        from novelvideo.task_backend.runners.prop_reference import _prop_reference_prompt
+        prompt = _prop_reference_prompt(style="ink", visual_prompt=model.visual_prompt or model.description)
+    assert expected in prompt
+    assert "揭露秘密" not in getattr(model, field)
+    if kind == 'scenes':
+        assert '揭露秘密' in prompt  # Full business context is a separate prompt section.
+    assert "第六集" not in getattr(model, field)
+    assert "第七集" not in getattr(model, field)
+
+
+@pytest.mark.parametrize("kind,field", [("scenes", "environment_prompt"), ("props", "visual_prompt")])
+async def test_unlabeled_text_does_not_invent_visual_contract(setup, kind, field):
+    store, service, _ = setup
+    doc, ent = await entity(store, service, kind)
+    description = "剧情作用：寻找旧物；外观待定。\n- **未知字段：**不要推断"
+    result = await service.put(entity_id=ent["entity_id"], document_id=doc.id,
+        base_revision_id=doc.current_revision_id, block_id=ent["block_id"], name="A",
+        create_text={"name": "A", "description": description}, client_mutation_id="unknown")
+    assert result["asset_record"][field] == ""
+    assert result["asset_record"]["description"] == description
+
+
+def test_design_prompt_preserves_field_values_and_accepts_label_markup():
+    from novelvideo.script_creation.entities import _design_prompt
+    assert _design_prompt("prop", "- **外观材质**：表盘刻有 12:30\n剧情作用：揭密") == "外观材质：表盘刻有 12:30"
+    assert _design_prompt("scene", "空间布局: 北窗南门\n  后续尚未确定\n未知：保留原文") == "空间布局：北窗南门"

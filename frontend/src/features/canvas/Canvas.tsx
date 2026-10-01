@@ -4822,6 +4822,8 @@ export function Canvas({
 
       {!taskPanelOpen && (
         <CanvasQuickActionBar
+          project={canvasProject}
+          selectedNodeId={selectedNodeId}
           placement={controlsPlacement}
           skillItems={skillRegistry}
           onAddNode={handleQuickAddNode}

@@ -5,10 +5,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import AwareDatetime, BaseModel, ConfigDict, ValidationError
 
 from novelvideo.api.auth import get_api_user
+from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
 from novelvideo.api.routes.media_capabilities import require_media_capability_admin
 from novelvideo.costs.models import CostStatus, Identity, MediaType, PriceRule
 from novelvideo.costs.queries import CostQueries
 from novelvideo.costs.reprice import RepriceService
+from novelvideo.costs.presets import preset_status, install_presets
 from novelvideo.costs.service import get_cost_service
 from novelvideo.costs.storage_models import Subscription
 from novelvideo.costs.store import _json
@@ -76,6 +78,23 @@ async def preview(project: str, user: dict = Depends(get_api_user)):
     return _result(lambda: RepriceService(get_cost_service().store).preview(project_id))
 
 
+@router.post('/recover')
+async def recover(project: str, user: dict = Depends(require_media_capability_admin)):
+    from novelvideo.costs.setup import recover_project_costs
+
+    project_id = await _project(project, user, 'editor')
+    record = await get_project_registry().get_project(project_id)
+    if record is None:
+        raise HTTPException(404, 'Project not found')
+    service = get_cost_service()
+    result = await recover_project_costs(record, service,
+        get_media_capability_store().list_providers(), get_media_credential_resolver())
+    reprice = RepriceService(service.store)
+    preview = reprice.preview(project_id)
+    applied = reprice.apply(project_id, preview['preview_id'])
+    return {'ok': True, 'data': {**result, 'repriced': applied['affected_count']}}
+
+
 @router.post('/reprice-apply')
 async def apply(project: str, body: ApplyBody, user: dict = Depends(get_api_user)):
     project_id = await _project(project, user, 'editor')
@@ -85,6 +104,19 @@ async def apply(project: str, body: ApplyBody, user: dict = Depends(get_api_user
 @settings_router.get('/price-rules')
 async def price_rules():
     return _result(lambda: get_cost_service().store.list_price_rules())
+
+
+@settings_router.get('/presets')
+async def presets():
+    return _result(lambda: preset_status(get_cost_service().store, get_media_capability_store().list_providers()))
+
+
+@settings_router.post('/presets')
+async def save_presets(user: dict = Depends(require_media_capability_admin)):
+    store = get_cost_service().store
+    return _result(lambda: _audit(store, user,
+        lambda: install_presets(store, get_media_capability_store().list_providers()),
+        {'operation': 'install_platform_presets', 'version': '2026-09-24'}))
 
 
 def _audit(store, user, operation, value):

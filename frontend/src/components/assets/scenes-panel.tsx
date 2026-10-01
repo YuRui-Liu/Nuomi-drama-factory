@@ -8,9 +8,12 @@ import { toast } from "sonner";
 
 import { AssetHeaderActions } from "@/components/assets/asset-header-actions-slot";
 import { AssetImportDialog } from "@/components/assets/asset-import-dialog";
+import { AssetExtractionDialog } from "@/features/script-creation/prop-extraction-dialog";
 import { CharacterImageSourceSelect } from "@/components/assets/character-image-source-select";
 import { SceneAssetCard } from "@/components/assets/scene-asset-card";
 import { SceneReferenceVersions } from "@/components/assets/scene-reference-versions";
+import { SceneContextSource } from "@/components/assets/scene-context-source";
+import "@/components/assets/asset-workspace.css";
 import { AssetBeatReferences } from "@/components/assets/asset-beat-references";
 import {
   SceneEnvironmentPromptFields,
@@ -568,6 +571,7 @@ function CoOccurrenceRow({
 }
 
 function SceneAssetCardController({
+  view = "references",
   project,
   scene,
   imageSourceSelection,
@@ -577,6 +581,7 @@ function SceneAssetCardController({
 }: {
   project: string;
   scene: SceneAsset;
+  view?: string;
   imageSourceSelection: string;
   referenceCount?: number;
   onEdit: () => void;
@@ -911,7 +916,8 @@ function SceneAssetCardController({
 
   return (
     <>
-      <SceneAssetCard
+      <div hidden={view === "history" || view === "properties"}><SceneAssetCard
+        view={view}
         scene={scene}
         referenceCount={referenceCount}
         masterRunning={generateMaster.isPending || masterTask.started}
@@ -956,8 +962,9 @@ function SceneAssetCardController({
         onUploadCustomPackage={() => customInputRef.current?.click()}
         onDeleteCustomPackage={handleDeleteCustom}
         onGenerateStagePly={handleGenerateStagePly}
-      />
-      <div className="mt-3 space-y-3">
+      /></div>
+      <div hidden={view !== "history"} className="mt-3 space-y-3">
+        {!scene.master_path && !scene.reverse_master_path && !scene.spatial_layout_image && <p className="rounded-lg border p-5 text-sm text-muted-foreground">此场景尚无参考版本，生成或上传后可在这里检查与采用。</p>}
         {scene.master_path ? (
           <SceneReferenceVersions
             project={project}
@@ -1151,8 +1158,12 @@ export function ScenesPanel({
   const createScene = useCreateScene(project);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [extractOpen, setExtractOpen] = useState(false);
   const [editing, setEditing] = useState<SceneAsset | null>(null);
   const [draftSeed, setDraftSeed] = useState<Partial<ScenePayload> | null>(null);
+  const [selectedVariant, setSelectedVariant] = useState<string | null>(focusId ?? null);
+  const [detailView, setDetailView] = useState("references");
+  useEffect(() => { if (focusId) setSelectedVariant(focusId); }, [focusId]);
   const [selectedBaseName, setSelectedBaseName] = useState<string | null>(() =>
     readStoredSceneGroupSelection(project),
   );
@@ -1316,6 +1327,7 @@ export function ScenesPanel({
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
       <AssetHeaderActions>
+        <Button variant="outline" size="sm" onClick={() => setExtractOpen(true)} className={SUBTLE_HEADER_ACTION_BUTTON_CLASS}>从创作场景表提取</Button>
         <CharacterImageSourceSelect project={project} kind="scene" />
         <HeaderRefreshButton
           label={t("common.refresh")}
@@ -1369,6 +1381,7 @@ export function ScenesPanel({
       {importOpen ? (
         <AssetImportDialog project={project} assetType="scene" open onOpenChange={setImportOpen} />
       ) : null}
+      {extractOpen && <AssetExtractionDialog assetType="scene" project={project} onClose={() => setExtractOpen(false)} onImported={() => { void scenes.refetch(); }} />}
       {refIndex.isError ? (
         <p role="alert" className="px-4 pb-2 text-xs text-destructive">
           {t("assets.common.referenceLoadFailed", { defaultValue: "引用加载失败" })}
@@ -1407,8 +1420,8 @@ export function ScenesPanel({
           </Button>
         </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-hidden bg-background lg:flex">
-          <aside className="flex max-h-[42vh] w-full shrink-0 flex-col overflow-hidden border-b border-border/30 bg-background lg:max-h-none lg:w-80 lg:border-b-0 lg:border-r">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background lg:flex-row">
+          <aside className="flex max-h-[24vh] w-full shrink-0 flex-col overflow-hidden border-b border-border/30 bg-background lg:max-h-none lg:w-64 lg:border-b-0 lg:border-r xl:w-72">
             <div className="px-3 pb-2 pt-3">
               <div className="flex min-w-0 items-center gap-2">
                 <AssetSearchBox
@@ -1446,7 +1459,7 @@ export function ScenesPanel({
               )}
             </div>
           </aside>
-          <section className="min-w-0 flex-1 overflow-hidden bg-background">
+          <section className="min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
             {!selectedGroup ? (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
                 {t("assets.common.noMatch")}
@@ -1454,7 +1467,7 @@ export function ScenesPanel({
             ) : (
               <div className="@container h-full overflow-y-auto px-4 py-3">
                 <div className="flex min-w-0 items-start justify-between gap-3">
-                  <div className="min-w-0">
+                  <div className="flex min-w-0 flex-wrap items-center gap-3">
                     <div className="flex min-w-0 items-center gap-2">
                       <h3 className="truncate text-sm font-semibold text-foreground">
                         {selectedGroup.baseName}
@@ -1463,6 +1476,7 @@ export function ScenesPanel({
                         {selectedGroup.scenes.length}
                       </span>
                     </div>
+                    <div className="flex flex-wrap gap-2">{selectedGroup.scenes.map(scene => <button key={scene.name} type="button" aria-pressed={(selectedGroup.scenes.some(item => item.name === selectedVariant) ? selectedVariant : selectedGroup.scenes[0]?.name) === scene.name} onClick={() => setSelectedVariant(scene.name)} className="rounded-md border px-2 py-1.5 text-xs aria-pressed:border-primary aria-pressed:text-primary">{scene.name}</button>)}</div>
                   </div>
                   <TooltipProvider delay={80}>
                     <Tooltip>
@@ -1507,13 +1521,16 @@ export function ScenesPanel({
                     </Tooltip>
                   </TooltipProvider>
                 </div>
+                <div role="tablist" aria-label="场景工作区" className="asset-workspace-tabs my-2">{[["references","参考视图"],["properties","属性与变体"],["world","3D 场景"],["history","历史"]].map(([value,label]) => <button key={value} role="tab" type="button" aria-selected={detailView === value} onClick={() => setDetailView(value)}>{label}</button>)}</div>
                 <div
                   ref={gridRef}
-                  className="mt-1.5 grid grid-cols-1 gap-3 xl:grid-cols-2"
+                  className="mt-1.5 space-y-3"
                 >
-                  {selectedGroup.scenes.map((scene) => (
+                  {selectedGroup.scenes.filter(scene => scene.name === (selectedGroup.scenes.some(item => item.name === selectedVariant) ? selectedVariant : selectedGroup.scenes[0]?.name)).map((scene) => (
                     <div key={scene.name} data-asset-id={scene.name}>
+                      {detailView === "properties" && <section className="mb-4 rounded-lg border bg-card p-5"><h3 className="text-lg font-semibold">{scene.name}</h3><p className="my-3 text-sm text-muted-foreground">基础场景：{scene.base_scene_id || selectedGroup.baseName} · 变体：{scene.variant_id || "基础状态"}</p><p className="mb-3 whitespace-pre-wrap text-sm">{scene.description || scene.environment_prompt || "尚未填写场景描述"}</p><p className="mb-4 whitespace-pre-wrap text-sm text-muted-foreground">{scene.variant_prompt}</p><Button variant="outline" onClick={() => { setEditing(scene); setDraftSeed(null); setDialogOpen(true); }}>编辑属性与变体</Button><SceneContextSource key={scene.name} project={project} name={scene.name} /><div className="mt-5"><AssetBeatReferences project={project} references={refIndex.referencesFor("scene", scene.name)} /></div></section>}
                       <SceneAssetCardController
+                        view={detailView}
                         project={project}
                         scene={scene}
                         imageSourceSelection={imageSourceSelection}

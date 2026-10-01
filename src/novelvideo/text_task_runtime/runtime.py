@@ -16,12 +16,18 @@ from novelvideo.knowledge_runtime.codex import (
     StructuredImage,
     validate_structured_images,
 )
+from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
 from novelvideo.text_task_runtime.models import (
     AgentTaskRouteSnapshot,
     validate_text_task_model_name,
 )
 
 T = TypeVar("T")
+
+# A headless runtime can finish successfully yet print text that does not match
+# the requested schema. That is a sampling failure of one attempt, not a broken
+# route, so the facade may re-ask instead of failing the whole production stage.
+_RETRYABLE_OUTPUT_CODES = frozenset({"DSH_OUTPUT_INVALID"})
 
 
 def _reject_unsupported_skill(snapshot: AgentTaskRouteSnapshot) -> None:
@@ -232,13 +238,33 @@ class StructuredRuntimeAgent:
             validate_structured_images(list(frozen_images))
         attempt_prompt = prompt
         for attempt in range(self.output_retries + 1):
-            output = await self.runtime.run_structured(
-                prompt=attempt_prompt,
-                output_type=self.output_type,
-                system_prompt=self.system_prompt,
-                validation_context=self.validation_context,
-                **({"images": list(frozen_images)} if frozen_images else {}),
-            )
+            try:
+                output = await self.runtime.run_structured(
+                    prompt=attempt_prompt,
+                    output_type=self.output_type,
+                    system_prompt=self.system_prompt,
+                    validation_context=self.validation_context,
+                    **({"images": list(frozen_images)} if frozen_images else {}),
+                )
+            except KnowledgeRuntimeError as exc:
+                if (
+                    str(getattr(exc, "code", "") or "") not in _RETRYABLE_OUTPUT_CODES
+                    or attempt >= self.output_retries
+                ):
+                    raise
+                # The payload was usually valid JSON that broke a cross-field
+                # rule ("ref2va requires reference_summary"). Telling the model
+                # only "not schema-shaped JSON" makes it repeat the same mistake,
+                # so pass the runtime's structural detail through verbatim.
+                detail = " ".join(str(exc).split())[:800]
+                attempt_prompt = f"""{prompt}
+
+## 上次结构化结果未通过校验
+{detail}
+
+请只修正上述被指出的字段后重新输出符合既定 Schema 的完整结果，不要输出解释或 Markdown 围栏。
+"""
+                continue
             try:
                 if self.validation_context is not None and hasattr(
                     self.output_type, "model_validate"

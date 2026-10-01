@@ -6,6 +6,7 @@ export interface CostBucket {
   total_cents: number; confirmed_cents: number; estimated_cents: number;
   priced_count: number; unpriced_count: number; subscription_count: number;
   pending_count: number; attempt_count: number;
+  cny_attempt_count?: number; native_credit_count?: number; native_credit_total?: string;
 }
 export interface CostTrendPoint {
   date: string; total_cents: number | null; confirmed_cents: number | null;
@@ -23,6 +24,8 @@ export interface ProjectCostSnapshot {
   trend: { daily: CostTrendPoint[]; cumulative: CostTrendPoint[] };
   breakdown: { channels: (CostBucket & { provider: string; media: (CostBucket & { media_type: CostMedia })[] })[]; media: (CostBucket & { media_type: CostMedia })[] };
   subscriptions: CostSubscription[];
+  measured_credits?: { provider: string; account_id: string; credit: string }[];
+  historical_credits?: { provider: string; credit: string; task_count: number; date_known: boolean };
   coverage: { start_at: string | null; complete: boolean; reasons: string[]; gaps: string[] };
 }
 export interface CostValue { status: CostStatus; amount_micros: number | null; reason: string | null }
@@ -33,8 +36,10 @@ export interface CostAttempt {
   usage: Record<string, string>; usage_source: string | null; workflow: string | null;
   specifications: [string, string][];
 }
-export interface CostEntry extends CostAttempt { cost_status: CostStatus; amount_cents: number | null; value: CostValue }
+export interface NativeBilling { unit: 'RH_CREDIT'; amount: string | null; status: 'confirmed' | 'unknown' }
+export interface CostEntry extends CostAttempt { cost_status: CostStatus; amount_cents: number | null; value: CostValue; billing?: NativeBilling | null }
 export interface CostRevision {
+  billing?: NativeBilling | null;
   value: CostValue; event_id?: string; sequence?: number; recorded_at?: string | null; applied?: boolean;
   usage?: Record<string, string>; usage_source?: string | null;
   evidence?: Record<string, string | number | null>;

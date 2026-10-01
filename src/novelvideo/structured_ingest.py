@@ -21,7 +21,7 @@ from uuid import uuid4
 
 import portalocker
 
-STRUCTURED_PIPELINE_VERSION = "structured_v1"
+STRUCTURED_PIPELINE_VERSION = "structured_v2_voice_facts"
 STRUCTURED_SCHEMA_VERSION = "1"
 
 SectionType = Literal["scene", "chapter", "window"]
