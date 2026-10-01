@@ -53,6 +53,8 @@ export function OperationPanelShell({
     if (!expanded) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        // This child dialog owns Escape until it closes; preserve the editor.
+        if (document.querySelector('[data-technique-library-modal="true"]')) return;
         event.stopPropagation();
         onCollapse();
       }

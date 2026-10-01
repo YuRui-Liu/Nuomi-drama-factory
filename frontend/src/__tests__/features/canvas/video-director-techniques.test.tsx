@@ -41,9 +41,10 @@ describe('director technique compatibility', () => {
     render(<I18nextProvider i18n={i18n}><TechniqueCardPicker segment={segment} hasReferences={true} capabilities={capabilities}
       techniques={[card]} error="techniqueModeUnsupported" onSelect={onSelect} /></I18nextProvider>);
     expect(screen.getByText('Ending')).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: /Ending/ })).toBeDisabled();
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /更换手法/ })).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('模式');
-    expect(screen.getByRole('link', { name: 'Source' })).toHaveAttribute('href', 'https://example.com');
+    expect(screen.queryByRole('link', { name: 'Source' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /清除/ }));
     expect(onSelect).toHaveBeenCalledWith(null);
   });

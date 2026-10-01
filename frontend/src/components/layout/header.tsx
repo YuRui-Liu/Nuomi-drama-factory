@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/tooltip";
 import { CreditBalanceBadge } from "@/components/layout/credit-balance-badge";
 import { BrandMark } from "@/components/brand/brand-mark";
+import { TechniqueLibrary } from "@/features/technique-library/TechniqueLibrary";
 import { NotificationDrawer } from "@/components/notifications/notification-drawer";
 import { SettingsDialog } from "@/components/settings/settings-dialog";
 import {
@@ -248,6 +249,7 @@ export function Header() {
 
         {/* Actions */}
         <div className="col-start-3 row-start-1 flex min-w-0 items-center justify-end gap-1 max-lg:col-start-2">
+          <TechniqueLibrary />
           <div ref={settingsAnchorRef} className="relative">
             <Button
               type="button"

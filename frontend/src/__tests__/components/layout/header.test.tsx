@@ -5,6 +5,14 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Header } from "@/components/layout/header";
+import { getTechniqueCatalog } from "@/api/techniqueLibrary";
+
+vi.mock("@/api/techniqueLibrary", () => ({
+  getTechniqueCatalog: vi.fn().mockResolvedValue({ catalogVersion: "1", techniques: [] }),
+  getTechniqueFavorites: vi.fn().mockResolvedValue({ ids: [] }),
+  setTechniqueFavorite: vi.fn(),
+}));
+
 
 const runtimeState = vi.hoisted(() => ({ authRequired: true, isCe: false }));
 const modelGatewayState = vi.hoisted(() => ({ enabledCalls: [] as boolean[] }));
@@ -96,6 +104,7 @@ vi.mock("react-i18next", () => ({
     t: (key: string) =>
       ({
         "app.logoHomeTooltip": "Home",
+        "techniqueLibrary.title": "Technique library",
         "header.settings": "Settings",
         "header.settingsWithWarning": "Settings need attention",
         "header.account.open": "Open account",
@@ -125,7 +134,7 @@ vi.mock("react-i18next", () => ({
 }));
 
 vi.mock("@/stores/auth-store", () => ({
-  useAuthStore: () => authState,
+  useAuthStore: Object.assign((selector?: (state: typeof authState) => unknown) => selector ? selector(authState) : authState, { getState: () => authState }),
 }));
 
 vi.mock("@/stores/app-store", () => ({
@@ -181,6 +190,7 @@ function renderHeader({ project, pathname }: { project?: string; pathname?: stri
 
 describe("Header runtime gating", () => {
   beforeEach(() => {
+    vi.mocked(getTechniqueCatalog).mockClear();
     routerState.project = undefined;
     routerState.pathname = "/";
     routerState.searchStr = "";
@@ -196,6 +206,15 @@ describe("Header runtime gating", () => {
     episodeStoreState.setLastEpisodeLocation.mockReset();
     episodeStoreState.clearLastEpisodeLocation.mockReset();
     projectNavState.rememberSection.mockReset();
+  });
+
+  it("opens the shared technique library without a selected project", async () => {
+    renderHeader();
+    expect(getTechniqueCatalog).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Technique library" }));
+    expect(await screen.findByRole("dialog", { name: "Technique library" })).toBeInTheDocument();
+    expect(getTechniqueCatalog).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "techniqueLibrary.apply" })).not.toBeInTheDocument();
   });
 
   it("shows the NuomiDrama brand and direct project navigation", () => {
