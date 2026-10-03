@@ -85,6 +85,8 @@ class DecisionBasis(BaseModel):
 
 ## 任务 3：生成与独立创作审查
 
+执行前必须先完成下方任务 2A；本任务同时落实规格第 14 节。作者逐项返修响应与下一轮 QC 判定分开存储，不能由作者自报通过。
+
 文件：`creative_review.py`、`prompts.py`、`planner.py`、`service.py`、`validation.py`；新建 `tests/director_plan/test_creative_review.py`，修改 `test_start_state_policy.py`、`test_validation.py`。
 
 - [ ] 写失败测试：结构通过但光学/构图矛盾仍需修改；生成者自填通过无效；审查失败或证据不足不自动放行；无动作变化的保持镜头可合法。
@@ -179,3 +181,24 @@ class KeyframeProjection(BaseModel):
 检查点 A（任务 1–3）：契约与审查成立，尚不代表下游采用。检查点 B（任务 4–6）：跨层保真与能力边界成立。检查点 C（任务 7–8）：用户能看到并采用修订，报告真实验收范围。
 
 本轮未执行上述测试，未修改实现。代码执行阶段应依据当时最新源文件细化函数补丁；这里的接口草图不替代完整实现和回归证据。
+
+## 用户补充后的执行约束与任务 2A
+
+所有实现、测试、提交只在 `.worktrees/director-creative-contract` 执行。使用原目录虚拟环境的 Python 时设置 `PYTHONPATH=src`，使导入指向 worktree；不复制原目录未提交的 runtime 或 craft 文件。原目录仅只读检查，不作为执行目录。
+
+### 任务 2A：作者续接、有效记忆和 QC 历史（先于任务 3）
+
+文件：修改 `src/novelvideo/knowledge_runtime/codex.py`、`src/novelvideo/text_task_runtime/runtime.py`、`src/novelvideo/director_plan/planner.py`、`service.py`、`prompts.py`；新建 `src/novelvideo/director_plan/revision_feedback.py`、`author_sessions.py`、`creative_memory.py`，分别负责问题/返修/复查历史、作者会话持久映射、项目及任务类型范围的记忆。复用通用运行时已有能力，若并行任务已提交等价能力，先审查再复用，不覆盖或重复实现。
+
+- [ ] 检查本机 `codex exec --help` 与 `codex exec resume --help`，确认实际会话创建、续接与事件输出协议。现有 `--ephemeral` 只保留给不需要持久会话的调用；不得全局改变其他运行时调用的行为。
+- [ ] 新建 `tests/director_plan/test_author_sessions.py`：捕获调用参数证明初次新建、同链续接指定 ID、重启恢复、不同链隔离、同链并发串行/拒绝；模拟会话丢失并断言明确错误而非新会话。
+- [ ] 新建 `tests/director_plan/test_revision_feedback.py`：固定 issue_id；第二轮包含第一次问题、修法和复查；漏答/未知 ID/作者自关问题被拒绝；QC 未提及不关闭；过期报告无效；已解决项回归；同轮重复请求幂等。
+- [ ] 新建 `tests/director_plan/test_creative_memory.py`：同项目同类有效记忆可检索，跨项目/类别排除；未验证成功修法不晋升；失败经验明确标注；规则变更和用户纠正使相关记录失效。
+- [ ] 先运行上述三个测试文件确认预期失败，再实现持久记录及运行时显式 session 接口。会话映射及问题状态更新使用原子写入与锁，CLI 的操作系统进程 session 不等于 Codex 对话 session。
+- [ ] 作者返修输出包含按 issue_id 的 proposed_change / disputed / blocked 响应与具体字段差异；下一轮独立 QC 才能写 resolved / persists / regressed / needs_human。QC 单独创建执行上下文，不使用作者 session ID。
+- [ ] 返修预算使用已有任务配置或显式配置字段；达到预算留在 review_required。QC 输出错误和格式重试不消耗虚假的成功复查轮次；所有报告绑定修订及规则版本。
+- [ ] 对保存的会话 ID 做作用域匹配校验；新任务继承有效记忆并创建新会话，同链任务恢复原会话。记忆检索快照及来源随作者请求保存，以便复现。
+- [ ] 在 worktree 运行 `PYTHONPATH=src /Users/liuyuxiang05/Liu/Nuomi-drama-factory/.venv/bin/python -m pytest tests/director_plan/test_author_sessions.py tests/director_plan/test_revision_feedback.py tests/director_plan/test_creative_memory.py -q`，随后运行 runtime 和导演服务定向回归。测试中禁止真实付费模型调用；mock 的协议验证不冒充真实 CLI 续接验收。
+- [ ] 分别报告“会话协议测试”“真实 CLI 续接证据”“反馈闭环测试”的状态；未真实调用时明确未验证端到端续接。提交只包含本任务文件，消息 `feat(director): persist author sessions and independent QC feedback`。
+
+新增规格覆盖：第 14 节对应任务 2A、3、7、8。工作台必须分别展示作者修改说明和 QC 复查结果；验收不得把作者自评或单轮结构通过计为修复完成。
