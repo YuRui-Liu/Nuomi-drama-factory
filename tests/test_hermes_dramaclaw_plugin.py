@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -21,6 +22,24 @@ def _load_plugin_module():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def test_team_upload_listing_uses_authenticated_api(monkeypatch):
+    plugin = _load_plugin_module()
+    monkeypatch.setenv("DRAMACLAW_TEAM_MODE", "1")
+    monkeypatch.setenv("DRAMACLAW_PROJECT_ID", "p1")
+    calls = []
+
+    def request(method, path):
+        calls.append((method, path))
+        return {"ok": True, "data": {"files": [{"filename": "novel.txt"}]}}
+
+    monkeypatch.setattr(plugin, "_request", request)
+    result = plugin._handle_list_ingest_uploads({})
+    if isinstance(result, str):
+        result = json.loads(result)
+    assert calls == [("GET", "/api/v1/projects/p1/ingest/uploads")]
+    assert result["data"]["files"][0]["filename"] == "novel.txt"
 
 
 def test_dramaclaw_plugin_adds_chat_error_without_replacing_task_error():

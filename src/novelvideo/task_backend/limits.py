@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from novelvideo.shared.runtime_env import is_ce_effective
+from novelvideo.shared.runtime_env import is_self_hosted
 from novelvideo.task_backend.queues import normalize_queue_kind
 from novelvideo.task_concurrency_settings import process_task_concurrency_settings
 
@@ -145,7 +145,7 @@ def _positive_lane_int(
 
 
 def _saved_ce_limit(queue_kind: str | None) -> int | None:
-    if not is_ce_effective():
+    if not is_self_hosted():
         return None
     lane = normalize_queue_kind(queue_kind)
     return process_task_concurrency_settings().lanes[lane]

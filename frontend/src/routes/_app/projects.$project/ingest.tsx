@@ -789,7 +789,7 @@ const IngestCreditCostSlot = memo(function IngestCreditCostSlot({
 }: {
   display?: string | null;
 }) {
-  const hidden = useCreditDisplayHidden() || isCeRuntime() || !display;
+  const hidden = useCreditDisplayHidden() || isCeRuntime(true) || !display;
   return (
     <span className="flex h-4 w-[26px] items-center justify-center overflow-hidden">
       <span

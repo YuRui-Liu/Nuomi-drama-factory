@@ -7,7 +7,7 @@ import sys
 from typing import Any
 
 from novelvideo.model_gateway_settings import get_effective_newapi_config
-from novelvideo.shared.runtime_env import is_ce_effective
+from novelvideo.shared.runtime_env import is_self_hosted
 
 
 def _runtime_version(api_key: str, base_url: str) -> str:
@@ -50,7 +50,7 @@ def refresh_model_gateway_runtime() -> dict[str, Any]:
     changes; Hermes performs its own worker fingerprint rotation.
     """
 
-    if not is_ce_effective():
+    if not is_self_hosted():
         raise RuntimeError("model gateway runtime refresh is only available in CE")
 
     from novelvideo import config as app_config

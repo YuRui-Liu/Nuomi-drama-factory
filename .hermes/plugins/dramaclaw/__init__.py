@@ -589,6 +589,9 @@ def _handle_list_ingest_uploads(args: dict[str, Any], **_: Any) -> str:
         if current_project and project != current_project:
             raise ValueError("can only list uploads for the current Hermes project scope")
 
+        if os.environ.get("DRAMACLAW_TEAM_MODE") == "1":
+            return tool_result(_request("GET", f"/api/v1/projects/{project}/ingest/uploads"))
+
         project_dir_raw = os.environ.get("DRAMACLAW_PROJECT_OUTPUT_DIR", "").strip()
         if not project_dir_raw:
             project_dir_raw = os.environ.get("SUPERTALE_PROJECT_OUTPUT_DIR", "").strip()

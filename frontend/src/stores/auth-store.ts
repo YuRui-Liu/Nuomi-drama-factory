@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { quotaSafeStateStorage } from "@/lib/localStorageQuota";
 import { regionAbortController } from "@/lib/region-abort";
+import { isTeamRuntime } from "@/lib/runtime-config";
 import type { OkResponse } from "@/types/api";
 
 export interface CurrentUser {
@@ -190,6 +191,7 @@ export const useAuthStore = create<AuthState>()(
         set({ avatarUrl: url });
       },
       refreshAvatar: async () => {
+        if (isTeamRuntime()) return;
         // EE-only avatar endpoint; absent on CE backends, so failures are silent.
         try {
           const res = await fetch("/api/v1/account/avatar", {

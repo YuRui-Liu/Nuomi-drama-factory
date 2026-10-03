@@ -1471,11 +1471,11 @@ function IdentityCard({
     ? identityCostRes.data.data.display
     : "";
   const identityCreditButtonClass =
-    isCeRuntime()
+    isCeRuntime(true)
       ? "h-7 gap-1 rounded-[8px] px-2 text-xs transition-transform active:scale-95"
       : "relative h-7 gap-1 rounded-[8px] px-2 pr-9 text-xs transition-transform active:scale-95";
   const identityCreditDialogActionClass =
-    isCeRuntime()
+    isCeRuntime(true)
       ? "transition-transform active:scale-95"
       : "relative border-[3px] border-[#007A87] bg-transparent pr-9 transition-transform hover:border-[#007A87] hover:bg-transparent active:scale-95 dark:border-[#007A87] dark:hover:border-[#007A87]";
 

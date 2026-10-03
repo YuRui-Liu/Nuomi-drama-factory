@@ -87,6 +87,11 @@ def _clamp_harness_route(
 def default_agent_task_route(task_role: str) -> AgentTaskRoute:
     """Return the built-in baseline for a logical text-task role."""
 
+    from novelvideo.shared.runtime_env import edition
+
+    if edition() == "team":
+        return AgentTaskRoute()
+
     return _ROLE_DEFAULTS.get(task_role, AgentTaskRoute())
 
 

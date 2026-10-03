@@ -21,7 +21,7 @@ function formatFullCredits(value: number, language: string): string {
 export function CreditBalanceBadge() {
   // Hooks must run unconditionally (Rules of Hooks); gate the CE/auth checks
   // after them. `useCurrentUser` stays disabled in CE so we don't fetch there.
-  const ce = isCeRuntime();
+  const ce = isCeRuntime(true);
   const { t, i18n } = useTranslation();
   const username = useAuthStore((s) => s.username);
   const { data, isLoading, isError } = useCurrentUser(Boolean(username) && !ce);

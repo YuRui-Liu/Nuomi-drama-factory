@@ -115,15 +115,19 @@ def _serialize_task_timestamp(value: str) -> str:
     return parsed.isoformat().replace("+00:00", "Z")
 
 
-async def _sse_token_still_valid(request: Request, last_check: float) -> tuple[bool, float]:
+async def _sse_token_still_valid(
+    request: Request, last_check: float, *, project_id: str | None = None,
+) -> tuple[bool, float]:
     now = asyncio.get_event_loop().time()
     if now - last_check < _SSE_REVERIFY_INTERVAL_S:
         return True, last_check
     try:
         user = await verify_credential_for_request(request)
+        if user is not None and project_id:
+            await resolve_project_context(user=user, project_id=project_id, required_role="viewer")
     except Exception:
         logger.debug("SSE credential recheck failed", exc_info=True)
-        return True, last_check
+        return False, now
     return (user is not None), now
 
 
@@ -418,7 +422,7 @@ async def stream_project_tasks(
                 }
                 last_heartbeat = now
 
-            still_valid, last_auth_check = await _sse_token_still_valid(request, last_auth_check)
+            still_valid, last_auth_check = await _sse_token_still_valid(request, last_auth_check, project_id=project)
             if not still_valid:
                 yield {
                     "event": "auth_revoked",
@@ -451,7 +455,7 @@ async def stream_project_task(
         last_auth_check = asyncio.get_event_loop().time()
         not_found_deadline = None
         while True:
-            still_valid, last_auth_check = await _sse_token_still_valid(request, last_auth_check)
+            still_valid, last_auth_check = await _sse_token_still_valid(request, last_auth_check, project_id=project)
             if not still_valid:
                 yield {
                     "event": "auth_revoked",
@@ -490,7 +494,7 @@ async def stream_project_task(
                     "logs": task.logs[-100:],
                 }
                 if is_terminal:
-                    payload["result"] = task.result
+                    payload["result"] = _sanitize_task_result_for_client(task.result, ctx=ctx)
                     payload["error"] = task.error
                     if isinstance(task.metadata, dict):
                         payload["error_code"] = task.metadata.get("error_code")

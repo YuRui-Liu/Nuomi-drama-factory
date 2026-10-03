@@ -293,7 +293,15 @@ class HermesSdkThread:
             return
         base_cmd = [str(self._cli_path), "acp"]
         # Wrap with OS sandbox (codex-linux-sandbox on Linux; sandbox-exec on macOS).
-        sandboxed = wrap_command(base_cmd, SandboxSpec(user=self._username, hermes_home=self._cwd))
+        from novelvideo.shared.runtime_env import edition
+        if edition() == 'team':
+            from novelvideo.team.execution import wrap_isolated_command
+            root = Path(__file__).resolve().parents[3]
+            sandboxed = wrap_isolated_command(base_cmd, self._cwd, read_paths=[
+                root / '.hermes' / 'plugins', root / '.hermes' / 'skills', root / 'src',
+            ])
+        else:
+            sandboxed = wrap_command(base_cmd, SandboxSpec(user=self._username, hermes_home=self._cwd))
         _log.info("spawning hermes acp for user=%s (sandboxed=%s)", self._username,
                   sandboxed[0] != base_cmd[0])
         self._proc = await asyncio.create_subprocess_exec(

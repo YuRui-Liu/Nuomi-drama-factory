@@ -237,7 +237,7 @@ _OLD_SOUL_IDENTITY_TEXT = (
 )
 
 
-def ensure_user_hermes_workspace(username: str) -> Path:
+def ensure_user_hermes_workspace(username: str, *, scope_key: str | None = None) -> Path:
     """Create / refresh per-user HERMES_HOME. Idempotent and cheap.
 
     Layout under ``state/{username}/.hermes/``:
@@ -251,6 +251,9 @@ def ensure_user_hermes_workspace(username: str) -> Path:
     Returns the HERMES_HOME path (caller passes as ``HERMES_HOME`` env var).
     """
     home = _state_root() / username / ".hermes"
+    from novelvideo.shared.runtime_env import edition
+    if edition() == "team":
+        home = _state_root() / username / ".hermes-team" / hashlib.sha256((scope_key or "home").encode()).hexdigest()
     home.mkdir(parents=True, exist_ok=True)
     try:
         home.chmod(0o700)

@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from novelvideo.api.routes.media_capabilities import require_media_capability_admin
 from novelvideo.ports import get_task_backend
-from novelvideo.shared.runtime_env import is_ce_effective
+from novelvideo.shared.runtime_env import is_self_hosted
 from novelvideo.task_backend.limits import (
     project_lane_effective_active_limit,
     project_user_lane_active_limit,
@@ -119,7 +119,7 @@ def _runtime_data() -> dict[str, Any]:
 
 @router.get("/concurrency")
 def get_concurrency() -> Any:
-    if not is_ce_effective():
+    if not is_self_hosted():
         return _ce_only_error()
     return {"ok": True, "data": _runtime_data()}
 
@@ -129,7 +129,7 @@ def get_concurrency() -> Any:
     openapi_extra={"requestBody": _TASK_CONCURRENCY_REQUEST_BODY},
 )
 async def put_concurrency(request: Request) -> Any:
-    if not is_ce_effective():
+    if not is_self_hosted():
         return _ce_only_error()
     try:
         body = await request.json()

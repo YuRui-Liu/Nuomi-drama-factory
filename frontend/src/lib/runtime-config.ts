@@ -5,14 +5,14 @@ import { z } from "zod";
 export const RuntimeConfigResponse = z.object({
   ok: z.literal(true),
   data: z.object({
-    edition: z.enum(["ce", "ee"]),
+    edition: z.enum(["ce", "team", "ee"]),
     auth_required: z.boolean(),
     instance_id: z.string().optional(),
   }),
 });
 
 export interface RuntimeConfig {
-  edition: "ce" | "ee";
+  edition: "ce" | "team" | "ee";
   authRequired: boolean;
   instanceId?: string;
 }
@@ -23,6 +23,7 @@ let runtimeConfig: RuntimeConfig = {
 };
 
 function fallbackRuntimeConfig(): RuntimeConfig {
+  if (import.meta.env.VITE_EDITION === "team") return { edition: "team", authRequired: true };
   return import.meta.env.VITE_EDITION === "ce"
     ? { edition: "ce", authRequired: false }
     : { edition: "ee", authRequired: true };
@@ -46,8 +47,14 @@ export async function loadRuntimeConfig(): Promise<void> {
   }
 }
 
-export function isCeRuntime(): boolean {
-  return runtimeConfig.edition === "ce";
+// includeTeam gates self-hosted features (provider setup, no cloud credits).
+// Leave false for CE-only anonymous access and project-sharing restrictions.
+export function isCeRuntime(includeTeam = false): boolean {
+  return runtimeConfig.edition === "ce" || (includeTeam && isTeamRuntime());
+}
+
+export function isTeamRuntime(): boolean {
+  return runtimeConfig.edition === "team";
 }
 
 export function authRequired(): boolean {

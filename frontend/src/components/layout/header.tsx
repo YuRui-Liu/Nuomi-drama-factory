@@ -14,10 +14,12 @@ import {
   ChevronRight,
   Languages,
   LogOut,
+  Users,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AvatarUploadDialog } from "@/components/account/avatar-upload-dialog";
+import { TeamUsersDialog } from "@/components/account/team-users-dialog";
 import {
   Tooltip,
   TooltipContent,
@@ -36,7 +38,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuthStore } from "@/stores/auth-store";
 import { useAppStore } from "@/stores/app-store";
-import { authRequired, isCeRuntime } from "@/lib/runtime-config";
+import { authRequired, isCeRuntime, isTeamRuntime } from "@/lib/runtime-config";
 import { resetUserSessionState } from "@/lib/reset-region-state";
 import { useModelGatewayConfig } from "@/lib/queries/model-gateway";
 import { useKnowledgeRuntimeStatus, useMediaProviderAccounts } from "@/lib/queries/knowledge-runtime";
@@ -56,6 +58,7 @@ export function Header() {
   const params = useParams({ strict: false }) as { project?: string };
   const [companionOpen, setCompanionOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [teamUsersOpen, setTeamUsersOpen] = useState(false);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [releaseNotificationStateVersion, setReleaseNotificationStateVersion] = useState(0);
   const [avatarDialogOpen, setAvatarDialogOpen] = useState(false);
@@ -71,7 +74,9 @@ export function Header() {
   const accountOpenFrameRef = useRef<number | null>(null);
   const accountAnchorRef = useRef<HTMLDivElement | null>(null);
   const settingsAnchorRef = useRef<HTMLDivElement | null>(null);
-  const { username, logout } = useAuthStore();
+  const { username, role, logout } = useAuthStore();
+  const teamAdmin = isTeamRuntime() && role === "admin";
+  const canConfigure = !isTeamRuntime() || teamAdmin;
   const queryClient = useQueryClient();
   // 退出登录是 SPA 内部跳转（不刷新页面），必须一并清掉 React Query 缓存和
   // 用户级 zustand/localStorage 状态，否则换账号登录后 projectSummaries 等
@@ -88,15 +93,15 @@ export function Header() {
   const setPikoAccessory = useAppStore((s) => s.setPikoAccessory);
   const setLanguage = useAppStore((s) => s.setLanguage);
   const showLogout = authRequired();
-  const ceRuntime = isCeRuntime();
+  const ceRuntime = isCeRuntime(true);
   const displayName = username ?? "User";
   const avatarInitial = displayName.slice(0, 1).toUpperCase();
   const activeLanguage = (i18n.resolvedLanguage ?? i18n.language).startsWith("zh")
     ? "zh"
     : "en";
-  const modelGatewayConfig = useModelGatewayConfig(ceRuntime);
-  const runtimeStatus = useKnowledgeRuntimeStatus(ceRuntime);
-  const mediaProviders = useMediaProviderAccounts(ceRuntime);
+  const modelGatewayConfig = useModelGatewayConfig(ceRuntime && canConfigure);
+  const runtimeStatus = useKnowledgeRuntimeStatus(ceRuntime && canConfigure);
+  const mediaProviders = useMediaProviderAccounts(ceRuntime && canConfigure);
   const releaseNotifications = useReleaseNotifications(i18n.resolvedLanguage ?? i18n.language);
   const releaseFeed = releaseNotifications.data?.data;
   void releaseNotificationStateVersion;
@@ -120,7 +125,7 @@ export function Header() {
     missingConnections.length ? `待配置：${missingConnections.join("、")}` : "",
     failedConnections.length ? `读取失败：${failedConnections.join("、")}` : "",
   ].filter(Boolean).join("；");
-  const hasSettingsWarning = ceRuntime && Boolean(settingsNotice);
+  const hasSettingsWarning = ceRuntime && canConfigure && Boolean(settingsNotice);
   const settingsWarningBubble = useFloatingBubblePosition(
     settingsAnchorRef,
     hasSettingsWarning && !settingsOpen && !settingsWarningBubbleDismissed,
@@ -266,7 +271,8 @@ export function Header() {
         {/* Actions */}
         <div className="col-start-3 row-start-1 flex min-w-0 items-center justify-end gap-1 max-lg:col-start-2">
           <TechniqueLibrary />
-          <div ref={settingsAnchorRef} className="relative">
+          {teamAdmin && <Button variant="ghost" size="icon-sm" aria-label="团队成员管理" onClick={() => setTeamUsersOpen(true)}><Users className="size-[17px]" /></Button>}
+          {canConfigure && <div ref={settingsAnchorRef} className="relative">
             <Button
               type="button"
               variant="ghost"
@@ -288,7 +294,7 @@ export function Header() {
                 </span>
               ) : null}
             </Button>
-          </div>
+          </div>}
           <Button
             type="button"
             variant="ghost"
@@ -389,7 +395,8 @@ export function Header() {
         open={avatarDialogOpen}
         onOpenChange={setAvatarDialogOpen}
       />
-      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+      {canConfigure && <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />}
+      {teamAdmin && <TeamUsersDialog open={teamUsersOpen} onOpenChange={setTeamUsersOpen} />}
       {settingsWarningBubble
         ? createPortal(
             <div
@@ -520,7 +527,7 @@ function AccountPanel({
           </span>
         </div>
         <div className="space-y-0.5">
-          {!isCeRuntime() ? (
+          {!isCeRuntime(true) ? (
             <AccountMenuRow
               icon={<Camera className="size-3.5" />}
               label={t("header.account.changeAvatar")}

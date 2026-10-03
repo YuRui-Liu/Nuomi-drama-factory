@@ -380,7 +380,18 @@ class DeepSeekHarnessStructuredRuntime:
         output_type,
         system_prompt: str,
         validation_context,
+        _team_scratch: Path | None = None,
     ):
+        from novelvideo.shared.runtime_env import edition
+        if edition() == 'team' and _team_scratch is None:
+            with tempfile.TemporaryDirectory(prefix='nuomi-team-dsh-') as isolated:
+                scratch = Path(isolated)
+                return await self._run_once(
+                    home=scratch / 'home' / '.dsh', model=model, effort=effort,
+                    timeout=timeout, prompt=prompt, output_type=output_type,
+                    system_prompt=system_prompt, validation_context=validation_context,
+                    _team_scratch=scratch,
+                )
         try:
             _write_settings_document(home, model=model, effort=effort)
             tool_free_patch = _write_tool_free_patch(home)
@@ -405,6 +416,10 @@ class DeepSeekHarnessStructuredRuntime:
         ]
         env = build_codex_process_env(environ={**os.environ, "DSH_HOME": str(home)})
         with tempfile.TemporaryDirectory(prefix="nuomi-dsh-") as cwd:
+            if _team_scratch is not None:
+                from novelvideo.team.execution import prepare_cli
+                argv, env = prepare_cli(argv, _team_scratch, runtime=DSH_RUNTIME)
+                cwd = str(_team_scratch)
             try:
                 process = await asyncio.create_subprocess_exec(
                     *argv,

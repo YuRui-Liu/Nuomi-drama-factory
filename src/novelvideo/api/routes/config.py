@@ -12,11 +12,13 @@ from novelvideo.shared import runtime_env
 
 router = APIRouter()
 
-RuntimeEdition = Literal["ce", "ee"]
+RuntimeEdition = Literal["ce", "ee", "team"]
 _INSTANCE_ID = str(ULID())
 
 
 def _runtime_edition() -> RuntimeEdition:
+    if runtime_env.edition() == "team":
+        return "team"
     return "ce" if runtime_env.is_ce_effective() else "ee"
 
 
@@ -28,7 +30,7 @@ async def get_runtime_config():
             "ok": True,
             "data": {
                 "edition": edition,
-                "auth_required": edition == "ee",
+                "auth_required": edition != "ce",
                 "instance_id": _INSTANCE_ID,
             },
         }

@@ -15,7 +15,7 @@ from novelvideo.model_gateway_settings import (
     get_newapi_embedding_model_config,
 )
 from novelvideo.official_defaults import OFFICIAL_NEWAPI_BASE_URL
-from novelvideo.shared.runtime_env import is_ce_effective
+from novelvideo.shared.runtime_env import is_self_hosted
 
 PROJECT_EMBEDDING_MODEL_KEY = "cognee_embedding_model"
 PROJECT_EMBEDDING_DIMENSION_KEY = "cognee_embedding_dimension"
@@ -82,7 +82,7 @@ _CURRENT_COGNEE_EMBEDDING_SPEC: ContextVar[EmbeddingModelSpec | None] = ContextV
 def active_gateway_uses_custom_embedding() -> bool:
     """Return whether new projects should bind to the CE custom model alias."""
 
-    if not is_ce_effective():
+    if not is_self_hosted():
         return False
     return get_effective_newapi_config().mode == MODE_CUSTOM
 
@@ -154,7 +154,7 @@ def embedding_model_spec(
             gateway=MODE_OFFICIAL,
         )
     if clean_model == COGNEE_EMBEDDING_MODEL_LEGACY:
-        if not is_ce_effective():
+        if not is_self_hosted():
             raise RuntimeError(
                 "DC-cognee-embedding is reserved for CE custom NewAPI projects"
             )
@@ -175,7 +175,7 @@ def embedding_model_spec(
 def embedding_gateway_credentials(spec: EmbeddingModelSpec) -> tuple[str, str]:
     """Resolve credentials for the gateway permanently implied by a model spec."""
 
-    if is_ce_effective():
+    if is_self_hosted():
         gateway = get_ce_newapi_config_for_mode(spec.gateway)
         return gateway.api_key, gateway.base_url
     if spec.gateway != MODE_OFFICIAL:

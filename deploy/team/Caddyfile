@@ -1,0 +1,16 @@
+{$TEAM_DOMAIN:studio.yrui9.online} {
+    encode zstd gzip
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy strict-origin-when-cross-origin
+        Strict-Transport-Security "max-age=31536000"
+    }
+    # Route private media through the API, never serve /data as a public directory.
+    @backend path /api/* /static/* /healthz
+    handle @backend {
+        reverse_proxy api:8780
+    }
+    handle {
+        reverse_proxy web:80
+    }
+}

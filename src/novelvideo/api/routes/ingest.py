@@ -87,6 +87,25 @@ def _unsupported_format_response(filename: str) -> dict:
     }
 
 
+@router.get("/projects/{project}/ingest/uploads")
+async def list_ingest_uploads(project: str, user: dict = Depends(get_api_user)):
+    """List uploaded document metadata without granting agents filesystem access."""
+    resolved = await resolve_project_scope(project, user, required_role="viewer")
+    project_dir = Path(resolved.project_dir).resolve()
+    uploads = project_dir / "uploads"
+    if not uploads.resolve().is_relative_to(project_dir):
+        raise HTTPException(403, "Invalid upload directory")
+    files = []
+    if uploads.is_dir():
+        for path in uploads.iterdir():
+            if path.name.startswith(".") or path.is_symlink() or not path.is_file() or not is_supported_novel_path(path.name):
+                continue
+            stat = path.stat()
+            files.append({"filename": path.name, "size": stat.st_size, "modified_at": int(stat.st_mtime), "extension": path.suffix.lower()})
+    files.sort(key=lambda item: (item["modified_at"], item["filename"]), reverse=True)
+    return {"ok": True, "data": {"project_id": project, "count": len(files), "files": files, "upload_dir_available": True}}
+
+
 @router.post("/projects/{project}/ingest/upload")
 async def upload_novel(
     project: str,

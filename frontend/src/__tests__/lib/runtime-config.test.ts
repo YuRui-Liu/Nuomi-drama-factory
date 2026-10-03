@@ -3,6 +3,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 describe("runtime-config", () => {
+  it("supports authenticated team runtime without cloud features", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true, data: { edition: "team", auth_required: true },
+    }))));
+    const config = await import("@/lib/runtime-config");
+    await config.loadRuntimeConfig();
+    expect(config.isTeamRuntime()).toBe(true);
+    expect(config.isCeRuntime()).toBe(false);
+    expect(config.isCeRuntime(true)).toBe(true);
+    expect(config.authRequired()).toBe(true);
+  });
   const originalEdition = import.meta.env.VITE_EDITION;
 
   beforeEach(() => {

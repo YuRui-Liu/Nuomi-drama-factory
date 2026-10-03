@@ -267,11 +267,15 @@ async def preview_style(
 ):
     """使用指定风格生成预览图。"""
     from novelvideo.services.style_service import StyleService
+    from novelvideo.shared.runtime_env import edition
 
     username = user["username"]
     project_name = body.project
+    team_mode = edition() == "team"
+    if team_mode and not body.project:
+        raise HTTPException(status_code=422, detail="Team style generation requires a project")
     if body.project:
-        resolved = await resolve_project_scope(body.project, user, required_role="viewer")
+        resolved = await resolve_project_scope(body.project, user, required_role="editor" if team_mode else "viewer")
         username = resolved.username
         project_name = resolved.project_name
     style = StyleService.get_style(

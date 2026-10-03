@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+from starlette.websockets import WebSocketState
 
 from novelvideo.api.auth import (
     AUTH_COOKIE_NAME,
@@ -38,22 +39,56 @@ from novelvideo.shared.billing_errors import (
 router = APIRouter()
 
 AI_ASSISTANT_CHAT_FEATURE_KEY = "ai_assistant_chat"
+_TEAM_AUTH_CHECK_INTERVAL = 10.0
+
+
+async def _run_team_chat_turn(turn, websocket, username, scope, *, turn_id=None):
+    """Recheck authorization while a turn blocks the WebSocket receive loop."""
+    from novelvideo.shared.runtime_env import edition
+    if edition() != "team":
+        return await turn
+    from novelvideo.chat.dispatcher import cancel_user
+
+    async def watch():
+        while True:
+            await asyncio.sleep(_TEAM_AUTH_CHECK_INTERVAL)
+            user = await _authenticate_ws(websocket)
+            await _require_chat_scope_access(user=user, scope=scope, write=True, delegate=True)
+            await websocket.send_json({"type": "chat.ping", "scope": scope.to_dict(), "turn_id": turn_id})
+
+    task = asyncio.ensure_future(turn)
+    watcher = asyncio.create_task(watch())
+    try:
+        done, _ = await asyncio.wait({task, watcher}, return_when=asyncio.FIRST_COMPLETED)
+        if watcher in done:
+            await watcher
+        return await task
+    except BaseException as exc:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+        if watcher.done() or isinstance(exc, asyncio.CancelledError):
+            await cancel_user(username)
+            with contextlib.suppress(Exception):
+                message = "unauthorized" if isinstance(exc, HTTPException) and exc.status_code == 401 else "聊天已停止：连接中断或项目权限发生变化，请重新登录或检查项目授权。"
+                await websocket.send_json({"type": "error", "message": message, "scope": scope.to_dict(), "turn_id": turn_id})
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1008)
+        raise
+    finally:
+        watcher.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await watcher
 
 
 @router.post("/chat/cancel")
 async def cancel_chat_turn(user: dict = Depends(get_api_user)) -> dict[str, Any]:
-    """Best-effort cancellation for the active Hermes chat worker.
-
-    The WebSocket receive loop is blocked while a Hermes prompt is streaming,
-    so a separate HTTP endpoint gives the frontend an out-of-band stop signal.
-    Closing the worker is intentionally coarse, but it is the only reliable way
-    to interrupt long-running tool calls with the current Hermes ACP wrapper.
-    """
+    """Stop the active Agent, including turns started before a config change."""
     username = str(user["username"])
     try:
-        from novelvideo.chat.hermes_pool import pool as hermes_pool
+        from novelvideo.chat.dispatcher import cancel_user
 
-        cancelled = await hermes_pool.close_user(username)
+        cancelled = await cancel_user(username)
     except Exception:
         cancelled = False
     try:
@@ -501,15 +536,16 @@ async def _stream_project_turn(
             )
         elif event_type == "tool_update":
             tool_name, tool_body = _tool_display_payload(event.get("text"), event.get("name"))
+            success = event.get("success", True)
             await _send_json_best_effort(
                 websocket,
                 {
                     "type": "tool.result",
                     "turn_id": turn_id,
                     "name": tool_name,
-                    "success": True,
+                    "success": success,
                     "result": {"text": tool_body},
-                    "error": None,
+                    "error": None if success else tool_body,
                 },
                 send_lock,
             )
@@ -596,7 +632,12 @@ async def _stream_home_turn(
         media=_attachment_payloads(attachments),
         turn_id=turn_id,
     )
-    thread = await hermes_pool.get_for_user(
+    from novelvideo.shared.runtime_env import edition
+    get_thread = hermes_pool.get_for_user
+    if edition() == "team":
+        from novelvideo.chat.dispatcher import get_chat_thread
+        get_thread = get_chat_thread
+    thread = await get_thread(
         username,
         scope_kind="home",
         project_id=None,
@@ -675,15 +716,16 @@ async def _stream_home_turn(
                     tool_name = event.name
                 tool_text += str(event.text or "") + "\n"
                 display_name, display_body = _tool_display_payload(tool_text, tool_name)
+                success = not (isinstance(event.raw, dict) and event.raw.get("status") == "failed")
                 await _send_json_best_effort(
                     websocket,
                     {
                         "type": "tool.result",
                         "turn_id": turn_id,
                         "name": display_name,
-                        "success": True,
+                        "success": success,
                         "result": {"text": display_body},
-                        "error": None,
+                        "error": None if success else display_body,
                     },
                     send_lock,
                 )
@@ -839,7 +881,7 @@ async def chat_ws(websocket: WebSocket) -> None:
             try:
                 await _require_ai_assistant_access(user=user, scope=scope)
                 if scope.kind == "project":
-                    await _stream_project_turn(
+                    await _run_team_chat_turn(_stream_project_turn(
                         websocket=websocket,
                         user=user,
                         username=username,
@@ -847,16 +889,16 @@ async def chat_ws(websocket: WebSocket) -> None:
                         text=text,
                         attachments=msg.attachments,
                         turn_id=turn_id,
-                    )
+                    ), websocket, username, scope, turn_id=turn_id)
                 elif scope.kind == "home":
-                    await _stream_home_turn(
+                    await _run_team_chat_turn(_stream_home_turn(
                         websocket=websocket,
                         username=username,
                         scope=scope,
                         text=text,
                         attachments=msg.attachments,
                         turn_id=turn_id,
-                    )
+                    ), websocket, username, scope, turn_id=turn_id)
                 else:
                     await _send_json_best_effort(
                         websocket,
@@ -867,6 +909,8 @@ async def chat_ws(websocket: WebSocket) -> None:
                         },
                     )
             except Exception as exc:  # noqa: BLE001
+                if websocket.application_state == WebSocketState.DISCONNECTED:
+                    return
                 message = str(exc)
                 if "当前用户已有 AI 对话正在处理中" in message:
                     await _send_json_best_effort(

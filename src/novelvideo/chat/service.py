@@ -263,6 +263,10 @@ def _chat_backend() -> str:
         or os.environ.get("SUPERTALE_CHAT_BACKEND")
         or "hermes"
     ).strip().lower() or "hermes"
+    from novelvideo.shared.runtime_env import edition
+    if edition() == "team":
+        from novelvideo.chat.runtime_settings import load_chat_runtime_settings
+        return load_chat_runtime_settings().backend
     if preferred == "hermes":
         # Explicit "hermes" must succeed — do NOT silently fall back to
         # claude/codex. A missing hermes binary is a config error to surface.
@@ -1935,7 +1939,8 @@ def _extract_display_tool_call(raw: Any) -> tuple[str, dict[str, Any]] | None:
     if not isinstance(raw, dict):
         return None
     title = str(raw.get("title") or raw.get("kind") or raw.get("name") or raw.get("tool_name") or "").strip()
-    tool_name = title.partition(":")[0].split()[0].strip()
+    title_parts = title.partition(":")[0].split()
+    tool_name = title_parts[0].strip() if title_parts else ""
     if tool_name not in _DISPLAY_TOOL_NAMES:
         for key in ("name", "tool", "toolName", "tool_name"):
             candidate = str(raw.get(key) or "").strip()
@@ -3225,7 +3230,8 @@ async def stream_assistant_reply(
             )
         model_prompt = _script_creation_model_reply_prompt(prompt) or prompt
         backend = _chat_backend()
-        if backend == "codex":
+        from novelvideo.shared.runtime_env import edition
+        if backend == "codex" and edition() != "team":
             return await _stream_assistant_reply_codex(
                 username,
                 project,
@@ -3234,7 +3240,7 @@ async def stream_assistant_reply(
                 project_dir=project_dir,
                 project_state_dir=project_state_dir,
             )
-        if backend == "hermes":
+        if backend == "hermes" or edition() == "team":
             return await _stream_assistant_reply_hermes(
                 username,
                 project,
@@ -3333,11 +3339,16 @@ async def prewarm_chat_backend(username: str, *, project: str | None = None) -> 
         if _chat_backend() != "hermes":
             return
         from novelvideo.chat.hermes_pool import pool as _hermes_pool
-
+        from novelvideo.shared.runtime_env import edition
+        options = {}
+        if edition() == "team":
+            from novelvideo.chat.runtime_settings import load_chat_runtime_settings
+            options["model"] = load_chat_runtime_settings().model
         await _hermes_pool.prewarm(
             username,
             scope_kind="project" if project else "home",
             project_id=project or None,
+            **options,
         )
     except Exception:
         return
@@ -3352,17 +3363,16 @@ async def _stream_assistant_reply_hermes(
     project_dir: str | Path | None = None,
     project_state_dir: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Stream via Hermes ACP subprocess (per-user, sandboxed).
-
-    Differs from claude/codex paths:
-    - Hermes is per-USER not per-(user, project). Project context is injected
-      as a prompt prefix via `current_project=project`.
-    - No per-project chat.db session id; HermesPool owns the thread lifecycle.
-    """
+    """Persist common Agent events from Hermes or a TEAM managed CLI turn."""
     from novelvideo.chat.hermes_pool import pool as _hermes_pool
 
     agent_prompt = _prompt_with_user_context(username, project, prompt)
-    thread = await _hermes_pool.get_for_user(
+    from novelvideo.shared.runtime_env import edition
+    get_thread = _hermes_pool.get_for_user
+    if edition() == "team":
+        from novelvideo.chat.dispatcher import get_chat_thread
+        get_thread = get_chat_thread
+    thread = await get_thread(
         username,
         scope_kind="project" if project else "home",
         project_id=project or None,
@@ -3524,6 +3534,7 @@ async def _stream_assistant_reply_hermes(
                             "type": "tool_update",
                             "text": display_tool_text,
                             "name": current_tool_name,
+                            "success": not (isinstance(event.raw, dict) and event.raw.get("status") == "failed"),
                         },
                     )
                 continue

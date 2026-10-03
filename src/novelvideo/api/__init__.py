@@ -116,7 +116,7 @@ OPENAPI_TAGS = [
 ]
 
 api_router.include_router(auth.router, tags=["auth"])
-if not runtime_env.is_ce_effective():
+if not runtime_env.is_self_hosted():
     for ep in entry_points(group="novelvideo.api_routes"):
         ep.load()(api_router)
 api_router.include_router(config.router, tags=["config"])

@@ -29,6 +29,11 @@ def is_ce_effective() -> bool:
     return edition() == "ce" and not os.environ.get("ST_CONTROL_PLANE_DSN", "").strip()
 
 
+def is_self_hosted() -> bool:
+    """CE and team share instance-local model settings and inline workers."""
+    return edition() in {"ce", "team"} and not os.environ.get("ST_CONTROL_PLANE_DSN", "").strip()
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None:

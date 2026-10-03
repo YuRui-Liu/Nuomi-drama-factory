@@ -95,13 +95,14 @@ def _process_group_kwargs(*, platform: str | None = None) -> dict[str, Any]:
 class _ThreadedProcess:
     """Async-compatible wrapper for event loops without subprocess support."""
 
-    def __init__(self, argv: list[str], *, stdin: int, env: Mapping[str, str]) -> None:
+    def __init__(self, argv: list[str], *, stdin: int, env: Mapping[str, str], cwd: str | None = None) -> None:
         self._process = subprocess.Popen(
             argv,
             stdin=stdin,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=dict(env),
+            **({'cwd': cwd} if cwd is not None else {}),
             **_process_group_kwargs(),
         )
 
@@ -127,8 +128,8 @@ class _ThreadedProcess:
         self._process.kill()
 
 
-async def _create_codex_process(argv: list[str], *, stdin: int) -> Any:
-    env = build_codex_process_env()
+async def _create_codex_process(argv: list[str], *, stdin: int, env: Mapping[str, str] | None = None, cwd: str | None = None) -> Any:
+    env = build_codex_process_env() if env is None else dict(env)
     try:
         return await asyncio.create_subprocess_exec(
             *argv,
@@ -136,10 +137,11 @@ async def _create_codex_process(argv: list[str], *, stdin: int) -> Any:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            **({'cwd': cwd} if cwd is not None else {}),
             **_process_group_kwargs(),
         )
     except NotImplementedError:
-        return await asyncio.to_thread(_ThreadedProcess, argv, stdin=stdin, env=env)
+        return await asyncio.to_thread(_ThreadedProcess, argv, stdin=stdin, env=env, **({'cwd': cwd} if cwd is not None else {}))
 
 
 def parse_codex_version(value: str) -> tuple[int, int, int] | None:
@@ -227,11 +229,24 @@ async def _run_status_command(
     *argv: str,
     timeout_seconds: float = CODEX_STATUS_TIMEOUT_SECONDS,
 ) -> tuple[int, str, str]:
+    from novelvideo.shared.runtime_env import edition
+
+    if edition() == 'team':
+        from novelvideo.team.execution import prepare_cli
+        with tempfile.TemporaryDirectory(prefix='nuomi-team-codex-status-') as scratch:
+            wrapped, env = prepare_cli(list(argv), Path(scratch), runtime='codex')
+            process = await _create_codex_process(wrapped, stdin=asyncio.subprocess.DEVNULL,
+                                                  env=env, cwd=scratch)
+            return await _status_result(process, timeout_seconds)
     process_argv = normalize_codex_process_argv(list(argv))
     process = await _create_codex_process(
         process_argv,
         stdin=asyncio.subprocess.DEVNULL,
     )
+    return await _status_result(process, timeout_seconds)
+
+
+async def _status_result(process: Any, timeout_seconds: float) -> tuple[int, str, str]:
     try:
         stdout, stderr = await asyncio.wait_for(
             process.communicate(),
@@ -331,6 +346,8 @@ def build_codex_exec_argv(
     schema_path: str | None,
     model: str,
 ) -> list[str]:
+    from novelvideo.shared.runtime_env import edition
+
     argv = [
         codex_bin,
         "exec",
@@ -359,6 +376,9 @@ def build_codex_exec_argv(
         argv.extend(["--model", model])
     if schema_path:
         argv.extend(["--output-schema", schema_path])
+    if edition() == 'team':
+        argv.extend(['--disable', 'shell_tool', '--disable', 'unified_exec',
+                     '--disable', 'browser_use', '--disable', 'computer_use'])
     argv.append("-")
     return argv
 
@@ -556,11 +576,18 @@ class CodexCliStructuredBackend:
                     image_path.write_bytes(image.data)
                     argv[-1:-1] = ["--image", str(image_path)]
             process_argv = normalize_codex_process_argv(argv)
+            process_options = {}
+            from novelvideo.shared.runtime_env import edition
+            if edition() == 'team':
+                from novelvideo.team.execution import prepare_cli
+                process_argv, process_env = prepare_cli(process_argv, temp_dir, runtime='codex')
+                process_options = {'env': process_env, 'cwd': str(temp_dir)}
             attempt = self._cost_capture.prepare(model=self.model, media_type='text', fresh=True)
             try:
                 process = await _create_codex_process(
                     process_argv,
                     stdin=asyncio.subprocess.PIPE,
+                    **process_options,
                 )
             except OSError as exc:
                 if attempt is not None:

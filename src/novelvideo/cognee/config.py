@@ -49,7 +49,7 @@ from novelvideo.shared.billing_errors import (
     find_insufficient_credits_stop,
 )
 from novelvideo.shared.env_guard import preserve_st_env
-from novelvideo.shared.runtime_env import is_ce_effective
+from novelvideo.shared.runtime_env import is_self_hosted
 from novelvideo.text_runtime_settings import load_text_runtime_settings
 
 # 抑制 cognee/litellm 内部的 Pydantic 序列化警告
@@ -174,7 +174,7 @@ def _effective_newapi_gateway() -> tuple[str, str]:
 
         return get_newapi_runtime_credentials()
     except Exception:
-        if is_ce_effective():
+        if is_self_hosted():
             # CE credentials are never allowed to fall back to deployment env.
             return "", OFFICIAL_NEWAPI_BASE_URL
         return (
@@ -195,7 +195,7 @@ _active_gateway_fingerprint: str | None = None
 def cognee_gateway_restart_required() -> bool:
     """Return whether CE settings changed after Cognee was initialized."""
     return bool(
-        is_ce_effective()
+        is_self_hosted()
         and _active_gateway_fingerprint
         and _active_gateway_fingerprint != _current_gateway_fingerprint()
     )
@@ -1039,7 +1039,7 @@ try:
 except ImportError:
     COGNEE_AVAILABLE = False
 
-if COGNEE_AVAILABLE and is_ce_effective() and api_key:
+if COGNEE_AVAILABLE and is_self_hosted() and api_key:
     _active_gateway_fingerprint = _current_gateway_fingerprint()
 
 

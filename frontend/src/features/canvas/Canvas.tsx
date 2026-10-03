@@ -4565,7 +4565,7 @@ export function Canvas({
   }, [nodePlacementClientPosition, pendingNodePlacement, t]);
 
   return (
-    <CreditDisplayHiddenProvider value={isCeRuntime()}>
+    <CreditDisplayHiddenProvider value={isCeRuntime(true)}>
     <div
       ref={wrapperRef}
       className="relative h-full w-full bg-background"

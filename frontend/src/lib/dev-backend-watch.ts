@@ -5,7 +5,7 @@ import { RuntimeConfigResponse } from "@/lib/runtime-config";
 const WATCH_INTERVAL_MS = 4_000;
 
 type BackendIdentity = {
-  edition: "ce" | "ee";
+  edition: "ce" | "team" | "ee";
   instanceId?: string;
 };
 

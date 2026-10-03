@@ -18,7 +18,7 @@ export function CreditCostInline({
   iconClassName?: string;
 }) {
   if (useCreditDisplayHidden()) return null;
-  if (isCeRuntime()) return null;
+  if (isCeRuntime(true)) return null;
   if (!display) return null;
   return (
     <span

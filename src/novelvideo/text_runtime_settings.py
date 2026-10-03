@@ -15,7 +15,7 @@ from novelvideo.model_gateway_settings import (
     _resolve_secret,
     mask_secret,
 )
-from novelvideo.shared.runtime_env import is_ce_effective
+from novelvideo.shared.runtime_env import is_self_hosted
 from novelvideo.sqlite_pragmas import configure_sqlite_connection
 
 DEFAULT_PROVIDER = "deepseek"
@@ -84,7 +84,7 @@ def _from_values(*, source: str, provider: str, base_url: str, api_key: str, mod
 
 def load_text_runtime_settings() -> TextRuntimeSettings:
     """Resolve CE from SQLite on every call and EE from deployment env."""
-    if not is_ce_effective():
+    if not is_self_hosted():
         return _from_values(
             source="environment",
             provider=os.environ.get("TEXT_MODEL_PROVIDER", DEFAULT_PROVIDER),
@@ -133,7 +133,7 @@ def save_text_runtime_settings(
     api_key: str | None = None, clear_api_key: bool = False,
 ) -> TextRuntimeSettings:
     """Persist CE settings, preserving an omitted API key unless cleared."""
-    if not is_ce_effective():
+    if not is_self_hosted():
         raise PermissionError("text runtime settings can only be saved in CE")
     provider, base_url, model = _normalize(provider, base_url, model)
     current_key = load_text_runtime_settings().api_key

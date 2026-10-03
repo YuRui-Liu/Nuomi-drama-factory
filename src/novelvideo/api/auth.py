@@ -75,7 +75,10 @@ def _enforce_agent_request_boundary(request: Request, user: dict) -> None:
     if user.get("credential_kind") != "agent_session":
         return
 
-    match = PROJECT_PATH_RE.search(request.url.path)
+    # Exact collection endpoint, not a project named "summaries". Nested paths
+    # still undergo the normal active-project check.
+    collection = request.url.path.rstrip("/") == "/api/v1/projects/summaries"
+    match = None if collection else PROJECT_PATH_RE.search(request.url.path)
     if match:
         requested_project = unquote(match.group(1))
         current_kind = str(user.get("current_scope_kind") or "home")

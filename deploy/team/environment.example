@@ -1,0 +1,24 @@
+# Copy to .env.team at repository root; never commit real credentials.
+TEAM_DOMAIN=studio.yrui9.online
+# Generate with: openssl rand -hex 32
+# Use hexadecimal only, so it is safe in the PostgreSQL connection URL.
+TEAM_DB_PASSWORD=""
+
+# Optional model credentials. Administrators can also configure supported
+# providers in the existing model settings UI after first login.
+NEWAPI_BASE_URL=
+NEWAPI_API_KEY=""
+TEXT_MODEL_BASE_URL=
+TEXT_MODEL_API_KEY=""
+TEXT_MODEL_NAME=
+
+# Team image installs this pinned Codex CLI; update only after verifying flags.
+TEAM_CODEX_VERSION=0.156.1
+# Optional provider key for CLI, separate from the browser login password.
+OPENAI_API_KEY=""
+# Optional CLIs must also be installed inside the API image.
+CODEBUDDY_API_KEY=""
+DEEPSEEK_API_KEY=""
+
+# The team deployment intentionally runs one API process with inline tasks.
+# Configure task concurrency through the existing administrator settings UI.

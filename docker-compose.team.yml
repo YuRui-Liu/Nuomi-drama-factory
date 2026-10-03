@@ -1,0 +1,95 @@
+# Run with: docker compose --env-file .env.team -f docker-compose.team.yml ...
+name: nuomi-team
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nuomi
+      POSTGRES_USER: nuomi
+      POSTGRES_PASSWORD: ${TEAM_DB_PASSWORD:?Set a random hexadecimal TEAM_DB_PASSWORD in .env.team}
+    volumes:
+      - team-db:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U nuomi -d nuomi"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [private]
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_WORLD: "0"
+        TEAM_CODEX_VERSION: ${TEAM_CODEX_VERSION:-0.156.1}
+    restart: unless-stopped
+    env_file: .env.team
+    environment:
+      ST_EDITION: team
+      ST_TEAM_DATABASE_URL: postgresql://nuomi:${TEAM_DB_PASSWORD}@db:5432/nuomi
+      ST_TEAM_ORIGIN: https://${TEAM_DOMAIN:-studio.yrui9.online}
+      ST_CONTROL_PLANE_DSN: ""
+      ST_REDIS_URL: ""
+      ST_CELERY_BROKER_URL: ""
+      ST_CELERY_RESULT_BACKEND: ""
+      ST_TASK_BACKEND: inline
+      ST_COOKIE_SECURE: "1"
+      ST_WORKER_ID: team-local
+      NOVELVIDEO_DATA_ROOT: /data
+      NOVELVIDEO_OUTPUT_DIR: /data/output
+      NOVELVIDEO_STATE_DIR: /data/state
+      NOVELVIDEO_RUNTIME_DIR: /data/runtime
+      NEWAPI_PROVISIONER_ENABLED: "true"
+      DRAMACLAW_CHAT_BACKEND: hermes
+      CODEX_HOME: /data/cli-auth/codex
+    volumes:
+      - team-data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [private, outbound]
+    stop_grace_period: 60s
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_EDITION: team
+    restart: unless-stopped
+    environment:
+      BACKEND_HOST: api
+      BACKEND_PORT: "8780"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [private]
+
+  edge:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      TEAM_DOMAIN: ${TEAM_DOMAIN:-studio.yrui9.online}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/team/Caddyfile:/etc/caddy/Caddyfile:ro
+      - team-caddy-data:/data
+      - team-caddy-config:/config
+    depends_on:
+      - web
+    networks: [private, outbound]
+
+volumes:
+  team-db:
+  team-data:
+  team-caddy-data:
+  team-caddy-config:
+
+networks:
+  private:
+    internal: true
+  outbound:

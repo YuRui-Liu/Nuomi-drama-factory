@@ -47,6 +47,17 @@ def ensure_bootstrap() -> None:
         return
     dsn = os.environ.get("ST_CONTROL_PLANE_DSN", "").strip()
     edition = os.environ.get("ST_EDITION", "").strip().lower()
+    team_dsn = os.environ.get("ST_TEAM_DATABASE_URL", "").strip()
+    if edition == "team":
+        if dsn or not team_dsn:
+            raise RuntimeError("ST_EDITION=team requires ST_TEAM_DATABASE_URL and forbids ST_CONTROL_PLANE_DSN")
+        from novelvideo.team import register_team_ports
+
+        register_team_ports()
+        _BOOTSTRAPPED = True
+        return
+    if team_dsn:
+        raise RuntimeError("ST_TEAM_DATABASE_URL requires ST_EDITION=team; cannot mix CE/EE configuration")
     if dsn and edition == "ce":
         raise RuntimeError(
             "ST_CONTROL_PLANE_DSN 与 ST_EDITION=ce 同时设置(矛盾配置):"

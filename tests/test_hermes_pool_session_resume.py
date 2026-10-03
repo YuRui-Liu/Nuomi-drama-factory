@@ -97,6 +97,21 @@ def _patch_fake_hermes_pool(
     return pool, calls, fake_auth, gateway
 
 
+@pytest.mark.asyncio
+async def test_hermes_model_change_and_clear_rotate_worker(tmp_path, monkeypatch):
+    pool, calls, auth, gateway = _patch_fake_hermes_pool(tmp_path, monkeypatch)
+    try:
+        first = await pool.get_for_user("alice", model="model-a")
+        second = await pool.get_for_user("alice", model="model-b")
+        assert second is not first and first.closed
+        assert pool._slots["alice"].model == "model-b"
+        third = await pool.get_for_user("alice", model="")
+        assert third is not second and second.closed
+        assert pool._slots["alice"].model == ""
+    finally:
+        await pool.close_all()
+
+
 def test_hermes_worker_receives_effective_newapi_key_without_mutating_host_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -131,6 +131,11 @@ class WorkBuddyStructuredRuntime:
         if timeout <= 0:
             raise ValueError('WorkBuddy timeout must be positive')
         with tempfile.TemporaryDirectory(prefix='nuomi-workbuddy-') as cwd:
+            from novelvideo.shared.runtime_env import edition
+            env = build_codex_process_env()
+            if edition() == 'team':
+                from novelvideo.team.execution import prepare_cli
+                argv, env = prepare_cli(argv, Path(cwd), runtime='workbuddy')
             # The Node CLI calls process.exit() while stdout writes to a *pipe*
             # are still pending, so anything past the 64 KiB pipe buffer is lost
             # and a large JSON envelope arrives truncated (json.loads then fails
@@ -143,7 +148,7 @@ class WorkBuddyStructuredRuntime:
                 try:
                     process = await asyncio.create_subprocess_exec(*argv, cwd=cwd,
                         stdin=asyncio.subprocess.PIPE, stdout=stdout_sink,
-                        stderr=asyncio.subprocess.PIPE, env=build_codex_process_env(),
+                        stderr=asyncio.subprocess.PIPE, env=env,
                         **_process_group_kwargs())
                 except OSError:
                     raise KnowledgeRuntimeError('WorkBuddy 无法启动，请检查 CLI 和 Node.js 安装。', code='WORKBUDDY_START_FAILED') from None

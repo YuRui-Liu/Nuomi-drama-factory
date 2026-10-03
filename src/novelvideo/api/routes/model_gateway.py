@@ -26,7 +26,7 @@ from novelvideo.model_gateway_settings import (
     set_model_gateway_mode,
 )
 from novelvideo.model_gateway_runtime import refresh_model_gateway_runtime
-from novelvideo.shared.runtime_env import is_ce_effective
+from novelvideo.shared.runtime_env import is_self_hosted
 from novelvideo.text_runtime_settings import (
     load_text_runtime_settings,
     save_text_runtime_settings,
@@ -81,7 +81,7 @@ OFFICIAL_ONLY_MEDIA_MODEL_NAMES = {
 
 def require_ce_gateway_management() -> None:
     """Reject CE-local gateway mutations from an EE-composed process."""
-    if not is_ce_effective():
+    if not is_self_hosted():
         raise PermissionError("model gateway management is only available in CE")
     require_provisioner_enabled()
 

@@ -158,6 +158,11 @@ class HermesPool:
                         project_id=project_id,
                         reason="thread-closed",
                     )
+                elif model is not None and model != slot.model:
+                    slot = await self._rotate_slot_locked(
+                        slot, model=model, scope_kind=scope_kind,
+                        project_id=project_id, reason="chat-model-change",
+                    )
                 elif slot.gateway_fingerprint != effective_gateway_fingerprint():
                     slot = await self._rotate_slot_locked(
                         slot,
@@ -214,7 +219,11 @@ class HermesPool:
             raise RuntimeError(
                 f"hermes CLI not found at {cli_path}. " "Run `uv tool install 'hermes-agent[acp]'`."
             )
-        home = ensure_user_hermes_workspace(username)
+        from novelvideo.shared.runtime_env import edition
+        home = (
+            ensure_user_hermes_workspace(username, scope_key=f"{scope_kind}:{project_id or ''}")
+            if edition() == "team" else ensure_user_hermes_workspace(username)
+        )
         worker_id = f"hermes-{uuid.uuid4().hex}"
         token = await get_auth_session_port().create_agent_session(
             username=username,
@@ -398,6 +407,9 @@ class HermesPool:
             env["SUPERTALE_PROJECT"] = project_id
         if project_env:
             env.update(project_env)
+        from novelvideo.shared.runtime_env import edition
+        if edition() == "team":
+            env["DRAMACLAW_TEAM_MODE"] = "1"
         api_key, _base_url = effective_gateway_credentials()
         if api_key:
             env["NEWAPI_API_KEY"] = api_key
@@ -460,6 +472,7 @@ class HermesPool:
         *,
         scope_kind: str = "home",
         project_id: str | None = None,
+        model: str | None = None,
     ) -> None:
         """Proactively spawn + warm the user's worker for the given scope.
 
@@ -471,7 +484,7 @@ class HermesPool:
         """
         try:
             thread = await self.get_for_user(
-                username, scope_kind=scope_kind, project_id=project_id
+                username, scope_kind=scope_kind, project_id=project_id, model=model
             )
         except Exception as e:  # noqa: BLE001 - prewarm must never break chat
             _log.debug("prewarm get_for_user failed for user=%s: %s", username, e)

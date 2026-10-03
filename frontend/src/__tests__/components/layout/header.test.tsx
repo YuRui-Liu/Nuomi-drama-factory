@@ -13,10 +13,10 @@ vi.mock("@/api/techniqueLibrary", () => ({
   setTechniqueFavorite: vi.fn(),
 }));
 
-const runtimeState = vi.hoisted(() => ({ authRequired: true, isCe: false }));
+const runtimeState = vi.hoisted(() => ({ authRequired: true, isCe: false, isTeam: false }));
 const modelGatewayState = vi.hoisted(() => ({ enabledCalls: [] as boolean[], query: {} as Record<string, unknown> }));
 const connectionState = vi.hoisted(() => ({ runtime: {} as Record<string, unknown>, providers: {} as Record<string, unknown> }));
-const authState = vi.hoisted(() => ({ username: "local", logout: vi.fn() }));
+const authState = vi.hoisted(() => ({ username: "local", role: "member", logout: vi.fn() }));
 const resetUserSessionStateMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
 const episodeStoreState = vi.hoisted(() => ({
@@ -39,6 +39,7 @@ vi.mock("@/lib/reset-region-state", () => ({
 vi.mock("@/lib/runtime-config", () => ({
   authRequired: () => runtimeState.authRequired,
   isCeRuntime: () => runtimeState.isCe,
+  isTeamRuntime: () => runtimeState.isTeam,
 }));
 
 vi.mock("@/lib/queries/model-gateway", () => ({
@@ -202,6 +203,8 @@ describe("Header runtime gating", () => {
     routerState.hash = "";
     runtimeState.authRequired = true;
     runtimeState.isCe = false;
+    runtimeState.isTeam = false;
+    authState.role = "member";
     modelGatewayState.enabledCalls.length = 0;
     modelGatewayState.query = {};
     connectionState.runtime = { data: { ready: true } };
@@ -223,6 +226,23 @@ describe("Header runtime gating", () => {
     expect(await screen.findByRole("dialog", { name: "Technique library" })).toBeInTheDocument();
     expect(getTechniqueCatalog).toHaveBeenCalledOnce();
     expect(screen.queryByRole("button", { name: "techniqueLibrary.apply" })).not.toBeInTheDocument();
+  });
+
+  it("limits team account and global provider management to administrators", () => {
+    runtimeState.isTeam = true;
+    const { unmount } = renderHeader();
+    expect(screen.queryByRole("button", { name: "团队成员管理" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Settings" })).not.toBeInTheDocument();
+    unmount();
+    authState.role = "admin";
+    renderHeader();
+    expect(screen.getByRole("button", { name: "团队成员管理" })).toBeInTheDocument();
+  });
+
+  it("shows the project assistant route to team members", () => {
+    runtimeState.isTeam = true;
+    renderHeader({ project: "team-project" });
+    expect(screen.getByRole("link", { name: "Nuomi assistant" })).toHaveAttribute("href", "/projects/team-project/assistant");
   });
 
   it("shows the NuomiDrama brand and direct project navigation", () => {

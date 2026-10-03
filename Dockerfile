@@ -18,7 +18,7 @@ ENV ST_EDITION=ce \
     HERMES_CLI_PATH=/root/.local/bin/hermes
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg bubblewrap \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -29,11 +29,9 @@ COPY LICENSES ./LICENSES
 COPY src ./src
 COPY .hermes ./.hermes
 
-# 资产完整性兜底(等价原 wheel 检查):login 媒体须随 src 带入(.dockerignore 已 ! 放行)。
-RUN test -f src/novelvideo/assets/login_bgm.mp3 \
-    && test -f src/novelvideo/assets/login_bg_v1.mp4 \
-    && test -f src/novelvideo/assets/login_bg_v2.mp4 \
-    && test -f src/novelvideo/assets/login_bg_v3.mp4
+# Check assets shipped by this repository; legacy login audio/videos are absent.
+RUN test -f src/novelvideo/assets/login_bg.png \
+    && test -f src/novelvideo/assets/to_be_continued.png
 
 # 可选 3DGS/SHARP「world」特性。默认精简镜像。INSTALL_WORLD=1 时:
 #   - node + @playcanvas/splat-transform(PLY→SOG,MIT)装到 PATH
@@ -55,6 +53,14 @@ RUN set -eux; \
     mkdir -p /data
 
 RUN uv tool install 'hermes-agent[acp]'
+
+# Optional pinned CLI for team text tasks. Never bake credentials into an image.
+ARG TEAM_CODEX_VERSION=""
+RUN if [ -n "$TEAM_CODEX_VERSION" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends nodejs npm \
+        && npm install -g "@openai/codex@$TEAM_CODEX_VERSION" \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 ENV PATH="/app/.venv/bin:/root/.local/bin:$PATH"
 

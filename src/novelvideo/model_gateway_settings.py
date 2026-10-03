@@ -22,7 +22,7 @@ from novelvideo.official_defaults import (
     DEFAULT_EMBEDDING_BATCH_SIZE,
     OFFICIAL_NEWAPI_BASE_URL,
 )
-from novelvideo.shared.runtime_env import is_ce_effective
+from novelvideo.shared.runtime_env import is_self_hosted
 from novelvideo.sqlite_pragmas import configure_sqlite_connection
 
 MODE_OFFICIAL = "official"
@@ -244,7 +244,7 @@ def _hydrate_secrets(data: dict[str, str]) -> dict[str, str]:
 
 def _uses_ce_gateway_settings() -> bool:
     """Return whether this process owns the CE-local gateway settings database."""
-    return is_ce_effective()
+    return is_self_hosted()
 
 
 def _write_many(values: dict[str, str]) -> None:
