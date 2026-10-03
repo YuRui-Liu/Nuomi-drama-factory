@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
+from contextlib import nullcontext
 
 from .models import (
     AssetMigrationReport,
@@ -32,6 +33,19 @@ class DirectorPlanService:
         self._planner = planner
 
     async def create_draft(
+        self,
+        input: DirectorPlanInput,
+        *,
+        on_stage: Callable[[str], None] | None = None,
+        old_plan: DirectorPlanRevision | None = None,
+        assets: tuple[LegacyShotAsset, ...] = (),
+    ) -> DirectorPlanRevision:
+        guard = getattr(self._planner, "author_chain_guard", None)
+        with guard(input) if guard is not None else nullcontext():
+            return await self._create_draft(input, on_stage=on_stage,
+                                           old_plan=old_plan, assets=assets)
+
+    async def _create_draft(
         self,
         input: DirectorPlanInput,
         *,

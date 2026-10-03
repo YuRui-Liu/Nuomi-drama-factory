@@ -27,7 +27,8 @@ async def test_director_plan_runner_reports_real_stages_and_returns_revision(mon
     assert get_project_task_runner("director_plan") is director_plan.run_director_plan
 
     progress_events: list[tuple[float, str]] = []
-    input_value = object()
+    from tests.director_plan.test_planner import episode as make_input
+    input_value = make_input()
     old_plan = object()
     assets = (object(),)
     revision = SimpleNamespace(
@@ -41,7 +42,8 @@ async def test_director_plan_runner_reports_real_stages_and_returns_revision(mon
 
     class Service:
         async def create_draft(self, value, *, on_stage, old_plan, assets):
-            assert value is input_value
+            assert value.author_chain_id == "task-1"
+            assert value.model_copy(update={"author_chain_id": None}) == input_value
             assert old_plan is old_plan_value
             assert assets is assets_value
             assert progress_events == [(0.05, "M1 source_locked")]

@@ -190,7 +190,8 @@ def _semantic_source_spans(semantic) -> tuple[SourceSpan, ...]:
 
 
 def _build_director_plan_service(ctx: ProjectContext) -> DirectorPlanService:
-    return DirectorPlanService(DirectorPlanStore(ctx.output_dir), DirectorPlanner())
+    return DirectorPlanService(DirectorPlanStore(ctx.output_dir), DirectorPlanner(
+        author_project_dir=ctx.output_dir, author_project_id=str(ctx.project_id)))
 
 
 def _load_asset_migration_context(
@@ -368,6 +369,9 @@ async def _execute_director_plan(
         )
 
     input_value = await _build_director_plan_input(payload, ctx)
+    chain_id = str(payload.get("author_chain_id") or envelope.get("__run_task_id") or "").strip()
+    if chain_id:
+        input_value = input_value.model_copy(update={"author_chain_id": chain_id})
     progress(0.05, "M1 source_locked")
     service = _build_director_plan_service(ctx)
     old_plan, assets = _load_asset_migration_context(ctx, episode)

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
+from uuid import uuid4
+from contextlib import nullcontext
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import Agent, PromptedOutput
@@ -25,6 +28,7 @@ class DirectorPlanContractError(ValueError):
 
 
 class DirectorPlanInput(_FrozenModel):
+    author_chain_id: str | None = None
     episode: int
     source_script_hash: str
     source_spans: tuple[SourceSpan, ...]
@@ -54,11 +58,23 @@ class GroupRepairInput(_FrozenModel):
 
 
 class DirectorPlanner:
-    def __init__(self, agent: Any | None = None) -> None:
+    def __init__(self, agent: Any | None = None, *,
+                 author_project_dir: str | Path | None = None,
+                 author_project_id: str | None = None) -> None:
         from novelvideo.text_task_runtime.runtime import current_text_task_runtime
 
         from novelvideo.agent_teams.adapters import method_runtime
         self._runtime = method_runtime('director', 'director_plan', current_text_task_runtime()) if agent is None else None
+        self._author_runtime = None
+        self._author_store = None
+        self._author_binding = None
+        self.author_chain_id = None
+        if author_project_dir is not None:
+            from .author_sessions import AuthorSessionStore
+            if not author_project_id:
+                raise ValueError("author_project_id_required")
+            self._author_store = AuthorSessionStore(Path(author_project_dir),
+                project_id=author_project_id, task_kind="director_plan")
         self.model_name = (
             str(self._runtime.snapshot.model).strip()
             if self._runtime is not None
@@ -79,9 +95,37 @@ class DirectorPlanner:
             ),
         ))
 
+    def _author_for(self, input: DirectorPlanInput):
+        if self._runtime is None or getattr(self._runtime.snapshot, "runtime", None) != "codex":
+            return self._runtime
+        if self._author_store is None:
+            # Legacy unscoped callers (e.g. method trials) are not durable
+            # revision chains. Production supplies a scope explicitly.
+            return self._runtime
+        chain_id = input.author_chain_id or self.author_chain_id or str(uuid4())
+        if self.author_chain_id is not None and chain_id != self.author_chain_id:
+            raise ValueError("author_chain_mismatch")
+        if self._author_runtime is None:
+            snapshot = self._runtime.snapshot
+            route = {key: getattr(snapshot, key, None) for key in
+                     ("runtime", "model", "reasoning_effort", "skill_id", "skill_version")}
+            method = getattr(self._runtime, "method", None)
+            if method is not None:
+                route["method_snapshot"] = method.model_dump(mode="json")
+            self._author_binding = self._author_store.bind(chain_id, route=route)
+            self._author_runtime = self._author_store.wrap_runtime(self._runtime, self._author_binding)
+            self.author_chain_id = chain_id
+        return self._author_runtime
+
+    def author_chain_guard(self, input: DirectorPlanInput):
+        self._author_for(input)
+        if self._author_binding is None:
+            return nullcontext()
+        return self._author_store.claim(self._author_binding)
+
     async def plan_episode(self, input: DirectorPlanInput) -> DirectorPlanDraft:
         if self._runtime is not None:
-            output = await self._runtime.run_structured(
+            output = await self._author_for(input).run_structured(
                 prompt=build_episode_prompt(input), output_type=DirectorPlanDraft
             )
         else:
@@ -94,7 +138,7 @@ class DirectorPlanner:
 
     async def repair_group(self, input: GroupRepairInput) -> NarrativeGroupPlan:
         if self._runtime is not None:
-            output = await self._runtime.run_structured(
+            output = await self._author_for(input.episode).run_structured(
                 prompt=build_group_repair_prompt(input), output_type=DirectorPlanDraft
             )
         else:
