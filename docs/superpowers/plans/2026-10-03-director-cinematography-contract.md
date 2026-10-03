@@ -12,7 +12,7 @@
 
 ## 工作区与执行约束
 
-仓库根：`/Users/liuyuxiang05/Liu/Nuomi-drama-factory`。下列文件路径均相对此根。现有工作区存在其他任务改动，禁止整体暂存、重置或复制它们。实现前按 using-git-worktrees 检查现有隔离；创建新 worktree 前按该技能确认用户偏好，基于包含本规格与计划的提交。文档编写沿用原工作区，不创建代码分支或安装依赖。
+仓库根：`/Users/liuyuxiang05/Liu/Nuomi-drama-factory`。下列文件路径均相对此根。根据用户最新指示，直接在 `fix/codex-identity-qc` 分支执行，不再使用隔离 worktree。现有工作区存在其他任务改动，禁止整体暂存、重置或复制它们；只提交本任务负责的变更。
 
 所有生产行为遵循 `AGENTS.md` 和 `skills/nuomi-production/SKILL.md`；本计划的离线检查不调用生产模型。新增付费生成不属于离线验收。执行前读实际文件，遇到并发修改保留并适配，不覆盖。
 
@@ -184,7 +184,7 @@ class KeyframeProjection(BaseModel):
 
 ## 用户补充后的执行约束与任务 2A
 
-所有实现、测试、提交只在 `.worktrees/director-creative-contract` 执行。使用原目录虚拟环境的 Python 时设置 `PYTHONPATH=src`，使导入指向 worktree；不复制原目录未提交的 runtime 或 craft 文件。原目录仅只读检查，不作为执行目录。
+所有实现、测试、提交在原项目目录的 `fix/codex-identity-qc` 分支执行；此要求取代此前隔离工作区限制。使用项目已有虚拟环境，不覆盖未提交的 runtime 或 craft 变更；对重叠文件先检查差异，适配已有工作。
 
 ### 任务 2A：作者续接、有效记忆和 QC 历史（先于任务 3）
 
@@ -198,7 +198,7 @@ class KeyframeProjection(BaseModel):
 - [ ] 作者返修输出包含按 issue_id 的 proposed_change / disputed / blocked 响应与具体字段差异；下一轮独立 QC 才能写 resolved / persists / regressed / needs_human。QC 单独创建执行上下文，不使用作者 session ID。
 - [ ] 返修预算使用已有任务配置或显式配置字段；达到预算留在 review_required。QC 输出错误和格式重试不消耗虚假的成功复查轮次；所有报告绑定修订及规则版本。
 - [ ] 对保存的会话 ID 做作用域匹配校验；新任务继承有效记忆并创建新会话，同链任务恢复原会话。记忆检索快照及来源随作者请求保存，以便复现。
-- [ ] 在 worktree 运行 `PYTHONPATH=src /Users/liuyuxiang05/Liu/Nuomi-drama-factory/.venv/bin/python -m pytest tests/director_plan/test_author_sessions.py tests/director_plan/test_revision_feedback.py tests/director_plan/test_creative_memory.py -q`，随后运行 runtime 和导演服务定向回归。测试中禁止真实付费模型调用；mock 的协议验证不冒充真实 CLI 续接验收。
+- [ ] 在原项目目录运行 `PYTHONPATH=src .venv/bin/python -m pytest tests/director_plan/test_author_sessions.py tests/director_plan/test_revision_feedback.py tests/director_plan/test_creative_memory.py -q`，随后运行 runtime 和导演服务定向回归。测试中禁止真实付费模型调用；mock 的协议验证不冒充真实 CLI 续接验收。
 - [ ] 分别报告“会话协议测试”“真实 CLI 续接证据”“反馈闭环测试”的状态；未真实调用时明确未验证端到端续接。提交只包含本任务文件，消息 `feat(director): persist author sessions and independent QC feedback`。
 
 新增规格覆盖：第 14 节对应任务 2A、3、7、8。工作台必须分别展示作者修改说明和 QC 复查结果；验收不得把作者自评或单轮结构通过计为修复完成。

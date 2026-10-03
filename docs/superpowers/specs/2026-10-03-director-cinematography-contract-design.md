@@ -209,7 +209,7 @@ API 返回决策、来源、审查与依赖状态。现有导演工作台展示�
 
 ## 14. 作者续接与 QC 反馈闭环（用户补充约束）
 
-实现只能在 `/Users/liuyuxiang05/Liu/Nuomi-drama-factory/.worktrees/director-creative-contract` 工作区进行，分支 `feat/director-creative-contract`。原目录只允许必要的只读检查，不在那里修改、执行实现任务或提交；不得混入其他任务的未提交代码。
+根据用户最新指示，实现、测试和提交在 `/Users/liuyuxiang05/Liu/Nuomi-drama-factory` 的 `fix/codex-identity-qc` 分支进行，不再使用隔离 worktree。保留其他任务的未提交改动，仅提交本任务负责的变更。此指示取代之前的隔离工作区要求。
 
 ### 14.1 逐项返修与复查
 
