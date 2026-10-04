@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import os
 import sys
 import types as py_types
 from pathlib import Path
@@ -91,6 +92,13 @@ async def list_tools() -> list[types.Tool]:
 
 @SERVER.call_tool(validate_input=True)
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
+    if session_id := os.environ.get('NUOMI_ASSISTANT_SESSION_ID'):
+        from .session_store import for_scope, SessionConflict
+        project = os.environ.get('DRAMACLAW_PROJECT_ID') or None
+        store = for_scope(os.environ['DRAMACLAW_USERNAME'], 'project' if project else 'home', project)
+        store.require_current(session_id, int(os.environ['NUOMI_ASSISTANT_GENERATION']))
+        if store.turn_cancelled(os.environ.get('NUOMI_ASSISTANT_TURN_ID')):
+            raise SessionConflict('当前对话已取消，工具未执行。')
     item = TOOLS.get(name)
     if item is None:
         raise ValueError(f"unknown DramaClaw tool: {name}")

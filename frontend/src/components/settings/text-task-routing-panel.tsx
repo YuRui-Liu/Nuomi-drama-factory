@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Bot, Loader2 } from "lucide-react";
+import { ChatRuntimePanel } from "@/components/settings/chat-runtime-panel";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -108,6 +109,7 @@ export function TextTaskRoutingPanel({ open }: { open: boolean }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
+        <ChatRuntimePanel enabled={open} />
         {query.isLoading ? <p className="text-xs text-muted-foreground">正在加载任务路由…</p> : null}
         {query.isError ? <p className="text-xs text-red-300">任务路由 API 不可用，请重启后端。</p> : null}
         {(query.data?.data.roles ?? []).map((item) => {

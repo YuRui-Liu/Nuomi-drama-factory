@@ -6,7 +6,8 @@ from novelvideo.chat.runtime_settings import load_chat_runtime_settings
 
 
 async def get_chat_thread(username: str, *, scope_kind: str, project_id: str | None):
-    settings = load_chat_runtime_settings()
+    from .routing import frozen_route
+    settings = frozen_route.get() or load_chat_runtime_settings()
     if settings.backend == "hermes":
         from novelvideo.chat.hermes_pool import pool
 

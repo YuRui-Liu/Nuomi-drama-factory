@@ -42,19 +42,38 @@ AI_ASSISTANT_CHAT_FEATURE_KEY = "ai_assistant_chat"
 _TEAM_AUTH_CHECK_INTERVAL = 10.0
 
 
-async def _run_team_chat_turn(turn, websocket, username, scope, *, turn_id=None):
+async def _run_team_chat_turn(turn, websocket, username, scope, *, turn_id=None, generation=None, user=None):
+    from novelvideo.chat.session_manager import turn_scope
+    from novelvideo.chat.routing import resolve_chat_route, frozen_route
+    route_token = None
+    try:
+        project_ctx = await _require_chat_scope_access(user=user, scope=scope, write=True, delegate=True) if user is not None else None
+        route, _source = resolve_chat_route(project_ctx)
+        route_token = frozen_route.set(route)
+        async with turn_scope(username, scope.kind, scope.id, expected_generation=generation, turn_id=turn_id):
+            return await _run_authorized_chat_turn(turn, websocket, username, scope, turn_id=turn_id)
+    finally:
+        if route_token is not None:
+            frozen_route.reset(route_token)
+        if hasattr(turn, 'close'):
+            turn.close()
+
+
+async def _run_authorized_chat_turn(turn, websocket, username, scope, *, turn_id=None):
     """Recheck authorization while a turn blocks the WebSocket receive loop."""
     from novelvideo.shared.runtime_env import edition
-    if edition() != "team":
-        return await turn
-    from novelvideo.chat.dispatcher import cancel_user
+    from novelvideo.chat.session_manager import assert_current
 
     async def watch():
+        last_auth = 0
         while True:
-            await asyncio.sleep(_TEAM_AUTH_CHECK_INTERVAL)
-            user = await _authenticate_ws(websocket)
-            await _require_chat_scope_access(user=user, scope=scope, write=True, delegate=True)
-            await websocket.send_json({"type": "chat.ping", "scope": scope.to_dict(), "turn_id": turn_id})
+            await asyncio.sleep(min(.25, _TEAM_AUTH_CHECK_INTERVAL))
+            assert_current()
+            now = asyncio.get_running_loop().time()
+            if edition() == 'team' and now - last_auth >= _TEAM_AUTH_CHECK_INTERVAL:
+                user = await _authenticate_ws(websocket)
+                await _require_chat_scope_access(user=user, scope=scope, write=True, delegate=True)
+                last_auth = now
 
     task = asyncio.ensure_future(turn)
     watcher = asyncio.create_task(watch())
@@ -68,7 +87,10 @@ async def _run_team_chat_turn(turn, websocket, username, scope, *, turn_id=None)
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
         if watcher.done() or isinstance(exc, asyncio.CancelledError):
-            await cancel_user(username)
+            from novelvideo.chat.hermes_pool import pool
+            from novelvideo.chat.session_manager import current_session
+            active = current_session.get()
+            await pool.close_scope(username, scope.kind, scope.id, generation=active[1].generation if active else None)
             with contextlib.suppress(Exception):
                 message = "unauthorized" if isinstance(exc, HTTPException) and exc.status_code == 401 else "聊天已停止：连接中断或项目权限发生变化，请重新登录或检查项目授权。"
                 await websocket.send_json({"type": "error", "message": message, "scope": scope.to_dict(), "turn_id": turn_id})
@@ -82,19 +104,19 @@ async def _run_team_chat_turn(turn, websocket, username, scope, *, turn_id=None)
 
 
 @router.post("/chat/cancel")
-async def cancel_chat_turn(user: dict = Depends(get_api_user)) -> dict[str, Any]:
+async def cancel_chat_turn(body: dict[str, Any], user: dict = Depends(get_api_user)) -> dict[str, Any]:
     """Stop the active Agent, including turns started before a config change."""
     username = str(user["username"])
-    try:
-        from novelvideo.chat.dispatcher import cancel_user
-
-        cancelled = await cancel_user(username)
-    except Exception:
-        cancelled = False
-    try:
-        chat_service.force_release_chat_run_lock(username, "")
-    except Exception:
-        pass
+    from novelvideo.chat.session_manager import cancel_scope
+    from novelvideo.chat.session_store import for_scope
+    from novelvideo.chat.hermes_pool import pool
+    scope = ChatScope.from_payload(body.get('scope'))
+    await _require_chat_scope_access(user, scope, write=True)
+    generation = for_scope(username, scope.kind, scope.id).get_or_create().generation
+    if body.get('generation') is not None and body['generation'] != generation:
+        raise HTTPException(409, '会话已更新')
+    cancelled = await cancel_scope(username, scope.kind, scope.id, generation)
+    await pool.close_scope(username, scope.kind, scope.id, generation=generation)
     return {"ok": True, "data": {"cancelled": cancelled}}
 
 
@@ -121,6 +143,7 @@ class ChatMessageIn(BaseModel):
     scope: ChatScopePayload | None = None
     text: str
     turn_id: str | None = None
+    generation: int | None = None
     attachments: list[ChatAttachmentIn] = []
 
 
@@ -129,13 +152,57 @@ class ScopeSetIn(BaseModel):
     scope: ChatScopePayload
 
 
+class ClearSessionIn(BaseModel):
+    scope: ChatScopePayload
+    expected_generation: int
+    request_id: str
+
+
+def _session_payload(username, scope):
+    from dataclasses import asdict
+    from novelvideo.chat.session_store import for_scope
+    return asdict(for_scope(username, scope.kind, scope.id).get_or_create())
+
+
+@router.get('/chat/session')
+async def get_chat_session(scope_kind: str = 'home', project_id: str | None = None,
+                           user: dict = Depends(get_api_user)):
+    scope = ChatScope.from_payload({'kind': scope_kind, 'id': project_id})
+    await _require_chat_scope_access(user, scope)
+    return {'ok': True, 'data': _session_payload(str(user['username']), scope)}
+
+
+@router.post('/chat/session/clear')
+async def clear_chat_session(body: ClearSessionIn, user: dict = Depends(get_api_user)):
+    from dataclasses import asdict
+    from novelvideo.chat.session_store import for_scope, SessionConflict
+    from novelvideo.chat.session_manager import cancel_scope
+    from novelvideo.chat.hermes_pool import pool
+    scope = _scope_from_model(body.scope)
+    await _require_chat_scope_access(user, scope, write=True)
+    username = str(user['username'])
+    store = for_scope(username, scope.kind, scope.id)
+    try:
+        state = store.clear(expected_generation=body.expected_generation, request_id=body.request_id)
+    except SessionConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    await cancel_scope(username, scope.kind, scope.id, body.expected_generation)
+    # Invalidate the prior worker before the next message can reuse it.
+    await pool.close_scope(username, scope.kind, scope.id, generation=body.expected_generation)
+    return {'ok': True, 'data': asdict(state)}
+
+
 class ChatUiEventIn(BaseModel):
+    session_id: str
+    generation: int
     scope: ChatScopePayload
     turn_id: str
     event: dict[str, Any]
 
 
 class ChatNotificationIn(BaseModel):
+    session_id: str
+    generation: int
     scope: ChatScopePayload | None = None
     text: str
 
@@ -154,18 +221,20 @@ async def append_chat_notification(
     if len(text) > 4000:
         raise HTTPException(status_code=400, detail="text is too long")
 
-    if scope.kind == "project":
-        if not scope.id:
-            raise HTTPException(status_code=400, detail="project scope id is required")
-        message = chat_service.add_assistant_message(
-            username,
-            str(scope.id),
-            text,
-            project_dir=project_ctx.output_dir if project_ctx is not None else None,
-            project_state_dir=project_ctx.state_dir if project_ctx is not None else None,
-        )
-    else:
-        message = chat_store.append_message(username, scope, "assistant", text)
+    from novelvideo.chat.session_manager import write_scope
+    from novelvideo.chat.session_store import SessionConflict
+    try:
+        with write_scope(username, scope, payload.session_id, payload.generation):
+            if scope.kind == 'project':
+                message = chat_service.add_assistant_message(
+                    username, str(scope.id), text,
+                    project_dir=project_ctx.output_dir if project_ctx is not None else None,
+                    project_state_dir=project_ctx.state_dir if project_ctx is not None else None,
+                )
+            else:
+                message = chat_store.append_message(username, scope, "assistant", text)
+    except SessionConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
     return {"ok": True, "data": message}
 
 
@@ -181,7 +250,12 @@ async def append_chat_ui_event(
     if not turn_id:
         raise HTTPException(status_code=400, detail="turn_id is required")
     try:
-        event = chat_store.append_ui_event(username, scope, turn_id, payload.event)
+        from novelvideo.chat.session_manager import write_scope
+        from novelvideo.chat.session_store import SessionConflict
+        with write_scope(username, scope, payload.session_id, payload.generation):
+            event = chat_store.append_ui_event(username, scope, turn_id, payload.event)
+    except SessionConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "data": event}
@@ -346,10 +420,21 @@ async def _require_chat_scope_access(
     if scope.kind != "project":
         return None
     if write or delegate:
-        return await resolve_project_context(
+        ctx = await resolve_project_context(
             user=user, project_id=str(scope.id), required_role="editor",
         )
-    return await _project_context_for_scope(user, scope)
+    else:
+        ctx = await _project_context_for_scope(user, scope)
+    # Registry ownership proves this old project directory belongs to the
+    # caller. Shared-project collaborators must never inherit the owner's chat.
+    if getattr(ctx, 'owner_username', None) == user['username']:
+        from novelvideo.chat.session_store import for_scope
+        legacy = ctx.state_dir / 'chat.db'
+        store = for_scope(str(user['username']), 'project', scope.id)
+        if legacy.is_file():
+            store.legacy_history = legacy
+        store.get_or_create()
+    return ctx
 
 
 async def _prewarm_authorized_chat(user: dict[str, Any], username: str, scope: ChatScope) -> None:
@@ -359,10 +444,8 @@ async def _prewarm_authorized_chat(user: dict[str, Any], username: str, scope: C
         # Read-only clients can load history without creating or changing an
         # agent worker. A later chat.message receives an explicit denial.
         return
-    await _sync_running_agent_scope(username, scope)
-    await chat_service.prewarm_chat_backend(
-        username, project=scope.id if scope.kind == "project" else None,
-    )
+    # A page visit must not create a provider session before the user's next
+    # message, or bypass migration/generation checks in the turn manager.
 
 
 async def _require_ai_assistant_access(
@@ -423,7 +506,9 @@ async def _send_scope_changed(
             "type": "scope.changed",
             "scope": scope.to_dict(),
             "history": await _history(username, scope, project_ctx=project_ctx),
-            "busy": chat_service.chat_run_lock_is_active(username),
+            "scope_label": getattr(project_ctx, 'project_name', scope.id) if project_ctx is not None else '首页',
+            "session": _session_payload(username, scope),
+            "busy": chat_service.chat_run_lock_is_active(username, str(scope.id or '')),
         }
     ):
         return None
@@ -435,6 +520,8 @@ async def _send_json_best_effort(
     payload: dict[str, Any],
     send_lock: asyncio.Lock | None = None,
 ) -> bool:
+    from novelvideo.chat.session_manager import event_identity
+    payload = {**payload, **event_identity()}
     try:
         if send_lock is None:
             await websocket.send_json(payload)
@@ -633,10 +720,8 @@ async def _stream_home_turn(
         turn_id=turn_id,
     )
     from novelvideo.shared.runtime_env import edition
-    get_thread = hermes_pool.get_for_user
-    if edition() == "team":
-        from novelvideo.chat.dispatcher import get_chat_thread
-        get_thread = get_chat_thread
+    from novelvideo.chat.dispatcher import get_chat_thread
+    get_thread = get_chat_thread
     thread = await get_thread(
         username,
         scope_kind="home",
@@ -880,6 +965,10 @@ async def chat_ws(websocket: WebSocket) -> None:
 
             try:
                 await _require_ai_assistant_access(user=user, scope=scope)
+                from novelvideo.chat.session_store import for_scope, SessionConflict
+                generation = for_scope(username, scope.kind, scope.id).get_or_create().generation
+                if (msg.generation is None and generation > 1) or (msg.generation is not None and generation != msg.generation):
+                    raise SessionConflict('会话已更新，请刷新后重试。')
                 if scope.kind == "project":
                     await _run_team_chat_turn(_stream_project_turn(
                         websocket=websocket,
@@ -889,7 +978,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                         text=text,
                         attachments=msg.attachments,
                         turn_id=turn_id,
-                    ), websocket, username, scope, turn_id=turn_id)
+                    ), websocket, username, scope, turn_id=turn_id, generation=generation, user=user)
                 elif scope.kind == "home":
                     await _run_team_chat_turn(_stream_home_turn(
                         websocket=websocket,
@@ -898,7 +987,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                         text=text,
                         attachments=msg.attachments,
                         turn_id=turn_id,
-                    ), websocket, username, scope, turn_id=turn_id)
+                    ), websocket, username, scope, turn_id=turn_id, generation=generation, user=user)
                 else:
                     await _send_json_best_effort(
                         websocket,

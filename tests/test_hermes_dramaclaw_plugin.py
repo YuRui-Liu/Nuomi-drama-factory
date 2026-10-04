@@ -24,6 +24,20 @@ def _load_plugin_module():
     return module
 
 
+def test_old_session_tool_request_never_reaches_api(monkeypatch, tmp_path):
+    from novelvideo.chat.session_store import SessionStore
+    plugin = _load_plugin_module()
+    store = SessionStore(tmp_path / 'chat.db')
+    old = store.get_or_create()
+    monkeypatch.setenv('NUOMI_ASSISTANT_DB_PATH', str(store.db_path))
+    monkeypatch.setenv('NUOMI_ASSISTANT_SESSION_ID', old.session_id)
+    monkeypatch.setenv('NUOMI_ASSISTANT_GENERATION', str(old.generation))
+    monkeypatch.setattr(plugin, 'urlopen', lambda *a, **k: (_ for _ in ()).throw(AssertionError('old tool reached API')))
+    store.clear(expected_generation=old.generation, request_id='clear')
+    result = plugin._request('POST', '/api/v1/projects/a/ingest/start')
+    assert not result['ok'] and '会话已清除' in result['error']
+
+
 def test_team_upload_listing_uses_authenticated_api(monkeypatch):
     plugin = _load_plugin_module()
     monkeypatch.setenv("DRAMACLAW_TEAM_MODE", "1")

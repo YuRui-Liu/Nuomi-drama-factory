@@ -6,6 +6,7 @@ export type ClientFrame =
       scope?: ChatScope;
       text: string;
       turn_id?: string;
+      generation?: number;
       attachments?: ChatAttachment[];
     }
   | { type: "scope.set"; scope: ChatScope };
@@ -47,6 +48,8 @@ export type ServerFrame =
       scope: ChatScope;
       history: unknown[];
       busy?: boolean;
+      session?: { session_id: string; generation: number; status?: string };
+      scope_label?: string;
     }
   | {
       type: "chat.busy";

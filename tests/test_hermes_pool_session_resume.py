@@ -55,6 +55,7 @@ def _patch_fake_hermes_pool(
 ):
     from novelvideo.chat import hermes_pool
     from novelvideo.ports import registry
+    monkeypatch.setenv('NOVELVIDEO_STATE_DIR', str(tmp_path / 'state'))
 
     calls: list[tuple[str, str | None]] = []
     started_count = 0
@@ -80,7 +81,7 @@ def _patch_fake_hermes_pool(
     monkeypatch.setattr(registry, "_PORTS", dict(registry._PORTS))
     registry.register_port("auth_session", fake_auth)
     monkeypatch.setattr(hermes_pool, "_hermes_cli_path", lambda: fake_cli)
-    monkeypatch.setattr(hermes_pool, "ensure_user_hermes_workspace", lambda _user: tmp_path)
+    monkeypatch.setattr(hermes_pool, "ensure_user_hermes_workspace", lambda _user, **kw: tmp_path)
     monkeypatch.setattr(
         hermes_pool,
         "effective_gateway_fingerprint",
@@ -104,10 +105,10 @@ async def test_hermes_model_change_and_clear_rotate_worker(tmp_path, monkeypatch
         first = await pool.get_for_user("alice", model="model-a")
         second = await pool.get_for_user("alice", model="model-b")
         assert second is not first and first.closed
-        assert pool._slots["alice"].model == "model-b"
+        assert pool._slots[("alice", "home", None)].model == "model-b"
         third = await pool.get_for_user("alice", model="")
         assert third is not second and second.closed
-        assert pool._slots["alice"].model == ""
+        assert pool._slots[("alice", "home", None)].model == ""
     finally:
         await pool.close_all()
 
@@ -165,12 +166,13 @@ async def test_hermes_pool_uses_separate_sessions_per_project(
     assert second.id == "session-2"
     assert third.id == "session-1"
     assert fourth.id == "session-1"
-    assert calls == [("start", None), ("start", None), ("resume", "session-1")]
-    assert fake_auth.created == 3
+    assert calls == [("start", None), ("start", None)]
+    assert fake_auth.created == 2
     assert fake_auth.updated == [
-        ("token-3", {"scope_kind": "project", "project_id": "project_a"}),
+        ("token-1", {"scope_kind": "project", "project_id": "project_a"}),
+        ("token-1", {"scope_kind": "project", "project_id": "project_a"}),
     ]
-    assert fake_auth.revoked == ["token-1", "token-2", "token-3"]
+    assert fake_auth.revoked == ["token-1", "token-2"]
 
 
 @pytest.mark.asyncio
@@ -182,7 +184,7 @@ async def test_hermes_pool_resumes_current_project_session_when_renewing_token(
 
     try:
         first = await pool.get_for_user("alice", scope_kind="project", project_id="project_a")
-        pool._slots["alice"].token = AgentSessionToken(
+        pool._slots[("alice", "project", "project_a")].token = AgentSessionToken(
             value="expired-token",
             session_id="expired-agent-session",
             user="alice",

@@ -142,6 +142,7 @@ type AttachmentBlob = {
 };
 
 type QueuedSendItem = {
+  sessionEpoch: number;
   id: string;
   text: string;
   attachments: ChatAttachment[];
@@ -1798,6 +1799,12 @@ function ControlBar({
           ))}
         </select>
       )}
+      <Button variant="ghost" size="sm" onClick={() => {
+        if (window.confirm(`清除「${chat.scopeLabel}」的助手会话？对话上下文将清空，剧本、资产和生产任务会保留。`)) void chat.clearSession();
+      }}>清除会话</Button>
+      {chat.sessionMode && <span className="text-xs text-muted-foreground" title={chat.sessionMode === 'native' ? '复用供应商的原生会话' : '持续保存消息与工具结果，每轮重放同一项目历史'}>
+        {chat.sessionMode === 'native' ? '连续会话' : '历史重放'}
+      </span>}
       <Button
         variant="ghost"
         size="icon-sm"
@@ -2672,7 +2679,7 @@ export function SuperChatPanel({
     setSelectedHistoryMessageIndex(null);
     setUploadedIngestFiles(loadUploadedIngestFiles(params.project?.trim()));
     setReingestConfirmation(null);
-  }, [params.project]);
+  }, [params.project, chat.sessionEpoch]);
 
   const recordUploadedFiles = useCallback(
     (project: string | undefined, prepared: PreparedIngestAttachment[]): UploadedIngestFile[] => {
@@ -2910,6 +2917,7 @@ export function SuperChatPanel({
       : -1;
     const nextIndex = selectedIndex >= 0 ? selectedIndex : 0;
     const nextMessage = queuedMessages[nextIndex];
+    if (nextMessage.sessionEpoch !== chat.sessionEpoch) return;
     const remainingMessages = queuedMessages.filter((_, index) => index !== nextIndex);
     void sendWithIngestAutomation(nextMessage.text, nextMessage.attachments).then((sent) => {
       if (!sent) return;
@@ -2918,6 +2926,7 @@ export function SuperChatPanel({
     });
   }, [
     chat.busy,
+    chat.sessionEpoch,
     chat.connected,
     preparingSend,
     queuedMessages,
@@ -2960,6 +2969,7 @@ export function SuperChatPanel({
         ...current,
         {
           id: `queue-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          sessionEpoch: chat.sessionEpoch,
           text,
           attachments: queuedAttachments,
           createdAt: Date.now(),

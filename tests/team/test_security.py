@@ -51,6 +51,12 @@ def test_anonymous_only_reaches_config_and_login(client):
     assert client.post("/api/v1/auth/login", headers={"Origin": "https://studio.example.com"}).status_code == 200
 
 
+def test_member_session_routes_reach_scope_authorizing_handlers(client):
+    client.cookies.set('test_role', 'member')
+    assert client.get('/api/v1/chat/session').status_code == 200
+    assert client.post('/api/v1/chat/session/clear', headers={'Origin': 'https://studio.example.com'}).status_code == 200
+
+
 def test_csrf_applies_to_login_and_admin(client):
     for endpoint in ("/api/v1/auth/login", "/api/v1/admin/users"):
         assert client.post(endpoint, headers={"Origin": "https://evil.example"}).status_code == 403

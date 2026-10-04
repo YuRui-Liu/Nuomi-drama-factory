@@ -168,6 +168,9 @@ def test_backend_api_get_ignores_stale_legacy_supertale_url(monkeypatch):
 
 @pytest.mark.anyio
 async def test_append_chat_notification_persists_project_assistant_message(monkeypatch, tmp_path):
+    from novelvideo.chat.session_store import for_scope
+    monkeypatch.setenv('NOVELVIDEO_STATE_DIR', str(tmp_path))
+    state = for_scope('alice', 'project', 'demo').get_or_create()
     seen = {}
 
     async def fake_project_context(*, user, project_id, required_role):
@@ -206,6 +209,7 @@ async def test_append_chat_notification_persists_project_assistant_message(monke
         chat_routes.ChatNotificationIn(
             scope=chat_routes.ChatScopePayload(kind="project", id="demo"),
             text="  任务已完成。  ",
+            session_id=state.session_id, generation=state.generation,
         ),
         user={"username": "alice"},
     )
@@ -319,15 +323,16 @@ def test_claude_and_codex_sessions_are_scope_scoped(monkeypatch, tmp_path):
     monkeypatch.setenv("NOVELVIDEO_OUTPUT_DIR", str(tmp_path / "output"))
 
     chat_service._set_claude_session_id("admin", "project-a", "claude-session-1")
-    assert chat_service._get_claude_session_id("admin", "project-b") == "claude-session-1"
-    assert chat_service._get_codex_thread_id("admin", "project-b") is None
-
-    chat_service._set_codex_thread_id("admin", "project-a", "codex-thread-1")
+    assert chat_service._get_claude_session_id("admin", "project-a") == "claude-session-1"
     assert chat_service._get_claude_session_id("admin", "project-b") is None
-    assert chat_service._get_codex_thread_id("admin", "project-b") == "codex-thread-1"
-
-    state_file = tmp_path / "state" / "admin" / "agent_sessions.json"
-    assert state_file.exists()
+    from novelvideo.chat.session_store import for_scope, SessionConflict
+    with pytest.raises(SessionConflict):
+        chat_service._set_codex_thread_id('admin', 'project-a', 'codex-thread-1')
+    store = for_scope('admin', 'project', 'project-a')
+    store.clear(expected_generation=1, request_id='change-backend')
+    chat_service._set_codex_thread_id('admin', 'project-a', 'codex-thread-1')
+    assert chat_service._get_codex_thread_id('admin', 'project-a') == 'codex-thread-1'
+    assert for_scope('admin', 'project', 'project-b').get_or_create().provider_session_id is None
 
 
 def test_user_agent_workspace_is_not_project_workspace(monkeypatch, tmp_path):
@@ -411,14 +416,16 @@ def test_codex_backend_validates_explicit_binary(monkeypatch, tmp_path):
     assert chat_service.is_codex_backend_available() is False
 
 
-def test_chat_run_lock_is_user_scoped(monkeypatch, tmp_path):
+def test_chat_run_lock_is_project_scoped(monkeypatch, tmp_path):
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("NOVELVIDEO_OUTPUT_DIR", str(tmp_path / "output"))
 
     lock_id = chat_service._acquire_chat_run_lock("admin", "project-a")
     try:
+        other = chat_service._acquire_chat_run_lock("admin", "project-b")
+        chat_service._release_chat_run_lock("admin", "project-b", other)
         with pytest.raises(RuntimeError, match="当前用户已有 AI 对话"):
-            chat_service._acquire_chat_run_lock("admin", "project-b")
+            chat_service._acquire_chat_run_lock("admin", "project-a")
     finally:
         chat_service._release_chat_run_lock("admin", "project-a", lock_id)
 
@@ -760,7 +767,8 @@ def test_project_chat_storage_uses_resolved_project_state_dir(monkeypatch, tmp_p
         project_state_dir=project_state_dir,
     )
 
-    assert (project_state_dir / "chat.db").exists()
+    from novelvideo.chat.session_store import for_scope
+    assert for_scope('admin', 'project', '01KS_PROJECT_ID').db_path.exists()
     assert not (tmp_path / "state" / "admin" / "01KS_PROJECT_ID").exists()
     assert not (tmp_path / "output" / "admin" / "01KS_PROJECT_ID").exists()
 
@@ -776,7 +784,8 @@ def test_project_chat_storage_creates_missing_resolved_state_dir(monkeypatch, tm
         project_state_dir=project_state_dir,
     )
 
-    assert (project_state_dir / "chat.db").exists()
+    from novelvideo.chat.session_store import for_scope
+    assert for_scope('admin', 'project', '01KS_PROJECT_ID').db_path.exists()
     assert not (tmp_path / "state" / "admin" / "01KS_PROJECT_ID").exists()
 
 

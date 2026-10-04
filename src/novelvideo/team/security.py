@@ -108,7 +108,9 @@ class TeamSecurityMiddleware:
                 await resolve_project_context(user=user, project_id=match.group(1), required_role=required)
             elif path == "/api/v1/auth/logout" and method == "POST":
                 pass
-            elif path in {"/api/v1/chat/cancel", "/api/v1/chat/notifications", "/api/v1/chat/ui-events"} and method == "POST":
+            elif path == "/api/v1/chat/session" and method == "GET":
+                pass  # Handler authorizes the requested project scope.
+            elif path in {"/api/v1/chat/cancel", "/api/v1/chat/notifications", "/api/v1/chat/ui-events", "/api/v1/chat/session/clear"} and method == "POST":
                 pass
             elif (method == "POST" and path == "/api/v1/styles") or (method == "DELETE" and re.fullmatch(r"/api/v1/styles/[^/]+", path)):
                 # These exact handlers resolve the body/query project as editor.

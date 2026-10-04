@@ -17,6 +17,7 @@ from novelvideo.chat.agent_tools import AgentToolSession
 from novelvideo.chat.backend_sdk import ChatBackendEvent
 from novelvideo.text_task_runtime.models import AgentTaskRouteSnapshot
 from novelvideo.text_task_runtime.runtime import build_text_task_runtime
+from novelvideo.chat.session_store import for_scope
 
 MAX_STEPS = 12
 MAX_TOOLS_PER_STEP = 4
@@ -46,11 +47,10 @@ def _safe(value: object, limit: int = MAX_ENTRY_CHARS) -> str:
 
 
 async def cancel_user(username: str) -> bool:
-    active = _ACTIVE.get(username)
-    if active is None:
-        return False
-    await active[0].close()
-    return True
+    matches = [active for key, active in list(_ACTIVE.items()) if key[0] == username]
+    for active in matches:
+        await active[0].close()
+    return bool(matches)
 
 
 class CliAgentThread:
@@ -63,10 +63,12 @@ class CliAgentThread:
         self.username, self.scope_kind, self.project_id = username, scope_kind, project_id
         self.snapshot = AgentTaskRouteSnapshot(runtime=backend, model=model,
             reasoning_effort=reasoning_effort, task_role='chat_agent', source='global')
-        digest = hashlib.sha256(json.dumps([backend, model, reasoning_effort, scope_kind, project_id]).encode()).hexdigest()
-        self.id = 'cli-' + hashlib.sha256((username + ':' + digest).encode()).hexdigest()
-        root = Path(os.environ.get('NOVELVIDEO_STATE_DIR') or Path(__file__).resolve().parents[3] / 'state').expanduser()
-        self._history_path = root / username / '.cli-chat' / digest / 'history.json'
+        self._store = for_scope(username, scope_kind, project_id)
+        self._state = self._store.get_or_create()
+        self._store.bind_provider(self._state.session_id, self._state.generation, backend, None, 'replay')
+        self.id = self._state.session_id
+        self._active_key = (username, scope_kind, project_id, self._state.generation)
+        self._history_path = self._store.db_path.parent / self.id / 'history.json'
         self._task: asyncio.Task | None = None
 
     def _load(self) -> list[dict[str, str]]:
@@ -74,22 +76,21 @@ class CliAgentThread:
             with self._history_path.open('rb') as handle:
                 raw = handle.read(MAX_HISTORY_BYTES + 1)
             if len(raw) > MAX_HISTORY_BYTES:
-                return []
+                raise RuntimeError('助手上下文超过容量，请手动清除会话后重试。')
             entries = json.loads(raw)
             if not isinstance(entries, list):
-                return []
-            return [{'role': e['role'], 'content': _safe(e['content'])} for e in entries[-24:]
+                raise RuntimeError('助手历史损坏，请恢复文件或手动清除会话。')
+            return [{'role': e['role'], 'content': e['content']} for e in entries
                     if isinstance(e, dict) and isinstance(e.get('role'), str)
                     and e['role'] in {'user', 'assistant', 'tool'} and isinstance(e.get('content'), str)]
-        except (OSError, ValueError):
-            return []
+        except FileNotFoundError:
+            return self._store.migrated_context()
 
     def _save(self, entries: list[dict[str, str]]) -> None:
-        entries[:] = entries[-24:]
+        self._store.require_current(self.id, self._state.generation)
         data = json.dumps(entries, ensure_ascii=False).encode()
-        while len(data) > MAX_HISTORY_BYTES and entries:
-            entries.pop(0)
-            data = json.dumps(entries, ensure_ascii=False).encode()
+        if len(data) > MAX_HISTORY_BYTES:
+            raise RuntimeError('助手上下文超过容量，请手动清除会话后重试。')
         self._history_path.parent.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(dir=self._history_path.parent, prefix='.history-')
         try:
@@ -111,15 +112,15 @@ class CliAgentThread:
     async def stream(self, prompt: str, *, current_project: str | None = None) -> AsyncIterator[ChatBackendEvent]:
         if current_project is not None and (self.scope_kind != 'project' or current_project != self.project_id):
             raise ValueError('Current project does not match immutable chat scope')
-        if self.username in _ACTIVE:
-            raise RuntimeError('Chat already busy for this user')
+        if self._active_key in _ACTIVE:
+            raise RuntimeError('Chat already busy for this project')
         task = asyncio.current_task()
         assert task is not None
         self._task = task
-        _ACTIVE[self.username] = (self, task)
+        _ACTIVE[self._active_key] = (self, task)
         try:
             history = self._load()
-            history.append({'role': 'user', 'content': _safe(prompt)})
+            history.append({'role': 'user', 'content': _safe(prompt, limit=MAX_HISTORY_BYTES + 1)})
             async with AgentToolSession(username=self.username, scope_kind=self.scope_kind,
                                         project_id=self.project_id) as session:
                 specs = session.specs()
@@ -141,6 +142,7 @@ class CliAgentThread:
                     if len(decision.tool_calls) > MAX_TOOLS_PER_STEP:
                         raise RuntimeError('Tool call limit exceeded')
                     parsed = []
+                    self._store.require_current(self.id, self._state.generation)
                     for call in decision.tool_calls:
                         if call.name not in names:
                             raise ValueError('Unknown tool: ' + _safe(call.name))
@@ -149,7 +151,7 @@ class CliAgentThread:
                             raise ValueError('Tool arguments must be a JSON object')
                         parsed.append((call.name, arguments))
                     if decision.message:
-                        message = _safe(decision.message)
+                        message = _safe(decision.message, limit=MAX_HISTORY_BYTES + 1)
                         history.append({'role': 'assistant', 'content': message})
                         yield ChatBackendEvent(type='assistant_delta', thread_id=self.id, text=message)
                     if not parsed:
@@ -157,9 +159,10 @@ class CliAgentThread:
                         yield ChatBackendEvent(type='complete', thread_id=self.id, text=_safe(decision.message))
                         return
                     for name, arguments in parsed:
+                        self._store.require_current(self.id, self._state.generation)
                         yield ChatBackendEvent(type='tool_update', thread_id=self.id, name=name, text='正在执行 ' + name)
                         result = await session.call(name, arguments)
-                        history.append({'role': 'tool', 'content': _safe({'name': name, 'arguments': arguments, 'result': result})})
+                        history.append({'role': 'tool', 'content': _safe({'name': name, 'arguments': arguments, 'result': result}, limit=MAX_HISTORY_BYTES + 1)})
                         self._save(history)
                         raw_result = _safe(result, limit=1_000_000)
                         try:
@@ -175,7 +178,7 @@ class CliAgentThread:
                             raise RuntimeError('Tool failed: ' + name + '; task may be incomplete')
                 raise RuntimeError('Agent step limit reached; task may be incomplete')
         finally:
-            if _ACTIVE.get(self.username) == (self, task):
-                _ACTIVE.pop(self.username, None)
+            if _ACTIVE.get(self._active_key) == (self, task):
+                _ACTIVE.pop(self._active_key, None)
             if self._task is task:
                 self._task = None

@@ -51,12 +51,13 @@ def test_ce_agent_key_routes_are_not_mounted() -> None:
     }
 
 
-def test_ce_chat_http_routes_are_mounted_and_use_local_auth(monkeypatch) -> None:
+def test_ce_chat_http_routes_are_mounted_and_use_local_auth(monkeypatch, tmp_path) -> None:
     from novelvideo.api.app import create_app
     from novelvideo.chat import service as chat_service
     from novelvideo.ports import registry
 
     monkeypatch.setenv("ST_EDITION", "ce")
+    monkeypatch.setenv('NOVELVIDEO_STATE_DIR', str(tmp_path))
     monkeypatch.setenv("ST_CONTROL_PLANE_DSN", "")
     monkeypatch.setenv("REDIS_URL", "")
     monkeypatch.setattr(registry, "_PORTS", {})
@@ -65,11 +66,16 @@ def test_ce_chat_http_routes_are_mounted_and_use_local_auth(monkeypatch) -> None
 
     app = create_app()
     with TestClient(app) as client:
-        cancel = client.post("/api/v1/chat/cancel")
+        state = client.get('/api/v1/chat/session').json()['data']
+        from novelvideo.chat.session_store import for_scope
+        user = client.get('/api/v1/auth/me').json()['data']
+        for_scope(user['username']).begin_turn('turn-1', state['generation'])
+        cancel = client.post("/api/v1/chat/cancel", json={'scope': {'kind': 'home'}, 'generation': state['generation']})
         ui_event = client.post(
             "/api/v1/chat/ui-events",
             json={
                 "scope": {"kind": "home"},
+                "session_id": state['session_id'], "generation": state['generation'],
                 "turn_id": "turn-1",
                 "event": {"type": "noop"},
             },

@@ -22,7 +22,7 @@ it("offers every chat backend and saves the selected Agent independently", async
   expect(screen.getByLabelText("聊天模型")).toHaveValue("gpt-5.6-sol");
   fireEvent.click(screen.getByRole("button", { name: "保存聊天 Agent" }));
   await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({ backend: "codex", model: "gpt-5.6-sol", reasoningEffort: null }));
-  expect(toast.success).toHaveBeenCalledWith("聊天 Agent 已保存，下一轮对话生效");
+  expect(toast.success).toHaveBeenCalledWith("糯米助手配置已保存；更换运行时需清除原会话后生效");
 });
 
 it("reports failure without displaying success", async () => {

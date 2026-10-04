@@ -242,6 +242,13 @@ def load_user_preferences(username: str) -> str:
 
 def _prompt_with_user_context(username: str, project: str, prompt: str) -> str:
     preferences = load_user_preferences(username)
+    from .session_store import for_scope
+    migrated = for_scope(username, 'project' if project else 'home', project or None).migrated_context()
+    if migrated:
+        prior = json.dumps(migrated, ensure_ascii=False)
+        if len(prior.encode()) > 64 * 1024:
+            raise RuntimeError('迁移的助手上下文超过容量，请手动清除会话后重试。')
+        prompt = f'[MIGRATED_PROJECT_CONVERSATION]\n{prior}\n[/MIGRATED_PROJECT_CONVERSATION]\n\n{prompt}'
     scope = f"project:{project}" if project else "home"
     return (
         "[DRAMACLAW_USER_CONTEXT]\n"
@@ -258,15 +265,11 @@ def _prompt_with_user_context(username: str, project: str, prompt: str) -> str:
 
 
 def _chat_backend() -> str:
-    preferred = (
-        os.environ.get("DRAMACLAW_CHAT_BACKEND")
-        or os.environ.get("SUPERTALE_CHAT_BACKEND")
-        or "hermes"
-    ).strip().lower() or "hermes"
+    from .routing import current_route
+    preferred = current_route().backend
     from novelvideo.shared.runtime_env import edition
     if edition() == "team":
-        from novelvideo.chat.runtime_settings import load_chat_runtime_settings
-        return load_chat_runtime_settings().backend
+        return preferred
     if preferred == "hermes":
         # Explicit "hermes" must succeed — do NOT silently fall back to
         # claude/codex. A missing hermes binary is a config error to surface.
@@ -292,10 +295,6 @@ def _chat_backend() -> str:
             "DRAMACLAW_CHAT_BACKEND=claude requested but Claude is unavailable. "
             "Install claude-agent-sdk and ensure CLAUDE_CLI_PATH points to a valid claude binary."
         )
-    if is_codex_backend_available():
-        return "codex"
-    if is_claude_backend_available():
-        return "claude"
     return preferred
 
 
@@ -317,7 +316,8 @@ def _codex_bin_path() -> Path | None:
 
 
 def _codex_model() -> str:
-    return os.environ.get("CODEX_MODEL", "gpt-5.4").strip() or "gpt-5.4"
+    from .routing import current_route
+    return current_route().model
 
 
 def _claude_model() -> str | None:
@@ -335,7 +335,7 @@ def is_claude_backend_available() -> bool:
 
 def is_codex_backend_available() -> bool:
     codex_bin = _codex_bin_path()
-    return (codex_bin is None or codex_bin.exists()) and importlib.util.find_spec("openai_codex") is not None
+    return (codex_bin is None or codex_bin.exists()) and (importlib.util.find_spec("openai_codex") is not None or bool(codex_bin or shutil.which('codex')))
 
 
 def is_hermes_backend_available() -> bool:
@@ -447,6 +447,12 @@ def _user_state_dir(username: str) -> Path:
 
 
 def _user_agent_workspace(username: str) -> Path:
+    from .session_manager import current_session
+    current = current_session.get()
+    if current:
+        workspace = current[0].db_path.parent / current[1].session_id / 'workspace'
+        workspace.mkdir(parents=True, exist_ok=True)
+        return workspace
     workspace = _user_state_dir(username) / ".chat_agents"
     workspace.mkdir(parents=True, exist_ok=True)
     return workspace
@@ -506,19 +512,10 @@ def _chat_db_path(
     project_dir: str | Path | None = None,
     project_state_dir: str | Path | None = None,
 ) -> Path:
-    if project_state_dir is not None:
-        db_path = Path(project_state_dir) / "chat.db"
-        _migrate_legacy_chat_db(
-            username,
-            project,
-            db_path,
-            project_dir,
-            create_parent=True,
-        )
-        return db_path
-    db_path = _project_state_dir(username, project) / "chat.db"
-    _migrate_legacy_chat_db(username, project, db_path, project_dir, create_parent=True)
-    return db_path
+    from .session_store import for_scope
+    store = for_scope(username, 'project' if project else 'home', project or None)
+    store.get_or_create()
+    return store.db_path
 
 
 def _chat_input_history_path(username: str, project: str) -> Path:
@@ -669,7 +666,7 @@ def _chat_run_lock_is_stale(
 
 
 def _chat_run_lock_key(project: str) -> str:
-    return _CHAT_RUN_LOCK_KEY
+    return _CHAT_RUN_LOCK_KEY + ':' + project
 
 
 def _chat_run_lock_path(username: str, project: str) -> Path:
@@ -815,6 +812,8 @@ async def _chat_run_lock_heartbeat_loop(username: str, project: str, lock_id: st
 def _append_message(
     conn: sqlite3.Connection, role: str, content: str, media: list[dict[str, Any]] | None = None
 ) -> dict[str, Any]:
+    from .session_manager import fence_write
+    fence_write(conn)
     media = media or []
     created_at_iso = _now_iso()
     cursor = conn.execute(
@@ -2765,19 +2764,28 @@ def _set_active_agent_session_id(username: str, backend: str, thread_id: str) ->
 
 
 def _get_claude_session_id(username: str, project: str) -> str | None:
-    return _get_active_agent_session_id(username, "claude")
+    return _project_provider_session(username, project, 'claude')
 
 
 def _set_claude_session_id(username: str, project: str, session_id: str) -> None:
-    _set_active_agent_session_id(username, "claude", session_id)
+    _project_provider_session(username, project, 'claude', session_id)
 
 
 def _get_codex_thread_id(username: str, project: str) -> str | None:
-    return _get_active_agent_session_id(username, "codex")
+    return _project_provider_session(username, project, 'codex')
 
 
 def _set_codex_thread_id(username: str, project: str, thread_id: str) -> None:
-    _set_active_agent_session_id(username, "codex", thread_id)
+    _project_provider_session(username, project, 'codex', thread_id)
+
+
+def _project_provider_session(username, project, backend, provider_id=None):
+    from .session_store import for_scope
+    from .session_manager import current_session
+    store = for_scope(username, 'project' if project else 'home', project or None)
+    current = current_session.get()
+    state = current[1] if current else store.get_or_create()
+    return store.bind_provider(state.session_id, state.generation, backend, provider_id, 'native').provider_session_id
 
 
 def _load_api_url() -> str:
@@ -2898,23 +2906,16 @@ def _build_claude_env(username: str, project: str, agent_token: str = "") -> dic
     env["SUPERTALE_API_URL"] = _load_api_url()
     env["DRAMACLAW_AGENT_TOKEN"] = agent_token
     env["SUPERTALE_AGENT_TOKEN"] = agent_token
+    from .session_manager import current_session, current_turn
+    if active := current_session.get():
+        env['NUOMI_ASSISTANT_SESSION_ID'] = active[1].session_id
+        env['NUOMI_ASSISTANT_GENERATION'] = str(active[1].generation)
+        env['NUOMI_ASSISTANT_TURN_ID'] = current_turn.get() or ''
     return env
 
 
 def _build_codex_env(username: str, project: str, agent_token: str = "") -> dict[str, str]:
-    env = os.environ.copy()
-    env["DRAMACLAW_USERNAME"] = username
-    env["DRAMACLAW_AGENT_SCOPE"] = "user"
-    env["SUPERTALE_USERNAME"] = username
-    env["SUPERTALE_AGENT_SCOPE"] = "user"
-    if project:
-        env["DRAMACLAW_PROJECT_ID"] = project
-        env["SUPERTALE_PROJECT_ID"] = project
-    env["DRAMACLAW_API_URL"] = _load_api_url()
-    env["SUPERTALE_API_URL"] = _load_api_url()
-    env["DRAMACLAW_AGENT_TOKEN"] = agent_token
-    env["SUPERTALE_AGENT_TOKEN"] = agent_token
-    return env
+    return _build_claude_env(username, project, agent_token)
 
 
 def _extract_media(
@@ -3168,12 +3169,22 @@ def _codex_mcp_config_overrides(mcp_servers: dict[str, dict[str, Any]]) -> tuple
 def _build_codex_thread(username: str, project: str, agent_token: str):
     ensure_user_codex_workspace(username, project, agent_token)
     workspace = _user_agent_workspace(username)
+    from .routing import current_route
+    route = current_route()
+    overrides = _codex_mcp_config_overrides(_dramaclaw_mcp_servers())
+    if route.reasoning_effort:
+        overrides += (f'model_reasoning_effort={json.dumps(route.reasoning_effort)}',)
+    if importlib.util.find_spec('openai_codex') is None:
+        from .codex_cli_session import CodexCliSession
+        return CodexCliSession(codex_bin=_codex_bin_path(), cwd=workspace,
+                               env=_build_codex_env(username, project, agent_token), model=route.model,
+                               config_overrides=overrides, thread_id=_get_codex_thread_id(username, project))
     client = CodexClient(
         codex_bin=_codex_bin_path(),
         cwd=workspace,
         env=_build_codex_env(username, project, agent_token),
         model=_codex_model(),
-        config_overrides=_codex_mcp_config_overrides(_dramaclaw_mcp_servers()),
+        config_overrides=overrides,
     )
     thread_id = _get_codex_thread_id(username, project)
     return client.thread_resume(thread_id) if thread_id else client.thread_start()
@@ -3240,7 +3251,7 @@ async def stream_assistant_reply(
                 project_dir=project_dir,
                 project_state_dir=project_state_dir,
             )
-        if backend == "hermes" or edition() == "team":
+        if backend in {"hermes", "workbuddy", "deepseek_harness"} or edition() == "team":
             return await _stream_assistant_reply_hermes(
                 username,
                 project,
@@ -3368,10 +3379,8 @@ async def _stream_assistant_reply_hermes(
 
     agent_prompt = _prompt_with_user_context(username, project, prompt)
     from novelvideo.shared.runtime_env import edition
-    get_thread = _hermes_pool.get_for_user
-    if edition() == "team":
-        from novelvideo.chat.dispatcher import get_chat_thread
-        get_thread = get_chat_thread
+    from novelvideo.chat.dispatcher import get_chat_thread
+    get_thread = get_chat_thread
     thread = await get_thread(
         username,
         scope_kind="project" if project else "home",

@@ -28,14 +28,14 @@ export function ChatRuntimePanel({ enabled = true }: { enabled?: boolean }) {
     try {
       const result = await save.mutateAsync({ backend, model: model.trim(), reasoningEffort: backend === "hermes" ? null : effort });
       if (!result.ok) { toast.error(result.error || "保存聊天 Agent 失败"); return; }
-      toast.success("聊天 Agent 已保存，下一轮对话生效");
+      toast.success("糯米助手配置已保存；更换运行时需清除原会话后生效");
     } catch (error) { toast.error(error instanceof Error ? error.message : "保存聊天 Agent 失败"); }
   };
 
   return (
     <div className="mt-4 rounded-lg border border-white/10 bg-white/[0.025] p-4">
-      <h4 className="text-sm font-medium text-foreground">聊天 Agent</h4>
-      <p className="mt-1 text-xs text-muted-foreground">选择对话使用的 Agent，与后台文本任务运行时分别配置。保存后下一轮对话生效。</p>
+      <h4 className="text-sm font-medium text-foreground">糯米助手</h4>
+      <p className="mt-1 text-xs text-muted-foreground">配置项目助手的运行时与模型。每个项目持续复用自己的会话；更换运行时需手动清除会话。</p>
       {query.isError ? <p role="alert" className="mt-2 text-xs text-destructive">加载聊天 Agent 配置失败，请重新打开设置。</p> : null}
       <div className="mt-4 grid gap-3 md:grid-cols-2">
         <div className="space-y-1.5">

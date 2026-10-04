@@ -50,11 +50,10 @@ def test_standalone_router_authorization(isolated, user, status):
             assert client.put("/api/v1/chat-runtime/config", json={"backend": "codex", "model": "gpt-5.6-sol", "executable": "/tmp/foo"}).status_code == 422
 
 
-def test_non_team_settings_cannot_be_saved(isolated, monkeypatch):
+def test_ce_settings_can_be_saved(isolated, monkeypatch):
     from novelvideo.chat.runtime_settings import save_chat_runtime_settings
     monkeypatch.setenv("ST_EDITION", "ce")
-    with pytest.raises(PermissionError):
-        save_chat_runtime_settings(backend="hermes", model="")
+    assert save_chat_runtime_settings(backend="hermes", model="").backend == 'hermes'
 
 
 def test_standalone_router_requires_team_and_authentication(isolated, monkeypatch):
@@ -69,8 +68,8 @@ def test_standalone_router_requires_team_and_authentication(isolated, monkeypatc
         assert client.get("/api/v1/chat-runtime/config").status_code == 401
         app.dependency_overrides[get_api_user] = lambda: {"role": "admin"}
         monkeypatch.setenv("ST_EDITION", "ce")
-        assert client.get("/api/v1/chat-runtime/config").status_code == 404
-        assert client.put("/api/v1/chat-runtime/config", json={"backend": "hermes", "model": ""}).status_code == 404
+        assert client.get("/api/v1/chat-runtime/config").status_code == 200
+        assert client.put("/api/v1/chat-runtime/config", json={"backend": "hermes", "model": ""}).status_code == 200
 
 
 def test_environment_default_and_saved_override(isolated, monkeypatch):

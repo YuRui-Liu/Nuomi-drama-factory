@@ -9,9 +9,7 @@ from novelvideo.text_task_runtime.models import TextTaskReasoningEffort
 
 
 def require_chat_admin(user: dict = Depends(get_api_user)) -> dict:
-    if edition() != "team":
-        raise HTTPException(404, "Chat runtime configuration requires TEAM edition")
-    if user.get("role") != "admin" or user.get("credential_kind") == "agent_session":
+    if user.get("credential_kind") == "agent_session" or (edition() == 'team' and user.get("role") != "admin"):
         raise HTTPException(403, "Instance administrator browser session required")
     return user
 

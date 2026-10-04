@@ -381,13 +381,13 @@ def create_app() -> FastAPI:
 
     from novelvideo.shared.runtime_env import edition
 
+    from novelvideo.api.routes.chat_runtime import router as chat_runtime_router
+    application.include_router(chat_runtime_router, prefix="/api/v1")
     if edition() == "team":
-        from novelvideo.api.routes.chat_runtime import router as chat_runtime_router
         from novelvideo.team.routes import router as team_router
         from novelvideo.team.security import TeamSecurityMiddleware
 
         application.include_router(team_router, prefix="/api/v1")
-        application.include_router(chat_runtime_router, prefix="/api/v1")
         application.add_middleware(
             TeamSecurityMiddleware,
             origin=os.environ.get("ST_TEAM_ORIGIN", ""),

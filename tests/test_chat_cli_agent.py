@@ -104,7 +104,7 @@ async def test_busy_user_and_close(engine):
     while not state.prompts:
         await asyncio.sleep(0)
     with pytest.raises(RuntimeError, match='busy'):
-        await collect(mod.CliAgentThread('alice', 'project', 'p2', 'workbuddy', 'model'))
+        await collect(mod.CliAgentThread('alice', 'project', 'p1', 'codex', 'model'))
     await thread.close()
     assert task.cancelled()
     assert state.exits == 1
@@ -114,11 +114,33 @@ async def test_history_is_bounded_and_credentials_redacted(engine):
     mod, state = engine
     state.answers = [{'message': 'done', 'tool_calls': []}]
     thread = mod.CliAgentThread('alice', 'project', 'p1', 'codex', 'model')
-    await collect(thread, 'api_key=secretvalue Bearer credentialvalue ' + 'x' * 100_000)
+    await collect(thread, 'api_key=secretvalue Bearer credentialvalue ' + 'x' * 1_000)
     assert 'secretvalue' not in state.prompts[0]
     assert 'credentialvalue' not in state.prompts[0]
     assert len(state.prompts[0]) < 10_000
     assert thread._history_path.stat().st_size < mod.MAX_HISTORY_BYTES
+
+
+async def test_long_history_is_not_silently_discarded(engine):
+    mod, state = engine
+    thread = mod.CliAgentThread('alice', 'project', 'p1', 'codex', 'model')
+    state.answers = [{'message': 'remember', 'tool_calls': []}]
+    await collect(thread, 'original')
+    previous = thread._history_path.read_bytes()
+    with pytest.raises(RuntimeError, match='容量'):
+        await collect(thread, 'x' * 100_000)
+    assert thread._history_path.read_bytes() == previous
+
+
+async def test_model_change_keeps_history(engine):
+    mod, state = engine
+    state.answers = [{'message': 'remember', 'tool_calls': []}] * 2
+    first = mod.CliAgentThread('alice', 'project', 'p1', 'codex', 'model')
+    await collect(first)
+    second = mod.CliAgentThread('alice', 'project', 'p1', 'codex', 'other-model')
+    await collect(second)
+    assert first.id == second.id
+    assert 'remember' in state.prompts[-1]
 
 
 async def test_adapter_failure_has_no_fallback_or_credentials(engine):

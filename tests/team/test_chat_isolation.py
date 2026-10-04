@@ -5,6 +5,13 @@ import pytest
 from fastapi import HTTPException
 
 
+@pytest.fixture(autouse=True)
+def isolated_sessions(monkeypatch, tmp_path):
+    from novelvideo import config
+    monkeypatch.setenv('NOVELVIDEO_STATE_DIR', str(tmp_path))
+    monkeypatch.setattr(config, 'STATE_DIR', str(tmp_path))
+
+
 def test_team_uses_configured_chat_backend(monkeypatch):
     from novelvideo.chat import service
     from novelvideo.chat import runtime_settings
@@ -40,7 +47,7 @@ async def test_running_chat_cancelled_when_authorization_revoked(monkeypatch):
     async def authenticate(ws):
         raise HTTPException(401, "revoked")
 
-    async def close_user(username):
+    async def close_user(username, scope_kind, project_id, **kwargs):
         closed.append(username)
 
     async def turn():
@@ -56,7 +63,7 @@ async def test_running_chat_cancelled_when_authorization_revoked(monkeypatch):
         pass
 
     monkeypatch.setattr(chat, "_authenticate_ws", authenticate)
-    monkeypatch.setattr(pool, "close_user", close_user)
+    monkeypatch.setattr(pool, "close_scope", close_user)
     ws = SimpleNamespace(send_json=send_json, close=close)
     with pytest.raises(HTTPException):
         await chat._run_team_chat_turn(turn(), ws, "alice", ChatScope(kind="home"), turn_id="turn1")
@@ -84,7 +91,7 @@ async def test_team_turn_stops_after_project_editor_access_removed(monkeypatch):
         checked.append((scope.id, write, delegate))
         raise HTTPException(403, "editor access removed")
 
-    async def close_user(username):
+    async def close_user(username, scope_kind, project_id, **kwargs):
         closed.append(username)
 
     async def close(**kwargs):
@@ -92,7 +99,7 @@ async def test_team_turn_stops_after_project_editor_access_removed(monkeypatch):
 
     monkeypatch.setattr(chat, "_authenticate_ws", authenticate)
     monkeypatch.setattr(chat, "_require_chat_scope_access", access)
-    monkeypatch.setattr(pool, "close_user", close_user)
+    monkeypatch.setattr(pool, "close_scope", close_user)
     with pytest.raises(HTTPException):
         await chat._run_team_chat_turn(asyncio.sleep(10), SimpleNamespace(close=close), "alice", ChatScope(kind="project", id="p1"))
     assert checked == [("p1", True, True)]

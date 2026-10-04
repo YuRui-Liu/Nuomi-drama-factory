@@ -12,7 +12,8 @@ from novelvideo.chat.store import ChatScope
 
 
 @pytest.fixture
-def chat_harness(monkeypatch):
+def chat_harness(monkeypatch, tmp_path):
+    monkeypatch.setenv('NOVELVIDEO_STATE_DIR', str(tmp_path))
     state = SimpleNamespace(user={"id": "user", "username": "alice"}, role="editor")
 
     async def authenticate(websocket):
@@ -30,7 +31,7 @@ def chat_harness(monkeypatch):
     monkeypatch.setattr(chat, "_authenticate_ws", authenticate)
     monkeypatch.setattr(chat, "resolve_project_context", resolve)
     monkeypatch.setattr(chat, "_history", AsyncMock(return_value=[]))
-    monkeypatch.setattr(chat.chat_service, "chat_run_lock_is_active", lambda username: False)
+    monkeypatch.setattr(chat.chat_service, "chat_run_lock_is_active", lambda username, project='': False)
     state.prewarm = AsyncMock()
     state.sync = AsyncMock()
     state.project_turn = AsyncMock(side_effect=finish)
@@ -149,7 +150,7 @@ async def test_browser_viewer_cannot_append_project_notification(chat_harness, m
     h.role = "viewer"
     appended = []
     monkeypatch.setattr(chat.chat_service, "add_assistant_message", lambda *args, **kwargs: appended.append(args))
-    payload = chat.ChatNotificationIn(scope=chat.ChatScopePayload(kind="project", id="project-a"), text="changed")
+    payload = chat.ChatNotificationIn(scope=chat.ChatScopePayload(kind="project", id="project-a"), text="changed", session_id='old', generation=1)
     with pytest.raises(HTTPException) as exc:
         await chat.append_chat_notification(payload, h.user)
     assert exc.value.status_code == 403

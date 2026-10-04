@@ -372,10 +372,10 @@ class HermesSdkThread:
             )
             resp, _ = await self._read_until_id(req_id, SESSION_NEW_TIMEOUT)
             if resp and "error" not in resp:
+                if callback := getattr(self, 'on_session', None):
+                    callback(self.id)
                 return
-            _log.warning("session/load failed, falling back to session/new: %s",
-                         resp.get("error") if resp else "timeout")
-            self._is_new = True
+            raise RuntimeError('Hermes resume failed；请重试恢复或手动清除当前项目会话。')
 
         req_id = await self._send(
             "session/new",
@@ -389,6 +389,8 @@ class HermesSdkThread:
         result = resp.get("result", {})
         self.id = result.get("sessionId") or f"hermes-{uuid.uuid4().hex}"
         self._is_new = False
+        if callback := getattr(self, 'on_session', None):
+            callback(self.id)
 
     async def _prepare(self) -> None:
         """Spawn + initialize + create/resume session (the cold-start prologue).

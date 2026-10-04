@@ -1,7 +1,7 @@
-"""Per-user Hermes worker pool.
+"""Per-user, per-scope Hermes worker pool.
 
-Each user gets at most one HermesSdkClient instance (and one persistent
-HermesSdkThread session that accumulates cross-project memory). Clients
+Each scope gets a HermesSdkClient instance and one persistent
+HermesSdkThread session. Clients
 are lazily spawned on first chat message and reaped after idle timeout
 to control memory use.
 
@@ -104,6 +104,7 @@ class _WorkerSlot:
     model: str | None = None
     scope_kind: str = "home"
     project_id: str | None = None
+    generation: int = 1
     gateway_fingerprint: str = ""
     last_used: float = field(default_factory=time.time)
 
@@ -123,7 +124,7 @@ class HermesPool:
         token_ttl_secs: int = DEFAULT_TOKEN_TTL_SECS,
         token_renew_skew_secs: int = DEFAULT_TOKEN_RENEW_SKEW_SECS,
     ) -> None:
-        self._slots: dict[str, _WorkerSlot] = {}
+        self._slots: dict[tuple[str, str, str | None], _WorkerSlot] = {}
         self._session_ids: dict[str, dict[tuple[str, str | None], str]] = {}
         self._lock = asyncio.Lock()
         self._idle_kill_secs = idle_kill_secs
@@ -148,7 +149,14 @@ class HermesPool:
         ``await thread.stream(prompt)`` to send messages.
         """
         async with self._lock:
-            slot = self._slots.get(username)
+            key = (username, scope_kind, project_id)
+            slot = self._slots.get(key)
+            from .session_store import for_scope
+            state = for_scope(username, scope_kind, project_id).get_or_create()
+            if slot is not None and slot.generation != state.generation:
+                await self._close_slot(slot)
+                self._slots.pop(key, None)
+                slot = None
             if slot is not None:
                 if bool(getattr(slot.thread, "is_closed", False)):
                     slot = await self._rotate_slot_locked(
@@ -199,7 +207,7 @@ class HermesPool:
                 scope_kind=scope_kind,
                 project_id=project_id,
             )
-            self._slots[username] = slot
+            self._slots[key] = slot
             # Ensure background reaper is running
             if self._cleanup_task is None or self._cleanup_task.done():
                 self._cleanup_task = asyncio.create_task(self._reaper_loop())
@@ -220,10 +228,11 @@ class HermesPool:
                 f"hermes CLI not found at {cli_path}. " "Run `uv tool install 'hermes-agent[acp]'`."
             )
         from novelvideo.shared.runtime_env import edition
-        home = (
-            ensure_user_hermes_workspace(username, scope_key=f"{scope_kind}:{project_id or ''}")
-            if edition() == "team" else ensure_user_hermes_workspace(username)
-        )
+        from .session_store import for_scope
+        store = for_scope(username, scope_kind, project_id)
+        state = store.get_or_create()
+        store.bind_provider(state.session_id, state.generation, 'hermes', None, 'native')
+        home = ensure_user_hermes_workspace(username, scope_key=f"{scope_kind}:{project_id or ''}:{state.session_id}")
         worker_id = f"hermes-{uuid.uuid4().hex}"
         token = await get_auth_session_port().create_agent_session(
             username=username,
@@ -236,6 +245,9 @@ class HermesPool:
         )
         project_env = await self._project_env(username, project_id)
         env = self._build_env(home, username, token, project_id=project_id, project_env=project_env)
+        env.update(NUOMI_ASSISTANT_DB_PATH=str(store.db_path),
+                   NUOMI_ASSISTANT_SESSION_ID=state.session_id,
+                   NUOMI_ASSISTANT_GENERATION=str(state.generation))
         client = HermesSdkClient(
             cli_path=cli_path,
             cwd=home,
@@ -243,8 +255,11 @@ class HermesPool:
             model=model,
             username=username,
         )
-        session_id = (resume_session_id or self._session_id_for(username, scope_kind, project_id) or "").strip()
+        session_id = (state.provider_session_id or "").strip()
         thread = client.thread_resume(session_id) if session_id else client.thread_start()
+        thread.on_session = lambda provider_id: store.bind_provider(state.session_id, state.generation, 'hermes', provider_id, 'native')
+        if thread.id:
+            thread.on_session(thread.id)
         _log.info(
             "spawned hermes worker for user=%s home=%s agent_session=%s resumed_session=%s",
             username,
@@ -261,6 +276,7 @@ class HermesPool:
             scope_kind=scope_kind,
             project_id=project_id,
             gateway_fingerprint=effective_gateway_fingerprint(),
+            generation=state.generation,
         )
 
     def _token_needs_renewal(self, slot: _WorkerSlot) -> bool:
@@ -325,7 +341,7 @@ class HermesPool:
             replacement.token.session_id,
             reason,
         )
-        self._slots[slot.username] = replacement
+        self._slots[(slot.username, slot.scope_kind, slot.project_id)] = replacement
         await asyncio.shield(self._close_slot(slot))
         return replacement
 
@@ -422,7 +438,7 @@ class HermesPool:
         victim = min(self._slots.values(), key=lambda s: s.last_used)
         _log.info("hermes pool full (%d); evicting LRU user=%s", self._max_workers, victim.username)
         await self._close_slot(victim)
-        self._slots.pop(victim.username, None)
+        self._slots.pop((victim.username, victim.scope_kind, victim.project_id), None)
 
     async def _close_slot(self, slot: _WorkerSlot) -> None:
         self._remember_session(slot)
@@ -450,7 +466,7 @@ class HermesPool:
                     for v in victims:
                         _log.info("hermes worker idle-killed: user=%s", v.username)
                         await self._close_slot(v)
-                        self._slots.pop(v.username, None)
+                        self._slots.pop((v.username, v.scope_kind, v.project_id), None)
                     if not self._slots:
                         # Pool empty — exit reaper; next spawn will restart it
                         return
@@ -460,11 +476,21 @@ class HermesPool:
     async def close_user(self, username: str) -> bool:
         """Programmatically tear down one user's worker (e.g. on logout)."""
         async with self._lock:
-            slot = self._slots.pop(username, None)
-            if slot is None:
+            keys = [key for key in self._slots if key[0] == username]
+            for key in keys:
+                await self._close_slot(self._slots.pop(key))
+            return bool(keys)
+
+    async def close_scope(self, username, scope_kind, project_id, generation=None):
+        async with self._lock:
+            key = (username, scope_kind, project_id)
+            slot = self._slots.get(key)
+            if slot and generation is not None and slot.generation != generation:
                 return False
-            await self._close_slot(slot)
-            return True
+            self._slots.pop(key, None)
+            if slot:
+                await self._close_slot(slot)
+            return slot is not None
 
     async def prewarm(
         self,
@@ -502,7 +528,7 @@ class HermesPool:
     ) -> bool:
         """Update an already-running worker's server-side active scope."""
         async with self._lock:
-            slot = self._slots.get(username)
+            slot = self._slots.get((username, scope_kind, project_id))
             if slot is None:
                 return False
             await self._update_scope_locked(slot, scope_kind, project_id)

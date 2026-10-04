@@ -19,6 +19,7 @@ import {
 } from "@/features/superchat/message";
 import { hasStructuredContent } from "@/features/superchat/spec-extract";
 import { api } from "@/lib/api";
+import { belongsToSession, loadSessionIdentity, type AssistantSession } from './session-identity';
 import {
   isStaleByTtl,
   pruneLocalStorageByPrefix,
@@ -574,6 +575,11 @@ export function useSuperChat({
   const [error, setError] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>(() => initialScopeSnapshot.cachedMessages);
   const [historyReady, setHistoryReady] = useState(false);
+  const [scopeLabel, setScopeLabel] = useState(project || '首页');
+  const [sessionMode, setSessionMode] = useState<AssistantSession['mode']>(null);
+  const [sessionEpoch, setSessionEpoch] = useState(0);
+  const sessionEpochRef = useRef(0);
+  const advanceSessionEpoch = useCallback(() => setSessionEpoch(++sessionEpochRef.current), []);
   const [streamText, setStreamText] = useState("");
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [relayInstances, setRelayInstances] = useState<RelayInstanceInfo[]>([]);
@@ -588,6 +594,10 @@ export function useSuperChat({
   const [activeTurnId, setActiveTurnId] = useState<string | null>(initialScopeSnapshot.activeTurnId);
   const streamTextRef = useRef("");
   const messagesRef = useRef<ChatMessage[]>(initialScopeSnapshot.cachedMessages);
+  const sessionRef = useRef<AssistantSession | null>(loadSessionIdentity(scopeKey));
+  const currentScopeKeyRef = useRef(scopeKey);
+  currentScopeKeyRef.current = scopeKey;
+  const clearRequestRef = useRef<{ generation: number; request_id: string } | null>(null);
   const activeTurnIdRef = useRef<string | null>(initialScopeSnapshot.activeTurnId);
   const pendingClientTurnIdRef = useRef<string | null>(null);
   const recentlyCompletedTurnIdRef = useRef<string | null>(null);
@@ -653,6 +663,9 @@ export function useSuperChat({
   }, [markTurnInactive]);
 
   const handleFrame = useCallback((frame: ServerFrame) => {
+    const identity = frame as ServerFrame & Partial<AssistantSession>;
+    if (frame.type !== 'scope.changed' && sessionRef.current && identity.session_id
+      && !belongsToSession(sessionRef.current, identity as AssistantSession)) return;
     switch (frame.type) {
       case "scope.changed": {
         setConnected(true);
@@ -660,6 +673,23 @@ export function useSuperChat({
         setError(null);
         const frameScope = isChatScope(frame.scope) ? frame.scope : undefined;
         if (!scopeMatches(frameScope, desiredScope)) break;
+        setScopeLabel(typeof frame.scope_label === 'string' ? frame.scope_label : project || '首页');
+        const incomingSession = frame.session as AssistantSession | undefined;
+        if (incomingSession) {
+          const changed = sessionRef.current && !belongsToSession(sessionRef.current, incomingSession);
+          sessionRef.current = incomingSession;
+          setSessionMode(incomingSession.mode);
+          safeLocalStorageSet(`superchat:session:${scopeKey}`, JSON.stringify(incomingSession));
+          if (incomingSession.status === 'migration_required') setError('检测到旧助手会话，无法确认项目归属。请手动清除会话后开始项目独立对话；旧文件保留。');
+          if (changed) {
+            advanceSessionEpoch();
+            markTurnInactive(activeTurnIdRef.current);
+            messagesRef.current = [];
+            setMessages([]);
+            streamTextRef.current = '';
+            setStreamText('');
+          }
+        }
         setHistoryReady(true);
         const history = mergeHistory(Array.isArray(frame.history) ? frame.history : []);
         const currentMessages = messagesRef.current;
@@ -905,6 +935,11 @@ export function useSuperChat({
 
   useEffect(() => {
     setRelayInstances([]);
+    setScopeLabel(project || '首页');
+    advanceSessionEpoch();
+    sessionRef.current = loadSessionIdentity(scopeKey);
+    setSessionMode(sessionRef.current?.mode);
+    clearRequestRef.current = null;
     setSelectedInstanceId("");
     setModels([]);
     setActiveModel(null);
@@ -965,6 +1000,7 @@ export function useSuperChat({
   }, [connect, disconnect]);
 
   const send = useCallback((text: string, attachments: ChatAttachment[] = [], transportText?: string) => {
+    if (currentScopeKeyRef.current !== scopeKey || sessionEpochRef.current !== sessionEpoch) return false;
     const trimmed = text.trim();
     if (!trimmed || !connected) return false;
     const outboundText = transportText?.trim() || trimmed;
@@ -979,45 +1015,38 @@ export function useSuperChat({
       scope: desiredScope,
       text: outboundText,
       turn_id: turnId,
+      generation: sessionRef.current?.generation,
       attachments: attachments.length > 0 ? attachments : undefined,
     });
     return true;
-  }, [connected, desiredScope, displayName, markTurnActive, sendFrame]);
+  }, [connected, desiredScope, displayName, markTurnActive, sendFrame, scopeKey, sessionEpoch]);
 
   const appendNotification = useCallback(async (text: string): Promise<boolean> => {
     const trimmed = text.trim();
     if (!trimmed) return false;
+    const identity = sessionRef.current;
+    if (!identity) return false;
     try {
       const response = await api
         .post("api/v1/chat/notifications", {
           json: {
             scope: desiredScope,
             text: trimmed,
+            session_id: identity.session_id,
+            generation: identity.generation,
           },
         })
         .json<ChatNotificationResponse>();
       const message = normalizeMessage(response.data, "assistant");
-      if (message) {
+      if (message && currentScopeKeyRef.current === scopeKey && sessionRef.current?.session_id === identity.session_id) {
         setMessages((current) => sortMessages([...current, message]));
       }
       return true;
     } catch (error) {
       console.error("[superchat] append notification failed", error);
-      const fallback = normalizeMessage(
-        {
-          id: `task-notification-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          role: "assistant",
-          content: trimmed,
-          created_at: new Date().toISOString(),
-        },
-        "assistant",
-      );
-      if (fallback) {
-        setMessages((current) => sortMessages([...current, fallback]));
-      }
       return false;
     }
-  }, [desiredScope]);
+  }, [desiredScope, scopeKey]);
 
   const abort = useCallback(() => {
     const turnId = activeTurnIdRef.current ?? pendingClientTurnIdRef.current;
@@ -1025,12 +1054,12 @@ export function useSuperChat({
       cancelledTurnIdsRef.current.add(turnId);
     }
     markTurnInactive(turnId);
-    void api.post("api/v1/chat/cancel").catch(() => undefined);
+    void api.post("api/v1/chat/cancel", { json: { scope: desiredScope, generation: sessionRef.current?.generation } }).catch(() => undefined);
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.close(4000, "client abort");
     }
-  }, [markTurnInactive]);
+  }, [markTurnInactive, desiredScope]);
 
   const resolveApproval = useCallback((_approval: ApprovalRequest, _decision: "allow-once" | "allow-always" | "deny") => {
     setApprovals([]);
@@ -1053,6 +1082,66 @@ export function useSuperChat({
   const switchModel = useCallback((_modelId: string) => {
     setModelsLoading(false);
   }, []);
+
+  const clearSession = useCallback(async () => {
+    try {
+      if (!clearRequestRef.current) {
+        const response = await api.get('api/v1/chat/session', { searchParams: {
+          scope_kind: desiredScope.kind, ...(desiredScope.id ? { project_id: desiredScope.id } : {}),
+        } }).json<{ ok: boolean; data: AssistantSession }>();
+        const state = response.data;
+        if (currentScopeKeyRef.current !== scopeKey) return;
+        clearRequestRef.current = { generation: state.generation, request_id: crypto.randomUUID() };
+      }
+      const result = await api.post('api/v1/chat/session/clear', { json: {
+        scope: desiredScope, expected_generation: clearRequestRef.current.generation,
+        request_id: clearRequestRef.current.request_id,
+      } }).json<{ ok: boolean; data: AssistantSession }>();
+      if (!result.ok) throw new Error('清除会话失败');
+      const latest = loadSessionIdentity(scopeKey);
+      if (latest && latest.generation > result.data.generation) return;
+      safeLocalStorageSet(`superchat:session:${scopeKey}`, JSON.stringify(result.data));
+      localStorage.removeItem(`${MESSAGE_CACHE_PREFIX}${scopeKey}`);
+      clearActiveTurn(scopeKey);
+      if (currentScopeKeyRef.current !== scopeKey) return;
+      sessionRef.current = result.data;
+      setSessionMode(result.data.mode);
+      advanceSessionEpoch();
+      clearRequestRef.current = null;
+      markTurnInactive(activeTurnIdRef.current);
+      recentlyCompletedTurnIdRef.current = null;
+      pendingClientTurnIdRef.current = null;
+      messagesRef.current = [];
+      streamTextRef.current = '';
+      setMessages([]); setStreamText(''); setBusy(false); setError(null);
+      localStorage.removeItem(`${MESSAGE_CACHE_PREFIX}${scopeKey}`);
+      sendFrame({ type: 'scope.set', scope: desiredScope });
+    } catch (error) {
+      if (currentScopeKeyRef.current === scopeKey && (error as { response?: { status?: number } })?.response?.status === 409) {
+        clearRequestRef.current = null;
+        sendFrame({ type: 'scope.set', scope: desiredScope });
+      }
+      if (currentScopeKeyRef.current === scopeKey) setError(error instanceof Error ? error.message : '清除会话失败');
+    }
+  }, [desiredScope, scopeKey, markTurnInactive, sendFrame]);
+
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== `superchat:session:${scopeKey}`) return;
+      const incoming = loadSessionIdentity(scopeKey);
+      if (!incoming || (sessionRef.current && belongsToSession(sessionRef.current, incoming))) return;
+      sessionRef.current = incoming;
+      setSessionMode(incoming.mode);
+      advanceSessionEpoch();
+      markTurnInactive(activeTurnIdRef.current);
+      recentlyCompletedTurnIdRef.current = null;
+      messagesRef.current = []; streamTextRef.current = '';
+      setMessages([]); setStreamText(''); setBusy(false);
+      sendFrame({ type: 'scope.set', scope: desiredScope });
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [scopeKey, desiredScope, markTurnInactive, sendFrame]);
 
   const sessionControl = useCallback((_command: SessionControlCommand, _args?: string) => {
     // novelvideo's native chat endpoint does not expose external session-control commands.
@@ -1095,6 +1184,10 @@ export function useSuperChat({
   }, [persistMessageSet]);
 
   return {
+    clearSession,
+    scopeLabel,
+    sessionEpoch,
+    sessionMode,
     abort,
     approvals,
     activeTurnId,

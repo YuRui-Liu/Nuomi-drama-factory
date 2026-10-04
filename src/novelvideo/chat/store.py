@@ -89,10 +89,11 @@ class ChatScope:
 
 class ChatStore:
     def db_for(self, username: str, scope: ChatScope) -> Path:
-        if scope.kind == "home":
-            return _state_root() / username / "_home" / "chat.db"
-        if scope.kind == "project":
-            return _state_root() / username / str(scope.id) / "chat.db"
+        from .session_store import for_scope
+        if scope.kind in {'home', 'project'}:
+            store = for_scope(username, scope.kind, scope.id)
+            store.get_or_create()
+            return store.db_path
         return _state_root() / username / f"_{scope.kind}" / str(scope.id) / "chat.db"
 
     def connect(self, username: str, scope: ChatScope) -> sqlite3.Connection:
@@ -167,6 +168,8 @@ class ChatStore:
         created_at = datetime.now(timezone.utc).isoformat()
         conn = self.connect(username, scope)
         try:
+            from .session_manager import fence_write
+            fence_write(conn)
             cursor = conn.execute(
                 """
                 INSERT INTO chat_messages(role, content, media_json, turn_id, metadata_json, created_at)
@@ -209,6 +212,15 @@ class ChatStore:
         created_at = datetime.now(timezone.utc).isoformat()
         conn = self.connect(username, scope)
         try:
+            from .session_manager import fence_write, current_session
+            from .session_store import SessionConflict
+            fence_write(conn)
+            current = current_session.get()
+            if current and not conn.execute(
+                'SELECT 1 FROM assistant_turns WHERE turn_id=? AND generation=?',
+                (turn_id, current[1].generation),
+            ).fetchone():
+                raise SessionConflict('该轮对话不属于当前会话。')
             cursor = conn.execute(
                 """
                 INSERT INTO chat_ui_events(turn_id, event_type, payload_json, created_at)

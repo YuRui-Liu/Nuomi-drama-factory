@@ -254,6 +254,18 @@ def _query_string(params: Any) -> str:
 
 
 def _request(method: str, path: str, *, query: Any = None, body: Any = None) -> dict[str, Any]:
+    if db_path := os.environ.get('NUOMI_ASSISTANT_DB_PATH'):
+        # Hermes has its own interpreter: use SQLite directly instead of
+        # importing the API application or inheriting another user's scope.
+        import sqlite3
+        with sqlite3.connect(f'{Path(db_path).as_uri()}?mode=ro', uri=True) as db:
+            row = db.execute('SELECT data FROM assistant_session WHERE id=1').fetchone()
+            state = json.loads(row[0]) if row else {}
+            generation = int(os.environ['NUOMI_ASSISTANT_GENERATION'])
+            if (state.get('session_id'), state.get('generation')) != (os.environ['NUOMI_ASSISTANT_SESSION_ID'], generation):
+                return {'ok': False, 'error': '会话已清除，旧工具请求未执行。'}
+            if db.execute("SELECT 1 FROM assistant_turns WHERE generation=? AND status='cancel_requested'", (generation,)).fetchone():
+                return {'ok': False, 'error': '当前对话已取消，工具请求未执行。'}
     api_path = _normalize_api_path(path)
     url = f"{_base_url()}{api_path}{_query_string(query)}"
     payload = None
