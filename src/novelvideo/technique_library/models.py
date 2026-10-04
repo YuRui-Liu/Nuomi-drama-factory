@@ -1,8 +1,9 @@
-"""Strict portable catalog schema; no prompt or binary content is accepted."""
+"""Portable catalog with explicitly attributed source prompt records."""
+import hashlib
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Provenance = Literal['official', 'author', 'reconstructed', 'unpublished', 'unknown']
 UseCase = Literal['cinema', 'performance', 'action', 'product', 'music', 'stylized']
@@ -33,6 +34,28 @@ class Source(BaseModel):
     _url = field_validator('url')(safe_url)
 
 
+class CasePrompt(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    text: str = Field(min_length=1, max_length=200_000)
+    language: str = 'und'
+    provenance: Provenance = 'unknown'
+    repository: str
+    revision: str = Field(pattern=r'^[0-9a-f]{40}$')
+    path: str
+    upstream_id: str
+    source_url: str
+    content_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+    _url = field_validator('source_url')(safe_url)
+
+    @model_validator(mode='after')
+    def verify_content(self):
+        if not self.text.strip() or self.provenance == 'unpublished':
+            raise ValueError('Prompt must contain available source text')
+        if hashlib.sha256(self.text.encode('utf-8')).hexdigest() != self.content_sha256:
+            raise ValueError('Prompt content hash mismatch')
+        return self
+
+
 class Case(BaseModel):
     model_config = ConfigDict(extra='forbid')
     id: str = Field(pattern=r'^h3-[0-9a-f]{16}$')
@@ -41,6 +64,7 @@ class Case(BaseModel):
     use_cases: list[UseCase]
     provenance: Provenance
     sources: list[Source] = Field(min_length=1)
+    prompts: list[CasePrompt] = Field(default_factory=list)
     media_url: str | None = None
     mode: str | None = None
     duration: str | None = None

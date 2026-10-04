@@ -63,3 +63,19 @@ def test_unchanged_catalog_reuses_validation(tmp_path, monkeypatch):
     catalog.query_cases()
     catalog.query_cases()
     assert reads == [path]
+
+
+def test_list_omits_bodies_but_detail_preserves_source_text(tmp_path, monkeypatch):
+    from novelvideo.technique_library.prompt_records import prompt_record
+    catalog = module()
+    case = sample_case()
+    claim = {**case['sources'][0], 'provenance': 'author'}
+    case['prompts'] = [prompt_record('原创测试。\n镜头缓缓推进。', claim, language='zh').model_dump()]
+    path = tmp_path / 'catalog.json'
+    path.write_text(json.dumps({'sources': [], 'report': {}, 'cases': [case]}))
+    monkeypatch.setattr(catalog, 'CATALOG_PATH', path)
+    listed = catalog.query_cases()['items'][0]
+    assert 'prompts' not in listed
+    assert listed['prompt_count'] == 1
+    assert listed['has_public_prompt'] is True
+    assert catalog.get_case(case['id'])['prompts'] == case['prompts']

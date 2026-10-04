@@ -9,6 +9,7 @@ import tempfile
 from urllib.parse import urlsplit, urlunsplit
 
 from .models import Bundle, Case, safe_url
+from .prompt_records import prompt_identity
 
 
 class IngestError(ValueError):
@@ -66,6 +67,11 @@ def merge_cases(rows: list[dict], previous: list[Case] | None = None) -> tuple[l
         for claim in incoming.sources:
             if claim not in existing.sources:
                 existing.sources.append(claim)
+        identities = {prompt_identity(prompt) for prompt in existing.prompts}
+        for prompt in incoming.prompts:
+            if prompt_identity(prompt) not in identities:
+                existing.prompts.append(prompt)
+                identities.add(prompt_identity(prompt))
         existing.use_cases = sorted(set(existing.use_cases + incoming.use_cases))
         for field in ('provenance', 'mode', 'duration'):
             unknown = 'unknown' if field == 'provenance' else None

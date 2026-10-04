@@ -38,7 +38,12 @@ def query_cases(q: str = '', use_case: str = '', provenance: str = '', offset: i
              if (not needle or needle in json.dumps(case, ensure_ascii=False).casefold())
              and (not use_case or use_case in case['use_cases'])
              and (not provenance or provenance == case['provenance'])]
-    return {'items': items[offset:offset + limit], 'total': len(items), 'offset': offset, 'limit': limit}
+    summaries = [{**{key: value for key, value in case.items() if key != 'prompts'},
+                  'prompt_count': len(case['prompts']),
+                  'has_public_prompt': any(prompt['provenance'] in ('official', 'author')
+                                           for prompt in case['prompts'])}
+                 for case in items[offset:offset + limit]]
+    return {'items': summaries, 'total': len(items), 'offset': offset, 'limit': limit}
 
 
 def get_case(case_id: str) -> dict | None:

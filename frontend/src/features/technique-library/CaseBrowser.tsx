@@ -3,6 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { getTechniqueCases, getTechniqueCase } from '@/api/techniqueLibrary';
 import { useCases } from './presentation';
+import { CasePromptPanel } from './CasePromptPanel';
+import { CaseMedia } from './CaseMedia';
 
 const provenanceLabels: Record<string, string> = { official: '官方', author: '作者', reconstructed: '反推', unpublished: '未公开', unknown: '未知' };
 
@@ -24,6 +26,8 @@ export function CaseBrowser({ username, onTechnique, initialId, techniqueTitles 
       {detail.isError && <p role="alert">{tr('casesError', '案例读取失败')} <button className={button} onClick={() => void detail.refetch()}>{tr('retryCases', '重试案例')}</button></p>}
       {item && !detail.isError && <article className="mx-auto max-w-3xl space-y-5 py-5">
         <h3 className="text-xl text-white">{item.title}</h3><p className="text-sm leading-7 text-slate-300">{item.summary}</p>
+        <CaseMedia key={`${item.id}:media`} url={item.media_url} />
+        <CasePromptPanel key={item.id} prompts={item.prompts} />
         <p className="text-xs text-slate-400">{item.use_cases.map((value) => tr(`use_${value}`, useCases[value as keyof typeof useCases] ?? value)).join(' · ')}</p>
         <p className="text-xs text-amber-200">{tr(`provenance_${item.provenance}`, provenanceLabels[item.provenance] ?? provenanceLabels.unknown)} · {tr('unverifiedCase', '未本地实测；来源声明不代表使用授权')}</p>
         <h4>{tr('sources', '参考来源')}</h4>

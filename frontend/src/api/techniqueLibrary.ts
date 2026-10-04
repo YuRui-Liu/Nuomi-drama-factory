@@ -1,10 +1,21 @@
 import { apiCall } from './client';
 import type { DirectorTechniqueCatalog, TechniqueCard } from './videoDirector';
 
+export interface CasePrompt {
+  text: string; language: string; provenance: string;
+  repository: string; revision: string; path: string; upstream_id: string;
+  source_url: string; content_sha256: string;
+}
 export interface TechniqueCase {
   id: string; title: string; summary: string; use_cases: string[];
   provenance: string; local_verification: string; related_technique_ids: string[];
   sources: { repository: string; revision: string; path: string; url?: string; author?: string; provenance: string }[];
+  prompts?: CasePrompt[];
+  prompt_count?: number;
+  has_public_prompt?: boolean;
+  media_url?: string | null;
+  mode?: string | null;
+  duration?: string | null;
 }
 export interface CaseFilters { q: string; use_case: string; provenance: string; offset: number; limit: number }
 export function getTechniqueCases(filters: CaseFilters, signal?: AbortSignal): Promise<{ items: TechniqueCase[]; total: number; offset: number; limit: number }> {
