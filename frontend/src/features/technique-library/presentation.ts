@@ -3,6 +3,7 @@ import type { DirectorSegment } from '@/features/canvas/domain/canvasNodes';
 import { techniqueCompatibility } from '@/features/canvas/director/directorValidation';
 
 export interface TechniqueContext {
+  reference?: import('@/api/caseReference').CaseReferenceContext;
   segment: DirectorSegment;
   hasReferences: boolean;
   capabilities: DirectorCapabilities | null;

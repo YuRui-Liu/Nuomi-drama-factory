@@ -51,6 +51,7 @@ interface ProviderModel {
 /** Split frontend model strings into SuperTale's provider/model pair. */
 const PLACEHOLDER_MODEL_TOKENS = new Set(["default", "auto", ""]);
 const SUPPORTED_PROVIDERS = new Set<FreezoneProvider>([
+  "grsai",
   "huimeng",
   "openai",
   "openrouter",

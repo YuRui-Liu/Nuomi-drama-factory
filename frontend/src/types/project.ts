@@ -3,6 +3,8 @@
 export type SpineTemplate = "drama" | "narrated";
 
 export interface ProjectConfig {
+  name?: string;
+  display_name?: string;
   spine_template?: SpineTemplate;
   aspect_ratio?: "2:3" | "9:16" | "16:9";
   visual_style?: string;
@@ -36,6 +38,7 @@ export type ProjectRole = "viewer" | "editor" | "admin" | "owner";
 export interface ProjectSummary {
   id: string;
   name: string;
+  displayName?: string;
   status: ProjectStatus;
   ownerUsername?: string;
   ownerId?: string;

@@ -108,12 +108,16 @@ async def test_voice_design_retains_candidate_and_existing_reference(monkeypatch
     monkeypatch.setattr("novelvideo.api.deps.get_media_capability_store", lambda: object())
     monkeypatch.setattr("novelvideo.api.deps.get_media_credential_resolver", lambda: object())
     monkeypatch.setattr(voice_design, "get_task_manager", lambda: SimpleNamespace(update_progress_for_project=lambda *a, **k: None))
-    result = await voice_design._run_voice_design({"payload": payload}, ctx)
+    async def not_cancelled(**kwargs):
+        return False
+    monkeypatch.setattr("novelvideo.task_backend.cancel.is_cancel_requested", not_cancelled)
+    envelope = {"payload": payload, "__run_task_id": "voice-task-1"}
+    result = await voice_design._run_voice_design(envelope, ctx)
     assert result["quality_status"] == "rejected"
     assert result["published"] is False
     candidates = VoiceCandidateStore(tmp_path / "data.db", tmp_path)
     assert candidates.get(result["candidate_id"])["provider_task_id"] == "provider-task-1"
-    again = await voice_design._run_voice_design({"payload": payload}, ctx)
+    again = await voice_design._run_voice_design(envelope, ctx)
     assert again["candidate_id"] == result["candidate_id"]
     assert len(submitted) == 1
     store = SQLiteStore("voice_test", output_dir=str(tmp_path), state_dir=str(tmp_path))

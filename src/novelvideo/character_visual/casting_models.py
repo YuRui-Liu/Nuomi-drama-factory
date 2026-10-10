@@ -128,6 +128,25 @@ class CastingCandidate(CastingContract):
     submission_token: NonBlank | None = None
     generation_metadata: dict[Literal["provider", "requested_model", "resolved_model", "resolution_source"], str] = Field(default_factory=dict)
     asset_path: NonBlank | None = None
+    sheet_contract: Literal['character_sheet_v4'] | None = None
+    generation_prompt: str | None = None
+    change_request: str | None = None
+    avatar_image: NonBlank | None = None
+    avatar_sha256: str | None = None
+    crop_box: tuple[float, float, float, float] | None = None
+    asset_version: int = 0
+    repair_parent_id: NonBlank | None = None
+    repair_count: int = Field(default=0, ge=0, le=1)
+    repair_history: list[dict[str, Any]] = Field(default_factory=list)
+    repair_child_id: str | None = None
+    repair_prompt: str | None = None
+    effective_proposal: dict[str, Any] | None = None
+    effective_proposal_hash: str | None = None
+    source_material: list[dict[str, Any]] = Field(default_factory=list)
+    identity_constraints: dict[str, Any] = Field(default_factory=dict)
+    reuse_stale_draft: bool = False
+    image_references: list[dict[str, str]] = Field(default_factory=list)
+    sheet_quality: dict[str, Any] | None = None
     asset_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")] | None = None
     generation_status: Literal["queued", "running", "succeeded", "failed"] = "queued"
     review_status: Literal["not_started", "running", "completed", "failed"] = "not_started"
@@ -158,3 +177,4 @@ class CastingAdoption(CastingContract):
     acknowledged_findings: list[NonBlank] = Field(default_factory=list)
     override_reason: NonBlank | None = None
     expected_review_attempt_id: NonBlank | None = None
+    expected_asset_version: int | None = None

@@ -73,6 +73,8 @@ export function useAssetsDeepLink(): AssetsDeepLink {
       navigate({
         search: ((prev: Record<string, unknown>) => {
           const next: Record<string, unknown> = { ...prev, type: nextType };
+          delete next.character;
+          delete next.characterTab;
           if (nextId) next.id = nextId;
           else delete next.id;
           return next;

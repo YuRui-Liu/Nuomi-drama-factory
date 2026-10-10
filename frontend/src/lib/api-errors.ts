@@ -103,6 +103,19 @@ export function errorFromBackendBody(status: number, body: unknown, fallback: st
     return null;
   }
 
+  const validation = (body as { detail?: unknown }).detail;
+  if (status === 422 && Array.isArray(validation)) {
+    const messages = validation.filter((item): item is { loc?: unknown[]; type?: string; msg?: string } =>
+      !!item && typeof item === "object").map(item => {
+      const field = Array.isArray(item.loc) ? item.loc.filter(part => part !== "body").join(".") : "";
+      if (item.type === "extra_forbidden" && field === "expected_reference") {
+        return "声音采用接口仍是旧版本，请更新或重启后端后重试；候选音频已保留";
+      }
+      return `${field ? `${field}：` : ""}${item.msg || "字段校验失败"}`;
+    });
+    if (messages.length) return new BackendStatusError(`请求未通过校验：${messages.join("；")}`, status, body);
+  }
+
   const findNestedString = (value: unknown, key: string): string | undefined => {
     if (!value || typeof value !== "object") return undefined;
     const record = value as Record<string, unknown>;

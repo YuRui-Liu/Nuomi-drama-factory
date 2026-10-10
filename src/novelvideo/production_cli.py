@@ -490,8 +490,10 @@ def batch(
 
 
 from novelvideo.script_creation_cli import create_script_app
+from novelvideo.canvas_cli import create_canvas_app
 
 app.add_typer(create_script_app(perform=_perform, body=_body, segment=_segment, emit=_emit), name="script")
+app.add_typer(create_canvas_app(perform=_perform, body=_body, segment=_segment, emit=_emit), name="canvas")
 
 
 if __name__ == "__main__":

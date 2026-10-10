@@ -54,7 +54,7 @@ def fixture_sources(root):
     (stim / 'demo.md').write_text('# Demo\n- **Category:** Action\n- **Source:** author\'s own\n- **Reference clip:** [@b](https://x.com/b/status/456)\n- **In the gallery:** https://apimodels.app/minimax-h3-prompts#prompt-demo\n\n## Prompt\nPRIVATE_FULL_PROMPT')
 
 
-def test_metadata_only_merge_counts_and_idempotence(tmp_path):
+def test_prompt_merge_counts_and_idempotence(tmp_path):
     ingest = ingest_module()
     fixture_sources(tmp_path)
     output = tmp_path / 'out.json'
@@ -66,9 +66,12 @@ def test_metadata_only_merge_counts_and_idempotence(tmp_path):
     assert bundle['report']['errors'] == 0
     assert len(bundle['cases']) == 3
     serialized = output.read_text()
-    assert 'PRIVATE_FULL_PROMPT' not in serialized and 'COPYRIGHT_SUMMARY' not in serialized
+    assert 'PRIVATE_FULL_PROMPT' in serialized and 'COPYRIGHT_SUMMARY' not in serialized
+    assert all('PRIVATE_FULL_PROMPT' not in c['summary'] for c in bundle['cases'])
     merged = next(c for c in bundle['cases'] if c['media_url'] == 'https://media.example/a.mp4')
     assert len(merged['sources']) == 2
+    assert {p['provenance'] for p in merged['prompts']} == {'author', 'reconstructed'}
+    assert all(p['text'] == 'PRIVATE_FULL_PROMPT' for p in merged['prompts'])
     assert merged['provenance'] == 'unknown' and 'provenance' in merged['conflicts']
     assert merged['sources'][1]['source_verification'] is True
     assert merged['sources'][1]['prompt_provenance'] == 'reconstructed'
@@ -79,6 +82,7 @@ def test_metadata_only_merge_counts_and_idempotence(tmp_path):
     gallery = next(c for c in bundle['cases'] if any(s['upstream_id'] == 'demo' for s in c['sources']))
     assert gallery['conflicts'] == []
     assert gallery['duration'] == '15s'
+    assert gallery['prompts'][0]['text'] == 'PRIVATE_FULL_PROMPT'
     assert all(c['local_verification'] == 'unverified' for c in bundle['cases'])
     ingest.import_catalog(tmp_path, output)
     assert serialized == output.read_text()

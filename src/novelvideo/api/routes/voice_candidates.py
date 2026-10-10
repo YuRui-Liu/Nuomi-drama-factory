@@ -26,6 +26,7 @@ class VoiceApproval(BaseModel):
     model_config = ConfigDict(extra="forbid")
     confirm: Literal[True]
     reason: str = Field(min_length=1, max_length=2000)
+    expected_reference: dict[str, str] | None = None
 
 
 async def resolve_voice_scope(project, name, user, *, read_only=False):
@@ -76,6 +77,18 @@ async def recheck_voice_candidate(project: str, name: str, candidate_id: str, us
     return {"ok": True, "data": candidate_view(ctx, candidates, result)}
 
 
+@router.delete("/projects/{project}/characters/{name}/voice-candidates/{candidate_id}")
+async def delete_voice_candidate(project: str, name: str, candidate_id: str, user: dict = Depends(get_api_user)):
+    _, store, character, candidates = await resolve_voice_scope(project, name, user)
+    try:
+        _owned(candidates, candidate_id, character.name)
+        candidates.delete(candidate_id)
+        await store.load_graph_state()
+    except ValueError as exc:
+        return JSONResponse(status_code=409, content={"ok": False, "error": str(exc)})
+    return {"ok": True, "data": {"candidate_id": candidate_id, "deleted": True}}
+
+
 @router.post("/projects/{project}/characters/{name}/voice-candidates/{candidate_id}/approve")
 async def approve_voice_candidate(project: str, name: str, candidate_id: str, body: VoiceApproval,
                                   user: dict = Depends(get_api_user)):
@@ -85,7 +98,8 @@ async def approve_voice_candidate(project: str, name: str, candidate_id: str, bo
     except ValueError as exc:
         return JSONResponse(status_code=404, content={"ok": False, "error": str(exc)})
     try:
-        result = candidates.approve(candidate_id, actor=str(user.get("username") or user.get("id") or "local-reviewer"), reason=body.reason)
+        result = candidates.approve(candidate_id, actor=str(user.get("username") or user.get("id") or "local-reviewer"), reason=body.reason,
+                                    expected_reference=body.expected_reference)
         await store.load_graph_state()
     except ValueError as exc:
         return JSONResponse(status_code=409, content={"ok": False, "error": str(exc)})

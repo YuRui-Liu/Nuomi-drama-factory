@@ -7,9 +7,9 @@ import json
 import re
 from typing import Any
 
-from novelvideo.media_capabilities.tts.models import VoiceSpec, VoiceSpecError
+from novelvideo.media_capabilities.tts.models import CharacterVoiceDesign, VoiceSpec, VoiceSpecError
 from novelvideo.media_capabilities.tts.voice_prompt import (
-    AGE_LABELS, GENDER_LABELS, compile_voice_instruction, normalize_voice_age,
+    AGE_LABELS, GENDER_LABELS, compile_voice_instruction, compile_character_voice_design, normalize_voice_age,
 )
 
 
@@ -41,6 +41,13 @@ def voice_snapshot_digest(snapshot: dict[str, Any]) -> str:
 
 
 def _mentioned_ages(text: str) -> set[str]:
+    # Negative style guidance is not a requested age. Limit negation to its
+    # clause so a later positive requirement still participates in validation.
+    clauses = re.split(r"[，,。.;；!?！？\n]|但是|但|而是|\bbut\b|\binstead\b", text, flags=re.I)
+    text = " ".join(
+        clause for clause in clauses
+        if not re.match(r"\s*(?:请\s*)?(?:避免|不要|不使用|不用|禁止|avoid\b|do not\b|don't\b|without\b)", clause, re.I)
+    )
     patterns = {
         "child": r"儿童|幼年|\bchild(?:ren)?\b",
         "teen": r"青少年|(?<!青)少年|\bteen(?:ager)?\b",
@@ -54,6 +61,7 @@ def _mentioned_ages(text: str) -> set[str]:
 def prepare_character_voice_request(
     character: Any, *, slot: str, voice_description: str = "", audition_text: str = "",
     language: str = "Chinese", voice_spec: VoiceSpec | None = None, db_path=None,
+    design: CharacterVoiceDesign | None = None, perceived_age: str = "", design_context: dict | None = None,
 ) -> dict[str, Any]:
     if slot not in {"default", "child", "youth", "middle", "elder"}:
         raise VoiceSpecError(f"invalid voice slot: {slot}")
@@ -64,10 +72,16 @@ def prepare_character_voice_request(
         raise VoiceSpecError(f"vocalization_not_dialogue: {mode}; 请核对角色发声事实，非语言素材不能使用人声槽位")
     age = normalize_voice_age(slot if slot != "default" else facts.get("age_group") or snapshot["age_group"])
     custom = " ".join(voice_description.split())
+    if design is not None and (voice_spec is not None or custom):
+        raise VoiceSpecError("请选择结构化声音方案或自定义描述，不要同时提交")
+    if design is not None:
+        voice_spec = design.voice_spec
     if voice_spec is not None and custom:
         raise VoiceSpecError("choose voice_spec or voice_description, not both")
     spec = voice_spec or VoiceSpec(texture=custom or str(facts.get("voice_traits") or ""))
-    free_text = " ".join(
+    if perceived_age.strip() and slot == "default":
+        spec = spec.model_copy(update={"age_impression": perceived_age.strip()})
+    free_text = "; ".join(
         str(v) for k, v in spec.model_dump().items()
         if k not in {"age_impression", "negative_constraints"}
     )
@@ -78,24 +92,31 @@ def prepare_character_voice_request(
     effective_age = next(iter(profile_ages), age)
     if len(mentioned) > 1 or (effective_age and mentioned - {effective_age}):
         raise VoiceSpecError("voice age conflicts with selected age slot")
-    impression = spec.age_impression
+    impression = perceived_age.strip() or spec.age_impression
     if slot != "default" or not impression:
         impression = AGE_LABELS[age] + GENDER_LABELS.get(snapshot["gender"].strip().lower(), "")
     spec = spec.model_copy(update={"age_impression": impression})
-    instruction = compile_voice_instruction(spec)
-    if snapshot['description'] or snapshot['authoring_context']:
-        instruction += ('\n作者业务设定，仅作为声音表演设计参考，不是已证实的声学参数或对白事实。'
-            '优先遵守上面的明确声线要求，不从身份、外貌或未来计划推断年龄、性别、音高或口音：\n'
-            + json.dumps({'description': snapshot['description'], 'sources': snapshot['authoring_context']}, ensure_ascii=False))
-    # Check contradictions across dimensions as well as inside each dimension.
-    combined = " ".join((spec.pitch, spec.texture, spec.pace, spec.resonance, spec.articulation))
-    compile_voice_instruction(VoiceSpec(pitch=combined, pace=combined))
+    if design is not None:
+        design = design.model_copy(update={"voice_spec": spec})
+        instruction = compile_character_voice_design(design)
+    elif custom:
+        # A complete freeform direction is not a texture attribute.
+        instruction = (impression + "。" if impression else "") + custom
+    else:
+        instruction = compile_voice_instruction(spec)
+    # Natural delivery can contrast a low register with lifted sentence endings.
+    compile_voice_instruction(spec)
+    if not instruction.strip():
+        raise VoiceSpecError("请填写至少一个声音特点")
     return {
         "character_name": character.name, "slot": slot, "voice_description": instruction,
-        "audition_text": audition_text.strip() or "这件事没那么简单，我们先把情况弄清楚。",
+        "audition_text": audition_text.strip() or (design.audition_text.strip() if design else "") or "这件事没那么简单，我们先把情况弄清楚。",
         "language": language.strip() or "Chinese",
         "voice_spec": spec.model_dump(mode="json"), "profile_snapshot": snapshot,
-        "profile_digest": voice_snapshot_digest(snapshot), "compiler_version": "voice-spec-v2",
+        "profile_digest": voice_snapshot_digest(snapshot), "compiler_version": "voice-design-v3",
+        "design": design.model_dump(mode="json") if design else None,
+        "design_context": design_context or {},
+        "design_context_digest": voice_snapshot_digest(design_context or {}),
         "target_reference": (
             {"path": getattr(character, "reference_audio_path", ""), "sha256": getattr(character, "reference_audio_sha256", "")}
             if slot == "default" else dict((getattr(character, "voice_samples_by_age_group", {}) or {}).get(slot) or {})

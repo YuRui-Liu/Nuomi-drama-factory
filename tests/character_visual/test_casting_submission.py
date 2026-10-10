@@ -3,6 +3,17 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_old_submitting_receipt_does_not_keep_delivery_busy():
+    from novelvideo.character_visual.casting_submission import submission_view
+    row = dict(request_id='r', task_type='character_portrait', scope='s', status='submitting', task_id='old')
+    manager = SimpleNamespace(get_task_for_project=lambda *a, **kw: SimpleNamespace(
+        task_id='old', status='submitting', updated_at='2020-01-01T00:00:00+00:00'))
+    result = submission_view(row, SimpleNamespace(), manager)
+    assert result['execution_status'] == 'unknown'
+    assert result['status'] == 'submission_unknown'
+    assert row['status'] == 'submitting'  # read projection never rewrites receipts
+
+
 @pytest.mark.asyncio
 async def test_lost_enqueue_response_never_enqueues_twice(tmp_path):
     assert importlib.util.find_spec('novelvideo.character_visual.casting_submission'), 'submission journal missing'

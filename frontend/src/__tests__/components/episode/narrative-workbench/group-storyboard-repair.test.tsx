@@ -25,6 +25,38 @@ beforeEach(() => {
   get.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ ok: true, data }))));
   post.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ ok: true, data: { task_id: "t1" } }))));
 });
+it("opens spatial comparison without generation and shows frozen facts honestly", async () => {
+  get.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ ok: true, data: {
+    ...data, keyframe_prompt: "身体朝门，视线看伙伴", adjacent_keyframe_context: null,
+  } }))));
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={qc}><GroupBeatInspector project="demo" episode={1} group={group} /></QueryClientProvider>);
+  fireEvent.click(screen.getAllByRole("button", { name: "核对站位与修复" })[0]);
+  expect(await screen.findByLabelText("已保存的定帧空间描述")).toHaveValue("身体朝门，视线看伙伴");
+  expect(screen.getByLabelText("已保存的相邻镜头约束")).toHaveValue("未记录");
+  expect(screen.getByAltText("下一镜分镜图")).toHaveAttribute("src", "/two.png");
+  expect(screen.getByAltText("当前分镜图")).toHaveAttribute("src", "/one.png");
+  expect(screen.getByText(/跨场不强求连续/)).toBeInTheDocument();
+  expect(post).not.toHaveBeenCalled();
+});
+it("keeps the selected sketch preview when render assets arrive while the dialog is open", async () => {
+  get.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ ok: true, data: { ...data, stage: "sketch" } }))));
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const sketchGroup: NarrativeGroup = { ...group, stages: { ...group.stages,
+    render: { status: "running", revision: 2 }, sketch: { status: "completed", revision: 1,
+      cell_assets: [{ cell: 0, beat_id: "shot-1", url: "/sketch-one.png" }] } } };
+  const view = (value: NarrativeGroup) => <QueryClientProvider client={qc}><GroupBeatInspector project="demo" episode={1} group={value} /></QueryClientProvider>;
+  const { rerender } = render(view(sketchGroup));
+  fireEvent.click(screen.getAllByRole("button", { name: "核对站位与修复" })[0]);
+  await screen.findByLabelText("提示词");
+  rerender(view({ ...sketchGroup, stages: { ...sketchGroup.stages, render: group.stages.render } }));
+  expect(screen.getByAltText("当前分镜图")).toHaveAttribute("src", "/sketch-one.png");
+  expect(screen.getByText("当前 · shot-1 · 草图")).toBeInTheDocument();
+  expect(screen.getByText("下一镜 · shot-2 · 实图")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "提交生成" }));
+  await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+  expect(post.mock.calls[0][0]).toContain("/sketch/cells/shot-1/repair");
+});
 it("waits for fresh context before initializing a reopened cached dialog", async () => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   qc.setQueryData([...queryKeys.narrativeGroups("demo", 1), "ng-1", "render", "cells", "shot-1", "repair"], data);

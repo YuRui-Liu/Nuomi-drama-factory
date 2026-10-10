@@ -70,6 +70,24 @@ def test_generate_requires_scope(api):
     assert client.post('/projects/p/music/generation-jobs', json={'requestId':'a'*32, 'request':{'tags':'piano'}}).status_code == 403
 
 
+def test_source_snapshot_survives_final_video_replacement(api, tmp_path, monkeypatch):
+    client, store, routes, app = api
+    from novelvideo.music import media
+    from novelvideo.music.models import MusicPlan
+    monkeypatch.setattr(media, 'probe_media', lambda path, kind: {'durationMs': 1000})
+    original = tmp_path / 'episode.mp4'
+    original.write_bytes(b'first completed video')
+    response = client.post('/projects/p/music/sources', json={'url': 'episode.mp4'})
+    assert response.status_code == 200, response.text
+    source = response.json()['data']
+    plan = MusicPlan.model_validate({'source': {'assetVersionId': source['versionId'], 'sha256': source['sha256'], 'durationMs': 1000}, 'tracks': []})
+    original.write_bytes(b'later composition')
+    routes.validate_plan(store, 'p', 'alice', plan)
+    frozen = client.get('/projects/p/music/versions/' + source['versionId'] + '/media')
+    assert frozen.content == b'first completed video'
+    assert client.get('/projects/other/music/versions/' + source['versionId'] + '/media').status_code == 403
+
+
 def test_resume_only_claims_paused_known_remote_once(api, monkeypatch):
     client, store, routes, app = api
     calls = []

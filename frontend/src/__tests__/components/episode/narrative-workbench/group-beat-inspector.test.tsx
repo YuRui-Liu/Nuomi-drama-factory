@@ -24,6 +24,17 @@ const group: NarrativeGroup = {
 };
 
 describe("GroupBeatInspector", () => {
+  it("maps physical batch-local cells by shot identity without overwriting another batch", () => {
+    const shots = ["shot-04", "shot-05", "shot-06", "shot-07", "shot-08"];
+    render(<GroupBeatInspector group={{ ...group,
+      cell_to_beat: shots.map((beat_id, cell) => ({ cell, beat_id })),
+      stages: { ...group.stages, render: { status: "completed", revision: 1,
+        cell_assets: shots.map((beat_id, index) => ({ cell: index % 4, beat_id, url: `/${beat_id}.png` })),
+      } },
+    }} />);
+    for (const shot of shots) expect(screen.getByAltText(`Beat ${shot} 渲染格位`)).toHaveAttribute("src", `/${shot}.png`);
+  });
+
   it("renders canonical cell asset URLs and per-cell failures", () => {
     const repair = vi.fn();
     render(<GroupBeatInspector group={group} onRepairBeat={repair} />);

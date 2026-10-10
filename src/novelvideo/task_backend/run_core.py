@@ -70,6 +70,7 @@ _PROJECT_TASK_RESOURCE_KINDS = {
     "freezone_video_story": "video",
     "freezone_image_reverse_prompt": "script",
     "freezone_story_script": "script",
+    "freezone_canvas_plan": "script",
 }
 
 

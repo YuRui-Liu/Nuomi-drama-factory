@@ -6,6 +6,7 @@ import { DirectorImageSlot } from './DirectorImageSlot';
 import { TechniqueCardPicker } from './TechniqueCardPicker';
 
 interface Props {
+  reference?: import('@/api/caseReference').CaseReferenceContext;
   segment: DirectorSegment;
   effectiveSegment: DirectorSegment;
   effectiveFrames?: Pick<DirectorSegment, 'firstFrame' | 'lastFrame'>;
@@ -27,7 +28,7 @@ interface Props {
   onMove: (offset: number) => void;
 }
 
-export function DirectorSegmentEditor({ segment, effectiveSegment, effectiveFrames, boundFrames, index, count, capabilities, techniques, hasReferences, errors, onPatch, onPick, onUpload, onRemove, imageErrors, uploading, onCopy, onDelete, onMove }: Props) {
+export function DirectorSegmentEditor({ segment, effectiveSegment, effectiveFrames, boundFrames, index, count, capabilities, techniques, hasReferences, errors, onPatch, onPick, onUpload, onRemove, imageErrors, uploading, onCopy, onDelete, onMove, reference }: Props) {
   const { t } = useTranslation();
   const tr = (key: string, defaultValue: string) => t(`node.videoDirector.editor.${key}`, { defaultValue });
   const prefix = `segments[${index}]`;
@@ -54,7 +55,7 @@ export function DirectorSegmentEditor({ segment, effectiveSegment, effectiveFram
     </label>
     {aligned && aligned.frames > 0 && <p className="text-xs text-text-muted">{tr('aligned', 'H3 对齐')}：{aligned.frames} {tr('frames', '帧')} / {aligned.seconds.toFixed(2)} {tr('seconds', '秒')}</p>}
     {errors[`${prefix}.duration_seconds`] && <p className="text-xs text-red-300">{errors[`${prefix}.duration_seconds`]}</p>}
-    <TechniqueCardPicker segment={effectiveSegment} segmentIndex={index} hasReferences={hasReferences}
+    <TechniqueCardPicker segment={effectiveSegment} segmentIndex={index} hasReferences={hasReferences} reference={reference}
       capabilities={capabilities} techniques={techniques} error={techniqueError?.[1]}
       errorField={techniqueError?.[0].slice(`${prefix}.technique`.length).replace(/^\./, '')}
       onSelect={(technique) => onPatch({ technique })} />

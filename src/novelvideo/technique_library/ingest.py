@@ -102,7 +102,7 @@ def merge_cases(rows: list[dict], previous: list[Case] | None = None) -> tuple[l
     return result, len(rows) - len(result)
 
 
-def import_catalog(source_root: str | Path, output: str | Path, report_path: str | Path | None = None) -> dict:
+def import_catalog(source_root: str | Path, output: str | Path, report_path: str | Path | None = None, *, archives: bool = False) -> dict:
     from .adapters import enumerate_sources
     output = Path(output)
     if report_path is not None:
@@ -110,7 +110,7 @@ def import_catalog(source_root: str | Path, output: str | Path, report_path: str
         if (report_path.resolve() == output.resolve() or
                 (report_path.exists() and output.exists() and report_path.samefile(output))):
             raise IngestError('Report and catalog must use different paths')
-    rows, sources, report = enumerate_sources(Path(source_root))
+    rows, sources, report = enumerate_sources(Path(source_root), archives=archives)
     if report['errors'] or not rows or any(not item['parsed'] for item in report['sources']):
         if report_path:
             _atomic_json(Path(report_path), report)

@@ -87,7 +87,7 @@ async def execute_grsai_generation(
     *,
     usage_meter: Any | None = None,
     poll_interval_seconds: float = 2.0,
-    timeout_seconds: float = 300.0,
+    timeout_seconds: float = 1800.0,
 ) -> GrsaiExecutionResult:
     """Submit, poll and download one image under one lease and reservation."""
 

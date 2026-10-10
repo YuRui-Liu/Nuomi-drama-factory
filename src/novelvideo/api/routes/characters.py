@@ -123,6 +123,40 @@ router.include_router(identity_qc_router)
 router.include_router(voice_candidates_router)
 router.include_router(voice_acceptance_router)
 
+from novelvideo.media_capabilities.tts.voice_recommendation import VoiceRecommendationRequest
+
+
+@router.post('/projects/{project}/characters/{name}/voice-recommendation')
+async def character_voice_recommendation(
+    project: str, name: str, body: VoiceRecommendationRequest | None = None,
+    user: dict = Depends(get_api_user),
+):
+    from types import SimpleNamespace
+    from novelvideo.media_capabilities.tts.voice_recommendation import recommend_character_voice
+    from novelvideo.text_task_runtime.runtime import build_text_task_runtime
+    from novelvideo.text_task_runtime.settings import resolve_configured_agent_task_route
+
+    ctx, _username, _project_name, project_dir, _output_dir, store = await _resolve_character_project(project, user)
+    if store.get_character(name) is None:
+        return {'ok': False, 'error': f"Character '{name}' not found"}
+    try:
+        route = resolve_configured_agent_task_route(
+            ctx=ctx or SimpleNamespace(state_dir=project_dir / '_state'),
+            task_role='script_creation',
+        )
+        data = await recommend_character_voice(
+            store, name, project_dir, runtime=build_text_task_runtime(route),
+            refresh=bool(body and body.refresh),
+            adjustment=body.adjustment if body else '',
+            design=body.design if body else None,
+        )
+        return {'ok': True, 'data': data}
+    except ValueError as exc:
+        return {'ok': False, 'error': str(exc)}
+    except Exception:
+        logger.exception('Character voice recommendation failed')
+        return {'ok': False, 'error': '声音建议生成失败，请检查文本模型配置后重试'}
+
 CHARACTER_IMAGE_SELECTION_CONFIG_KEY = "character_image_selection"
 ASSET_IMAGE_SELECTION_CONFIG_KEYS = {
     "character": CHARACTER_IMAGE_SELECTION_CONFIG_KEY,
@@ -1559,7 +1593,13 @@ async def design_character_voice_sample(
             audition_text=body.audition_text, language=body.language,
             voice_spec=body.voice_spec,
             db_path=getattr(store, 'db_path', None),
+            design=body.design,
+            perceived_age=body.perceived_age,
         )
+        from novelvideo.media_capabilities.tts.voice_recommendation import voice_project_context
+        from novelvideo.media_capabilities.tts.character_voice import voice_snapshot_digest
+        payload['design_context'] = voice_project_context(store.db_path)
+        payload['design_context_digest'] = voice_snapshot_digest(payload['design_context'])
     except ValueError as exc:
         return JSONResponse(status_code=422, content={"ok": False, "error": str(exc)})
     scope = f"character:{name}:voice:{slot}"

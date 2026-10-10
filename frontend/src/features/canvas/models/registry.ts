@@ -100,6 +100,7 @@ export function resolveImageModelResolution(
 }
 
 export function getModelProvider(providerId: string): ModelProviderDefinition {
+  if (providerId === 'grsai') return { id: 'grsai', name: 'GrsAI', label: 'GrsAI' };
   return (
     providerMap.get(providerId) ?? {
       id: 'unknown',

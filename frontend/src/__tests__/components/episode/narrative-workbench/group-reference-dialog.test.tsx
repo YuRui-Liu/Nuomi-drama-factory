@@ -300,11 +300,11 @@ describe("GroupReferenceDialog planned references", () => {
     };
     const { onResolvePlanning } = renderDialog({ preview: unresolved });
     expect(screen.queryByText("待处理问题")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "可选：返回规划补齐引用" }));
+    fireEvent.click(screen.getByRole("button", { name: "返回规划补齐引用" }));
     expect(onResolvePlanning).toHaveBeenCalledOnce();
   });
 
-  it("allows generation when a required ready binding has no version", () => {
+  it("blocks generation when a required ready binding has no version", () => {
     const unresolved = {
       ...preview,
       bindings: [{ ...preview.bindings[0], version_id: "" }],
@@ -312,16 +312,16 @@ describe("GroupReferenceDialog planned references", () => {
     const { onSubmit, onResolvePlanning } = renderDialog({ preview: unresolved });
 
     const generate = screen.getByRole("button", { name: "使用 0 张参考图生成" });
-    expect(generate).toBeEnabled();
-    expect(screen.getByText("必需引用尚未就绪，本次仍可继续生成；如需补齐，可返回规划处理。")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "可选：返回规划补齐引用" }));
+    expect(generate).toBeDisabled();
+    expect(screen.getByText("必需引用尚未就绪，请返回规划补齐后生成。")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "返回规划补齐引用" }));
     expect(onResolvePlanning).toHaveBeenCalledOnce();
     fireEvent.click(generate);
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ selectedBindingIds: [] }));
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it.each(["pending_confirmation", "missing_asset", "missing_image"] as const)(
-    "allows generation without a required %s reference",
+    "blocks generation without a required %s reference",
     (status) => {
       const incomplete = {
         ...preview,
@@ -338,12 +338,9 @@ describe("GroupReferenceDialog planned references", () => {
 
       const generate = screen.getByRole("button", { name: "使用 0 张参考图生成" });
       expect(screen.getByRole("button", { name: /石九 \/ 青年时期/ })).toBeDisabled();
-      expect(generate).toBeEnabled();
+      expect(generate).toBeDisabled();
       fireEvent.click(generate);
-      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-        selectedBindingIds: [],
-        uploadIds: [],
-      }));
+      expect(onSubmit).not.toHaveBeenCalled();
     },
   );
 

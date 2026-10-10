@@ -39,7 +39,7 @@ def plan_generation_batches(
         style_snapshot_hash, "style_snapshot_hash"
     )
     revision_id = _require_nonempty(revision_id, "revision_id")
-    counts = (len(group.shots),)
+    counts = tuple(min(4, len(group.shots) - offset) for offset in range(0, len(group.shots), 4))
     batches: list[GenerationBatchPlan] = []
     offset = 0
     for batch_index, count in enumerate(counts, start=1):
@@ -89,6 +89,20 @@ def plan_video_segments(
     shot_groups: list[list[ShotPlan]] = []
     current: list[ShotPlan] = []
     for shot in group.shots:
+        if shot.duration_seconds > 15:
+            raise ValueError(
+                f"capability_conflict: shot {shot.id} requires {shot.duration_seconds:g}s; "
+                "video backend supports at most 15s without cutting the adopted shot"
+            )
+        if group.creative_contract_version == 1 or shot.creative is not None:
+            if shot.duration_seconds < 4:
+                raise ValueError(f"capability_conflict: shot {shot.id} requires {shot.duration_seconds:g}s; "
+                                 "video backend requires at least 4s without extending the adopted shot")
+            if current:
+                shot_groups.append(current)
+                current = []
+            shot_groups.append([shot])
+            continue
         if not current:
             current = [shot]
             continue

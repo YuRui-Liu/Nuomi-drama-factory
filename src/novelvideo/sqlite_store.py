@@ -1881,6 +1881,41 @@ class SQLiteStore:
             character.extraction_locked = bool(locked)
         return bool(cursor.rowcount)
 
+    async def apply_character_voice_recommendation(self, name: str, *, expected_digest: str, voice_facts) -> bool:
+        """CAS only verified missing speech facts; never overwrite a stale profile."""
+        import sqlite3
+        from types import SimpleNamespace
+        from novelvideo.character_voice_facts import VoiceFacts
+        from novelvideo.media_capabilities.tts.character_voice import voice_snapshot_digest
+        from novelvideo.media_capabilities.tts.voice_recommendation import recommendation_snapshot, verified_dialogue
+
+        incoming = VoiceFacts.model_validate(voice_facts)
+        # A dedicated connection keeps this short transaction independent of
+        # other async operations sharing the store's aiosqlite connection.
+        with sqlite3.connect(self.db_path, timeout=5) as db:
+            db.row_factory = sqlite3.Row
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT * FROM characters WHERE name=?', (name,)).fetchone()
+            if row is None:
+                return False
+            facts = VoiceFacts.model_validate_json(row['voice_facts_json'] or '{}')
+            character = SimpleNamespace(**{field: row[field] for field in ('name', 'gender', 'age_group', 'role', 'description')}, voice_facts=facts)
+            snapshot, novel = recommendation_snapshot(character, db_path=self.db_path, project_dir=self.project_dir)
+            if voice_snapshot_digest(snapshot) != expected_digest:
+                return False
+            dialogue = verified_dialogue(name, novel)
+            if not dialogue or facts.provenance == 'human' or facts.conflicts or facts.vocalization_mode != 'unknown':
+                return False
+            expected = facts.model_copy(deep=True)
+            expected.vocalization_mode = 'dialogue'
+            expected.provenance = 'source'
+            expected.evidence = list(dict.fromkeys([*facts.evidence, f"novel.txt@{snapshot['novel_sha256']}: {dialogue[1]}"]))
+            if incoming != expected:
+                return False
+            db.execute("UPDATE characters SET voice_facts_json=?, updated_at=datetime('now') WHERE name=?", (expected.model_dump_json(), name))
+        await self.load_graph_state()
+        return True
+
     async def update_character(self, name: str, **updates) -> None:
         char = self.get_character(name)
         if not char:

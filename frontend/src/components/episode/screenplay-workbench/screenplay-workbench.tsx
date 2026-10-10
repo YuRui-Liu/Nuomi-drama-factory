@@ -28,6 +28,14 @@ export function ScreenplayWorkbench({ project, episode, onReviewRequest, compact
   const activate = useActivateScreenplaySemantics(project, episode);
   const director = useCreateDirectorPlan(project, episode);
   const directorPlans = useDirectorPlans(project, episode);
+  const parseTask = useTaskController({
+    key: { project, episode, taskType: TASK_TYPES.SCREENPLAY_SEMANTICS },
+    invalidateKeys: [screenplaySemanticKeys.all(project, episode)],
+    showCompleteToast: false,
+  });
+  const startParse = () => void create.mutateAsync([])
+    .then((started) => parseTask.start({ scope: started.scope }))
+    .catch(() => undefined);
   const repairTask = useTaskController({
     key: { project, episode, taskType: TASK_TYPES.SCREENPLAY_SEMANTIC_REPAIR },
     invalidateKeys: [screenplaySemanticKeys.all(project, episode)],
@@ -50,7 +58,7 @@ export function ScreenplayWorkbench({ project, episode, onReviewRequest, compact
   const sceneBeats = useMemo(() => revision?.beats.filter((item) => item.scene_id === selectedScene?.id).sort((a, b) => a.ordinal - b.ordinal) ?? [], [revision, selectedScene]);
   const selectedBeat = sceneBeats.find((item) => item.id === beatId) ?? sceneBeats[0];
   const issues = revision?.validation_report.issues.filter((item) => !item.scene_id || item.scene_id === selectedScene?.id) ?? [];
-  const pending = create.isPending || retry.isPending || edit.isPending || repair.isPending || repairTask.started || activate.isPending || director.isPending;
+  const pending = create.isPending || parseTask.started || retry.isPending || edit.isPending || repair.isPending || repairTask.started || activate.isPending || director.isPending;
   const errorCount = revision?.validation_report.issues.filter((issue) => issue.severity === "error").length ?? 0;
   const repairDisabledReason = pending
     ? "已有导演拆解任务正在运行"
@@ -95,12 +103,15 @@ export function ScreenplayWorkbench({ project, episode, onReviewRequest, compact
     <header className="flex flex-wrap items-center gap-2 border-b border-white/10 p-3">
       {!compact && <div className="mr-auto"><h2 className="text-sm font-semibold">场次校对与镜头规划</h2><p className="mt-1 text-xs text-muted-foreground">对照原文校对剧情节拍，确认后进入镜头制作。</p></div>}
       <div className="flex flex-wrap items-center gap-2" aria-label="导演拆解操作">
-        <Button size="sm" variant="outline" disabled={pending} title={pending ? "已有导演拆解任务正在运行" : undefined} onClick={() => create.mutate([])}><Play />解析场次</Button>
+        <Button size="sm" variant="outline" disabled={pending} title={pending ? "已有导演拆解任务正在运行" : undefined} onClick={startParse}><Play />解析场次</Button>
         {revision && <Button size="sm" variant="outline" disabled={Boolean(repairDisabledReason)} title={repairDisabledReason} onClick={() => void repair.mutateAsync({ revisionId: revision.revision_id }).then((started) => repairTask.start({ scope: started.scope })).catch(() => undefined)}><Sparkles />自动修复问题</Button>}
         {revision && <Button size="sm" variant="outline" disabled={Boolean(activateDisabledReason)} title={activateDisabledReason} onClick={() => activate.mutate({ revisionId: revision.revision_id })}><ShieldCheck />确认此版校对</Button>}
         <Button size="sm" disabled={Boolean(directorDisabledReason)} title={directorDisabledReason} onClick={() => director.mutate()}>生成镜头方案</Button>
       </div>
     </header>
+    {(create.isPending || parseTask.started) && <div role="status" className="border-b border-cyan-400/20 bg-cyan-400/[0.06] px-3 py-2 text-xs text-cyan-100">{parseTask.stream.currentTask || "正在解析场次，请等待完成。"}</div>}
+    {create.isError && <div role="alert" className="border-b border-red-400/20 bg-red-400/[0.06] px-3 py-2 text-xs text-red-200">解析场次提交失败：{create.error instanceof Error ? create.error.message : "未知错误"}</div>}
+    {parseTask.stream.status === "failed" && <div role="alert" className="border-b border-red-400/20 bg-red-400/[0.06] px-3 py-2 text-xs text-red-200">解析场次失败：{parseTask.stream.error || "未知错误"}</div>}
     {!compact && <ol aria-label="脚本制作阶段" className="grid grid-cols-2 gap-2 border-b border-white/10 p-3 lg:grid-cols-4">
       {["解析场次", "校对并确认", "生成镜头方案", "审核镜头方案"].map((label, index) => <li key={label} aria-current={currentStage === index ? "step" : undefined} className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs ${currentStage === index ? "bg-primary/10 text-primary" : "bg-white/[0.02] text-muted-foreground"}`}><span className={`flex size-5 shrink-0 items-center justify-center rounded-full border ${index < currentStage ? "border-primary/30 text-primary" : "border-current/20"}`}>{index + 1}</span>{label}</li>)}
     </ol>}
@@ -114,13 +125,25 @@ export function ScreenplayWorkbench({ project, episode, onReviewRequest, compact
     {(repair.isPending || repairTask.started) && <div role="status" className="border-b border-cyan-400/20 bg-cyan-400/[0.06] px-3 py-2 text-xs text-cyan-100">{repairTask.stream.currentTask || "正在提交导演拆解 Runtime 修复"}（默认并发 3，最多 2 轮）。不会修改剧本原文，完成后仍需人工激活。</div>}
     {repair.isError && <div role="alert" className="border-b border-red-400/20 bg-red-400/[0.06] px-3 py-2 text-xs text-red-200">Runtime 修复提交失败：{repair.error instanceof Error ? repair.error.message : "未知错误"}</div>}
     {repairTask.stream.status === "failed" && <div role="alert" className="border-b border-red-400/20 bg-red-400/[0.06] px-3 py-2 text-xs text-red-200">Runtime 修复失败：{repairTask.stream.error || "未知错误"}</div>}
+    {repairTask.stream.status === "completed" && !pending && revision && !revision.validation_report.passed && <div role="alert" className="border-b border-amber-400/20 bg-amber-400/5 px-3 py-2 text-xs text-amber-200">自动修复已结束，但仍有 {errorCount} 个校验问题。请查看下方问题清单，修复后才能确认校对和生成镜头方案。</div>}
+    {revision && !revision.validation_report.passed && <section aria-label="校验问题清单" className="border-b border-amber-400/20 bg-amber-400/5 px-3 py-2">
+      <h3 className="mb-1 text-xs font-semibold text-amber-300">待修复问题 · 点击定位场次</h3>
+      <ul className="space-y-1">{revision.validation_report.issues.filter((issue) => issue.severity === "error").map((issue, index) => {
+        const issueScene = revision.scenes.find((scene) => scene.id === issue.scene_id);
+        return <li key={`${issue.code}-${index}`}><button type="button" disabled={pending || !issueScene} className="text-left text-xs text-amber-200 hover:underline disabled:no-underline" onClick={() => {
+          if (!issueScene) return;
+          setSceneId(issueScene.id);
+          setBeatId(issue.beat_id ?? "");
+        }}>{issueScene ? `第 ${issueScene.ordinal} 场 · ${issueScene.location || issueScene.heading}：` : "全局："}{issue.message}{issue.source_range ? `（第 ${issue.source_range.start_line}–${issue.source_range.end_line} 行）` : ""}</button></li>;
+      })}</ul>
+    </section>}
     {(directorPlan || (compact && revision)) && <div role="status" className="flex flex-wrap items-center gap-2 border-b border-emerald-400/20 bg-emerald-400/[0.06] px-3 py-2 text-xs text-emerald-100">
       {compact && revision && <><span>{revision.scenes.length} 场 · {revision.beats.length} 个剧情节拍</span><span className={revision.validation_report.passed ? "text-emerald-400" : "text-amber-400"}>{revision.validation_report.passed ? "校验通过" : `${revision.validation_report.issues.length} 个问题`}</span><span>{displayedRevisionIsActive ? "已确认版本" : "待确认版本"}</span></>}
       {directorPlan && <><span className="font-medium">{directorPlan.status === "review_required" ? "镜头方案已生成，待人工审核" : directorPlan.status === "active" ? "镜头方案已激活" : `镜头方案状态：${directorPlan.status}`}</span>
       <span className="text-emerald-100/70">{directorPlan.groups.length} 个叙事组 · {directorShotCount} 个镜头</span>
       {onReviewRequest ? <Button className="ml-auto" size="sm" variant="outline" onClick={onReviewRequest}>审核镜头方案</Button> : <Button className="ml-auto" size="sm" variant="outline" nativeButton={false} render={<Link to="/projects/$project/episodes/$episode/beats" params={{ project, episode: String(episode) }} />}>审核镜头方案</Button>}
     </> }</div>}
-    {!revision ? <div className="flex h-72 flex-col items-center justify-center gap-3 text-center"><p className="text-sm text-muted-foreground">尚未解析。本入口只拆解已有剧本，不改写剧情。</p><Button disabled={pending} onClick={() => create.mutate([])}>解析场次</Button></div> : <>
+    {!revision ? <div className="flex h-72 flex-col items-center justify-center gap-3 text-center"><p className="text-sm text-muted-foreground">{pending ? "正在处理场次，完成后将自动显示解析结果。" : "尚未解析。本入口只拆解已有剧本，不改写剧情。"}</p><Button disabled={pending} onClick={startParse}>解析场次</Button></div> : <>
       {!compact && <div className="flex flex-wrap items-center gap-3 border-b border-white/10 px-4 py-2 text-xs text-muted-foreground"><span>{revision.scenes.length} 场 · {revision.beats.length} 个剧情节拍</span><span className={revision.validation_report.passed ? "text-emerald-400" : "text-amber-400"}>{revision.validation_report.passed ? "校验通过" : `${revision.validation_report.issues.length} 个问题`}</span><span className="ml-auto" title={revision.revision_id}>{data?.active_revision_id === revision.revision_id ? "已确认版本" : "待确认版本"}</span></div>}
       <div className={compact ? "grid min-h-[300px] flex-1 grid-cols-1 lg:grid-cols-[140px_minmax(0,1fr)_230px]" : "grid min-h-0 grid-cols-1 lg:grid-cols-[150px_minmax(0,1fr)] xl:grid-cols-[150px_minmax(0,1fr)_250px]"}>
         <SceneTree scenes={revision.scenes} selectedId={selectedScene?.id ?? ""} disabled={pending} onSelect={(id) => { setSceneId(id); setBeatId(""); }} onRetry={(id) => retry.mutate({ revisionId: revision.revision_id, sceneId: id })} />

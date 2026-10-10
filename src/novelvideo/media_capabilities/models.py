@@ -194,6 +194,7 @@ class RunningHubWorkflowSettingsKey(StrEnum):
     VIDEO_MINIMAX_H3_REF = "video_minimax_h3_ref"
     TTS_QWEN3_VOICE_DESIGN = "tts_qwen3_voice_design"
     TTS_INDEXTTS2_VOICE_CLONE = "tts_indextts2_voice_clone"
+    MUSIC_ACESTEP = "music_acestep"
 
 
 class RunningHubWorkflowSettings(_ExternalModel):
@@ -205,6 +206,7 @@ class RunningHubWorkflowSettings(_ExternalModel):
     video_minimax_h3_ref_max_images: StrictInt = Field(default=5, ge=1, le=10)
     tts_qwen3_voice_design: str = ""
     tts_indextts2_voice_clone: str = ""
+    music_acestep: str = "2059090557116440578"
 
     @field_validator(
         "image_upscale",
@@ -212,6 +214,7 @@ class RunningHubWorkflowSettings(_ExternalModel):
         "video_minimax_h3_ref",
         "tts_qwen3_voice_design",
         "tts_indextts2_voice_clone",
+        "music_acestep",
         mode="before",
     )
     @classmethod

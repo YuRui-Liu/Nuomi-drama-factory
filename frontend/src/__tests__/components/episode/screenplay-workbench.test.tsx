@@ -1,11 +1,13 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const repair = vi.hoisted(() => ({ mutateAsync: vi.fn().mockResolvedValue({ scope: "revision:1:semantic:sem-1" }), isPending: false }));
 const activate = vi.hoisted(() => ({ mutate: vi.fn(), isPending: false }));
 const edit = vi.hoisted(() => ({ mutate: vi.fn(), isPending: false }));
 const idle = vi.hoisted(() => ({ mutate: vi.fn(), isPending: false }));
+const create = vi.hoisted(() => ({ mutate: vi.fn(), mutateAsync: vi.fn().mockResolvedValue({ scope: "revision:1" }), isPending: false, isError: false, error: null as Error | null }));
+const parseTask = vi.hoisted(() => ({ started: false, start: vi.fn(), stream: { status: "idle", currentTask: "", error: null as string | null } }));
 const repairTask = vi.hoisted(() => ({ started: false, start: vi.fn(), stream: { status: "idle", currentTask: "", error: null } }));
 const state = vi.hoisted(() => ({ failed: false, passed: false, activeRevisionId: null as string | null, mode: "repair" as "repair" | "evidence" }));
 const directorState = vi.hoisted(() => ({ revisions: [] as Array<Record<string, unknown>> }));
@@ -32,7 +34,7 @@ const evidenceRevision = {
 vi.mock("@/lib/queries/screenplay-semantics", () => ({
   screenplaySemanticKeys: { all: (project: string, episode: number) => ["projects", project, "episodes", episode, "screenplay-semantics"] },
   useScreenplaySemantics: () => ({ isLoading: false, isError: state.failed, error: new Error("连接中断"), refetch: vi.fn(), data: state.failed ? undefined : { ok: true, data: { active_revision_id: state.activeRevisionId, revisions: [state.mode === "repair" ? revision : evidenceRevision] } } }),
-  useCreateScreenplaySemantics: () => idle,
+  useCreateScreenplaySemantics: () => create,
   useRetrySemanticScene: () => idle,
   useEditScreenplaySemantics: () => edit,
   useRepairScreenplaySemantics: () => repair,
@@ -48,7 +50,7 @@ vi.mock("@/lib/queries/director-plans", () => ({
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, to }: { children?: React.ReactNode; to?: string }) => <a href={to}>{children}</a>,
 }));
-vi.mock("@/hooks/use-task-controller", () => ({ useTaskController: () => repairTask }));
+vi.mock("@/hooks/use-task-controller", () => ({ useTaskController: ({ key }: { key: { taskType: string } }) => key.taskType === "screenplay_semantics" ? parseTask : repairTask }));
 
 import { ScreenplayWorkbench } from "@/components/episode/screenplay-workbench";
 
@@ -82,6 +84,32 @@ describe("ScreenplayWorkbench runtime repair gate", () => {
     expect(activate.mutate).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "确认此版校对" }));
     expect(activate.mutate).toHaveBeenCalledWith({ revisionId: "sem-1" });
+  });
+
+  it("shows remaining issues from other scenes with navigation in compact mode", async () => {
+    revision.validation_report.issues.push({ code: "uncovered_story_block", message: "第 59 行未覆盖", severity: "error", location: null, scene_id: "scene-2", beat_id: null, source_range: null });
+    revision.scenes.push({ ...revision.scenes[0], id: "scene-2", ordinal: 2, heading: "教室", location: "教室" });
+    try {
+      render(<ScreenplayWorkbench project="demo" episode={1} compact />);
+      const issues = screen.getByRole("region", { name: "校验问题清单" });
+      expect(issues).toHaveTextContent("第 59 行未覆盖");
+      await userEvent.click(screen.getByRole("button", { name: /第 2 场.*第 59 行未覆盖/ }));
+      expect(screen.getByLabelText("原文证据")).toHaveTextContent("第 59 行未覆盖");
+    } finally {
+      revision.validation_report.issues.pop();
+      revision.scenes.pop();
+    }
+  });
+
+  it("does not describe a completed repair as passing while issues remain", () => {
+    repairTask.stream.status = "completed";
+    try {
+      render(<ScreenplayWorkbench project="demo" episode={1} compact />);
+      expect(screen.getByRole("alert")).toHaveTextContent("自动修复已结束，但仍有 1 个校验问题");
+      expect(screen.getByRole("button", { name: "确认此版校对" })).toBeDisabled();
+    } finally {
+      repairTask.stream.status = "idle";
+    }
   });
 
   it("shows the four production stages and the reason generation is unavailable", () => {
@@ -135,6 +163,44 @@ describe("ScreenplayWorkbench runtime repair gate", () => {
     expect(screen.getByRole("status")).toHaveTextContent("镜头方案已生成，待人工审核");
     expect(screen.getByRole("status")).toHaveTextContent("2 个叙事组 · 3 个镜头");
     expect(screen.getByRole("link", { name: "审核镜头方案" })).toBeInTheDocument();
+  });
+});
+
+describe("ScreenplayWorkbench parsing lifecycle", () => {
+  beforeEach(() => {
+    state.failed = false; state.mode = "repair";
+    create.isError = false; create.error = null;
+    parseTask.started = false; parseTask.stream.status = "idle";
+    parseTask.stream.error = null; parseTask.stream.currentTask = "";
+    vi.clearAllMocks();
+  });
+  afterEach(() => { create.isError = false; parseTask.started = false; parseTask.stream.status = "idle"; });
+
+  it("tracks the accepted parse task with its frozen revision scope", async () => {
+    render(<ScreenplayWorkbench project="demo" episode={1} compact />);
+    await userEvent.click(screen.getByRole("button", { name: "解析场次" }));
+    expect(create.mutateAsync).toHaveBeenCalledWith([]);
+    expect(parseTask.start).toHaveBeenCalledWith({ scope: "revision:1" });
+  });
+
+  it("keeps parsing disabled and shows progress until the task completes", () => {
+    parseTask.started = true;
+    parseTask.stream.currentTask = "解析场次与锁定原文版本";
+    render(<ScreenplayWorkbench project="demo" episode={1} compact />);
+    expect(screen.getByRole("button", { name: "解析场次" })).toBeDisabled();
+    expect(screen.getByText(/解析场次与锁定原文版本/)).toBeVisible();
+  });
+
+  it("shows submission failures beside the parse action", () => {
+    create.isError = true; create.error = new Error("EPISODE_SOURCE_NOT_FOUND");
+    render(<ScreenplayWorkbench project="demo" episode={1} compact />);
+    expect(screen.getByRole("alert")).toHaveTextContent("EPISODE_SOURCE_NOT_FOUND");
+  });
+
+  it("shows background parsing failures", () => {
+    parseTask.stream.status = "failed"; parseTask.stream.error = "场头未识别";
+    render(<ScreenplayWorkbench project="demo" episode={1} compact />);
+    expect(screen.getByRole("alert")).toHaveTextContent("场头未识别");
   });
 });
 

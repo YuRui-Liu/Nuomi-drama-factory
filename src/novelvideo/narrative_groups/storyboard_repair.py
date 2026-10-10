@@ -65,6 +65,8 @@ def repair_input(root, group, stage, shot_id, *, synthesized=''):
         'shot_id': shot_id, 'stage': stage, 'source_revision': state.revision,
         'source_asset': _fingerprint(root, state),
         'original_prompt': snapshot.get('original_prompt') or None,
+        'keyframe_prompt': snapshot.get('keyframe_prompt') or None,
+        'adjacent_keyframe_context': snapshot.get('adjacent_keyframe_context') or None,
         'prompt': draft.get('prompt') or group.image_prompt_overrides.get(shot_id) or synthesized,
         'feedback': draft.get('feedback') or '',
         'repair_status': pending.get('status', 'idle') if same else (

@@ -6,6 +6,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { HTTPError } from "ky";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { getVideoVoicePreflight, type VideoVoicePreflight } from "@/lib/queries/narrative-groups";
 import { narrativeGroupTaskScope, narrativeGroupVideoTaskScope, updateNarrativeGroupVideoPlan, updateNarrativeGroupVideoSettings, useChangeNarrativeGroupStyle, useGenerateNarrativeGroupVideo, useGenerateNarrativeGroupVideoSegment, useNarrativeGroupAction, useNarrativeGroupReferences, useNarrativeGroups, useNarrativeGroupVideoPrompts, useNarrativeGroupVideoReferencePreview, useUpdateNarrativeGroupVideoDialogueSource, useUploadNarrativeReference, type NarrativeGridStage, type PlannedNarrativeGroupGenerationSelection, type VideoReferencePreview } from "@/lib/queries/narrative-groups";
 import { availableVideoModels, h3ModeAvailability, resolveVideoModel, resolveVideoMode, useMediaDefaults, useUpdateMediaDefaults, useVideoModels, type H3VideoMode } from "@/lib/queries/media-models";
 import { episodeWorkbenchScopeKey, useEpisodeWorkbenchStore } from "@/stores/episode-workbench-store";
@@ -76,6 +77,9 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat, view =
   const updateDefaults = useUpdateMediaDefaults(project);
   const [pendingAction, setPendingAction] = useState<{ groupId: string; stage: NarrativeGridStage; action: "generate" | "regenerate" } | null>(null);
   const [videoPlanSaving, setVideoPlanSaving] = useState(false);
+  const [voicePreflight, setVoicePreflight] = useState<VideoVoicePreflight | null>(null);
+  const [voiceChecking, setVoiceChecking] = useState(false);
+  const voiceCheckPending = useRef(false);
   const [videoSettingsSaving, setVideoSettingsSaving] = useState(false);
   const [selectedVideoModelId, setSelectedVideoModelId] = useState<string | null>(null);
   const [renderSettingsOpen, setRenderSettingsOpen] = useState(false);
@@ -116,6 +120,15 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat, view =
   const videoMode = model
     ? resolveVideoMode(mediaDefaults?.h3_mode ?? model.default_mode, model)
     : "auto";
+  // Revisions, source/settings snapshots and the selected model invalidate an
+  // in-flight check, even if navigation subsequently returns to the same group.
+  const voiceScope = JSON.stringify([project, episode, group, modelId, videoMode, aspectRatio]);
+  const voiceGeneration = useRef({ scope: voiceScope, counter: 0 });
+  if (voiceGeneration.current.scope !== voiceScope) {
+    voiceGeneration.current = { scope: voiceScope, counter: voiceGeneration.current.counter + 1 };
+  }
+  useEffect(() => { setVoicePreflight(null); }, [voiceScope]);
+  useEffect(() => () => { voiceGeneration.current.counter += 1; }, []);
   const referencePolicy = model?.reference_policy?.required ? model.reference_policy : undefined;
   const videoReferenceQuery = useNarrativeGroupVideoReferencePreview(
     project, episode, group?.id ?? "", Boolean(referencePolicy && group?.id),
@@ -246,7 +259,22 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat, view =
       toast.error(error instanceof Error ? error.message : "任务提交失败");
     }
   };
+  const checkVideoVoices = async () => {
+    if (voiceCheckPending.current) return false;
+    voiceCheckPending.current = true;
+    const generation = voiceGeneration.current.counter;
+    setVoiceChecking(true);
+    try {
+      const result = await getVideoVoicePreflight(project, episode, group.id);
+      if (voiceGeneration.current.counter !== generation) return false;
+      setVoicePreflight(result);
+      return result.ready;
+    } finally { voiceCheckPending.current = false; setVoiceChecking(false); }
+  };
   const runGroupVideo = async (request: { video_model: string; h3_mode: H3VideoMode }) => {
+    let retryPlanning = false;
+    try { retryPlanning = group.stages.video.status === "failed" && JSON.parse(group.stages.video.error || "null")?.code === "storyboard_prompt_blocked"; } catch { /* Other failures use the ordinary retry. */ }
+    retryPlanning ||= group.stages.video.status === "failed" && /Codex execution timed out|H3_PLANNING_OUTCOME_UNKNOWN/.test(group.stages.video.error || "");
     if (request.video_model !== modelId) return;
     if (!selectedModeAvailability?.available || videoPlanSaving || videoSettingsSaving
       || updateDefaults.isPending || (group.video_settings?.workflow_id && group.video_settings.workflow_id !== modelId)
@@ -260,7 +288,8 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat, view =
       || !validVideoReferences(currentReferencePreview, {...referencePolicy, max_images: currentReferencePreview?.max_images ?? referencePolicy.max_images})
     )) return;
     try {
-      const response = await generateVideo.mutateAsync({ groupId: group.id, model: request.video_model, mode: request.h3_mode, aspectRatio, revision: group.stages.video.revision, ...(group.video_plan ? { planRevision: group.video_plan.revision } : {}), ...(group.video_settings ? { settingsRevision: group.video_settings.revision } : {}), ...(referencePolicy && currentReferencePreview ? { referenceRevision: currentReferencePreview.revision } : {}) });
+      if (!await checkVideoVoices()) return;
+      const response = await generateVideo.mutateAsync({ groupId: group.id, model: request.video_model, mode: request.h3_mode, aspectRatio, revision: group.stages.video.revision, ...(retryPlanning ? { retryPlanning: true } : {}), ...(group.video_plan ? { planRevision: group.video_plan.revision } : {}), ...(group.video_settings ? { settingsRevision: group.video_settings.revision } : {}), ...(referencePolicy && currentReferencePreview ? { referenceRevision: currentReferencePreview.revision } : {}) });
       groupVideoTask.start({ scope: taskScope(response) });
       toast.success("H3 导演台组合视频已进入队列");
     } catch (error) { toast.error(error instanceof Error ? error.message : "组合视频任务提交失败"); }
@@ -290,6 +319,7 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat, view =
       || videoReferenceQuery.data?.ok !== true || videoReferenceDirty || !referenceRevisionSynchronized
       || !validVideoReferences(currentReferencePreview, {...referencePolicy, max_images: currentReferencePreview?.max_images ?? referencePolicy.max_images}))) return;
     try {
+      if (!await checkVideoVoices()) return;
       await generateVideoSegment.mutateAsync({ groupId: group.id, segmentId, model: modelId, mode: videoMode, aspectRatio, revision: group.stages.video.revision, ...(group.video_plan ? { planRevision: group.video_plan.revision } : {}), ...(group.video_settings ? { settingsRevision: group.video_settings.revision } : {}), ...(referencePolicy && currentReferencePreview ? { referenceRevision: currentReferencePreview.revision } : {}) });
       toast.success(`片段 ${segmentId} 已重新进入队列`);
     } catch (error) {
@@ -522,7 +552,13 @@ export function NarrativeGroupWorkbench({ project, episode, onRepairBeat, view =
       catch (error) { toast.error(error instanceof Error ? error.message : "对白源切换提交失败"); }
     }} /></section>
         {referenceNeedsVideoRegeneration ? <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">{t("narrativeVideoReferences.staleVideo")}</p> : needsVideoRegeneration ? <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">清晰度设置已变化，旧视频仍保留。确认参数后重新生成。</p> : null}
-        <GroupVideoStage controlsTarget={videoControlsTarget} modelId={modelId} mode={videoMode} models={catalog} modelSaving={updateDefaults.isPending || videoSettingsSaving} onModelChange={changeVideoModel} onModeChange={changeVideoMode} hasFirstFrame={frames.allHaveFirst} hasLastFrame={frames.allHaveLast} inputs={group.video_inputs} plan={group.video_plan} planSaving={videoPlanSaving || videoSettingsSaving || updateDefaults.isPending} workflowSynchronized={videoWorkflowSynchronized} taskStatus={group.stages.video.status} available={model?.available ?? false} unavailableReason={model?.unavailable_reason} reference={referencePolicy ? { required: true, count: selectedReferences.length, max: referenceMaxImages, valid: referenceValid, loading: videoReferenceQuery.isFetching, error: videoReferenceQuery.isError || videoReferenceQuery.data?.ok === false, dirty: videoReferenceDirty, onManage: () => setVideoReferenceDialogOpen(true) } : undefined} onPlanSave={saveGroupVideoPlan} onGenerate={runGroupVideo} />
+        <GroupVideoStage taskError={group.stages.video.error} controlsTarget={videoControlsTarget} modelId={modelId} mode={videoMode} models={catalog} modelSaving={updateDefaults.isPending || videoSettingsSaving} onModelChange={changeVideoModel} onModeChange={changeVideoMode} hasFirstFrame={frames.allHaveFirst} hasLastFrame={frames.allHaveLast} inputs={group.video_inputs} plan={group.video_plan} planSaving={videoPlanSaving || videoSettingsSaving || updateDefaults.isPending} workflowSynchronized={videoWorkflowSynchronized} taskStatus={group.stages.video.status} available={model?.available ?? false} unavailableReason={model?.unavailable_reason} reference={referencePolicy ? { required: true, count: selectedReferences.length, max: referenceMaxImages, valid: referenceValid, loading: videoReferenceQuery.isFetching, error: videoReferenceQuery.isError || videoReferenceQuery.data?.ok === false, dirty: videoReferenceDirty, onManage: () => setVideoReferenceDialogOpen(true) } : undefined} onPlanSave={saveGroupVideoPlan} onGenerate={runGroupVideo} />
+        {voiceChecking && <p role="status" className="text-xs text-muted-foreground">正在检查声音设定，尚未提交生成…</p>}
+        {voicePreflight && !voicePreflight.ready && <section role="alert" className="rounded border border-amber-400/40 p-3 text-sm">
+          <p>请补齐声音设定后重新点击生成；无需购买或生成 TTS 音色。</p>
+          <ul>{voicePreflight.issues.map(issue => <li key={issue.speaker}>{issue.reason}</li>)}</ul>
+          <a className="underline" href={`/projects/${encodeURIComponent(project)}/characters`}>前往资产中心修复角色声音设定</a>
+        </section>}
         <GroupVideoSegmentList segments={group.video_segments ?? []} onRetrySegment={videoRequestAllowed ? retryVideoSegment : undefined} />
       </section>
     </main>

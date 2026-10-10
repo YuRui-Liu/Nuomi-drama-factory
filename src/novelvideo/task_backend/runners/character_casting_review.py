@@ -35,6 +35,12 @@ def run_character_casting_review(envelope, ctx):
             raise TaskTimedOut(timeout_seconds=envelope.get("__timeout_seconds"))
     check_cancel()
     async def run():
+        if candidate.sheet_contract:
+            from novelvideo.character_visual.character_repair import deliver_sheet
+            return await await_envelope_with_cancel_watch(deliver_sheet(ctx=ctx, candidate_id=candidate.candidate_id,
+                runtime=current_text_task_runtime(), task_id=task_id, generate=None, resolution=None,
+                before_publish=check_cancel_async, review_only=True, attempt_id=payload['attempt_id']),
+                envelope, task_type='character_casting_review')
         return await await_envelope_with_cancel_watch(review_candidate(
             store=store, candidate_id=candidate.candidate_id, task_id=task_id,
             attempt_id=payload["attempt_id"], references=payload.get("references", []),

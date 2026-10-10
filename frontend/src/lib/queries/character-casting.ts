@@ -65,7 +65,7 @@ export function useCastingCandidates(
       ),
     refetchInterval: (query) =>
       query.state.data?.data.some(
-        (c) => active(c.generation_status) || active(c.review_status),
+        (c) => !c.stale && (active(c.generation_status) || active(c.review_status)),
       )
         ? 2000
         : false,

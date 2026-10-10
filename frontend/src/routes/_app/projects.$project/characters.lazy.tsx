@@ -87,6 +87,7 @@ import { VoiceAcceptancePanel } from "@/components/assets/voice-acceptance-panel
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { CharacterVisualProfile } from "@/components/assets/character-visual-profile";
 import { CharacterCastingPanel } from "@/components/assets/character-casting-panel";
+import { CharacterDelivery } from "@/components/assets/character-delivery/character-delivery";
 import { useCharacterCasting } from "@/lib/queries/character-casting";
 import { CharacterStateVersions } from "@/components/assets/character-state-versions";
 import { CharacterCostume } from "@/features/studios/character-costume";
@@ -106,6 +107,7 @@ import {
   type BeatReference,
 } from "@/lib/queries/asset-references";
 import { useAssetsDeepLink } from "@/hooks/use-assets-deep-link";
+import { useCharacterVoiceNavigation } from "@/hooks/use-character-voice-navigation";
 import { useAssetFocus } from "@/hooks/use-asset-focus";
 import { LightboxImage } from "@/components/lightbox-image";
 import { CreditCostInline } from "@/components/credit-cost-inline";
@@ -693,6 +695,7 @@ function CharacterListItem({
   mainCharacterLabel: string;
 }) {
   const { t } = useTranslation();
+  const voiceNavigation = useCharacterVoiceNavigation();
   const ageKey = labelKeyFor(AGE_GROUP_OPTIONS, character.age_group);
   const metaParts = [
     ageKey ? t(ageKey) : undefined,
@@ -701,9 +704,10 @@ function CharacterListItem({
   ].filter(Boolean);
 
   return (
+    <div className="flex items-center gap-1">
     <button
       type="button"
-      onClick={onSelect}
+      onClick={() => { onSelect(); voiceNavigation.select(character.name); }}
       aria-pressed={selected}
       className={cn(
         "flex w-full items-center gap-2.5 rounded-[8px] border px-2.5 py-2 text-left transition-colors",
@@ -736,6 +740,8 @@ function CharacterListItem({
         )}
       </div>
     </button>
+    <Button size="icon-sm" variant="ghost" aria-label={`${character.name}的声音`} title={character.reference_audio_url ? "已配置声音" : "设计声音"} onClick={() => { onSelect(); voiceNavigation.select(character.name, "voice"); }}><Mic2 className={cn("size-4", character.reference_audio_url && "text-primary")} /></Button>
+    </div>
   );
 }
 
@@ -2683,6 +2689,7 @@ function DetailPanel({
   const casting = useCharacterCasting(project, character?.name ?? "");
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const detailLink = useAssetsDeepLink();
+  const voiceNavigation = useCharacterVoiceNavigation();
   const [detailTab, setDetailTab] = useState("profile");
   const identitiesQuery = useCharacterIdentities(project, character?.name ?? "");
   const characterSwitch = useCharacterSwitch();
@@ -2763,16 +2770,26 @@ function DetailPanel({
           />
         </section>
         {characterSwitch.dialog}
+        <Tabs value={voiceNavigation.tab} onValueChange={(value) => characterSwitch.request(() => voiceNavigation.select(character.name, String(value)))}>
+          <TabsList aria-label="角色工作台" className="sticky top-0 z-20 w-full justify-start bg-background">
+            <TabsTrigger value="visual">形象</TabsTrigger>
+            <TabsTrigger value="voice">声音 <span className="text-xs text-muted-foreground">{character.reference_audio_url ? "已采用" : "待设计"}</span></TabsTrigger>
+            <TabsTrigger value="profile">人物设定</TabsTrigger>
+          </TabsList>
+          <TabsContent value="visual" keepMounted className="data-[hidden]:hidden">
+        <div id="character-delivery"><CharacterDelivery key={`${project}/${character.name}`} project={project} name={character.name} imageModel={imageModel} identityId={castingIdentityId} onIdentityChange={setCastingIdentityId} /></div>
+          </TabsContent>
+          <TabsContent value="voice" keepMounted className="data-[hidden]:hidden">
+            <CharacterVoicePanel character={character} project={project} active={voiceNavigation.tab === "voice"} />
+          </TabsContent>
+          <TabsContent value="profile" keepMounted className="data-[hidden]:hidden">
         <Tabs value={detailTab} onValueChange={(value) => characterSwitch.request(() => setDetailTab(String(value)))} className="gap-5">
           <TabsList aria-label="角色详情" className="asset-workspace-tabs sticky top-0 z-10 w-full justify-start bg-background group-data-horizontal/tabs:h-auto">
-            <TabsTrigger value="profile">身份</TabsTrigger>
-            <TabsTrigger value="portrait">肖像</TabsTrigger>
-            <TabsTrigger value="costume">服装</TabsTrigger>
-            <TabsTrigger value="visual">剧情选角</TabsTrigger>
-            <TabsTrigger value="voice">声音</TabsTrigger>
+            <TabsTrigger value="profile">角色资料</TabsTrigger>
+            <TabsTrigger value="portrait">图片复用</TabsTrigger>
             <TabsTrigger value="history">历史</TabsTrigger>
           </TabsList>
-        <TabsContent value="profile" keepMounted className="data-[hidden]:hidden">
+        <TabsContent value="profile" className="data-[hidden]:hidden">
           <section className="rounded-lg border border-border bg-card/40 p-5">
             <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
               <div><h3 className="font-semibold">角色身份与基础资料</h3><p className="mt-1 text-xs text-muted-foreground">原文事实、身份阶段与外观参考分别管理。</p></div>
@@ -2781,10 +2798,10 @@ function DetailPanel({
             <DetailsFormCard character={character} project={project} onRenamed={onRenamed} />
           </section>
           <div className="mt-5">
-            <IdentitiesGridSection character={character} project={project} imageModel={imageModel} onAttempt={onAttempt} canGeneratePortrait={canGeneratePortrait} active={detailTab === "profile"} onOpenCasting={(identityId) => { setCastingIdentityId(identityId); setDetailTab("visual"); }} />
+            <IdentitiesGridSection character={character} project={project} imageModel={imageModel} onAttempt={onAttempt} canGeneratePortrait={canGeneratePortrait} active={voiceNavigation.tab === "profile" && detailTab === "profile"} onOpenCasting={(identityId) => { setCastingIdentityId(identityId); voiceNavigation.select(character.name, "visual"); scrollContainerRef.current?.scrollTo({top:0,behavior:'smooth'}); }} />
           </div>
         </TabsContent>
-        <TabsContent value="portrait" keepMounted className="data-[hidden]:hidden">
+        <TabsContent value="portrait" className="data-[hidden]:hidden">
           <div className="grid grid-cols-1 gap-6 @[700px]:grid-cols-[minmax(0,1.2fr)_minmax(260px,1fr)]">
             <section className="asset-portrait-workspace rounded-lg border border-border bg-card/40 p-4">
               <PortraitBlock character={character} project={project} imageModel={imageModel} attemptCount={attemptCount} onAttempt={onAttempt} canGeneratePortrait={canGeneratePortrait} visualBiblePrerequisiteMessage={visualBiblePrerequisiteMessage} onOpenCasting={() => { setCastingIdentityId(null); setDetailTab("visual"); }} castingEnabled={!!(casting.data?.data.revision || casting.data?.data.current?.candidate_id || casting.data?.data.limitation_reason)} />
@@ -2818,7 +2835,7 @@ function DetailPanel({
             ))}
           </section>
         </TabsContent>
-        <TabsContent value="visual" keepMounted className="data-[hidden]:hidden">
+        <TabsContent value="visual" className="data-[hidden]:hidden">
         <CharacterCastingPanel key={`${project}/${character.name}`} project={project} name={character.name} imageModel={imageModel} identityId={castingIdentityId} onIdentityChange={setCastingIdentityId} />
         <details className="mt-5 rounded-xl border border-border/70 p-4">
         <summary className="cursor-pointer text-sm text-muted-foreground">现有设定（只读）</summary>
@@ -2858,10 +2875,8 @@ function DetailPanel({
         />
         </details>
         </TabsContent>
-        <TabsContent value="voice" keepMounted className="data-[hidden]:hidden">
-        <CharacterVoicePanel character={character} project={project} />
-        </TabsContent>
-
+        </Tabs>
+          </TabsContent>
         </Tabs>
         </div>
       </div>
@@ -3352,6 +3367,15 @@ function CharactersPageContent() {
       : null);
 
   const [selectedName, setSelectedName] = useState<string | null>(null);
+  const voiceNavigation = useCharacterVoiceNavigation();
+  useEffect(() => {
+    if (voiceNavigation.character) {
+      setSelectedName(voiceNavigation.character);
+      setSearchQuery("");
+      setReadinessFilter("all");
+      setAssetTab("characters");
+    }
+  }, [voiceNavigation.character]);
   const [buildStarted, setBuildStarted] = useState(false);
   const [rebuildDialogOpen, setRebuildDialogOpen] = useState(false);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
@@ -3467,6 +3491,7 @@ function CharactersPageContent() {
     setAssetTab(next);
     const assetRefType = ASSET_TYPE_BY_TAB[next];
     if (assetRefType) deepLink.select(assetRefType);
+    else voiceNavigation.clear();
   };
 
   return (
@@ -3529,6 +3554,7 @@ function CharactersPageContent() {
             writeStoredAssetTab(project, "characters");
             setAssetTab("characters");
             setSelectedName(narratorMain.name);
+            voiceNavigation.select(narratorMain.name, "voice");
           }}
         />
       ) : assetTab === "scenes" ? (

@@ -474,3 +474,30 @@ async def test_fact_for_another_identity_is_dropped_without_failing_the_recast()
         runtime=SimpleNamespace(run_structured=extract))
     assert result.facts == []
     assert result.source_warnings == ['excluded_source:hair_style:wrong_identity']
+def test_basic_identity_changes_invalidate_casting_sources():
+    import sqlite3
+    import json
+    from novelvideo.character_visual.casting_source import _authoring_sources, character_source_revision
+    db = sqlite3.connect(':memory:')
+    db.row_factory = sqlite3.Row
+    db.execute('CREATE TABLE characters (name TEXT, description TEXT, gender TEXT, age_group TEXT, role TEXT, body_type TEXT, identities_json TEXT)')
+    db.execute("INSERT INTO characters VALUES ('周野', '学生小传', '男', 'youth', '学生', '', '[]')")
+    before = _authoring_sources(db)
+    profile = json.loads(before['character-profile:周野'].text)
+    assert profile['gender'] == '男' and profile['age_group'] == 'youth'
+    db.execute("UPDATE characters SET age_group='middle'")
+    after = _authoring_sources(db)
+    assert character_source_revision(before, '', '周野') != character_source_revision(after, '', '周野')
+
+
+def test_other_variant_changes_do_not_invalidate_current_stage():
+    from novelvideo.character_visual.casting_source import SourceDocument, character_source_revision
+    base = SourceDocument('profile', '男', 'base', kind='authoring_context', character_name='甲')
+    a = SourceDocument('a', '青年', 'a1', kind='authoring_context', character_name='甲', identity_id='A')
+    b = SourceDocument('b', '老年', 'b1', kind='authoring_context', character_name='甲', identity_id='B')
+    docs = {'profile': base, 'a': a}
+    for identity in (None, 'A'):
+        assert character_source_revision(docs, 'old', '甲', identity_id=identity) == character_source_revision(
+            {**docs, 'b': b}, 'new', '甲', identity_id=identity)
+    assert character_source_revision(docs, 'old', '甲', identity_id='B') != character_source_revision(
+        {**docs, 'b': b}, 'new', '甲', identity_id='B')

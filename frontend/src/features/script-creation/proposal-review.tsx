@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { scriptCreationApi } from "./api";
 import type { RewriteJob, ScriptDocument, ScriptProposal } from "./types";
+import { CraftReportPanel, craftStageLabel } from "./craft-report";
 
 const message = (cause: unknown) => cause instanceof Error ? cause.message : "操作失败，请重试";
 type Selection = { text: string; start: number; end: number } | null;
@@ -169,7 +170,11 @@ export function ProposalReview({ project, document, documents = [], saved, selec
       {scope === "scene" && !(reference ? refineRange : selection) && <p className="mt-2 text-amber-200">先在编辑器中将光标放到目标场次。</p>}
       <button disabled={!saved || busy || (scope === "selection" && !(reference ? refineRange?.text : selection?.text)) || (scope === "scene" && !(reference ? refineRange : selection))} onClick={() => void start()} className="mt-2 w-full rounded bg-[#E5FF5C] px-3 py-2 font-semibold text-black disabled:opacity-35">生成改稿候选</button>
       {!saved && <p className="mt-2 text-amber-200">先保存并解决文档冲突，才能生成或采纳。</p>}
-      {job && <p className="mt-2">{job.status === "completed" ? "候选已生成，请逐处审阅" : job.status === "needs_rebase" ? "原文已变化，请重新生成" : job.status === "failed" ? `改稿失败：${job.error}` : "正在生成候选…"}</p>}
+      {job && ["failed", "paused"].includes(job.status) && <button disabled={busy || !saved} className="mt-2 underline" onClick={() => {
+        setBusy(true); setError("");
+        void scriptCreationApi.retryRewrite(project, job.id).then(setJob).catch(cause => setError(message(cause))).finally(() => setBusy(false));
+      }}>继续未完成改稿</button>}
+      {job && <><p className="mt-2">{job.status === "needs_review" ? "需要修改：请查看最后草稿及证据，调整补充要求后重新生成" : job.status === "completed" ? "候选已生成，请逐处审阅" : job.status === "needs_rebase" ? "原文已变化，请重新生成" : job.status === "failed" ? `改稿失败：${job.error}` : craftStageLabel(job.craft_stage)}</p><CraftReportPanel project={project} ownerId={job.id} kind="rewrite" status={job.status} revisionKey={[document, ...references].map(item => item.current_revision_id).join(":")} /></>}
     </div>
     {error && <div role="alert" className="rounded border border-rose-300/30 p-2 text-rose-200">{error}；如版本已变化，请重新生成整体候选。<button onClick={() => { setScope("episode"); void onApplied(); }} className="mt-2 block rounded border border-[#E5FF5C]/40 px-2 py-1 text-[#E5FF5C]">改为当前集整体重新生成</button></div>}
     {rounds.map((round) => {

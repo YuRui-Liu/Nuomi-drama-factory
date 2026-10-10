@@ -5085,6 +5085,64 @@ async def regenerate_beat_audio(
 # ── SRT 字幕导出 ─────────────────────────────────────────────────────────────
 
 
+async def _caption_context(project, episode_num, user, role):
+    resolved = await _resolve_generation_project(project, user, required_role=role)
+    store = (await make_sqlite_store_for_context(resolved.ctx) if resolved.ctx
+             else await make_sqlite_store(resolved.username, resolved.project_name))
+    return resolved.project_dir, await store.get_beats_as_dicts(episode_num)
+
+
+@router.get("/projects/{project}/episodes/{episode_num}/captions")
+async def get_episode_captions(project: str, episode_num: int, user: dict = Depends(get_api_user)):
+    from novelvideo.export.caption_editor import get_track, _path, _revision
+    root, beats = await _caption_context(project, episode_num, user, "viewer")
+    try:
+        return {"ok": True, "data": await get_track(root, episode_num, beats)}
+    except (ValueError, RuntimeError, OSError) as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc), "revision": _revision(_path(root, episode_num))})
+
+
+@router.put("/projects/{project}/episodes/{episode_num}/captions")
+async def save_episode_captions(project: str, episode_num: int, body: dict, user: dict = Depends(get_api_user)):
+    from novelvideo.export.caption_editor import save_track
+    root, beats = await _caption_context(project, episode_num, user, "editor")
+    if not isinstance(body.get("revision"), str) or not isinstance(body.get("track"), dict):
+        raise HTTPException(422, "revision and track are required")
+    try:
+        return {"ok": True, "data": await save_track(root, episode_num, beats, body["revision"], body["track"])}
+    except (ValueError, RuntimeError, OSError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/projects/{project}/episodes/{episode_num}/captions/rebuild")
+async def rebuild_episode_captions(project: str, episode_num: int, body: dict, user: dict = Depends(get_api_user)):
+    from novelvideo.export.caption_editor import rebuild_track
+    root, beats = await _caption_context(project, episode_num, user, "editor")
+    if not isinstance(body.get("revision"), str):
+        raise HTTPException(422, "revision is required")
+    try:
+        return {"ok": True, "data": await rebuild_track(root, episode_num, beats, body["revision"])}
+    except (ValueError, RuntimeError, OSError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/projects/{project}/episodes/{episode_num}/captions/align")
+async def align_episode_captions(project: str, episode_num: int, body: dict, user: dict = Depends(get_api_user)):
+    from novelvideo.export.caption_alignment import align_track
+    root, beats = await _caption_context(project, episode_num, user, "editor")
+    if not isinstance(body.get("revision"), str):
+        raise HTTPException(422, "revision is required")
+    async def reload_beats():
+        latest_root, latest_beats = await _caption_context(project, episode_num, user, "editor")
+        if latest_root != root:
+            raise ValueError("CAPTION_SOURCE_CHANGED: 对齐期间项目已改变，请重试")
+        return latest_beats
+    try:
+        return {"ok": True, "data": await align_track(root, episode_num, beats, body["revision"], reload_beats=reload_beats)}
+    except (ValueError, RuntimeError, OSError, TimeoutError) as exc:
+        raise HTTPException(409, str(exc) or "CAPTION_ALIGNMENT_TIMEOUT: 原声对齐超时") from exc
+
+
 @router.get("/projects/{project}/episodes/{episode_num}/export/srt")
 async def export_srt(project: str, episode_num: int, user: dict = Depends(get_api_user)):
     """导出 SRT 字幕文件。"""
@@ -5101,14 +5159,14 @@ async def export_srt(project: str, episode_num: int, user: dict = Depends(get_ap
     )
     beats = await store.get_beats_as_dicts(episode_num)
 
-    if not beats:
-        return {"ok": False, "error": "No beats in script"}
-
     from novelvideo.export.episode_export import build_srt_content
 
-    srt_content = await build_srt_content(project_dir, episode_num, beats)
+    try:
+        srt_content = await build_srt_content(project_dir, episode_num, beats)
+    except (ValueError, RuntimeError, OSError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not srt_content:
-        return {"ok": False, "error": "No subtitles to export"}
+        raise HTTPException(status_code=404, detail="No subtitles to export")
 
     return PlainTextResponse(
         content=srt_content,
@@ -5478,7 +5536,7 @@ async def cut_grid(
 
 
 @router.post("/projects/{project}/episodes/{episode_num}/export/zip")
-async def export_zip(project: str, episode_num: int, user: dict = Depends(get_api_user)):
+async def export_zip(project: str, episode_num: int, user: dict = Depends(get_api_user), prepare_only: bool = False):
     """打包指定集的所有资源为 ZIP 文件下载。"""
     from fastapi.responses import FileResponse
     from novelvideo.export.episode_export import build_episode_zip_file
@@ -5493,15 +5551,32 @@ async def export_zip(project: str, episode_num: int, user: dict = Depends(get_ap
     )
     beats = await store.get_beats_as_dicts(episode_num)
 
-    zip_path = await build_episode_zip_file(project_dir, project_name, episode_num, beats)
+    try:
+        zip_path = await build_episode_zip_file(project_dir, project_name, episode_num, beats)
+    except (ValueError, RuntimeError, OSError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if zip_path is None:
-        return {"ok": False, "error": "No episode assets available for export"}
+        raise HTTPException(status_code=404, detail="No episode assets available for export")
+
+    if prepare_only:
+        from urllib.parse import quote
+        return {"ok": True, "download_url": f"/api/v1/projects/{quote(project, safe='')}/episodes/{episode_num}/export/zip"}
 
     return FileResponse(
         path=zip_path,
         filename=zip_path.name,
         media_type="application/zip",
     )
+
+
+@router.get("/projects/{project}/episodes/{episode_num}/export/zip")
+async def download_prepared_zip(project: str, episode_num: int, user: dict = Depends(get_api_user)):
+    from fastapi.responses import FileResponse
+    resolved = await _resolve_generation_project(project, user, required_role="viewer")
+    path = resolved.project_dir / "videos" / "episodes" / f"{resolved.project_name}_第{episode_num}集.zip"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="素材包尚未准备，请重新点击导出")
+    return FileResponse(path, filename=path.name, media_type="application/zip")
 
 
 # ---------------------------------------------------------------------------

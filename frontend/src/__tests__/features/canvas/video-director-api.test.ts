@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
-import { createDirectorAttempt, getDirectorCapabilities, getDirectorTechniques, listDirectorAttempts, draftFromWire, draftToWire, attemptFromWire } from '@/api/videoDirector';
+import { createDirectorAttempt, getDirectorCapabilities, getDirectorTechniques, listDirectorAttempts, draftFromWire, draftToWire, attemptFromWire, prepareDirectorStoryboard } from '@/api/videoDirector';
 import { createDirectorDraft } from '@/features/canvas/domain/videoDirectorDraft';
 
 vi.mock('@/api/client', async (loadActual) => {
@@ -23,6 +23,18 @@ const rawAttempt = { id: 'a1', project_id: 'demo', canvas_id: 'canvas', node_id:
     segments: [{ id: 's1', prompt: 'Original', duration_seconds: 5, first_frame: null, last_frame: null }] } };
 
 describe('video director API', () => {
+  it('decodes a prepared draft while retaining the entire persisted canvas', async () => {
+    const canvas = { nodes: [{ id: 'board' }, { id: 'node' }], edges: [{ id: 'edge' }], revision: 8, metadata: { saved: true } };
+    let body: unknown;
+    server.use(http.post(`${base}/prepare-storyboard`, async ({ request }) => {
+      body = await request.json();
+      return HttpResponse.json({ ok: true, data: { canvas, draft: rawAttempt.snapshot, preparation: { sourceNodeId: 'board' } } });
+    }));
+    const result = await prepareDirectorStoryboard('demo', { canvas_id: 'canvas', node_id: 'node', request_id: 'req', base_revision: 7 });
+    expect(body).toMatchObject({ resolution: 'safe', base_revision: 7 });
+    expect(result.canvas).toEqual(canvas);
+    expect(result.draft.segments[0].durationSeconds).toBe(5);
+  });
   it('reads the technique catalog and preserves selection and frozen history', async () => {
     server.use(http.get(`${base}/techniques`, () => HttpResponse.json({ ok: true, data: {
       catalog_version: 'v1', techniques: [{ id: 'slow-push-in', version: '1.0.0', title: '缓慢推近',

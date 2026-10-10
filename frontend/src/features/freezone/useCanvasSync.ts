@@ -959,6 +959,7 @@ export function useCanvasSync(
         .getState()
         .hydrate(meta?.shotMetadata ?? EMPTY_SHOT_METADATA);
       setCanvasData(next.nodes, next.edges);
+      if (!mergedLocalWork) lastPersistedDraftSignatureRef.current = currentDraftSignature();
       setSyncStatus("ready");
       setError(null);
       hydratedRef.current = true;
@@ -1348,6 +1349,12 @@ export function useCanvasSync(
   }, [project, canvasId, status]);
 
   const flush = async (): Promise<boolean> => {
+    if (hydratedRef.current && !switchingRef.current && statusRef.current === "ready" &&
+        !sessionRef.current?.isSaving() && debounceTimerRef.current == null &&
+        (currentDraftSignature() === lastPersistedDraftSignatureRef.current ||
+         useCanvasStore.getState().userEditsSinceHydrate === 0)) {
+      return true;
+    }
     if (debounceTimerRef.current != null) {
       window.clearTimeout(debounceTimerRef.current);
       debounceTimerRef.current = null;

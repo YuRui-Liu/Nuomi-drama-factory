@@ -42,13 +42,28 @@ export interface ScriptSettings {
 }
 
 
-export type GenerationStatus = "pending" | "running" | "paused" | "failed" | "needs_rebase" | "completed";
+export interface CraftQuality { status: "passed" | "needs_revision" | "unreviewed"; summary?: string; blocker_count?: number }
+export interface CraftEvidence { quote: string; start?: number | null; end?: number | null; reason: string }
+export interface CraftIssue extends CraftEvidence { id: string; severity: "blocker" | "suggestion"; dimension: string; repair_goal: string; basis: "local" | "context"; reference_quote?: string | null; prior_issue_id?: string | null }
+export interface CraftRepairNote { issue_id: string; diagnosis: string; strategy: string; changed_quote: string }
+export interface CraftMemoryEntry {
+  id: string; kind: ScriptDocumentKind; source: string;
+  issue: Pick<CraftIssue, "id" | "reason" | "quote" | "repair_goal" | "dimension" | "severity">;
+  history: { stage: string; qc_issue?: Partial<CraftIssue>; author_attempt?: CraftRepairNote; qc_resolution?: unknown }[];
+  status: "open" | "resolved"; authority: "historical_qc_reminder_not_fact";
+  references: Record<string, string>; dismissed: boolean; dismissal_reason: string | null; stale: boolean;
+}
+export interface CraftContext { step_key: string; kind: ScriptDocumentKind; memory: CraftMemoryEntry[]; author_session: { id: string; mode: "native" | "replay"; provider_session_id?: string | null; binding?: unknown } }
+export interface CraftRecord { step_key?: string; stage: string; author_session_id?: string; session_mode?: "native" | "replay"; provider_session_id?: string | null; output: { markdown?: string; summary?: string; issues?: CraftIssue[]; coverage?: string[]; strengths?: CraftEvidence[]; resolved_issue_ids?: string[]; history_issue_ids?: string[]; repair_notes?: CraftRepairNote[] }; elapsed_seconds: number; attempts: number }
+export interface CraftReport { owner_id: string; status: string; stale: boolean; steps: { key: string; quality: CraftQuality }[]; records: CraftRecord[]; contexts?: CraftContext[] }
+export type GenerationStatus = "pending" | "running" | "paused" | "failed" | "needs_review" | "needs_rebase" | "completed";
 export interface GenerationStep {
   key: string;
   kind: ScriptDocumentKind;
   title: string;
   episode_number: number | null;
-  status: "pending" | "running" | "failed" | "completed";
+  status: "pending" | "running" | "failed" | "needs_review" | "completed";
+  craft_stage?: string; craft_review?: CraftQuality;
   context_revisions: Record<string, string>;
   task_id: string | null;
   output: { kind: "document"; document_id: string; revision_id: string } |
@@ -70,6 +85,7 @@ export interface GenerationRun {
 }
 export interface GenerationQueued { run: GenerationRun; task_id: string | null; scope?: string }
 export interface GenerationCandidate { id: string; run_id: string; step_key: string; markdown: string;
+  craft_review?: CraftQuality;
   target_document_id: string | null; target_revision_id: string | null; context_revisions: string }
 
 export interface ScriptProposal {
@@ -84,7 +100,8 @@ export interface RewriteJob {
   start: number; end: number; scope: "selection" | "scene" | "episode";
   mode: "dialogue" | "subtext" | "conflict" | "compress" | "custom";
   instruction: string; preserve: string; before: string;
-  status: "pending" | "running" | "completed" | "failed" | "needs_rebase";
+  status: "pending" | "running" | "paused" | "completed" | "failed" | "needs_rebase" | "needs_review";
+  craft_stage?: string; craft_review?: CraftQuality;
   proposal_id: string | null; error: string | null;
 }
 

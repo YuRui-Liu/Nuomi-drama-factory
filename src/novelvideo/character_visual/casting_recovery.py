@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import os
 import sqlite3
@@ -224,6 +225,28 @@ def assert_legacy_portrait_mutation_allowed(project_dir, state_dir, character_id
                 raise ValueError('CHARACTER_CASTING_REQUIRED: use explicit candidate adoption for this portrait')
 
 
+def _adopted_portrait_digest(root, metadata, audit):
+    if audit.get('portrait_sha256'):
+        return audit['portrait_sha256']
+    if not metadata.get('sheet_contract'):
+        return audit['asset_sha256']
+    # Legacy sheet adoptions recorded the source digest, not the derived avatar.
+    # Reconstruct only from the verified source and the adoption's frozen crop.
+    from PIL import Image
+    from .character_sheet import pixel_box
+    sheet_path = Path(metadata['sheet_path'])
+    if sheet_path.is_absolute():
+        sheet_path = sheet_path.relative_to(root)
+    source = controlled_path(root, sheet_path).read_bytes()
+    if hashlib.sha256(source).hexdigest() != audit['asset_sha256']:
+        raise ValueError('casting current immutable asset mismatch')
+    with Image.open(io.BytesIO(source)) as image:
+        cropped = image.crop(pixel_box(metadata['crop_box'], image.size))
+        buffer = io.BytesIO()
+        cropped.save(buffer, format='PNG')
+    return hashlib.sha256(buffer.getvalue()).hexdigest()
+
+
 def resolve_casting_media_path(project_dir, state_dir, path):
     """Pin mutable current URLs to an immutable adopted file before FileResponse."""
     root = Path(project_dir).absolute()
@@ -244,7 +267,7 @@ def resolve_casting_media_path(project_dir, state_dir, path):
             if canonical != requested:
                 continue
             immutable = controlled_path(root, version['asset_path'])
-            if immutable == canonical or hashlib.sha256(immutable.read_bytes()).hexdigest() != audit['asset_sha256']:
+            if immutable == canonical or hashlib.sha256(immutable.read_bytes()).hexdigest() != _adopted_portrait_digest(root, metadata, audit):
                 raise ValueError('casting current immutable asset mismatch')
             return immutable
         return requested

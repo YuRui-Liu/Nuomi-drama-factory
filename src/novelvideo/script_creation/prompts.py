@@ -1,7 +1,6 @@
 """Project document context for structured screenplay generation."""
 from __future__ import annotations
 
-from pathlib import Path
 import re
 
 from .models import Document
@@ -14,14 +13,9 @@ STEP_LABELS = {
 }
 
 CRAFT_BY_KIND = {
-    'brief': ('story-development.md',),
-    'outline': ('story-development.md',),
-    'episode_synopsis': ('story-development.md', 'short-drama-rhythm.md'),
-    'people': ('character-and-dialogue.md',),
-    'scenes': ('story-development.md',),
-    'props': ('story-development.md',),
-    'episode_script': ('screenplay-craft.md', 'character-and-dialogue.md',
-                       'short-drama-rhythm.md', 'language-editing.md'),
+    **{kind: ('principles.md', 'planning.md', 'review.md')
+       for kind in ('brief', 'outline', 'episode_synopsis', 'people', 'scenes', 'props')},
+    'episode_script': ('principles.md', 'writing.md', 'review.md', 'dialogue.md'),
 }
 
 STAGE_CONTRACTS = {
@@ -36,8 +30,8 @@ STAGE_CONTRACTS = {
 
 
 def craft_guidance(kind: str = 'episode_script') -> str:
-    root = Path(__file__).resolve().parents[3] / 'nuomi-drama-scripts' / 'references'
-    return '\n\n'.join((root / name).read_text(encoding='utf-8') for name in CRAFT_BY_KIND[kind] if (root / name).is_file())
+    from .craft_resources import craft_guidance as load_method
+    return load_method(kind)
 
 
 def _chinese_episode_number(number: int) -> str:

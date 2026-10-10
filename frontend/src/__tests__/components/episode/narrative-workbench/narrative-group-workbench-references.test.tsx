@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HTTPError } from "ky";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +8,7 @@ import zhTranslation from "../../../../../public/locales/zh/translation.json";
 import { NarrativeGroupWorkbench } from "@/components/episode/narrative-workbench/narrative-group-workbench";
 import { useEpisodeWorkbenchStore, episodeWorkbenchScopeKey } from '@/stores/episode-workbench-store';
 import type { PlannedNarrativeGroupGenerationSelection } from "@/lib/queries/narrative-groups";
+vi.mock("@/components/episode/narrative-workbench/group-video-quality-controls", () => ({ GroupVideoQualityControls: () => null }));
 
 const m = vi.hoisted(() => ({
  mutate: vi.fn(),
@@ -16,6 +17,7 @@ const m = vi.hoisted(() => ({
  success: vi.fn(),
  error: vi.fn(),
  generateVideo: vi.fn(),
+ voicePreflight: vi.fn(),
  generateVideoSegment: vi.fn(),
  updateVideoSettings: vi.fn(),
  groupsRefetch: vi.fn(),
@@ -37,6 +39,7 @@ const m = vi.hoisted(() => ({
 const group = { id:"g1", ordinal:1, title:"G", beat_ids:["1"], layout:{rows:1,columns:1,capacity:1}, stages:{sketch:{status:"pending",revision:0},render:{status:"partial_failure",revision:0},video:{status:"pending",revision:0}}, cell_to_beat:[],errors:[],video_inputs:[] };
 const group2 = { ...group, id: "g2", ordinal: 2, title: "G2" };
 vi.mock("@/lib/queries/narrative-groups",()=>({
+ getVideoVoicePreflight:(...args:any[])=>m.voicePreflight(...args),
  useNarrativeGroups:()=>({data:{ok:true,data:m.groups},isLoading:m.groupsLoading,refetch:m.groupsRefetch}),
  useNarrativeGroupAction:()=>({mutateAsync:m.mutate,isPending:false}),
  useUploadNarrativeReference:()=>({mutateAsync:m.uploadReference,isPending:false}),
@@ -95,6 +98,7 @@ describe("NarrativeGroupWorkbench references",()=>{
  });
  beforeEach(()=>{
   vi.clearAllMocks();
+  m.voicePreflight.mockResolvedValue({ready:true,issues:[]});
   m.groups=[group];
   m.groupsLoading=false;
   m.orientation="landscape";
@@ -239,6 +243,40 @@ it('selects the exact task deep-linked group after its data loads', async () => 
   m.groups=groups;
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);
   expect(screen.getByRole("group",{name:"目标画幅"})).toBeInTheDocument();
+ });
+ it.each(["revision", "return-to-group"])("discards delayed voice preflight after %s changes",async(change)=>{
+  let finish!: (result: {ready:boolean;issues:never[]})=>void;
+  m.voicePreflight.mockImplementation(()=>new Promise(resolve=>{finish=resolve;}));
+  m.groups=[group,group2];
+  const view=render(<NarrativeGroupWorkbench project="voice-race" episode={1}/>);
+  fireEvent.click(screen.getByText("生成组合视频"));
+  await waitFor(()=>expect(m.voicePreflight).toHaveBeenCalled());
+  if(change === "revision") {
+    m.groups=[{...group,stages:{...group.stages,video:{...group.stages.video,revision:1}}},group2];
+    view.rerender(<NarrativeGroupWorkbench project="voice-race" episode={1}/>);
+  } else {
+    act(()=>useEpisodeWorkbenchStore.getState().setNarrativeGroupSelection({project:"voice-race",episode:1},"g2"));
+    view.rerender(<NarrativeGroupWorkbench project="voice-race" episode={1}/>);
+    act(()=>useEpisodeWorkbenchStore.getState().setNarrativeGroupSelection({project:"voice-race",episode:1},"g1"));
+    view.rerender(<NarrativeGroupWorkbench project="voice-race" episode={1}/>);
+  }
+  await act(async()=>finish({ready:true,issues:[]}));
+  expect(m.generateVideo).not.toHaveBeenCalled();
+ });
+ it("blocks a paid video request and links to voice repair when saved traits are missing",async()=>{
+  m.voicePreflight.mockResolvedValue({ready:false,issues:[{speaker:"闻禾",reason:"角色 闻禾 的声音设定缺失"}]});
+  render(<NarrativeGroupWorkbench project="p" episode={1}/>);
+  fireEvent.click(screen.getByText("生成组合视频"));
+  expect(await screen.findByRole("alert")).toHaveTextContent("闻禾");
+  expect(screen.getByRole("link",{name:"前往资产中心修复角色声音设定"})).toHaveAttribute("href","/projects/p/characters");
+  expect(m.generateVideo).not.toHaveBeenCalled();
+ });
+ it("does not submit video when the voice preflight cannot be read",async()=>{
+  m.voicePreflight.mockRejectedValue(new Error("预检失败"));
+  render(<NarrativeGroupWorkbench project="p" episode={1}/>);
+  fireEvent.click(screen.getByText("生成组合视频"));
+  await waitFor(()=>expect(m.error).toHaveBeenCalledWith("预检失败"));
+  expect(m.generateVideo).not.toHaveBeenCalled();
  });
  it("uses the current landscape aspect for generate, regenerate, split, and group video",async()=>{
   render(<NarrativeGroupWorkbench project="p" episode={1} onRepairBeat={vi.fn()}/>);

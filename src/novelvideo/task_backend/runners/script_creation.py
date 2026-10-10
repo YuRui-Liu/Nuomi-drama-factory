@@ -57,7 +57,7 @@ async def _run_script_creation(envelope: dict[str, Any], ctx: Any) -> dict[str, 
                                                      progress=update)
     manager.update_progress_for_project(
         ctx, TASK_TYPE, 0, scope=f'run:{run_id}', progress=1.0,
-        current_task='创作完成' if result['status'] == 'completed' else '参考版本已变化',
+        current_task={'completed': '创作与内容审查完成', 'needs_review': '草稿需要修改'}.get(result['status'], '参考版本已变化'),
         expected_task_id=task_id)
     return {'run_id': run_id, 'status': result['status'], 'steps': result['steps']}
 
@@ -97,7 +97,8 @@ async def _run_script_rewrite(envelope: dict[str, Any], ctx: Any) -> dict[str, A
         task_id=task_id, cancel_check=check_cancel,
         commit_guard=lambda: raise_if_local_task_stop_requested(task_id))
     manager.update_progress_for_project(ctx, REWRITE_TASK_TYPE, 0,
-        scope=f'rewrite:{job_id}', progress=1.0, current_task='候选改稿已生成', expected_task_id=task_id)
+        scope=f'rewrite:{job_id}', progress=1.0,
+        current_task='改稿需要修改' if result['status'] == 'needs_review' else '候选改稿已生成', expected_task_id=task_id)
     return {'job_id': job_id, 'status': result['status'], 'proposal_id': result['proposal_id']}
 
 

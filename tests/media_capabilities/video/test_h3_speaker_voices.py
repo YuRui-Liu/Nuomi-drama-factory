@@ -36,3 +36,20 @@ def test_missing_voice_is_not_silently_invented():
     from novelvideo.media_capabilities.video.h3_speaker_voices import resolve_speaker_voices
     with pytest.raises(ValueError, match="声音"):
         resolve_speaker_voices(["居民丙"], [])
+
+
+def test_voice_preflight_reports_all_missing_and_accepts_traits_without_tts():
+    from novelvideo.media_capabilities.video.h3_speaker_voices import speaker_voice_preflight
+    character = SimpleNamespace(name="阿岑", aliases=["少年"], voice_facts=SimpleNamespace(voice_traits="清亮男声", conflicts=[]))
+    result = speaker_voice_preflight(["少年", "闻禾", "居民丙", "闻禾"], [character])
+    assert result["ready"] is False
+    assert [item["speaker"] for item in result["issues"]] == ["闻禾", "居民丙"]
+    assert speaker_voice_preflight(["少年"], [character]) == {"ready": True, "issues": []}
+    assert speaker_voice_preflight([], []) == {"ready": True, "issues": []}
+
+
+def test_required_speakers_preserves_structured_and_legacy_runtime_semantics():
+    from novelvideo.media_capabilities.video.h3_speaker_voices import required_voice_speakers
+    assert required_voice_speakers([SimpleNamespace(speaker="阿岑")], speaker="旧名", dialogue="出发。") == ["阿岑"]
+    assert required_voice_speakers([], speaker="旧名", dialogue="出发。") == ["旧名"]
+    assert required_voice_speakers([], speaker="无对白人物", dialogue=" ") == []

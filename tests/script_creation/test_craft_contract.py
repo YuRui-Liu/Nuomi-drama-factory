@@ -22,10 +22,11 @@ def test_screenplay_contract_uses_target_episode_and_separate_scene_metadata(epi
 @pytest.mark.parametrize('kind', ['episode_synopsis', 'episode_script'])
 def test_default_methods_include_single_episode_rhythm(kind):
     guidance = craft_guidance(kind)
-    assert guidance.count('# 短剧节奏\n') == 1
-    assert '单纯没有打斗' in guidance
+    assert '回报' in guidance
+    assert '固定' in guidance
+    assert '独立结构审查' in guidance
     if kind == 'episode_script':
-        assert guidance.count('# 人物与对白\n') == 1
+        assert '潜台词' in guidance
 
 
 def test_custom_skill_replaces_default_craft_but_preserves_format_contract():

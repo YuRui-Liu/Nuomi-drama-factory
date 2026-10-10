@@ -82,6 +82,7 @@ export interface RunningHubWorkflowSettings {
   video_minimax_h3_ref_max_images: number;
   tts_qwen3_voice_design: string;
   tts_indextts2_voice_clone: string;
+  music_acestep: string;
 }
 
 export function useKnowledgeRuntimeStatus(enabled = true) {

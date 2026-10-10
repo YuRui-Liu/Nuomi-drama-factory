@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.deps import make_sqlite_store_for_context, resolve_project_scope
 from novelvideo.episode_source_store import EpisodeSourceStore
+from novelvideo.episode_legacy_migration import ensure_legacy_migration
 from novelvideo.ports import get_task_backend
 from novelvideo.screenplay_semantics import ScreenplaySemanticActivationConflict, ScreenplaySemanticStore
 from novelvideo.screenplay_semantics.editing import SemanticEdit, SemanticEditError, apply_semantic_edit
@@ -37,6 +38,10 @@ async def _resolve(project: str, user: dict, *, role: str):
 
 async def _resolve_source_revision(ctx, episode: int) -> int:
     repository = EpisodeSourceStore(await make_sqlite_store_for_context(ctx))
+    migration = await ensure_legacy_migration(repository)
+    if migration.status == "confirmation_required":
+        raise HTTPException(409, detail={"code": "EPISODE_SOURCE_CONFIRMATION_REQUIRED",
+            "error": "请先在剧本导入中确认分集原文，再解析场次。"})
     source = next((item for item in await repository.list_sources() if item.episode_number == episode), None)
     if source is None:
         raise HTTPException(404, detail={"code": "EPISODE_SOURCE_NOT_FOUND"})
@@ -65,6 +70,7 @@ async def create_screenplay_semantics(
             "task_id": queued.task_state.task_id,
             "task_key": project_task_state_key("screenplay_semantics", str(ctx.project_id), episode, scope=scope),
             "backend": queued.backend, "queue": queued.queue,
+            "scope": scope,
             "source_revision": source_revision}
 
 

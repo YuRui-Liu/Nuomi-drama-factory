@@ -148,7 +148,9 @@ class RunningHubClient:
             base_url=base_url,
             transport=transport,
             timeout=timeout,
-            trust_env=False,
+            # Honor the user's system/environment proxy (and NO_PROXY), as
+            # direct egress may be unavailable even when RunningHub is reachable.
+            trust_env=True,
             follow_redirects=False,
         )
 

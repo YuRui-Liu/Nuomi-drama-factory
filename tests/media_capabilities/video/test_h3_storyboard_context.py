@@ -59,6 +59,11 @@ def test_role_builder_distinguishes_i2va_context_from_fl2va_end(tmp_path):
     segment.last_frame = assets[1]["path"]
     images = build_storyboard_prompt_images(binding, frames, [segment], media_root=tmp_path)
     assert [image.role for image in images] == ["start_frame", "end_frame"]
+    references = build_storyboard_prompt_images(
+        binding, frames, [segment], media_root=tmp_path, reference_only=True,
+    )
+    assert [image.role for image in references] == ["storyboard_context", "storyboard_context"]
+    assert [image.input_sha256 for image in references] == [image.input_sha256 for image in images]
 
 
 @pytest.mark.asyncio

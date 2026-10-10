@@ -132,7 +132,7 @@ export interface GroupVideoReferenceState {
   onManage?: () => void;
 }
 
-export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, inputs, plan, planSaving = false, workflowSynchronized = true, taskStatus = "pending", inherited = true, available = true, unavailableReason, models, modelSaving = false, reference, onModelChange, onModeChange, onPlanSave, onGenerate, controlsTarget }: {
+export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, inputs, plan, planSaving = false, workflowSynchronized = true, taskStatus = "pending", taskError, inherited = true, available = true, unavailableReason, models, modelSaving = false, reference, onModelChange, onModeChange, onPlanSave, onGenerate, controlsTarget }: {
   controlsTarget?: HTMLElement | null;
   modelId: string; mode: VideoModelMode; hasFirstFrame: boolean; hasLastFrame: boolean;
   inputs?: NonNullable<NarrativeGroup["video_inputs"]>;
@@ -140,6 +140,7 @@ export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, in
   planSaving?: boolean;
   workflowSynchronized?: boolean;
   taskStatus?: NarrativeGroup["stages"]["video"]["status"];
+  taskError?: string | null;
   inherited?: boolean; available?: boolean; unavailableReason?: string | null;
   models?: VideoModelCatalogItem[]; modelSaving?: boolean;
   reference?: GroupVideoReferenceState;
@@ -179,7 +180,19 @@ export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, in
   const planChanged = draftSignature(draftUnits) !== draftSignature(planDraft(plan));
   const totalDuration = plan?.total_duration_seconds ?? draftUnits.reduce((total, unit) => total + (unit.durationSeconds ?? 0), 0);
   const orderedBeatIds = draftUnits.flatMap((unit) => unit.beatIds);
-  const referenceBlocked = Boolean(reference?.required && (
+  const emptyPlan = !!plan && draftUnits.length === 0;
+  let storyboardConflict: { code?: string; conflicts?: Array<{ shot_id?: string; observed?: string; required?: string }> } | null = null;
+  try { storyboardConflict = taskError ? JSON.parse(taskError) : null; } catch { /* Plain-text task errors remain readable below. */ }
+  const planningBlocked = taskStatus === "failed" && storyboardConflict?.code === "storyboard_prompt_blocked";
+  const planningTimedOut = taskStatus === "failed" && /Codex execution timed out|H3_PLANNING_OUTCOME_UNKNOWN/.test(taskError || "");
+  const storyboardMessage = planningBlocked
+    ? `首帧与导演动作可能冲突，尚未提交视频生成。可复核原图一次；若仍有明确冲突，请修改对应分镜。${(storyboardConflict?.conflicts ?? []).map((item) => ` ${item.shot_id ?? "镜头"}：画面观察「${item.observed ?? "未提供"}」；导演要求「${item.required ?? "未提供"}」。`).join("")}`
+    : "";
+  const durationConflict = taskError?.match(/shot (\S+) requires ([\d.]+)s; video backend supports at most ([\d.]+)s/);
+  const failureMessage = durationConflict
+    ? `镜头 ${durationConflict[1]} 预计 ${durationConflict[2]} 秒，超过当前视频模型单镜头 ${durationConflict[3]} 秒上限。请返回导演方案，将长镜头拆分后重新审核与生成分镜。`
+    : storyboardMessage || (planningTimedOut ? "视频提示词规划超时，尚未提交本轮视频。点击生成组合视频可显式重试一次规划，继续复用当前分镜。" : taskError) || (emptyPlan ? "当前没有可生成的视频单元，请返回导演方案检查镜头安排。" : "");
+  const referenceBlocked = emptyPlan || Boolean(reference?.required && (
     reference.loading || reference.error || reference.dirty || !reference.valid
   ));
   const controls = <div className="flex flex-wrap items-center gap-2">{models && onModelChange ? <ProjectVideoModelSelect value={modelId} models={models} saving={modelSaving} disabled={editingDisabled} onChange={onModelChange} /> : null}<H3VideoModeSelect value={mode} availability={modeAvailabilities} disabled={editingDisabled || modelSaving || !onModeChange} onChange={(nextMode) => onModeChange?.(nextMode)} />{reference?.required ? <><span className="text-xs text-muted-foreground">{t("narrativeVideoReferences.selectedCount", { count: reference.count, max: reference.max })}</span><Button type="button" size="sm" variant="outline" onClick={reference.onManage}>{t("narrativeVideoReferences.manage")}</Button></> : null}<span className="text-xs text-muted-foreground">{taskStatusLabel[taskStatus]}</span><Button type="button" size="sm" disabled={!selectedMode.available || !onGenerate || planChanged || planSaving || !workflowSynchronized || referenceBlocked || taskStatus === "queued" || taskStatus === "running"} onClick={() => onGenerate?.({ video_model: modelId, h3_mode: mode })}>生成组合视频</Button></div>;
@@ -192,9 +205,20 @@ export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, in
         </div>
         {controlsTarget ? createPortal(controls, controlsTarget) : controls}
       </div>
+      {failureMessage && <p role="alert" className="mt-3 rounded-lg border border-amber-400/40 bg-amber-950/40 p-3 text-sm text-amber-100">{failureMessage}</p>}
+      <p className="mt-2 text-xs text-muted-foreground">模型标识：{modelId} · 渠道：{catalogModel?.provider || "暂未知"}</p>
+      <p className="mt-1 text-xs text-muted-foreground">计费单位与金额暂未知，请核对渠道账单；生成前将检查本组对白角色的声音设定。</p>
+      {planningBlocked && <Button type="button" className="mt-2" size="sm" variant="outline"
+        disabled={!selectedMode.available || !onGenerate || editingDisabled || planChanged || !workflowSynchronized || referenceBlocked}
+        onClick={() => onGenerate?.({ video_model: modelId, h3_mode: mode })}>复核原图并继续视频</Button>}
       {!available && <p className="mt-2 text-xs text-destructive">{unavailableReason || "模型尚未配置"}</p>}
       {planChanged && <p className="mt-2 text-xs text-muted-foreground">请先保存视频方案</p>}
-      {!workflowSynchronized && <p className="mt-2 text-xs text-muted-foreground">视频工作流与本组设置不一致，请重新选择视频模型以同步。</p>}
+      {!workflowSynchronized && <div className="mt-2 flex items-center gap-2">
+        <p className="text-xs text-muted-foreground">视频工作流与本组设置不一致，请重新选择视频模型以同步。</p>
+        {onModelChange && <Button type="button" size="sm" variant="outline"
+          disabled={editingDisabled || modelSaving || !available}
+          onClick={() => onModelChange(modelId)}>同步本组视频模型</Button>}
+      </div>}
       {reference?.required && reference.loading ? <p className="mt-2 text-xs text-muted-foreground">{t("narrativeVideoReferences.loading")}</p> : null}
       {reference?.required && reference.error ? <p className="mt-2 text-xs text-destructive">{t("narrativeVideoReferences.loadFailed")}</p> : null}
       {reference?.required && reference.dirty ? <p className="mt-2 text-xs text-muted-foreground">{t("narrativeVideoReferences.dirty")}</p> : null}

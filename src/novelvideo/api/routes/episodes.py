@@ -634,6 +634,19 @@ async def update_episode(
 
     await store.update_episode(episode_num, **updates)
 
+    # Manual identity selection must publish the same references as AI planning.
+    # Otherwise a newly added character stays missing in an already active plan.
+    if resolved.ctx and {"identity_ids", "identity_default_map"}.intersection(updates):
+        from novelvideo.director_plan.store import DirectorPlanStore
+        from novelvideo.narrative_groups.reference_refresh import refresh_active_references
+
+        plan_store = DirectorPlanStore(resolved.ctx.output_dir)
+        active_plan = plan_store.load_active(episode_num)
+        if active_plan is not None:
+            await refresh_active_references(
+                resolved.ctx, store, plan_store, episode_num, active_plan.revision_id,
+            )
+
     # 返回更新后的集信息
     ep = store.get_episode(episode_num)
     return {"ok": True, "data": _episode_detail_payload(ep, episode_num)}

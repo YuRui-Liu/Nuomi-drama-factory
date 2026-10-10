@@ -37,9 +37,9 @@ export function useProject(project: string) {
 export function useCreateProject() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) =>
+    mutationFn: (input: string | { name: string; display_name: string }) =>
       api
-        .post("api/v1/projects", { json: { name } })
+        .post("api/v1/projects", { json: typeof input === "string" ? { name: input } : input })
         .json<OkResponse<{ id?: string; project_id?: string; name: string }>>(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.projects() });
@@ -57,6 +57,7 @@ export function useUpdateProject(project: string) {
         .json<OkResponse<ProjectConfig>>(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.project(project) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projectSummaries() });
     },
   });
 }
@@ -70,6 +71,7 @@ export function useUpdateProject(project: string) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 type SummaryPayload = {
+  display_name?: string;
   id?: string;
   project_id?: string;
   name: string;
@@ -94,6 +96,7 @@ function toSummary(p: SummaryPayload): ProjectSummary {
   return {
     id,
     name: p.name,
+    displayName: p.display_name?.trim() || p.name,
     status: p.status,
     ownerType: p.owner_type ?? undefined,
     ownerId: p.owner_id ?? undefined,

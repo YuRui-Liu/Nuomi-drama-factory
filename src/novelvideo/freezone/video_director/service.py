@@ -338,9 +338,29 @@ class DirectorService:
                 paths = {key: self.store.root / "frozen" / value
                          for key, value in item["frozen_images"].items()}
                 prepared = await self._provider().prepare(draft, optimized, paths, reference_limit)
-            except Exception:
+            except Exception as exc:
+                from novelvideo.media_capabilities.runtime.configuration import MediaRuntimeConfigurationError
+
+                error = "视频工作流准备失败，请检查工作流配置后重试。"
+                if isinstance(exc, MediaRuntimeConfigurationError):
+                    error = "RunningHub 配置或凭据不可用，请检查媒体服务中的账号与工作流配置。"
+                elif isinstance(exc, RunningHubError):
+                    if exc.http_status in {401, 403}:
+                        error = "RunningHub 认证失败，请检查 API 凭据及账号权限。"
+                    elif exc.retriable:
+                        error = "RunningHub 网络或服务暂时不可用，图片上传失败；请检查网络后重试。"
+                    else:
+                        error = "RunningHub 拒绝图片上传，请检查图片及服务配置。"
                 return self.store.update(attempt_id, stage="failed", failed_stage="uploading",
-                                         error="Director upload or workflow preparation failed")
+                                         error=error,
+                                         preparation_error_type=type(exc).__name__,
+                                         preparation_http_status=(exc.http_status if isinstance(exc, RunningHubError) else None),
+                                         preparation_retriable=(exc.retriable if isinstance(exc, RunningHubError) else False),
+                                         preparation_error_trace=[
+                                             {"filename": Path(frame.f_code.co_filename).name,
+                                              "function": frame.f_code.co_name, "line": line}
+                                             for frame, line in islice(traceback.walk_tb(exc.__traceback__), 32)
+                                         ])
             validation = validate_generation(draft, reference_limit=reference_limit)
             item = self.store.update(attempt_id, stage="submitting", workflow_id=prepared["workflow_id"],
                                      workflow_profile_id=prepared["profile_id"],

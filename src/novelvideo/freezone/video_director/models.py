@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from novelvideo.media_capabilities.video.h3_wire import H3BaseWire, H3ReferenceWire
 from .techniques import TechniqueCard
+from novelvideo.technique_library.models import CasePrompt
 
 
 class _FrozenModel(BaseModel):
@@ -49,6 +50,16 @@ class FrozenTechnique(_FrozenModel):
     projection: FrozenTechniqueProjection
 
 
+class CaseReference(_FrozenModel):
+    proposal_id: str
+    case_id: str
+    dimensions: tuple[Literal['camera', 'rhythm', 'performance', 'ending'], ...]
+    source_prompts: tuple[CasePrompt, ...] = ()
+    description: str = ''
+    applied_at: datetime
+    prompt_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+
+
 class DirectorSegment(_FrozenModel):
     id: str
     prompt: str = ""
@@ -56,6 +67,7 @@ class DirectorSegment(_FrozenModel):
     first_frame: DirectorImage | None = None
     last_frame: DirectorImage | None = None
     technique: TechniqueSelection | None = None
+    case_reference: CaseReference | None = None
 
     @field_validator("duration_seconds")
     @classmethod

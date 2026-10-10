@@ -21,7 +21,8 @@ async def _run(envelope: dict, ctx: ProjectContext):
         if stage == "completed":
             return {"attempt_id": attempt_id, "result_url": item["result_url"], "stage": stage}
         if stage in {"failed", "submission_unknown"}:
-            raise RuntimeError(f"Director attempt {attempt_id} stopped at {stage}: {item.get('failed_stage')}")
+            reason = item.get("error") or item.get("failed_stage") or stage
+            raise RuntimeError(f"Director attempt {attempt_id} stopped at {stage}: {reason}")
         await asyncio.sleep(3)
 
 

@@ -23,7 +23,7 @@ _SPECS = {
     "videoStoryNode": ("generation", ("video", "text"), ("text", "json"), ("analyze",)),
     "videoComposeNode": ("transform", ("video", "audio"), ("video",), ("compose",)),
     "musicDeskNode": ("transform", ("video", "audio"), ("audio", "video"), ("edit", "export")),
-    "scriptNode": ("generation", ("text", "image", "video", "json"), ("text", "json"), ("generate",)),
+    "scriptNode": ("generation", ("text", "image", "video", "json"), ("text", "json"), ("generate", "plan_episode")),
     "pano360ViewerNode": ("interactive", ("image",), ("image", "json"), ("view", "capture")),
     "threeDWorldNode": ("interactive", ("image", "text", "json"), ("image", "json"), ("generate", "view", "capture")),
     "skillNode": ("generation", ("text", "image", "json"), ("text", "image", "json"), ("run",)),

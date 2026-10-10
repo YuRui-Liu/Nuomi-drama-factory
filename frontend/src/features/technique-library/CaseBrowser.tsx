@@ -5,10 +5,12 @@ import { getTechniqueCases, getTechniqueCase } from '@/api/techniqueLibrary';
 import { useCases } from './presentation';
 import { CasePromptPanel } from './CasePromptPanel';
 import { CaseMedia } from './CaseMedia';
+import { CaseReferenceReview } from './CaseReferenceReview';
+import type { CaseReferenceContext } from '@/api/caseReference';
 
 const provenanceLabels: Record<string, string> = { official: '官方', author: '作者', reconstructed: '反推', unpublished: '未公开', unknown: '未知' };
 
-export function CaseBrowser({ username, onTechnique, initialId, techniqueTitles = {} }: { username: string | null; onTechnique: (id: string) => boolean | void; initialId?: string; techniqueTitles?: Record<string, string> }) {
+export function CaseBrowser({ username, onTechnique, initialId, techniqueTitles = {}, context }: { username: string | null; onTechnique: (id: string) => boolean | void; initialId?: string; techniqueTitles?: Record<string, string>; context?: CaseReferenceContext }) {
   const { t } = useTranslation();
   const tr = (key: string, fallback: string) => t(`techniqueLibrary.${key}`, { defaultValue: fallback });
   const [filters, setFilters] = useState({ q: '', use_case: '', provenance: '', offset: 0, limit: 24 });
@@ -28,6 +30,8 @@ export function CaseBrowser({ username, onTechnique, initialId, techniqueTitles 
         <h3 className="text-xl text-white">{item.title}</h3><p className="text-sm leading-7 text-slate-300">{item.summary}</p>
         <CaseMedia key={`${item.id}:media`} url={item.media_url} />
         <CasePromptPanel key={item.id} prompts={item.prompts} />
+        {context ? <CaseReferenceReview key={`${username}:${context.project}:${context.canvasId}:${context.nodeId}:${context.segmentId}:${item.id}`} context={context} item={item} username={username} />
+          : <p className="text-xs text-cyan-200">要参考此案例创作，请从视频导演的分段「选择手法 → 案例」进入。</p>}
         <p className="text-xs text-slate-400">{item.use_cases.map((value) => tr(`use_${value}`, useCases[value as keyof typeof useCases] ?? value)).join(' · ')}</p>
         <p className="text-xs text-amber-200">{tr(`provenance_${item.provenance}`, provenanceLabels[item.provenance] ?? provenanceLabels.unknown)} · {tr('unverifiedCase', '未本地实测；来源声明不代表使用授权')}</p>
         <h4>{tr('sources', '参考来源')}</h4>

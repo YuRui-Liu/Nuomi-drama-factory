@@ -114,6 +114,7 @@ def parse_screenplay_document(text: str) -> ParsedScreenplayDocument:
     current_characters: list[str] = []
     current_blocks: list[SourceBlock] = []
     last_scene_line = 0
+    dialogue_open = False
     in_frontmatter = False
     frontmatter_seen = False
 
@@ -179,6 +180,7 @@ def parse_screenplay_document(text: str) -> ParsedScreenplayDocument:
                 continue
         if value and is_scene_start_line(value):
             flush_scene()
+            dialogue_open = False
             current_header = line
             parsed_header = parse_scene_blocks([value])[0]
             current_location = parsed_header.location
@@ -205,14 +207,29 @@ def parse_screenplay_document(text: str) -> ParsedScreenplayDocument:
         field = _screenplay_field(value)
         cast_value = f"{field[0]}：{field[1]}" if field else value
         cast = LABELED_CHARACTER_RE.match(cast_value)
-        if cast and not current_blocks:
+        if cast and all(block.kind == "formatting" for block in current_blocks):
             for character in parse_character_line(cast_value):
                 if character not in current_characters:
                     current_characters.append(character)
             metadata.append(_block(line, len(metadata) + 1, "cast"))
             last_scene_line = line.number
             continue
-        current_blocks.append(_block(line, len(current_blocks) + 1, _content_kind(value)))
+        normalized = value.replace("**", "").strip()
+        if (re.fullmatch(r"[-=*—_]{3,}", normalized)
+                or re.match(r"^(?:时间|时长)\s*[：:]", normalized)):
+            kind = "formatting"
+            dialogue_open = False
+        elif re.fullmatch(r"[^\n：:]{1,24}[：:]", normalized) and not field:
+            kind = "speaker"
+            dialogue_open = True
+        else:
+            kind = _content_kind(value)
+            if dialogue_open and not field and not normalized.startswith(("△", "▲", "【", "#")):
+                if kind == "action":
+                    kind = "dialogue"
+            if kind not in {"dialogue", "parenthetical"}:
+                dialogue_open = False
+        current_blocks.append(_block(line, len(current_blocks) + 1, kind))
         last_scene_line = line.number
 
     flush_scene()

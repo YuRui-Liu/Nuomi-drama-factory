@@ -43,6 +43,7 @@ export const CANVAS_ADD_NODE_TYPES: readonly CanvasNodeType[] = [
   CANVAS_NODE_TYPES.video,
   CANVAS_NODE_TYPES.videoDirector,
   CANVAS_NODE_TYPES.videoCompose,
+  CANVAS_NODE_TYPES.musicDesk,
   CANVAS_NODE_TYPES.audio,
   CANVAS_NODE_TYPES.script,
   CANVAS_NODE_TYPES.upload,

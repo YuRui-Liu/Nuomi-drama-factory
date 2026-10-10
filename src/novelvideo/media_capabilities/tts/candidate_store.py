@@ -53,8 +53,27 @@ class VoiceCandidateStore:
 
     def list(self, character_name: str) -> list[dict]:
         with self.connection() as db:
-            rows = db.execute("SELECT * FROM character_voice_candidates WHERE character_name=? ORDER BY created_at, candidate_id", (character_name,)).fetchall()
+            rows = db.execute("SELECT * FROM character_voice_candidates WHERE character_name=? AND status!='deleted' ORDER BY created_at, candidate_id", (character_name,)).fetchall()
             return [self.decode(row) for row in rows]
+
+    def delete(self, candidate_id: str) -> None:
+        """Remove a library entry, retaining bytes referenced by existing productions."""
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            candidate = self.decode(db.execute("SELECT * FROM character_voice_candidates WHERE candidate_id=?", (candidate_id,)).fetchone())
+            if candidate['status'] == 'deleted':
+                return
+            if candidate['status'] in {'prepared', 'submitted', 'submission_unknown', 'candidate'}:
+                raise ValueError('声音仍在处理中，请等待任务结束后删除')
+            row = db.execute('SELECT * FROM characters WHERE name=?', (candidate['character_name'],)).fetchone()
+            if row:
+                if row['reference_audio_path'] == candidate['path']:
+                    db.execute("UPDATE characters SET reference_audio_path='',reference_audio_sha256='',reference_audio_updated_at='' WHERE name=?", (candidate['character_name'],))
+                samples = json.loads(row['voice_samples_by_age_group_json'] or '{}')
+                samples = {key: value for key, value in samples.items() if value.get('path') != candidate['path']}
+                db.execute('UPDATE characters SET voice_samples_by_age_group_json=? WHERE name=?', (json.dumps(samples, ensure_ascii=False), candidate['character_name']))
+            db.execute('DELETE FROM character_nonverbal_selections WHERE candidate_id=?', (candidate_id,))
+            db.execute("UPDATE character_voice_candidates SET status='deleted' WHERE candidate_id=?", (candidate_id,))
 
     def create(self, request_id: str, payload: dict) -> dict:
         if not request_id.strip():
@@ -145,6 +164,8 @@ class VoiceCandidateStore:
 
     def read_audio(self, candidate_id: str) -> bytes:
         row = self.get(candidate_id)
+        if row['status'] == 'deleted':
+            raise ValueError('此候选已删除')
         path = (self.project_dir / row["path"]).resolve()
         if not row["path"] or not path.is_relative_to(self.project_dir):
             raise ValueError("invalid candidate path")
@@ -153,7 +174,8 @@ class VoiceCandidateStore:
             raise ValueError("candidate audio integrity mismatch")
         return content
 
-    def approve(self, candidate_id: str, *, actor: str, reason: str) -> dict:
+    def approve(self, candidate_id: str, *, actor: str, reason: str,
+                expected_reference: dict[str, str] | None = None) -> dict:
         """Explicit human exception approval, guarded against stale facts/references."""
         from novelvideo.models import NovelCharacter
         from novelvideo.media_capabilities.tts.character_voice import character_voice_snapshot, voice_snapshot_digest
@@ -165,6 +187,8 @@ class VoiceCandidateStore:
             db.execute("BEGIN IMMEDIATE")
             candidate = self.decode(db.execute("SELECT * FROM character_voice_candidates WHERE candidate_id=?", (candidate_id,)).fetchone())
             row = db.execute("SELECT * FROM characters WHERE name=?", (candidate["character_name"],)).fetchone()
+            if candidate['status'] == 'deleted':
+                raise ValueError('此候选已删除')
             if row is None:
                 raise ValueError("character no longer exists")
             role = NovelCharacter(name=row["name"], gender=row["gender"] or "", age_group=row["age_group"] or "",
@@ -195,11 +219,16 @@ class VoiceCandidateStore:
             samples = json.loads(row["voice_samples_by_age_group_json"] or "{}")
             current = ({"path": row["reference_audio_path"] or "", "sha256": row["reference_audio_sha256"] or ""}
                        if slot == "default" else samples.get(slot, {}))
+            if expected_reference is not None and {
+                key: current.get(key, "") for key in ("path", "sha256")
+            } != expected_reference:
+                raise ValueError("当前声音已变化，请刷新候选后重新选择")
             if candidate["status"] == "approved":
-                if current.get("path") != candidate["path"] or current.get("sha256") != candidate["sha256"]:
+                if current.get("path") == candidate["path"] and current.get("sha256") == candidate["sha256"]:
+                    return candidate
+                if expected_reference is None:
                     raise ValueError("reference changed after approval; explicit version selection required")
-                return candidate
-            if current != candidate["payload"].get("target_reference", {}):
+            if expected_reference is None and current != candidate["payload"].get("target_reference", {}):
                 raise ValueError("stale target reference; another version was selected")
             metadata = {"path": candidate["path"], "sha256": candidate["sha256"], "updated_at": candidate["created_at"]}
             if slot == "default":

@@ -6,6 +6,27 @@ from novelvideo.api.routes import screenplay_semantics as route
 
 
 @pytest.mark.asyncio
+async def test_resolve_source_migrates_existing_episode_without_visiting_imports(monkeypatch, tmp_path):
+    from novelvideo.sqlite_store import SQLiteStore
+    from novelvideo.episode_source_store import EpisodeSourceStore
+
+    sqlite = SQLiteStore("legacy-parse", str(tmp_path / "project"), str(tmp_path / "state"))
+    await sqlite.initialize()
+    content = "### 1-1 教室 内景·日\n人物：林澈\n林澈：来。"
+    await sqlite.save_episode_content(1, content)
+
+    async def resolve_store(ctx):
+        return sqlite
+
+    monkeypatch.setattr(route, "make_sqlite_store_for_context", resolve_store)
+    assert not await EpisodeSourceStore(sqlite).list_sources()
+    assert await route._resolve_source_revision(SimpleNamespace(), 1) == 1
+    sources = await EpisodeSourceStore(sqlite).list_sources()
+    assert sources[0].content == content
+    assert await route._resolve_source_revision(SimpleNamespace(), 1) == 1
+
+
+@pytest.mark.asyncio
 async def test_create_queues_frozen_source_revision(monkeypatch):
     ctx = SimpleNamespace(project_id="project-1")
     monkeypatch.setattr(route, "_resolve", lambda *a, **k: None)

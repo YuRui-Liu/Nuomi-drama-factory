@@ -11,9 +11,10 @@ def main() -> int:
     parser.add_argument('--source-root', required=True)
     parser.add_argument('--output', required=True)
     parser.add_argument('--report')
+    parser.add_argument('--archives', action='store_true', help='Read user-downloaded source archives with content hashes instead of Git revisions')
     args = parser.parse_args()
     try:
-        bundle = import_catalog(args.source_root, args.output, args.report)
+        bundle = import_catalog(args.source_root, args.output, args.report, archives=args.archives)
     except (IngestError, OSError) as exc:
         print(json.dumps({'ok': False, 'error': str(exc), 'report': getattr(exc, 'report', {})}, ensure_ascii=False), file=sys.stderr)
         return 1

@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 Provenance = Literal['official', 'author', 'reconstructed', 'unpublished', 'unknown']
 UseCase = Literal['cinema', 'performance', 'action', 'product', 'music', 'stylized']
+REVISION_PATTERN = r'^(?:[0-9a-f]{40}|archive-sha256:[0-9a-f]{64})$'
 
 
 def safe_url(value: str) -> str:
@@ -21,7 +22,7 @@ def safe_url(value: str) -> str:
 class Source(BaseModel):
     model_config = ConfigDict(extra='forbid')
     repository: str
-    revision: str = Field(pattern=r'^[0-9a-f]{40}$')
+    revision: str = Field(pattern=REVISION_PATTERN)
     path: str
     upstream_id: str
     url: str
@@ -40,7 +41,7 @@ class CasePrompt(BaseModel):
     language: str = 'und'
     provenance: Provenance = 'unknown'
     repository: str
-    revision: str = Field(pattern=r'^[0-9a-f]{40}$')
+    revision: str = Field(pattern=REVISION_PATTERN)
     path: str
     upstream_id: str
     source_url: str

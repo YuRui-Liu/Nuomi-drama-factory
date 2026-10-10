@@ -4,9 +4,10 @@ from __future__ import annotations
 import hashlib
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from novelvideo.api.auth import get_api_user
 from novelvideo.api.deps import resolve_project_scope, make_sqlite_store_for_context, make_static_url_for_context
@@ -43,6 +44,20 @@ class GenerateRequest(Request):
     idempotency_key: NonBlank
     expected_revision: NonBlank
     model: NonBlank | None = None
+    sheet_contract: Literal['character_sheet_v4'] | None = None
+    source_candidate_id: NonBlank | None = None
+    change_request: NonBlank | None = None
+    reuse_stale_draft: bool = False
+
+    @model_validator(mode='after')
+    def validate_change(self):
+        if self.reuse_stale_draft and not self.sheet_contract:
+            raise ValueError('reusing a saved design requires sheet review')
+        if bool(self.source_candidate_id) != bool(self.change_request):
+            raise ValueError('modification requires both source candidate and change request')
+        if self.change_request and not self.sheet_contract:
+            raise ValueError('modification requires sheet contract')
+        return self
 
 
 class DraftRequest(Request):
@@ -59,6 +74,11 @@ class ReferenceSelection(Request):
 class ReviewRequest(Request):
     idempotency_key: NonBlank
     references: list[ReferenceSelection] | None = Field(default=None, max_length=7)
+
+
+class CropRequest(Request):
+    crop_box: tuple[float, float, float, float]
+    expected_version: int = Field(ge=0)
 
 
 @asynccontextmanager
@@ -131,6 +151,12 @@ def current_version(ctx, name, identity_id):
         'url': make_static_url_for_context(ctx, path.relative_to(safe.project_dir).as_posix(), local_path=path),
         'candidate_id': (version.generation_metadata or {}).get('candidate_id'),
         'immutable': immutable, '_path': path}
+    sheet_path = (version.generation_metadata or {}).get('sheet_path')
+    if sheet_path:
+        sheet = safe.safe_path(sheet_path)
+        if hashlib.sha256(sheet.read_bytes()).hexdigest() != version.generation_metadata.get('sheet_sha256'):
+            raise ValueError('current sheet digest mismatch')
+        result['sheet_url'] = make_static_url_for_context(ctx, sheet.relative_to(safe.project_dir).as_posix(), local_path=sheet)
     return result
 
 
@@ -210,7 +236,19 @@ def resolve_references(ctx, sqlite_store, candidate, selections, documents=None,
 
 def candidate_view(ctx, candidate, workspace, identity_id, source_revision, style):
     from novelvideo.character_visual.casting_adoption import adoption_requirements
-    data = candidate.model_dump(mode='json', exclude={'asset_path', 'submission_token'})
+    # Frozen source documents belong to the worker/audit record. Do not resend
+    # an entire novel for every candidate on each progress poll.
+    data = candidate.model_dump(mode='json', exclude={'asset_path', 'avatar_image', 'submission_token',
+        'source_material', 'image_references', 'generation_prompt', 'repair_prompt'})
+    data['avatar_url'] = None
+    if candidate.avatar_image:
+        try:
+            store = candidate_store(ctx)
+            store.read_verified_avatar(candidate.candidate_id)
+            avatar = store.safe_path(candidate.avatar_image)
+            data['avatar_url'] = make_static_url_for_context(ctx, avatar.relative_to(store.project_dir).as_posix(), local_path=avatar)
+        except (OSError, ValueError):
+            data['asset_error'] = 'avatar_unavailable'
     data['stale'] = is_stale(candidate, workspace, identity_id, source_revision, style)
     data['adoption_requirements'] = adoption_requirements(candidate)
     if data['stale']:
@@ -231,11 +269,23 @@ def conflict(exc):
     raise HTTPException(409, str(exc)) from exc
 
 
+@router.post(BASE + '/candidates/{candidate_id}/crop')
+async def crop_candidate(project: str, name: str, candidate_id: str, body: CropRequest,
+                         identity_id: str | None = None, user: dict = Depends(get_api_user)):
+    async with scope(project, name, user, identity_id, editor=True) as (ctx, sql, character):
+        owned_candidate(ctx, name, identity_id, candidate_id)
+        try:
+            candidate = candidate_store(ctx).crop_avatar(candidate_id, body.crop_box, expected_version=body.expected_version)
+        except (ValueError, OSError) as exc:
+            conflict(exc)
+        return {'ok': True, 'data': {'candidate_id': candidate_id, 'asset_version': candidate.asset_version}}
+
+
 async def _character_sources(ctx, sql, name, identity_id, *, fresh=False):
     documents, revision = await load_sources(ctx.output_dir, sql)
     draft = stage_workspace(workspace_or_empty(ctx, name), identity_id)
     expected = draft.casting_revision.source_revision if draft.casting_revision and not fresh else None
-    return documents, character_source_revision(documents, revision, name, expected_revision=expected)
+    return documents, character_source_revision(documents, revision, name, expected_revision=expected, identity_id=identity_id)
 
 
 @router.get(BASE)
@@ -243,7 +293,7 @@ async def get_casting(project: str, name: str, identity_id: str | None = None, u
     async with scope(project, name, user, identity_id) as (ctx, sql, character):
         source_revision, prerequisite = '', None
         try:
-            _, source_revision = await _character_sources(ctx, sql, name, identity_id)
+            documents, source_revision = await _character_sources(ctx, sql, name, identity_id)
         except ValueError as exc:
             prerequisite = str(exc)
         # Source loading may await. Capture bible + workflow current together only
@@ -284,9 +334,6 @@ async def patch_casting(project: str, name: str, body: DraftRequest, identity_id
             draft = stage_workspace(workspace_or_empty(ctx, name), identity_id)
             if not draft.casting_revision or draft.casting_revision.revision_id != body.expected_revision:
                 raise ValueError('casting revision conflict')
-            _, source_revision = await _character_sources(ctx, sql, name, identity_id)
-            if source_revision != draft.casting_revision.source_revision or resolved_style(ctx) != draft.casting_revision.style_revision:
-                raise ValueError('source/style changed; recast required')
         except ValueError as exc:
             conflict(exc)
         try:
@@ -352,21 +399,51 @@ async def generate_candidate(project: str, name: str, body: GenerateRequest, ide
             existing = journal.existing('generate', name, identity_id, body.idempotency_key, fingerprint)
             if existing:
                 return {'ok': True, 'data': submission_view(existing, ctx, get_task_manager())}
-            _, source_revision = await _character_sources(ctx, sql, name, identity_id)
+            documents, source_revision = await _character_sources(ctx, sql, name, identity_id)
             style = resolved_style(ctx)
             model, selection = freeze_image_model(ctx, body.model)
             def prepare(row):
+                from novelvideo.character_visual.character_sheet import character_identity_constraints
                 workspace = workspace_or_empty(ctx, name)
-                snapshot = compile_current(workspace, identity_id, body.expected_revision, source_revision, style)
+                snapshot = compile_current(workspace, identity_id, body.expected_revision, source_revision, style,
+                    reuse_stale_draft=body.reuse_stale_draft)
                 candidate_id = 'casting-' + row['submission_token']
+                materials, image_references = [], []
+                history = []
+                effective_proposal, effective_proposal_hash = None, None
+                if body.sheet_contract:
+                    from dataclasses import asdict
+                    materials = [asdict(d) for d in documents.values()]
+                    reference = current_version(ctx, name, identity_id) or (current_version(ctx, name, None) if identity_id else None)
+                    if reference:
+                        path = reference['_path']
+                        image_references = [{'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}]
+                    if body.source_candidate_id:
+                        source = owned_candidate(ctx, name, identity_id, body.source_candidate_id)
+                        if source.snapshot.snapshot_hash != snapshot.snapshot_hash or not body.change_request:
+                            raise ValueError('source candidate changed or modification request missing')
+                        candidate_store(ctx).read_verified_asset(source.candidate_id)
+                        from novelvideo.character_visual.character_repair import bounded_references
+                        image_references = bounded_references([*source.image_references, {'path': source.asset_path, 'sha256': source.asset_sha256}])
+                        effective_proposal, effective_proposal_hash = source.effective_proposal, source.effective_proposal_hash
+                        history = [*source.repair_history, {'candidate_id': source.candidate_id,
+                            'generation_prompt': source.generation_prompt, 'issues': source.sheet_quality,
+                            'user_change_request': body.change_request}]
+                    if sum(candidate_store(ctx).safe_path(ref['path']).stat().st_size for ref in image_references) > 32 * 1024 * 1024:
+                        raise ValueError('参考图片总大小超过限制，请减少参考后再生成')
                 candidate_store(ctx).create_pending(CastingCandidate(candidate_id=candidate_id, project_id=ctx.project_id,
-                    character_id=name, identity_id=identity_id, snapshot=snapshot, requested_model=model,
+                    character_id=name, identity_id=identity_id, snapshot=snapshot, requested_model=model, sheet_contract=body.sheet_contract,
+                    source_material=materials, image_references=image_references,
+                    identity_constraints=character_identity_constraints(character, identity_id),
+                    reuse_stale_draft=body.reuse_stale_draft,
+                    effective_proposal=effective_proposal, effective_proposal_hash=effective_proposal_hash,
+                    change_request=body.change_request, repair_history=history,
                     task_id='submission:' + row['submission_token'], submission_token=row['submission_token']))
                 row['candidate_id'] = candidate_id
                 row['payload'].update(candidate_id=candidate_id, model=model, model_selection=selection)
             result = await submit_once(ctx=ctx, journal=journal, operation='generate', character_id=name,
                 identity_id=identity_id, idempotency_key=body.idempotency_key, fingerprint=fingerprint,
-                task_type='character_portrait', backend=get_task_backend(), manager=get_task_manager(), prepare=prepare,
+                task_type='identity_image' if body.sheet_contract else 'character_portrait', backend=get_task_backend(), manager=get_task_manager(), prepare=prepare,
                 payload={'mode': 'casting_candidate', 'character_name': name, 'identity_id': identity_id,
                          'display_name': f'选角候选 · {name}'})
         except ValueError as exc:

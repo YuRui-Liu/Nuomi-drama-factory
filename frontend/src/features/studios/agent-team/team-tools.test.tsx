@@ -105,6 +105,12 @@ it('renders candidate Markdown and keeps structured validation details collapsed
   expect(screen.getByText('校验结果：通过')).toBeInTheDocument();
   expect(screen.getByText('结构化候选与校验详情').closest('details')).not.toHaveAttribute('open');
 });
+it('distinguishes document format success from blocked creative quality', () => {
+  render(<TrialCandidate candidate={{ markdown: '# 尚需修订', validation_report: { passed: true, scope: 'document_contract' }, craft_review: { status: 'needs_revision', summary: '人物目标尚未形成冲突' }, craft_records: [] }} />);
+  expect(screen.getByText('格式校验结果：通过')).toBeInTheDocument();
+  expect(screen.getByText('需要修改')).toBeInTheDocument();
+  expect(screen.queryByText('创作审查通过')).not.toBeInTheDocument();
+});
 it('displays the frozen title when personal library identity collides with a pinned snapshot', () => {
   render(<MethodEditor role="writer" method={{ ...defaultMethod, skills: [{ id: resource.id, revision: resource.revision }] }} overrides={{}} resources={[{ ...resource, content: '# 个人库同名版本', owner: 'other' }]} resourceSnapshots={[{ ...resource, content: '# 已冻结技法标题' }]} disabled={false} onChange={vi.fn()} onRestore={vi.fn()} />);
   expect(screen.getByText(/已冻结技法标题 · v1/)).toBeInTheDocument();

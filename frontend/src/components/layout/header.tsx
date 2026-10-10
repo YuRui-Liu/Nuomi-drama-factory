@@ -400,7 +400,7 @@ export function Header() {
       {settingsWarningBubble
         ? createPortal(
             <div
-              className="fixed z-[9999] w-[240px] max-w-[calc(100vw-24px)] rounded-md border border-amber-400/45 bg-amber-400 py-1.5 pl-2 pr-6 text-[11px] font-medium leading-4 text-black shadow-[0_8px_22px_rgba(0,0,0,0.36),0_0_12px_rgba(251,191,36,0.28)]"
+              className="fixed z-40 w-[240px] max-w-[calc(100vw-24px)] rounded-md border border-amber-400/45 bg-amber-400 py-1.5 pl-2 pr-6 text-[11px] font-medium leading-4 text-black shadow-[0_8px_22px_rgba(0,0,0,0.36),0_0_12px_rgba(251,191,36,0.28)]"
               style={{ left: settingsWarningBubble.left, top: settingsWarningBubble.top }}
               role="status"
             >
@@ -455,7 +455,7 @@ function useFloatingBubblePosition(
       );
       setPosition({
         left,
-        top: rect.bottom + 7,
+        top: Math.max(rect.bottom, anchorRef.current?.closest("header")?.getBoundingClientRect().bottom ?? rect.bottom) + 7,
         arrowLeft: rect.left + rect.width / 2 - left - 4,
       });
     };

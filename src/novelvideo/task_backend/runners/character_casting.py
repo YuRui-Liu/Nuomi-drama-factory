@@ -34,7 +34,19 @@ async def generate_casting_candidate(*, ctx, candidate_id: str, character_id: st
     output = store.output_path(candidate_id)
     metadata = {"provider": "grsai", "requested_model": str(resolution.requested_model or ""),
                 "resolved_model": resolution.model, "resolution_source": resolution.resolution_source}
-    if not store.claim_generation(candidate_id, task_id=task_id, generation_metadata=metadata):
+    prompt = candidate.snapshot.prompt
+    aspect_ratio = '1:1'
+    if candidate.sheet_contract:
+        from novelvideo.character_visual.character_sheet import sheet_prompt
+        prompt = sheet_prompt(candidate.snapshot.proposal_snapshot, candidate.snapshot.style,
+                              [f'{f.field}: {f.value}' for f in candidate.snapshot.hard_constraints],
+                              identity_constraints=candidate.identity_constraints)
+        aspect_ratio = '3:2'
+    prompt = candidate.repair_prompt or prompt
+    if candidate.repair_prompt and candidate.identity_constraints:
+        import json
+        prompt += '\n必须遵循的角色身份资料：' + json.dumps(candidate.identity_constraints, ensure_ascii=False)
+    if not store.claim_generation(candidate_id, task_id=task_id, generation_metadata=metadata, generation_prompt=prompt):
         # Only recover validated local bytes. Never repeat a possibly paid request.
         if output.is_file():
             return candidate_result(store.complete_generation(candidate_id, output))
@@ -45,9 +57,21 @@ async def generate_casting_candidate(*, ctx, candidate_id: str, character_id: st
 
         with cost_context(CostContext(project_id=ctx.project_id, task_id=task_id,
                                       resource_id=candidate_id, media_type="image")), requested_cost_context(
-                "image", attempt_id=task_id, usage={"item": "1"}, specifications=(("aspect_ratio", "1:1"),)):
-            generated = await generate(model=resolution.model, prompt=candidate.snapshot.prompt,
-                                       output_path=output, aspect_ratio="1:1")
+                # One task can produce the initial sheet and a repaired sheet.
+                # The candidate is the immutable paid-attempt boundary, not the task.
+                "image", attempt_id=f"casting-image:{ctx.project_id}:{candidate_id}",
+                usage={"item": "1"}, specifications=(("aspect_ratio", aspect_ratio),)):
+            references = []
+            if candidate.image_references:
+                import hashlib
+                for reference in candidate.image_references:
+                    path = store.safe_path(reference['path'])
+                    if hashlib.sha256(path.read_bytes()).hexdigest() != reference['sha256']:
+                        raise ValueError('image reference digest mismatch')
+                    references.append(str(path))
+            generated = await generate(model=resolution.model, prompt=prompt,
+                                       output_path=output, aspect_ratio=aspect_ratio,
+                                       **({'reference_paths': references} if references else {}))
         if before_publish:
             await before_publish()
         return candidate_result(store.complete_generation(candidate_id, generated))

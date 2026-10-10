@@ -6,7 +6,6 @@ import asyncio
 from hashlib import sha256
 from math import gcd
 import os
-import re
 from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -108,9 +107,12 @@ def _snapshot_generation_input(
         reference_mappings: list[str] = []
         asset_references: list[dict[str, Any]] = []
         missing_mappings = 0
+        out_of_scope = 0
         counts = {"formal": 0, "temporary": 0, "fallback": 0}
+        # Reference labels address this request's grid, whose panels are locally
+        # enumerated by _grid_prompt; persistent beat numbers are not cell indices.
         beats_by_id = {
-            str(beat.get("id") or beat.get("beat_id") or ""): _beat_number(beat, index)
+            str(beat.get("id") or beat.get("beat_id") or ""): index
             for index, beat in enumerate(payload.get("beats") or (), start=1)
             if isinstance(beat, Mapping)
         }
@@ -180,9 +182,21 @@ def _snapshot_generation_input(
                     or not str(raw.get("source_id") or "").strip()
                 ):
                     raise ValueError
-            references.append(validated.image_path)
             entity_id = str(raw.get("entity_id") or "").strip()
             shot_ids = raw.get("shot_ids")
+            scoped_panel_ids = tuple(str(value) for value in shot_ids) if isinstance(shot_ids, (list, tuple)) else ()
+            # Older projections use beat IDs as panel IDs; retain that explicit
+            # mapping rather than mistaking the two ID namespaces for absence.
+            if isinstance(raw.get("beat_ids"), (list, tuple)):
+                scoped_panel_ids += tuple(str(value) for value in raw["beat_ids"])
+            # An explicit scope is not permission to apply a reference to every
+            # later panel. Unknown legacy scope stays unknown; do not infer exits
+            # or presence by searching prose or character names.
+            if (beats_by_id and scoped_panel_ids
+                and not set(scoped_panel_ids).intersection(beats_by_id)):
+                out_of_scope += 1
+                continue
+            references.append(validated.image_path)
             if planned_snapshot and binding_id and entity_id:
                 # Retain the exact verified input version for downstream video
                 # continuity; current catalogue entries are not provenance.
@@ -220,11 +234,9 @@ def _snapshot_generation_input(
                                 "identity_entity_id": entity_id,
                             })
             if entity_id and isinstance(shot_ids, (list, tuple)):
-                panel_numbers = tuple(
-                    beats_by_id[shot_id]
-                    for shot_id in (str(item) for item in shot_ids)
-                    if shot_id in beats_by_id
-                )
+                panel_numbers = tuple(dict.fromkeys(
+                    beats_by_id[panel_id] for panel_id in scoped_panel_ids
+                    if panel_id in beats_by_id))
                 panels = ", ".join(str(number) for number in panel_numbers) or "all relevant"
                 asset_kind = str(raw.get("asset_kind") or "")
                 if asset_kind == "character_identity":
@@ -266,6 +278,7 @@ def _snapshot_generation_input(
             **counts,
             "ignored": len(ignored),
             "mapping_missing": missing_mappings,
+            **({"out_of_scope": out_of_scope} if out_of_scope else {}),
         }
         if asset_references:
             audit["asset_references"] = asset_references
@@ -329,7 +342,8 @@ def _grid_prompt(
     image_projection = str(payload.get("image_projection") or "").strip()
     parts = [
         part
-        for part in (image_projection, style_prompt, grid_rules, "\n".join(panels))
+        for part in (image_projection, style_prompt, grid_rules,
+                     str(payload.get('adjacent_keyframe_context') or ''), "\n".join(panels))
         if part
     ]
     mapping = ""
@@ -612,12 +626,20 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
         # response so a bad split can be repaired without another generation.
         target.with_name(f"{target.stem}.provider.png").write_bytes(image_bytes)
         from novelvideo.narrative_groups.storyboard_repair import save_prompt_snapshot
-        from novelvideo.narrative_groups.image_prompt import panel_description
+        from novelvideo.narrative_groups.image_prompt import panel_description, adjacent_keyframe_context
 
         prompt_snapshot = {
             "original_prompt": request.prompt,
             "prompt": str(payload.get("repair_prompt") or ""),
             "feedback": str(payload.get("repair_feedback") or ""),
+            "keyframe_prompt": str(payload.get("keyframe_prompt") or ""),
+            "adjacent_keyframe_context": str(payload.get("adjacent_keyframe_context") or ""),
+            "panel_contexts": {
+                str(beat.get('id') or beat.get('beat_id') or ''): adjacent_keyframe_context(
+                    list(payload.get('keyframe_context_beats') or payload.get('beats') or ()),
+                    [str(beat.get('id') or beat.get('beat_id') or '')])
+                for beat in payload.get('beats') or ()
+            },
             "panel_prompts": {
                 str(beat.get("id") or beat.get("beat_id") or beat.get("beat_number") or ""):
                 panel_description(beat)
@@ -899,6 +921,45 @@ def _split_existing_grid(
 
 
 async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only: bool) -> dict[str, Any]:
+    raw = dict(envelope.get("payload") or {})
+    packs = raw.pop("generation_batches", ())
+    if len(packs) > 1:
+        results = []
+        split_inputs = {}
+        identity = str(raw.get("generation_id") or envelope.get("__run_task_id") or envelope.get("task_id") or "")
+        if not split_only and not identity:
+            raise ValueError("versioned storyboard requires project and generation identity")
+        for batch in packs:
+            from novelvideo.narrative_groups.image_prompt import adjacent_keyframe_context
+            shots = tuple(batch["shot_ids"])
+            child = {**raw, "generation_batch": batch, "batch_id": batch["id"],
+                     "keyframe_context_beats": list(raw.get('beats', ())),
+                     "adjacent_keyframe_context": adjacent_keyframe_context(list(raw.get('beats', ())), shots),
+                     "layout": batch["layout"], "shot_ids": list(shots), "_physical_pack": True,
+                     "generation_id": f"{identity}:{batch['id']}",
+                     "beats": [beat for beat in raw.get("beats", ())
+                               if str(beat.get("id") or beat.get("beat_id")) in shots]}
+            if split_only:
+                child["storyboard_split_input"] = batch.get("storyboard_split_input")
+            item = await _execute_single({**envelope, "payload": child}, ctx, split_only=split_only)
+            if item.get("storyboard_split_input"):
+                split_inputs[str(batch["id"])] = item["storyboard_split_input"]
+            results.append(item)
+        cells = [cell for result in results for cell in result.get("cell_assets", ())]
+        errors = [error for result in results for error in result.get("errors", ())]
+        status = "completed" if all(result["status"] == "completed" for result in results) else "partial_failure"
+        result = {"status": status, "cell_assets": cells, "errors": errors,
+                  "batches": results, "grid_asset": results[0].get("grid_asset", "")}
+        record_stage_result(_project_dir(raw, ctx), int(envelope.get("episode") or raw["episode"]),
+                            str(raw["group_id"]), str(raw["stage"]), expected_revision=int(raw["revision"]),
+                            status=status, cell_assets=cells,
+                            provider_parameters={"storyboard_split_inputs": split_inputs},
+                            error="; ".join(str(error) for error in errors))
+        return result
+    return await _execute_single(envelope, ctx, split_only=split_only)
+
+
+async def _execute_single(envelope: dict[str, Any], ctx: ProjectContext, *, split_only: bool) -> dict[str, Any]:
     payload = _normalize_generation_batch_payload(envelope.get("payload") or {})
     if payload.get("storyboard_contract_version") == 1:
         if not split_only:
@@ -990,6 +1051,9 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
                     shot = str(cell.get("shot_id") or cell.get("beat_id") or "")
                     save_prompt_snapshot(project_dir, cell["path"], {
                         **snapshot, "prompt": (snapshot.get("panel_prompts") or {}).get(shot, ""),
+                        "keyframe_prompt": (snapshot.get("panel_prompts") or {}).get(shot, ""),
+                        "adjacent_keyframe_context": (snapshot.get('panel_contexts') or {}).get(
+                            shot, snapshot.get('adjacent_keyframe_context', '')),
                     })
         record_stage_result(
             project_dir,
@@ -997,7 +1061,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
             group_id,
             stage,
             expected_revision=expected_revision,
-            status=result["status"],
+            status="running" if payload.get("_physical_pack") else result["status"],
             grid_asset=result.get("grid_asset"),
             cell_assets=result.get("cell_assets") or [],
             error=error,
@@ -1028,6 +1092,8 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
                 "reference_audit": dict(result.get("reference_audit") or {}),
             },
         )
+        if split_input is not None:
+            result["storyboard_split_input"] = split_input.model_dump(mode="json")
         return result
     except Exception as exc:
         record_stage_result(

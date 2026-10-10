@@ -214,8 +214,9 @@ def test_frozen_reference_snapshot_preserves_prompt_mapping_with_strong_sketch(
     generation_input = narrative_group._generation_input(payload)
 
     assert generation_input.references == (str(sketch), str(identity), str(scene))
-    assert "Reference 2: character Alice, identity Alice_youth; use for panels 4." in generation_input.prompt
-    assert "Reference 3: scene hall; use for panels 7." in generation_input.prompt
+    # Reference scope addresses cells in this generated grid, not episode beat numbers.
+    assert "Reference 2: character Alice, identity Alice_youth; use for panels 1." in generation_input.prompt
+    assert "Reference 3: scene hall; use for panels 2." in generation_input.prompt
 
 
 def test_legacy_frozen_snapshot_without_mapping_warns_instead_of_crashing(

@@ -37,7 +37,7 @@ def png(color):
 @pytest.fixture
 async def adoption_env(tmp_path, monkeypatch):
     stores = []
-    async def make(identity_id=None, review='completed'):
+    async def make(identity_id=None, review='completed', identity_name='老年'):
         from novelvideo.character_visual import casting_service, casting_source
         ctx = SimpleNamespace(project_id='project', output_dir=tmp_path / 'output', state_dir=tmp_path / 'separate-state',
             effective_role='editor', requester_user_id='trusted-user', project_name='project', owner_username='owner')
@@ -45,7 +45,12 @@ async def adoption_env(tmp_path, monkeypatch):
         await sql.initialize()
         stores.append(sql.close)
         await sql.add_character(NovelCharacter(name='甲'))
-        await sql.add_character_identity('甲', CharacterIdentity(identity_id='old', character_name='甲', identity_name='老年', appearance_details='保留描述'))
+        await sql.add_character_identity('甲', CharacterIdentity(identity_id='old', character_name='甲', identity_name=identity_name, appearance_details='保留描述'))
+        # Preserve the exact legacy name before freezing the source revision.
+        with sqlite3.connect(sql.db_path) as raw_db:
+            items = json.loads(raw_db.execute("SELECT identities_json FROM characters WHERE name='甲'").fetchone()[0])
+            items[0]['identity_name'] = identity_name
+            raw_db.execute("UPDATE characters SET identities_json=? WHERE name='甲'", (json.dumps(items),))
         text = '甲七十岁。'
         db = await sql._ensure_db()
         await db.execute('INSERT INTO episode_sources(episode_number,title,raw_content,content_hash,source_filename,source_revision,imported_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',
@@ -346,7 +351,7 @@ async def test_identity_rename_during_preload_rejected(adoption_env, monkeypatch
             db.execute('UPDATE characters SET identities_json=? WHERE name=?', (json.dumps(row), '甲'))
         return loaded
     monkeypatch.setattr(casting_source, 'load_sources', changing)
-    with pytest.raises(ValueError, match='identity.*changed'):
+    with pytest.raises(ValueError, match='identity.*changed|source changed'):
         await e.adopt()
     assert e.visual.get('甲').identity_visual_bibles == {}
 
@@ -516,7 +521,7 @@ async def test_get_cannot_mix_old_bible_with_concurrently_adopted_current(adopti
 @pytest.mark.parametrize('names', [('老年', '甲_老年'), ('老/年', '老:年')])
 @pytest.mark.parametrize('existing', ['unadopted', 'adopted', 'journal_only'])
 async def test_adoption_rejects_identity_canonical_path_collision(adoption_env, names, existing):
-    e = await adoption_env('old')
+    e = await adoption_env('old', identity_name=names[0])
     from novelvideo.character_visual import casting_service, casting_recovery
     with sqlite3.connect(e.sql.db_path) as db:
         row = json.loads(db.execute('SELECT identities_json FROM characters WHERE name=?', ('甲',)).fetchone()[0])
@@ -535,7 +540,11 @@ async def test_adoption_rejects_identity_canonical_path_collision(adoption_env, 
     w = e.visual.get('甲')
     proposal = w.identity_design_proposals['old'][0]
     draft = CharacterVisualWorkspace(character_id='甲', profile=w.profile, design_proposals=[proposal], selected_proposal_id=proposal.proposal_id)
-    source_revision = e.candidates.get('candidate').snapshot.source_revision
+    from novelvideo.character_visual.casting_source import load_sources
+    _, source_revision = await load_sources(e.ctx.output_dir, e.sql)
+    for fact in draft.profile.facts:
+        fact.source_revision = source_revision
+    w.profile = draft.profile.model_copy(deep=True)
     revision = build_casting_revision(draft, 'collision', source_revision, '水墨')
     w.identity_casting_revisions['collision'] = revision
     w.identity_design_proposals['collision'] = [proposal]

@@ -47,7 +47,8 @@ async def test_completed_candidate_is_not_auto_added_to_library_or_plan(tmp_path
     class Client:
         async def submit(self,*args): raise AssertionError('must not resubmit')
         async def query(self,task):
-            return SimpleNamespace(status='completed',results=[SimpleNamespace(node_id='107',output_type='audio',url='https://example.test/music')],usage={})
+            from novelvideo.media_capabilities.runtime.runninghub_client import RunningHubClient
+            return SimpleNamespace(status=RunningHubClient._normalize_status('SUCCESS'),results=[SimpleNamespace(node_id='107',output_type='audio',url='https://example.test/music')],usage={})
         async def download(self,url): return wav_bytes()
     result = await advance_generation(store,'p','j',Client(),tmp_path/'media')
     assert result['status'] == 'completed'

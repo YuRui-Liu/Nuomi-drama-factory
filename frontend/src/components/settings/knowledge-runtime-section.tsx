@@ -244,6 +244,7 @@ function MediaProviderCard({ open, kind, icon, account }: { open: boolean; kind:
     video_minimax_h3_ref_max_images: 5,
     tts_qwen3_voice_design: "",
     tts_indextts2_voice_clone: "",
+    music_acestep: "2059090557116440578",
   });
   const [videoRefMaxImages, setVideoRefMaxImages] = useState("5");
   const { dirty: accountDirty, markSaved: markAccountSaved } = useSettingsSnapshot(`media-${kind}`, { baseUrl, apiKey, concurrency, grsaiModel });
@@ -393,6 +394,8 @@ function MediaProviderCard({ open, kind, icon, account }: { open: boolean; kind:
             </Field>
             <WorkflowIdField label="Qwen3 音色设计 Workflow ID" value={workflowIds.tts_qwen3_voice_design} onChange={(value) => setWorkflowId("tts_qwen3_voice_design", value)} />
             <WorkflowIdField label="IndexTTS2 声音克隆 Workflow ID" value={workflowIds.tts_indextts2_voice_clone} onChange={(value) => setWorkflowId("tts_indextts2_voice_clone", value)} />
+            <WorkflowIdField label="ACE-Step 配乐 Workflow ID" value={workflowIds.music_acestep} onChange={(value) => setWorkflowId("music_acestep", value)} />
+            <p className="text-xs text-muted-foreground">配乐台生成纯音乐使用此工作流。部署环境设置 NUOMI_MUSIC_WORKFLOW_ID 时，以环境变量为准。</p>
           </div>
         ) : null}
         <div className="flex justify-end"><Button type="button" variant="outline" size="sm" onClick={handleSave} disabled={save.isPending}>{save.isPending ? <Loader2 className="size-3.5 animate-spin" /> : null}保存</Button></div>

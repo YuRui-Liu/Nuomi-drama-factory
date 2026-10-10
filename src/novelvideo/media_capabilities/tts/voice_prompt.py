@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from novelvideo.media_capabilities.tts.models import VoiceSpec, VoiceSpecError
+from novelvideo.media_capabilities.tts.models import CharacterVoiceDesign, VoiceSpec, VoiceSpecError
 
 
 _REAL_PERSON_PATTERNS = (
@@ -58,6 +58,21 @@ def compile_voice_instruction(spec: VoiceSpec) -> str:
     if negatives:
         instruction += " Avoid: " + ", ".join(negatives) + "."
     return instruction
+
+
+def compile_character_voice_design(design: CharacterVoiceDesign) -> str:
+    """Keep source material out of the acoustic instruction sent to VoiceDesign."""
+    _validate(design.voice_spec)
+    spec = design.voice_spec
+    values = [spec.age_impression, spec.pitch, spec.texture, spec.resonance,
+              spec.articulation, spec.accent, spec.pace, spec.emotional_baseline]
+    voice = "，".join(_clean(value).strip("。，；") for value in values if _clean(value))
+    performance = "，".join(_clean(value).strip("。，；")
+                            for value in design.performance.model_dump().values() if _clean(value))
+    parts = [value + "。" for value in (voice, performance) if value]
+    if spec.negative_constraints:
+        parts.append("避免：" + "、".join(_clean(v) for v in spec.negative_constraints if _clean(v)) + "。")
+    return "".join(parts)
 
 
 def compile_character_voice_description(

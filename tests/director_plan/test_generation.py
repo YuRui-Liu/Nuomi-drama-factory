@@ -157,3 +157,36 @@ def test_public_generation_api_requires_revision_and_style_hash() -> None:
         plan_generation_batches(group)  # type: ignore[call-arg]
     with pytest.raises(TypeError):
         plan_video_segments(group)  # type: ignore[call-arg]
+
+
+def test_creative_groups_use_physical_image_packs_without_recutting():
+    group = group_with_shots(1).model_copy(update={
+        "creative_contract_version": 1,
+        "shots": tuple(shot(i) for i in range(1, 7)),
+    })
+    batches = generation_batches(group)
+    assert [batch.shot_ids for batch in batches] == [
+        ("shot-1", "shot-2", "shot-3", "shot-4"), ("shot-5", "shot-6")]
+    assert all(batch.group_id == group.id for batch in batches)
+
+
+def test_creative_shots_are_never_provider_merged():
+    group = group_with_shots(2, continuous_with_next=True, duration_seconds=4).model_copy(
+        update={"creative_contract_version": 1})
+    assert [segment.shot_ids for segment in video_segments(group)] == [("shot-1",), ("shot-2",)]
+
+
+def test_creative_long_take_reports_capability_conflict_before_model_validation():
+    group = group_with_shots(1).model_copy(update={
+        "creative_contract_version": 1,
+        "shots": (shot(1).model_copy(update={"duration_seconds": 20}),),
+    })
+    with pytest.raises(ValueError, match="capability_conflict.*shot-1.*15") as error:
+        video_segments(group)
+    assert not isinstance(error.value, ValidationError)
+
+
+def test_creative_short_take_reports_conflict_instead_of_padding():
+    group = group_with_shots(1).model_copy(update={"creative_contract_version": 1})
+    with pytest.raises(ValueError, match="capability_conflict.*4s"):
+        video_segments(group)

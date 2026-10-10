@@ -159,7 +159,7 @@ export function GroupReferenceDialog({
           aria-label="引用预览警告"
           className="rounded-lg border border-amber-300 bg-amber-950/80 p-4 text-amber-50"
         >
-          <div className="flex items-center gap-2 font-semibold"><AlertTriangle className="size-4" aria-hidden="true" />引用不完整，本次仍可继续生成</div>
+          <div className="flex items-center gap-2 font-semibold"><AlertTriangle className="size-4" aria-hidden="true" />引用预览提示；必需引用须补齐后生成</div>
           <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">{(preview.warnings ?? []).map((warning, index) => <li key={`${index}:${warning}`}>{warning}</li>)}</ul>
         </div> : null}
         <section className="grid gap-3 rounded-xl border border-lime-300/40 bg-lime-300/10 p-4 sm:grid-cols-2">
@@ -167,6 +167,7 @@ export function GroupReferenceDialog({
           <label className="space-y-1 text-xs"><span className="font-medium">本次真实模型</span><select aria-label="本次真实模型" className="h-9 w-full rounded-md border border-white/30 bg-zinc-950 px-3" value={model} onChange={(event) => { setModel(event.target.value); setImageSize(coerceNarrativeImageSize(event.target.value, imageSize)); }}>{(stage === "sketch" ? ["nano-banana-2", "nano-banana-2-4k-cl", "gpt-image-2"] : ["gpt-image-2", "gpt-image-2-vip"]).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
           {stage === "render" ? <label className="space-y-1 text-xs"><span className="font-medium">本次输出分辨率</span><select aria-label="本次输出分辨率" className="h-9 w-full rounded-md border border-white/30 bg-zinc-950 px-3" value={imageSize ?? defaultNarrativeImageSize(model)} onChange={(event) => setImageSize(event.target.value as NarrativeImageSize)}>{supportedNarrativeImageSizes(model).map((size) => <option key={size} value={size}>{size}</option>)}</select></label> : null}
           <label className="flex items-center gap-2 text-xs sm:col-span-2"><Checkbox checked={saveAsProjectDefault} onCheckedChange={(checked) => setSaveAsProjectDefault(checked === true)} />保存为本项目{stage === "sketch" ? "草图" : "实图"}默认模型</label>
+          <p className="text-xs sm:col-span-2">计费单位与本次金额暂未知，请核对所选渠道的计价规则；失败与重试也可能产生费用。</p>
         </section>
         {stage === "render" && !sketchReady ? <label className="flex gap-2 rounded-lg border border-amber-300 bg-amber-950/70 p-3 text-xs text-amber-100"><Checkbox aria-label="允许无草图约束生成" checked={allowUnconstrained} onCheckedChange={(checked) => setAllowUnconstrained(checked === true)} /><span><strong>无草图约束生成</strong><br />实图构图可能漂移；默认允许提交，取消勾选可阻止本次生成。</span></label> : null}
         <div className="flex items-center justify-between gap-3 rounded-xl border border-white/20 bg-black/25 p-4">
@@ -179,7 +180,7 @@ export function GroupReferenceDialog({
 
       <DialogFooter className="px-0 pb-0">
         <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
-        <Button disabled={loading || !!errorMessage || !preview || submitting || uploading || normalizedSelection.requiredOverflow || normalizedSelection.bindingConflict || imageCount > maxImages || !providerId.trim() || !model.trim() || (stage === "render" && !sketchReady && !allowUnconstrained)} onClick={() => preview && onSubmit({ selectedBindingIds: normalizedSelection.selectedIds, uploadIds: references.temporaryUploads.map((item) => item.uploadId), referenceRevision: preview.reference_revision, useStyle, providerId, model, imageSize, allowUnconstrained, saveAsProjectDefault })}>
+        <Button disabled={loading || !!errorMessage || !preview || submitting || uploading || normalizedSelection.hasRequiredUnavailable || normalizedSelection.requiredOverflow || normalizedSelection.bindingConflict || imageCount > maxImages || !providerId.trim() || !model.trim() || (stage === "render" && !sketchReady && !allowUnconstrained)} onClick={() => preview && !normalizedSelection.hasRequiredUnavailable && onSubmit({ selectedBindingIds: normalizedSelection.selectedIds, uploadIds: references.temporaryUploads.map((item) => item.uploadId), referenceRevision: preview.reference_revision, useStyle, providerId, model, imageSize, allowUnconstrained, saveAsProjectDefault })}>
           {submitting ? <Loader2 className="size-4 animate-spin" /> : null}使用 {imageCount} 张参考图生成
         </Button>
       </DialogFooter>

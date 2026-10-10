@@ -217,6 +217,11 @@ export interface DirectorSegment {
   firstFrame: DirectorImage | null;
   lastFrame: DirectorImage | null;
   technique?: { id: string; version: string } | null;
+  caseReference?: {
+    proposal_id: string; case_id: string; dimensions: string[];
+    source_prompts: import('@/api/techniqueLibrary').CasePrompt[];
+    description: string; applied_at: string; prompt_sha256: string;
+  } | null;
 }
 
 export interface DirectorDraft {
@@ -275,7 +280,20 @@ export interface DirectorAttempt {
   updatedAt: string | null;
 }
 
+export interface StoryboardPreparation {
+  inputMode?: 'ref' | 'frames';
+  refBindings?: { sourceNodeId: string | null; imageId: string; url: string; pictureIndex: number; sha256: string }[];
+  sourceGridRows?: number; sourceGridCols?: number;
+  sourceNodeId: string; sourceUrl: string; sourceWidth: number; sourceHeight: number;
+  sourceFingerprint: string; settingsFingerprint: string; status: 'prepared';
+  cells: { id: string; rect: [number, number, number, number]; cropUrl: string; imageUrl: string }[];
+  baselineDraft: Record<string, unknown>;
+  requestedDurationSeconds: number; actualDurationSeconds: number; actualTotalFrames: number;
+}
 export interface VideoDirectorNodeData extends NodeDisplayData {
+  autoStoryboard?: { sourceNodeId: string };
+  storyboardPreparation?: StoryboardPreparation;
+  inputModeIntent?: 'manual';
   draft: DirectorDraft;
   /** Active image input route; absent on nodes saved before input modes existed. */
   activeInputMode?: 'ref' | 'frames';
@@ -500,11 +518,13 @@ export interface StoryboardGenFrameItem {
   id: string;
   description: string;
   referenceIndex: number | null;
+  duration_seconds?: number;
 }
 
 export type StoryboardRatioControlMode = 'overall' | 'cell';
 
 export interface StoryboardGenNodeData {
+  cellRects?: [number, number, number, number][];
   displayName?: string;
   gridRows: number;
   gridCols: number;

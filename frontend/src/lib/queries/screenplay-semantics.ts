@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "@/lib/api";
 import { p } from "@/lib/api-path";
+import { queryKeys } from "@/lib/query-keys";
 import type { ApiResponse, TaskResponse } from "@/types/api";
 
 export interface SourceRange { start_line: number; end_line: number }
@@ -65,9 +66,15 @@ export function useScreenplaySemantics(project: string, episode: number) {
 
 export function useCreateScreenplaySemantics(project: string, episode: number) {
   const invalidate = useInvalidate(project, episode);
+  const client = useQueryClient();
   return useMutation({
     mutationFn: (sceneIds: string[] = []) => api.post(collectionPath(project, episode), { json: { scene_ids: sceneIds, concurrency: 5 } }).json<TaskResponse>(),
-    onSuccess: invalidate,
+    onSuccess: async () => {
+      // Replace the prior run's terminal cache before the controller starts
+      // watching the newly accepted task at the same source-revision scope.
+      await client.invalidateQueries({ queryKey: queryKeys.tasks(project), refetchType: "all" });
+      await invalidate();
+    },
   });
 }
 

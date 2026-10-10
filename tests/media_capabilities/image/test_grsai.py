@@ -137,7 +137,7 @@ async def test_submit_and_query_use_async_api_and_encode_reference_in_memory(
     assert snapshot.status == "succeeded"
     assert [request.url.path for request in requests] == ["/v1/api/generate"]
     submit_payload = json.loads(requests[0].content)
-    assert submit_payload["replyType"] == "json"
+    assert submit_payload["replyType"] == "async"
     assert submit_payload["model"] == "gpt-image-2"
     assert submit_payload["aspectRatio"] == "1024x1024"
     assert submit_payload["images"] == [
@@ -176,6 +176,7 @@ async def test_submit_keeps_async_running_response_compatible_with_query() -> No
         snapshot = await client.query(task_id, api_key="secret")
 
     assert snapshot.status == "succeeded"
+    assert json.loads(requests[0].content)["replyType"] == "async"
     assert [request.url.path for request in requests] == [
         "/v1/api/generate",
         "/v1/api/result",

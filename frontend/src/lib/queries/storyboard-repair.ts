@@ -13,6 +13,8 @@ export interface StoryboardRepairContext {
   source_revision: number;
   source_asset: string;
   original_prompt: string | null;
+  keyframe_prompt?: string | null;
+  adjacent_keyframe_context?: string | null;
   prompt: string;
   feedback: string;
   repair_status: "idle" | "queued" | "running" | "failed" | "completed";

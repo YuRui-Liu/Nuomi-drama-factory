@@ -6,6 +6,9 @@ import asyncio
 import hashlib
 import io
 import json
+import logging
+import math
+import os
 import re
 from collections.abc import Awaitable, Callable, Mapping, MutableMapping
 from pathlib import Path
@@ -15,6 +18,7 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from novelvideo.director_plan.cinematography import ShotCinematography
+from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
 from novelvideo.task_backend.cancel import TaskCancelled, TaskTimedOut, TaskLeaseLost
 from novelvideo.knowledge_runtime.codex import (
     MAX_STRUCTURED_IMAGE_BYTES,
@@ -22,20 +26,53 @@ from novelvideo.knowledge_runtime.codex import (
     validate_structured_images,
 )
 
-POLICY_VERSION = "cinematography-visual-review-v2"
+POLICY_VERSION = "cinematography-visual-review-v3-face"
+FROZEN_H3_POLICY_VERSION = "cinematography-frozen-h3-v1-face-partial"
 MAX_FRAME_PIXELS = 32_000_000
+logger = logging.getLogger(__name__)
+_RUNTIME_ERROR_CODES = frozenset({
+    'CODEX_EXEC_TIMEOUT', 'CODEX_EXEC_CONFIG_INVALID', 'CODEX_PROCESS_CLEANUP_FAILED',
+    'CODEX_STRUCTURED_OUTPUT_INVALID', 'CODEX_NOT_INSTALLED', 'CODEX_NOT_AUTHENTICATED',
+    'CODEX_SCHEMA_INVALID', 'CODEX_EXEC_FAILED',
+})
+_SAFE_EXCEPTION_TYPES = frozenset({'ValueError', 'TypeError', 'KeyError', 'OSError',
+    'FileNotFoundError', 'TimeoutError', 'RuntimeError', 'ValidationError',
+    'VisualReviewConfigurationError'})
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class VisualReviewConfigurationError(ValueError):
+    pass
+
+
+def _review_timeout(value: float | None) -> float:
+    try:
+        resolved = float(value if value is not None else os.getenv('ST_VISUAL_REVIEW_TIMEOUT_S', '120'))
+        if not math.isfinite(resolved) or not 0 < resolved <= 1800:
+            raise ValueError
+        return resolved
+    except (TypeError, ValueError):
+        raise VisualReviewConfigurationError('Visual review timeout must be finite and within (0, 1800].') from None
+
+
+class FrozenH3Facts(BaseModel):
+    """Original retained H3 facts, never reconstructed as adopted cinematography."""
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    provenance: Literal["frozen_h3_director_plan"] = "frozen_h3_director_plan"
+    director_plan: dict[str, Any]
 
 
 class FrameEvidence(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     frame_label: Text
     observation: Text
+    face_status: Literal["assessed", "not_visible", "unavailable"] = "unavailable"
+    face_observation: str = ""
 
 
 class VisualIssue(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
-    dimension: Literal["blocking", "lighting", "camera", "cut"]
+    dimension: Literal["blocking", "lighting", "camera", "cut", "face_integrity"]
     description: Text
     frame_labels: tuple[Text, ...] = Field(min_length=1)
 
@@ -46,13 +83,27 @@ class VisualReviewReport(BaseModel):
     evidence: tuple[FrameEvidence, ...] = ()
     issues: tuple[VisualIssue, ...] = ()
     technical_error: str | None = None
+    review_id: str = ""
+    policy_version: str = ""
+    frame_digests: dict[str, str] = Field(default_factory=dict)
+    frame_assets: dict[str, str] = Field(default_factory=dict)
+    review_kind: str = ""
+    source_segment_ids: tuple[str, ...] = ()
 
 
 _POLICY = """Review the supplied images against immutable cinematography facts.
 This is read-only observation. Never generate, repair, or invent image evidence.
 Each image's ordered label and facts appear below. Inspect every image and return
 an evidence observation with its exact frame_label. Report only visible violations
-under blocking, lighting, camera, or cut, citing supplied frame_labels for each issue.
+under blocking, lighting, camera, cut, or face_integrity, citing supplied frame_labels for each issue.
+For every original full frame, report face_status and a concrete face_observation.
+Use not_visible only when no face is visible (for example, a back-facing head).
+Small, occluded or indistinct visible faces are unavailable, never presumed intact.
+Distinguish intentional depth-of-field or low detail from demonstrable melting,
+anatomical deformation or identity drift. Do not infer identity from an unreadable face.
+Do not invent face crops, landmarks, identities or restored detail. Only supplied
+original full-frame evidence can establish a defect. Subtle emotion that cannot be
+read at the planned shot size is a framing/readability issue, not proof of melting.
 Compare facing, gaze, subject positions and visible motion cues to the plan. A still
 cannot establish a full motion path or unseen action; do not invent measurements.
 Use frame_context to identify reference/actual and start/middle/end roles, visible
@@ -98,7 +149,7 @@ def _load_image(path: str | Path) -> StructuredImage:
 async def review_cinematography(
     *,
     frames: Mapping[str, str | Path],
-    facts: Mapping[str, ShotCinematography],
+    facts: Mapping[str, ShotCinematography | FrozenH3Facts],
     run_structured: Callable[..., Awaitable[Any]],
     reviewer_fingerprint: str,
     mode: Literal["reference", "boundary"] = "reference",
@@ -107,7 +158,8 @@ async def review_cinematography(
     frame_context: Mapping[str, str] | None = None,
     cache: MutableMapping[str, VisualReviewReport] | None = None,
     policy_version: str = POLICY_VERSION,
-    timeout_seconds: float = 120.0,
+    timeout_seconds: float | None = None,
+    require_face_integrity: bool = False,
 ) -> VisualReviewReport:
     """Review 1–8 local frames with an explicit pair for contextual boundaries.
 
@@ -117,6 +169,8 @@ async def review_cinematography(
     A two-frame boundary defaults to insertion order: previous end, next start.
     More frames require boundary_labels; all images need evidence and facts.
     ``frame_context`` describes frame roles, visible states and planned camera motion.
+    The local deadline is explicit ``timeout_seconds`` or ``ST_VISUAL_REVIEW_TIMEOUT_S``
+    (default 120 seconds, finite and at most 1800), separate from CLI execution limits.
     """
     try:
         if not 1 <= len(frames) <= 8 or set(frames) != set(facts):
@@ -141,16 +195,27 @@ async def review_cinematography(
                 raise ValueError("Boundary needs an ordered pair and explicit cut intent")
         elif pair is not None:
             raise ValueError("Boundary labels require boundary mode")
-        if not 0 < timeout_seconds <= 300:
-            raise ValueError("Review timeout must be bounded")
+        timeout_seconds = _review_timeout(timeout_seconds)
         # Snapshot all facts before yielding to the reviewer.
-        fact_data = {label: ShotCinematography.model_validate(facts[label]).model_dump(mode="json") for label in frames}
+        legacy = any(isinstance(value, FrozenH3Facts) for value in facts.values())
+        if legacy and not all(isinstance(value, FrozenH3Facts) for value in facts.values()):
+            raise ValueError("Mixed fact provenance")
+        if legacy:
+            policy_version = FROZEN_H3_POLICY_VERSION
+        fact_data = {label: (facts[label].model_dump(mode="json") if legacy else
+            ShotCinematography.model_validate(facts[label]).model_dump(mode="json")) for label in frames}
         images = [_load_image(path) for path in frames.values()]
         validate_structured_images(images)
         context = {"mode": mode, "cut_intent": cut_intent, "ordered_frames": list(frames),
+                   "require_face_integrity": require_face_integrity,
                    "facts": fact_data, "frame_context": frame_context_data,
                    "boundary_labels": pair}
-        prompt = _POLICY + "\n" + json.dumps(context, ensure_ascii=False, sort_keys=True)
+        legacy_policy = ("\nFacts are the original frozen H3 director plan, with partial constraints. "
+            "Missing constraints remain unknown; never fill them from a current plan or invented cinematography. "
+            "Assess visible face integrity and explicit original spatial/action invariants. "
+            "A passed observation is only a partial review, not full cinematography acceptance. "
+            "If an essential boundary constraint is absent return unavailable.\n") if legacy else ""
+        prompt = _POLICY + legacy_policy + "\n" + json.dumps(context, ensure_ascii=False, sort_keys=True)
         key_data = {"prompt": prompt, "policy_version": policy_version,
                     "reviewer": reviewer_fingerprint,
                     "images": [hashlib.sha256(image.data).hexdigest() for image in images]}
@@ -161,8 +226,11 @@ async def review_cinematography(
             prompt=prompt, images=images, output_type=VisualReviewReport,
         ), timeout=timeout_seconds)
         report = VisualReviewReport.model_validate(response.model_dump() if isinstance(response, BaseModel) else response)
+        provenance = {"review_id": key, "policy_version": policy_version,
+            "frame_digests": {label: hashlib.sha256(image.data).hexdigest()
+                              for label, image in zip(frames, images)}}
         if report.status == "unavailable":
-            return VisualReviewReport(status="unavailable", technical_error="ReviewerUnavailable")
+            return report.model_copy(update={**provenance, "technical_error": "ReviewerUnavailable"})
         labels = set(frames)
         if {item.frame_label for item in report.evidence} != labels:
             raise ValueError("Missing or invented frame evidence")
@@ -170,12 +238,25 @@ async def review_cinematography(
             raise ValueError("Issue cites unknown evidence")
         if (report.status == "failed") != bool(report.issues) or report.technical_error:
             raise ValueError("Inconsistent review verdict")
+        report = report.model_copy(update=provenance)
+        if require_face_integrity and report.status == "passed" and any(
+            item.face_status == "unavailable" or not item.face_observation.strip()
+            for item in report.evidence
+        ):
+            return report.model_copy(update={"status": "unavailable",
+                "technical_error": "FaceEvidenceUnavailable"})
         if cache is not None:
             cache[key] = report
         return report
     except (TaskCancelled, TaskTimedOut, TaskLeaseLost):
         raise
     except Exception as error:
-        error_type = type(error).__name__
-        safe_type = error_type if re.fullmatch(r"[A-Za-z0-9_]{1,64}", error_type) else "Exception"
-        return VisualReviewReport(status="unavailable", technical_error=safe_type)
+        if isinstance(error, KnowledgeRuntimeError):
+            code = getattr(error, 'code', None)
+            safe_code = code if isinstance(code, str) and code in _RUNTIME_ERROR_CODES else 'KnowledgeRuntimeError'
+        else:
+            name = type(error).__name__
+            safe_code = name if name in _SAFE_EXCEPTION_TYPES else 'Exception'
+        # Do not log exception text, traceback, prompt, file paths or provider output.
+        logger.warning('Visual review unavailable: code=%s', safe_code)
+        return VisualReviewReport(status="unavailable", technical_error=safe_code)

@@ -46,7 +46,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { SidebarListSkeleton, DetailPaneSkeleton } from "@/components/skeletons";
 import type { Style } from "@/types/style";
-import { stylePreviewUrl } from "@/lib/style-preview-url";
+import { extensionStylePreviewUrl, stylePreviewUrl } from "@/lib/style-preview-url";
 import { CreditCostInline } from "@/components/credit-cost-inline";
 import { useGenerationCreditCost } from "@/lib/queries/generation-credit-cost";
 
@@ -140,7 +140,7 @@ function isPreset(style: Style | null | undefined): boolean {
 }
 
 function stylePreviewSource(style: Style): string | null {
-  if (style.type === "extension") return style.preview_url ?? null;
+  if (style.type === "extension") return style.preview_url ? extensionStylePreviewUrl(style.preview_url) : null;
   return isPreset(style) ? stylePreviewUrl(style.id) : style.preview_url ?? null;
 }
 

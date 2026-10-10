@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 
 import { useProject, useUpdateProject } from "@/lib/queries/projects";
+import { ProjectDisplayName } from "@/components/projects/project-display-name";
 import {
   useChapters,
   useClearEpisodeImportStale,
@@ -1500,6 +1501,7 @@ export function IngestPageContent({ project }: { project: string }) {
             <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
               {t("ingest.subtitle")}
             </p>
+            {config && <ProjectDisplayName key={project} name={config.name || project} displayName={config.display_name} save={updateProject.mutateAsync} />}
             <span className="mt-2 inline-flex rounded border border-white/10 bg-white/[0.04] px-2 py-0.5 text-xs text-foreground/70">
               {knowledgePipeline === "structured_v1" ? "结构化导入" : "知识图谱"}
             </span>

@@ -295,6 +295,21 @@ describe("Header runtime gating", () => {
     expect(screen.getByRole("dialog", { name: "Settings dialog" })).toBeInTheDocument();
   });
 
+  it("keeps the warning below wrapped project navigation", async () => {
+    runtimeState.isCe = true;
+    connectionState.providers = { data: [{ provider_type: "grsai", credential_configured: true }] };
+    const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return { left: 20, right: 60, top: 0, bottom: this.tagName === "HEADER" ? 112 : 40, width: 40, height: 40, x: 20, y: 0, toJSON: () => ({}) };
+    });
+    try {
+      renderHeader({ project: "demo" });
+      const warning = await screen.findByRole("button", { name: "待配置：RunningHub" });
+      expect(warning.closest('[role="status"]')).toHaveStyle({ top: "119px" });
+    } finally {
+      geometry.mockRestore();
+    }
+  });
+
   it("does not mislabel pending or failed requests as missing configuration", async () => {
     runtimeState.isCe = true;
     connectionState.runtime = { isPending: true };

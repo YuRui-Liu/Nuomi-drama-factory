@@ -228,8 +228,8 @@ describe("PlannedReferencePicker", () => {
     expect(screen.getByRole("button", { name: /大厅雨夜版/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /密信/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /沈砚/ })).toBeDisabled();
-    expect(screen.getByText("必需引用尚未就绪，本次仍可继续生成；如需补齐，可返回规划处理。")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "可选：返回规划补齐引用" }));
+    expect(screen.getByText("必需引用尚未就绪，请返回规划补齐后生成。")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "返回规划补齐引用" }));
     expect(onResolvePlanning).toHaveBeenCalledOnce();
   });
 
@@ -242,9 +242,9 @@ describe("PlannedReferencePicker", () => {
     const binding = screen.getByRole("button", { name: /苏清晏/ });
     expect(binding).toBeDisabled();
     expect(binding).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByText("必需引用尚未就绪，本次仍可继续生成；如需补齐，可返回规划处理。")).toBeInTheDocument();
+    expect(screen.getByText("必需引用尚未就绪，请返回规划补齐后生成。")).toBeInTheDocument();
     expect(within(binding).getByText("缺少有效资产版本")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "可选：返回规划补齐引用" }));
+    fireEvent.click(screen.getByRole("button", { name: "返回规划补齐引用" }));
     expect(onResolvePlanning).toHaveBeenCalledOnce();
   });
 });

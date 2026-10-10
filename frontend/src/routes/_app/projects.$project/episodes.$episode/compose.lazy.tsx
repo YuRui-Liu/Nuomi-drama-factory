@@ -2,7 +2,9 @@
 // Copyright (c) 2026 ClaymoreLab
 import { createLazyFileRoute, useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
+import { CaptionEditor } from "@/components/episode/caption-editor";
+import { openEpisodeMusicDesk } from "@/features/canvas/music/handoff";
 import { toast } from "sonner";
 import {
   ArrowUpRight,
@@ -23,6 +25,7 @@ import { useTaskController } from "@/hooks/use-task-controller";
 import { useBeatStates } from "@/hooks/use-beat-states";
 import { queryKeys } from "@/lib/query-keys";
 import { api } from "@/lib/api";
+import { downloadFile } from "@/lib/download-file";
 import { p } from "@/lib/api-path";
 import { type StageId } from "@/lib/episode-stage-registry";
 import {
@@ -125,6 +128,9 @@ function InlineSwitch({
 }
 
 function ComposeTabContent() {
+  const previewVideo = useRef<HTMLVideoElement>(null);
+  const [captionTime, setCaptionTime] = useState(0);
+  const [openingMusic, setOpeningMusic] = useState(false);
   const { t } = useTranslation();
   const { project, episode } = Route.useParams();
   const epNum = parseInt(episode, 10);
@@ -266,47 +272,38 @@ function ComposeTabContent() {
     }
   };
 
+  const handleMusicDesk = async () => {
+    if (!resultUrl || openingMusic) return;
+    setOpeningMusic(true);
+    try {
+      const {canvas} = await openEpisodeMusicDesk(project, epNum, resultUrl);
+      await navigate({to: '/projects/$project/freezone', params: {project}, search: {canvas} as never});
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '配乐台打开失败，请重试');
+    } finally { setOpeningMusic(false); }
+  };
+
   const handleDownloadVideo = async () => {
     try {
-      const res = await api.get(
-        p`api/v1/projects/${project}/episodes/${epNum}/export/video`,
-      );
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = objectUrl;
-      a.download = `${project}_${outputFilename}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 2_000);
-    } catch {
-      toast.error(t("common.error"));
+      await downloadFile('/' + p`api/v1/projects/${project}/episodes/${epNum}/export/video`, `${project}_${outputFilename}`, ['video/mp4']);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t("common.error"));
     }
   };
 
   const handleExport = async (suffix: "srt" | "zip") => {
     try {
-      const res =
-        suffix === "zip"
-          ? await api.post(
-            p`api/v1/projects/${project}/episodes/${epNum}/export/zip`,
-          )
-          : await api.get(
-            p`api/v1/projects/${project}/episodes/${epNum}/export/srt`,
-          );
-      const blob = await res.blob();
       const filename = `${project}_ep${epNum}.${suffix}`;
-      const objectUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = objectUrl;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 2_000);
-    } catch {
-      toast.error(t("common.error"));
+      if (suffix === 'zip') {
+        const result = await api.post(p`api/v1/projects/${project}/episodes/${epNum}/export/zip`, { searchParams: { prepare_only: true }, timeout: 120_000 }).json<{ download_url: string }>();
+        await downloadFile(result.download_url, filename, ['application/zip']);
+      } else {
+        await downloadFile('/' + p`api/v1/projects/${project}/episodes/${epNum}/export/srt`, filename, ['text/srt', 'application/x-subrip']);
+      }
+    } catch (error) {
+      const response = (error as { response?: Response })?.response;
+      const body = await response?.clone().json().catch(() => null);
+      toast.error(typeof body?.detail === "string" ? body.detail : error instanceof Error ? error.message : t("common.error"));
     }
   };
 
@@ -383,6 +380,8 @@ function ComposeTabContent() {
             // Vertical (9:16) drama clips are taller than they are wide.
             <div className="flex min-h-52 items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-black/50">
               <video
+                ref={previewVideo}
+                onTimeUpdate={event => setCaptionTime(event.currentTarget.currentTime)}
                 src={resultUrl}
                 controls
                 onLoadedMetadata={(event) => {
@@ -428,6 +427,7 @@ function ComposeTabContent() {
           )}
           {!resultUrl && groups.length > 0 && <div className="rounded-lg border border-white/10 bg-black/20 p-4 text-sm">{groupReadiness.ready ? "本集视频来源已就绪，右侧确认参数后开始合成。" : <><p className="mb-3 text-amber-300">{groupReadiness.missing.length} 个叙事组需要补齐或更新视频</p><div className="flex flex-wrap gap-2">{groups.filter(group => groupReadiness.missing.includes(group.id)).map(group => <Button key={group.id} size="sm" variant="outline" onClick={() => void navigate({to:"/projects/$project/episodes/$episode/beats",params:{project,episode},search:{group:group.id,sub:"video"} as never})}>第 {group.ordinal} 组 · 前往处理 →</Button>)}</div></>}</div>}
           {groupReadiness.outdated.length > 0 && <div role="status" className="rounded-lg border border-amber-400/20 bg-amber-400/5 p-4 text-sm text-amber-300">第 {groups.filter(group => groupReadiness.outdated.includes(group.id)).map(group => group.ordinal).join("、")} 组分镜或引用已更新。本次将使用现有视频合成，无需重新生成；如需同步最新画面，可前往镜头生成更新视频。</div>}
+          {hasProductionContent && <CaptionEditor project={project} episode={epNum} currentTime={captionTime} previewReady={Boolean(resultUrl && currentOutputMedia)} onSeek={time => { if (previewVideo.current) { previewVideo.current.currentTime = time; setCaptionTime(time); void previewVideo.current.play(); } }} />}
           <details open={!resultUrl} className="rounded-lg border border-white/10"><summary className="cursor-pointer px-4 py-3 text-sm">本集片段 · {groupReadiness.completed} / {groups.length} 组就绪</summary>
           <NarrativeVideoClips compact
             groups={groups}
@@ -476,6 +476,7 @@ function ComposeTabContent() {
                   variant="outline"
                   size="sm"
                   onClick={() => void handleExport("srt")}
+                  disabled={groups.length > 0 && !canCompose}
                   className="gap-1.5"
                 >
                   <FileText className="size-3.5" />
@@ -485,6 +486,7 @@ function ComposeTabContent() {
                   variant="outline"
                   size="sm"
                   onClick={() => void handleExport("zip")}
+                  disabled={groups.length > 0 && !canCompose}
                   className="gap-1.5"
                 >
                   <Download className="size-3.5" />
@@ -492,6 +494,7 @@ function ComposeTabContent() {
                 </Button>
                 {resultUrl ? (
                   <>
+                    <Button variant="outline" size="sm" disabled={openingMusic || isComposing} onClick={() => void handleMusicDesk()}>{openingMusic ? '正在绑定成片版本…' : '进入配乐台'}</Button>
                     <Button
                       size="sm"
                       onClick={() => void handleDownloadVideo()}

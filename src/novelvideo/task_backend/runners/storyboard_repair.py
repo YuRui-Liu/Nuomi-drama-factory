@@ -29,7 +29,10 @@ def single_generation_input(payload):
              f"Compose at {payload['aspect_ratio']} aspect ratio.",
              'Reference 1 is the original frame. Preserve character identity, setting and visual style; apply the requested corrections.',
              'Use the remaining references only for matching subjects in this frame; do not add unrelated characters or scenes.',
-             payload.get('image_projection', ''), payload['repair_prompt']]
+             payload.get('image_projection', ''), payload.get('adjacent_keyframe_context', ''), payload['repair_prompt']]
+    if payload.get('keyframe_prompt'):
+        parts.append('Original frozen keyframe direction (preserve spatial facts except those explicitly '
+                     'changed by the requested correction; do not infer a new action):\n' + payload['keyframe_prompt'])
     mappings = ['original frame: preserve character identity, setting and visual style']
     mappings.extend(re.sub(r'; use for panels [^.]*\.', '', str(value))
                     for value in payload.get('repair_reference_mappings') or ())
@@ -100,6 +103,8 @@ async def execute_repair(envelope, ctx):
                 'single_storyboard_repair': True, 'repair_prompt': ticket['prompt'],
                 'repair_feedback': ticket['feedback'], 'repair_references': references,
                 'repair_reference_mappings': mappings,
+                'keyframe_prompt': snapshot.get('keyframe_prompt') or snapshot.get('prompt', ''),
+                'adjacent_keyframe_context': snapshot.get('adjacent_keyframe_context', ''),
                 'image_projection': snapshot.get('image_projection', generation.get('image_projection', '')),
                 'aspect_ratio': aspect, 'layout': {'rows': 1, 'columns': 1, 'capacity': 1}}
             from novelvideo.costs.context import CostContext, cost_context

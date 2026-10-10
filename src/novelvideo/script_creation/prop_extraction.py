@@ -178,7 +178,7 @@ def _candidates(output, document, asset_type='prop', *, all_names=None):
             fields['prop_type'] = item.prop_type
         for quote in item.visual_evidence:
             text = blocks.get(quote.block_id)
-            labels = ('空间布局', '视觉/光线', '视觉设计', '光线与氛围', '光线', '材质', '关键物件') if asset_type == 'scene' else ('外观材质', '外观与材质', '视觉描述', '视觉提示词')
+            labels = ('空间布局', '视觉/光线', '视觉与光线', '视觉设计', '光线与氛围', '光线', '材质', '关键物件') if asset_type == 'scene' else ('外观材质', '外观与材质', '视觉描述', '视觉提示词')
             verified_text = _verified_visual_quote(text, quote.text, labels)
             if asset_type == 'character' or verified_text is None:
                 raise DocumentValidation(f'外观描述必须逐字来自明确的视觉字段：{name}（block={quote.block_id}，quote={quote.text[:160]}）')

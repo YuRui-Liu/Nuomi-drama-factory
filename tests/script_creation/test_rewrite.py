@@ -1,4 +1,5 @@
 import pytest
+from tests.craft_fakes import craft_reply
 
 from novelvideo.script_creation.store import DocumentStore, DocumentConflict
 from novelvideo.script_creation.rewrite import RewriteService
@@ -6,7 +7,7 @@ from novelvideo.script_creation.rewrite import RewriteService
 
 class Runtime:
     async def run_structured(self, **kwargs):
-        return {"after": "新台词✨", "reason": "冲突更清晰"}
+        return craft_reply(kwargs['prompt'], '新台词✨')
 
 
 @pytest.mark.parametrize('newline', ['\n', '\r\n'])
@@ -22,7 +23,7 @@ def test_xyq_scene_scope_preserves_metadata_and_exact_offsets(newline):
     assert end == len(prefix + first)
 
 
-@pytest.mark.parametrize('kind,expected', [('episode_script', '# 短剧节奏'), ('people', '# 人物与对白')])
+@pytest.mark.parametrize('kind,expected', [('episode_script', '#'), ('people', 'Want（')])
 async def test_rewrite_uses_document_kind_methods_without_reformatting_selection(tmp_path, kind, expected):
     store = DocumentStore(tmp_path / 'data.db')
     await store.initialize()

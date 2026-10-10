@@ -7,6 +7,7 @@ import { getDirectorCapabilities } from '@/api/videoDirector';
 import { CANVAS_NODE_TYPES } from '@/features/canvas/domain/canvasNodes';
 import { createDirectorDraft } from '@/features/canvas/domain/videoDirectorDraft';
 import { useCanvasStore } from '@/stores/canvasStore';
+import { DirectorConnectionTargetDialog } from '@/features/canvas/director/DirectorConnectionTargetDialog';
 
 let onConnect: ((connection: Connection) => void) | undefined;
 vi.mock('@xyflow/react', async () => {
@@ -64,6 +65,33 @@ function dragImageToDirector() {
 }
 
 describe('director image connection target', () => {
+  it('counts different reference IDs separately even when their URLs match', async () => {
+    vi.mocked(getDirectorCapabilities).mockResolvedValue({ effectiveReferenceLimit: 2 } as Awaited<ReturnType<typeof getDirectorCapabilities>>);
+    const draft = createDirectorDraft('s');
+    draft.references = [{ imageId: 'board', url: '/shared.png' }];
+    const nodes = ['board', 'another'].map((id) => ({ id, type: CANVAS_NODE_TYPES.upload, position: { x: 0, y: 0 }, data: { imageUrl: '/shared.png' } }));
+    const target = { id: 'director', type: CANVAS_NODE_TYPES.videoDirector, position: { x: 0, y: 0 }, data: { draft,
+      storyboardPreparation: { inputMode: 'ref', refBindings: [{ sourceNodeId: 'board', imageId: 'board', url: '/shared.png' }] } } } as never;
+    const edges = nodes.map((node) => ({ id: node.id, source: node.id, target: 'director', data: { edgeKind: 'videoDirectorImage', slot: { kind: 'reference' } } }));
+    render(<DirectorConnectionTargetDialog sourceId="candidate" target={target} nodes={nodes} edges={edges} onSelect={vi.fn()} onCancel={vi.fn()} error="" />);
+    await waitFor(() => expect(screen.getByText('主体参考图已达到上限（2 张）')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: '主体参考图' })).toBeDisabled();
+  });
+  it('counts prepared references once and includes newly connected unprepared sources', async () => {
+    vi.mocked(getDirectorCapabilities).mockResolvedValue({ effectiveReferenceLimit: 5 } as Awaited<ReturnType<typeof getDirectorCapabilities>>);
+    const draft = createDirectorDraft('s');
+    draft.references = ['board', 'hero', 'partner'].map((id) => ({ imageId: id, url: `/${id}.png` }));
+    const nodes = [...draft.references, { imageId: 'extra1', url: '/extra1.png' }, { imageId: 'extra2', url: '/extra2.png' }].map((ref) => ({
+      id: ref.imageId, type: CANVAS_NODE_TYPES.upload, position: { x: 0, y: 0 }, data: { imageUrl: ref.url } }));
+    const target = { id: 'director', type: CANVAS_NODE_TYPES.videoDirector, position: { x: 0, y: 0 }, data: { draft,
+      storyboardPreparation: { inputMode: 'ref', refBindings: draft.references.map((ref) => ({ sourceNodeId: ref.imageId })) } } } as never;
+    const edges = nodes.map((node) => ({ id: node.id, source: node.id, target: 'director', data: { edgeKind: 'videoDirectorImage', slot: { kind: 'reference' } } }));
+    const props = { sourceId: 'candidate', target, nodes, onSelect: vi.fn(), onCancel: vi.fn(), error: '' };
+    const view = render(<DirectorConnectionTargetDialog {...props} edges={edges.slice(0, 3)} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: '主体参考图' })).toBeEnabled());
+    view.rerender(<DirectorConnectionTargetDialog {...props} edges={edges} />);
+    expect(screen.getByRole('button', { name: '主体参考图' })).toBeDisabled();
+  });
   beforeEach(() => {
     onConnect = undefined;
     vi.mocked(getDirectorCapabilities).mockResolvedValue({ effectiveReferenceLimit: 1 } as Awaited<ReturnType<typeof getDirectorCapabilities>>);

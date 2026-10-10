@@ -795,6 +795,55 @@ def run_video_generation(envelope: dict[str, Any], ctx: ProjectContext) -> dict[
     )
 
 
+def _publish_episode_outputs(candidate: Path, output: Path, caption_path: Path, caption_track) -> None:
+    """Stage all metadata first, retain a revision, and roll back failed publishes.
+
+    Fixed legacy output paths cannot be swapped as a filesystem transaction.
+    Retained revisions provide recovery even if the process dies between swaps.
+    """
+    import os
+    import shutil
+    import uuid
+
+    token = uuid.uuid4().hex
+    staged = output.parent / f".{token}.captions.tmp"
+    targets = [(candidate, output)]
+    previous: dict[Path, Path] = {}
+    published: list[Path] = []
+    try:
+        if caption_track is not None:
+            staged.write_text(caption_track.model_dump_json(indent=2), encoding="utf-8")
+            targets.append((staged, caption_path))
+        # Unique, retained copies preserve prior successful outputs on normal
+        # recomposition as well as a recoverable pair on publication failure.
+        revision = output.parent / "revisions" / output.stem / token
+        for old in (output, caption_path):
+            if old.is_file():
+                revision.mkdir(parents=True, exist_ok=True)
+                backup = revision / old.name
+                shutil.copy2(old, backup)
+                previous[old] = backup
+        try:
+            for source, destination in targets:
+                os.replace(source, destination)
+                published.append(destination)
+        except BaseException:
+            for destination in reversed(published):
+                backup = previous.get(destination)
+                if backup is None:
+                    destination.unlink(missing_ok=True)
+                else:
+                    restore = output.parent / f".{token}.{destination.name}.restore"
+                    try:
+                        shutil.copy2(backup, restore)
+                        os.replace(restore, destination)
+                    finally:
+                        restore.unlink(missing_ok=True)
+            raise
+    finally:
+        staged.unlink(missing_ok=True)
+
+
 def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
     import os
     import stat
@@ -851,6 +900,7 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
         target_width, target_height = 720, 1280
 
     video_clips: list[str] = []
+    caption_track = None
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
         sources = resolve_episode_composition_sources(output_dir, episode, beats)
@@ -1055,6 +1105,37 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
             filter_parts.append(f"[{index}:a]aresample=44100[a{index}]")
         concat_inputs = "".join(f"[v{index}][a{index}]" for index in range(len(video_clips)))
         filter_parts.append(f"{concat_inputs}concat=n={len(video_clips)}:v=1:a=1[outv][outa]")
+        final_video_label = "[outv]"
+        if add_subtitles:
+            import math
+            from novelvideo.export.episode_export import build_caption_track
+            from novelvideo.export.captions import render_ass
+
+            # Concat advances by the normalized clips, not planned shot lengths.
+            actual_durations = []
+            for clip in video_clips:
+                duration = _audio_duration(Path(clip), timeout_seconds=subprocess_timeout(30))
+                check_cancel()
+                if duration is None or not math.isfinite(duration) or duration <= 0:
+                    raise RuntimeError("无法测量合成片段时长，字幕时间轴未生成")
+                actual_durations.append(duration)
+            caption_track = asyncio.run(build_caption_track(
+                Path(output_dir), episode, beats, sources=sources, actual_durations=actual_durations,
+            ))
+            if caption_track.events:
+                subtitle_file = tmp_dir / "episode.ass"
+                subtitle_font = "Heiti SC" if Path("/System/Library/Fonts/STHeiti Medium.ttc").is_file() else "Noto Sans CJK SC"
+                subtitle_file.write_text(render_ass(caption_track, target_width, target_height, subtitle_font), encoding="utf-8")
+                subtitle_filter_path = (
+                    subtitle_file.as_posix().replace("\\", "\\\\")
+                    .replace(":", "\\:").replace("'", "'\\''")
+                )
+                # macOS's automatic PingFangUI fallback may point to an
+                # inaccessible reserved font. Prefer the readable CJK family.
+                filter_parts.append(
+                    f"[outv]subtitles=filename='{subtitle_filter_path}'[subtitled]"
+                )
+                final_video_label = "[subtitled]"
         try:
             output_mode = stat.S_IMODE(output_path.stat().st_mode)
         except FileNotFoundError:
@@ -1072,7 +1153,7 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
                     "-filter_complex",
                     ";".join(filter_parts),
                     "-map",
-                    "[outv]",
+                    final_video_label,
                     "-map",
                     "[outa]",
                     "-c:v",
@@ -1101,13 +1182,21 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
                 if current_snapshot != director_snapshot:
                     raise ValueError("DIRECTOR_COMPOSITION_CHANGED: 合成期间导演组或视频来源已改变")
             candidate_path.chmod(output_mode)
-            os.replace(candidate_path, output_path)
+            _publish_episode_outputs(
+                candidate_path, output_path,
+                final_dir / f"ep{episode:03d}.caption-events.json", caption_track,
+            )
         finally:
             candidate_path.unlink(missing_ok=True)
 
     return {
         "video_path": output_path.as_posix(),
         "add_subtitles_requested": add_subtitles,
+        "caption_review_status": (
+            "needs_review" if caption_track is not None and any(
+                event.review_status == "needs_review" for event in caption_track.events
+            ) else "approved" if caption_track is not None else "not_requested"
+        ),
     }
 
 

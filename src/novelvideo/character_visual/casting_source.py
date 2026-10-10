@@ -25,18 +25,31 @@ class SourceDocument:
     filename: str = ''
     kind: str = 'source'
     character_name: str = ''
+    identity_id: str | None = None
 
 
 def _authoring_sources(db):
     """Read current authored inputs separately from attested screenplay facts."""
     documents = {}
-    def add(key, text, *, character='', revision='', filename=''):
+    def add(key, text, *, character='', revision='', filename='', identity_id=None):
         if text.strip():
             documents[key] = SourceDocument(key, text, source_sha256(text), revision,
-                filename, 'authoring_context', character)
+                filename, 'authoring_context', character, identity_id)
 
-    for row in db.execute('SELECT name,description FROM characters ORDER BY name'):
+    for row in db.execute('SELECT * FROM characters ORDER BY name'):
         add('character:' + row['name'], row['description'] or '', character=row['name'])
+        fields = {key: row[key] for key in ('gender', 'age_group', 'role', 'body_type')
+                  if key in row.keys() and row[key]}
+        if 'identities_json' in row.keys():
+            identities = [{k: v for k, v in item.items() if k in
+                ('identity_id', 'identity_name', 'age_group', 'body_type', 'appearance_details', 'face_prompt') and v}
+                for item in json.loads(row['identities_json'] or '[]')]
+            for identity in identities:
+                add('character-identity:' + row['name'] + ':' + identity['identity_id'],
+                    json.dumps(identity, ensure_ascii=False, sort_keys=True),
+                    character=row['name'], identity_id=identity['identity_id'])
+        if fields:
+            add('character-profile:' + row['name'], json.dumps(fields, ensure_ascii=False, sort_keys=True), character=row['name'])
     tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if {'script_documents', 'script_revisions'} <= tables:
         for row in db.execute("""SELECT d.id,d.title,r.id AS revision,r.markdown FROM script_documents d
@@ -138,12 +151,13 @@ def _source_documents_revision(documents):
             for k, v in sorted(documents.items())}))
 
 
-def character_source_revision(documents, global_revision, character_name, *, expected_revision=None):
+def character_source_revision(documents, global_revision, character_name, *, expected_revision=None, identity_id=None):
     """Scope authored dependencies; retain legacy hashes only with exact proof."""
     if not any(v.kind == 'authoring_context' for v in documents.values()):
         return global_revision
     relevant = {k: v for k, v in documents.items()
-        if v.kind != 'authoring_context' or not v.character_name or v.character_name == character_name}
+        if v.kind != 'authoring_context' or ((not v.character_name or v.character_name == character_name)
+            and v.identity_id in (None, identity_id))}
     if expected_revision == global_revision:
         return expected_revision
     # Old drafts hashed every character. Prove compatibility by reconstructing
@@ -188,7 +202,8 @@ def assert_live_sources(ctx, sqlite_store, documents, character_id, identity_id)
                 raise ValueError('source changed during recast')
         def relevant_authoring(items):
             return {k: v for k, v in items.items() if v.kind == 'authoring_context'
-                and (not v.character_name or v.character_name == character_id)}
+                and (not v.character_name or v.character_name == character_id)
+                and v.identity_id in (None, identity_id)}
         if relevant_authoring(_authoring_sources(db)) != relevant_authoring(documents):
             raise ValueError('source changed during recast')
 
@@ -345,7 +360,8 @@ async def ground_profile(profile, documents, source_revision, *, runtime, identi
     authoring_context = [dict(kind=doc.kind, source_document=doc.document_id, text=doc.text,
         content_hash=doc.content_hash, revision=doc.revision, title=doc.filename)
         for doc in documents.values() if doc.kind == 'authoring_context'
-        and (not doc.character_name or doc.character_name == profile.name)]
+        and (not doc.character_name or doc.character_name == profile.name)
+        and doc.identity_id in (None, identity_id)]
     documents = {k: v for k, v in documents.items() if v.kind == 'source'}
     if not documents and authoring_context:
         return CharacterNarrativeProfile(character_id=profile.character_id, name=profile.name,

@@ -397,6 +397,9 @@ describe("styles page CE generation credit gating", () => {
     );
 
     const images = await screen.findAllByRole("img");
-    expect(images.filter((image) => image.getAttribute("src") === previewUrl)).toHaveLength(2);
+    expect(images.filter((image) => {
+      const url = new URL(image.getAttribute("src") ?? "", "http://localhost");
+      return url.pathname === previewUrl && url.searchParams.get("v") === "20261004-medium-review";
+    })).toHaveLength(2);
   });
 });

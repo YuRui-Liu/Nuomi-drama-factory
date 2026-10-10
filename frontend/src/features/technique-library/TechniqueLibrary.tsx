@@ -67,7 +67,7 @@ function LibraryBody({ username, context, searchRef, onClose }: {
       <button type="button" aria-pressed={entry === 'techniques'} className="rounded px-3 py-1 text-sm text-cyan-200" onClick={() => setEntry('techniques')}>{tr('techniquesEntry', '手法')}</button>
       <button type="button" aria-pressed={entry === 'cases'} className="rounded px-3 py-1 text-sm text-cyan-200" onClick={() => { setCaseId(undefined); setEntry('cases'); }}>{tr('cases', '案例')}</button>
     </nav>
-    {entry === 'cases' ? <CaseBrowser key={caseId ?? 'list'} username={username} initialId={caseId} techniqueTitles={Object.fromEntries(cards.map((card) => [card.id, card.title]))} onTechnique={(id) => {
+    {entry === 'cases' ? <CaseBrowser key={caseId ?? 'list'} username={username} context={context?.reference} initialId={caseId} techniqueTitles={Object.fromEntries(cards.map((card) => [card.id, card.title]))} onTechnique={(id) => {
       const card = cards.find((candidate) => candidate.id === id);
       if (card) { setSelectedId(techniqueKey(card)); setMobileDetail(true); setEntry('techniques'); return true; }
       return false;

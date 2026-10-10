@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent
+from pydantic_ai import Agent, PromptedOutput
 
 from novelvideo.official_defaults import (
     DEFAULT_FREEZONE_STORY_SCRIPT_MODEL,
@@ -160,7 +160,8 @@ def create_freezone_translation_agent() -> Agent:
     return Agent(
         model,
         system_prompt=FREEZONE_TRANSLATION_SYSTEM_PROMPT,
-        output_type=FreezoneTranslationResult,
+        # Thinking models may reject forced tool_choice; validate JSON text instead.
+        output_type=PromptedOutput(FreezoneTranslationResult),
         name="Freezone Prompt Translator",
     )
 
@@ -199,7 +200,8 @@ def create_freezone_story_script_agent(model: str | None = None) -> Agent:
     return Agent(
         llm_model,
         system_prompt=FREEZONE_STORY_SCRIPT_SYSTEM_PROMPT,
-        output_type=FreezoneStoryScriptGenerateData,
+        # Preserve schema validation and repair retries without forced tool calls.
+        output_type=PromptedOutput(FreezoneStoryScriptGenerateData),
         # 结构化脚本表字段多、且 shot_no/duration 是严格 int，模型偶尔会把时长写成
         # "2-5"/"3秒" 之类而过不了校验。默认 output_retries=1 只给一次纠正机会不够，
         # 抛 "Exceeded maximum output retries (1)"。对齐本仓其它复杂结构化 agent
@@ -311,5 +313,15 @@ async def generate_freezone_story_script(
         source_text=source_text,
         prompt=prompt,
     )
+    from novelvideo.text_task_runtime.runtime import current_text_task_runtime
+    from novelvideo.api.schemas import FreezoneStoryScriptGenerateData
+
+    runtime = current_text_task_runtime()
+    if runtime is not None:
+        return await runtime.run_structured(
+            prompt=task,
+            output_type=FreezoneStoryScriptGenerateData,
+            system_prompt=FREEZONE_STORY_SCRIPT_SYSTEM_PROMPT,
+        )
     response = await get_freezone_story_script_agent(model).run(task)
     return response.output

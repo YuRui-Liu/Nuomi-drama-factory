@@ -1,5 +1,6 @@
 import asyncio
 import pytest
+from tests.craft_fakes import craft_reply
 
 from novelvideo.script_creation.store import DocumentStore, DocumentConflict, DocumentValidation, DocumentNotFound
 from novelvideo.script_creation.consistency import ConsistencyService
@@ -126,7 +127,7 @@ async def test_hypothetical_target_proposal_rejects_discarded_source(tmp_path):
     job = (await service.create_target_rewrites(result["issues"][0]["id"], target_document_ids=[episode.id]))[0]
     class RewriteRuntime:
         async def run_structured(self, **kwargs):
-            return {"after": "阿宁说：我仍不知密钥。", "reason": "匹配知情顺序"}
+            return craft_reply(kwargs["prompt"], "阿宁说：我仍不知密钥。")
     await RewriteService(store).execute(job["id"], runtime=RewriteRuntime(), task_id="rewrite-task")
     target = (await ProposalService(store).list(episode.id))[0]
     await ProposalService(store).discard(source["id"])
@@ -199,7 +200,7 @@ async def test_refined_consistency_rewrite_inherits_source_and_all_original_refs
     original = (await service.create_target_rewrites(result["issues"][0]["id"], target_document_ids=[episode.id]))[0]
     class RewriteRuntime:
         async def run_structured(self, **kwargs):
-            return {"after": "阿宁说：我仍不知密钥。", "reason": "修复知情顺序"}
+            return craft_reply(kwargs["prompt"], "阿宁说：我仍不知密钥。")
     rewrite = RewriteService(store)
     await rewrite.execute(original["id"], runtime=RewriteRuntime(), task_id="first-task")
     first = (await ProposalService(store).list(episode.id))[0]
@@ -244,7 +245,7 @@ async def test_hypothetical_quote_cannot_use_unchanged_suffix_of_cross_block_pat
         scope="selection", mode="custom", instruction="改知情", preserve="", client_mutation_id="rewrite")
     class RewriteRuntime:
         async def run_structured(self, **kwargs):
-            return {"after": "我还不知道密钥。阿宁从正门进来", "reason": "修复知情"}
+            return craft_reply(kwargs["prompt"], "我还不知道密钥。阿宁从正门进来")
     await rewrite.execute(job["id"], runtime=RewriteRuntime(), task_id="rewrite-task")
     proposal = (await ProposalService(store).list(episode.id))[0]
     assert proposal["block_id"] is None and "交出钥匙" in proposal["after"]
@@ -280,7 +281,7 @@ async def test_large_hypothetical_context_stays_frozen_outside_user_instruction(
     class RewriteRuntime:
         async def run_structured(self, **kwargs):
             assert "候选尾部标记" in kwargs["prompt"]
-            return {"after": "阿宁说：我已知密钥。", "reason": "保持知情一致"}
+            return craft_reply(kwargs["prompt"], "阿宁说：我已知密钥。")
     rewrite = RewriteService(store)
     await rewrite.execute(job["id"], runtime=RewriteRuntime(), task_id="rewrite-task")
     first = (await ProposalService(store).list(episode.id))[0]

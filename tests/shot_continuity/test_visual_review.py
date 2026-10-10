@@ -36,6 +36,89 @@ async def test_observed_reference_passes(inputs):
     assert result.evidence[0].frame_label == 'reference'
 
 
+@pytest.mark.parametrize('code,expected', [('CODEX_EXEC_TIMEOUT', 'CODEX_EXEC_TIMEOUT'),
+    ('CODEX_SCHEMA_INVALID', 'CODEX_SCHEMA_INVALID'), ('secret-key-123', 'KnowledgeRuntimeError')])
+async def test_runtime_diagnostic_preserves_only_allowlisted_code(inputs, caplog, code, expected):
+    from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
+    from novelvideo.shot_continuity.visual_review import review_cinematography
+    async def fail(**kwargs):
+        raise KnowledgeRuntimeError('secret-provider-body /private/sensitive/path', code=code)
+    result = await review_cinematography(frames=inputs[0], facts=inputs[1], run_structured=fail,
+        reviewer_fingerprint='model')
+    assert result.status == 'unavailable'
+    assert result.technical_error == expected
+    assert expected in caplog.text
+    assert 'secret' not in caplog.text
+    assert '/private/sensitive/path' not in caplog.text
+
+
+@pytest.mark.parametrize('value', ['0', '-1', 'nan', 'inf', '1801', 'invalid'])
+async def test_invalid_local_review_timeout_fails_before_runtime(inputs, monkeypatch, value):
+    from novelvideo.shot_continuity.visual_review import review_cinematography
+    monkeypatch.setenv('ST_VISUAL_REVIEW_TIMEOUT_S', value)
+    async def must_not_call(**kwargs):
+        pytest.fail('invalid timeout must not dispatch runtime')
+    result = await review_cinematography(frames=inputs[0], facts=inputs[1], run_structured=must_not_call,
+        reviewer_fingerprint='model')
+    assert result.status == 'unavailable'
+    assert result.technical_error == 'VisualReviewConfigurationError'
+
+
+async def test_local_review_timeout_reads_bounded_configuration(inputs, monkeypatch):
+    from novelvideo.shot_continuity import visual_review
+    monkeypatch.setenv('ST_VISUAL_REVIEW_TIMEOUT_S', '1800')
+    seen = []
+    async def wait(awaitable, *, timeout):
+        seen.append(timeout)
+        return await awaitable
+    monkeypatch.setattr(visual_review.asyncio, 'wait_for', wait)
+    result = await review(inputs, verdict())
+    assert result.status == 'passed'
+    assert seen == [1800]
+
+
+async def test_frozen_h3_facts_use_distinct_policy_without_inventing_constraints(inputs):
+    from novelvideo.shot_continuity.visual_review import FrozenH3Facts, review_cinematography, FROZEN_H3_POLICY_VERSION
+    original = {'shots': [{'shot_id': '1', 'framing': 'wide', 'angle': 'village side',
+        'composition': 'subject faces path', 'start_frame': 0, 'end_frame': 24,
+        'focus': 'path', 'camera': {'type': 'static'}, 'actions': [
+            {'phase': 'establish', 'start_frame': 0, 'end_frame': 24, 'description': 'looks at path'}]}]}
+    facts = FrozenH3Facts(director_plan=original)
+    async def vision(**call):
+        assert 'frozen_h3_director_plan' in call['prompt']
+        assert 'Missing constraints remain unknown' in call['prompt']
+        assert 'world_anchor' not in call['prompt']
+        return verdict()
+    result = await review_cinematography(frames=inputs[0], facts={'reference': facts},
+        run_structured=vision, reviewer_fingerprint='model')
+    assert result.policy_version == FROZEN_H3_POLICY_VERSION
+    assert result.status == 'passed'
+
+
+async def test_face_review_cannot_pass_without_assessable_face_evidence(inputs):
+    result = await review(inputs, verdict(), require_face_integrity=True)
+    assert result.status == 'unavailable'
+
+
+async def test_face_failure_keeps_original_evidence_and_provenance(inputs):
+    response = verdict(issues=[{'dimension': 'face_integrity',
+        'description': 'Visible facial features melt between samples.',
+        'frame_labels': ['reference']}])
+    response['evidence'][0].update(face_status='assessed',
+        face_observation='The visible eye and mouth contours merge; this is not depth-of-field blur.')
+    result = await review(inputs, response, require_face_integrity=True)
+    assert result.status == 'failed'
+    assert result.review_id
+    assert result.frame_digests['reference']
+    assert result.policy_version
+
+
+async def test_no_visible_face_requires_explicit_observation(inputs):
+    response = verdict()
+    response['evidence'][0].update(face_status='not_visible', face_observation='Only the back of the head is visible.')
+    assert (await review(inputs, response, require_face_integrity=True)).status == 'passed'
+
+
 @pytest.mark.parametrize('response', [verdict(labels=()),
     verdict(labels=('invented',)), {'status': 'passed', 'evidence': [], 'issues': []},
     verdict(issues=[{'dimension': 'lighting', 'description': 'Wrong light', 'frame_labels': []}])])

@@ -9,6 +9,7 @@ import {
 } from "@tanstack/react-query";
 import type { QueryFunctionContext } from "@tanstack/react-query";
 import { jsonWithBackendError } from "@/lib/api-errors";
+import { useProject } from "@/lib/queries/projects";
 import { api } from "@/lib/api";
 import { p } from "@/lib/api-path";
 import { queryKeys } from "@/lib/query-keys";
@@ -19,6 +20,8 @@ import type {
   CharacterAssetKind,
   CharacterAssetRestoreResult,
   CharacterVoiceSamples,
+  CharacterVoiceRecommendation,
+  CharacterVoiceDesign,
   CharacterVoiceSlot,
   CharacterVisualWorkspace,
   CharacterVisualWorkspaceUpdate,
@@ -135,7 +138,10 @@ export function useUpdateCharacter(project: string, name: string) {
       api
         .patch(p`api/v1/projects/${project}/characters/${name}`, { json: data })
         .json<OkResponse<CharacterUpdateResponse>>(),
-    onSuccess: () => invalidateCharacterVoiceQueries(qc, project, name),
+    onSuccess: () => {
+      invalidateCharacterVoiceQueries(qc, project, name);
+      qc.invalidateQueries({ queryKey: ["character-voice-recommendation", project, name] });
+    },
   });
 }
 
@@ -391,24 +397,61 @@ export function useRecordCharacterVoiceSample(project: string, name: string) {
 
 export function useDesignCharacterVoiceSample(project: string, name: string) {
   return useMutation({
-    mutationFn: ({ slot, ...body }: { slot: string; voice_description?: string; audition_text?: string; voice_spec?: Record<string, unknown> }) =>
-      api
-        .post(
+    mutationFn: ({ slot, ...body }: { slot: string; voice_description?: string; audition_text?: string; voice_spec?: Record<string, unknown>; design?: CharacterVoiceDesign; perceived_age?: string }) =>
+      jsonWithBackendError<TaskResponse | ErrorResponse>(api.post(
           p`api/v1/projects/${project}/characters/${name}/voice-samples/${slot}/design`,
           { json: body, timeout: ASSET_BUILD_SUBMIT_TIMEOUT_MS },
-        )
-        .json<TaskResponse | ErrorResponse>(),
+        )),
+  });
+}
+
+export function useCharacterVoiceRecommendation(project: string, character: Character, enabled: boolean) {
+  const projectConfig = useProject(project).data?.data;
+  return useQuery({
+    queryKey: ["character-voice-recommendation", project, character.name,
+      character.description, character.gender, character.age_group, character.role, character.voice_facts, projectConfig],
+    queryFn: async () => {
+      const response = await api.post(p`api/v1/projects/${project}/characters/${character.name}/voice-recommendation`,
+        { json: {}, timeout: 120_000, retry: 0 }).json<OkResponse<CharacterVoiceRecommendation> | ErrorResponse>();
+      if (!response.ok) throw new Error(response.error || "声音推荐暂不可用");
+      return response.data;
+    },
+    enabled,
+    staleTime: 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useRefineCharacterVoice(project: string, name: string) {
+  return useMutation({
+    mutationFn: async (body: { adjustment: string; design?: CharacterVoiceDesign; refresh?: boolean }) => {
+      const response = await api.post(p`api/v1/projects/${project}/characters/${name}/voice-recommendation`,
+        { json: body, timeout: 120_000, retry: 0 }).json<OkResponse<CharacterVoiceRecommendation> | ErrorResponse>();
+      if (!response.ok) throw new Error(response.error || "声音建议暂不可用");
+      return response.data;
+    },
   });
 }
 
 export function useApproveCharacterVoiceCandidate(project: string, name: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ candidateId, reason }: { candidateId: string; reason: string }) =>
+    mutationFn: ({ candidateId, reason, expectedReference }: { candidateId: string; reason: string; expectedReference?: { path: string; sha256: string } }) =>
       jsonWithBackendError<OkResponse<unknown> | ErrorResponse>(api.post(
         p`api/v1/projects/${project}/characters/${name}/voice-candidates/${candidateId}/approve`,
-        { json: { reason, confirm: true }, throwHttpErrors: false },
+        { json: { reason, confirm: true, expected_reference: expectedReference }, throwHttpErrors: false },
       )),
+    onSuccess: () => invalidateCharacterVoiceQueries(qc, project, name),
+  });
+}
+
+export function useDeleteCharacterVoiceCandidate(project: string, name: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (candidateId: string) => jsonWithBackendError<OkResponse<unknown> | ErrorResponse>(api.delete(
+      p`api/v1/projects/${project}/characters/${name}/voice-candidates/${candidateId}`, { throwHttpErrors: false },
+    )),
     onSuccess: () => invalidateCharacterVoiceQueries(qc, project, name),
   });
 }

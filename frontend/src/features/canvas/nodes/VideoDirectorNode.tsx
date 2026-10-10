@@ -5,7 +5,7 @@ import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflo
 import { Clapperboard } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { CANVAS_NODE_TYPES, type VideoDirectorNodeData } from '@/features/canvas/domain/canvasNodes';
+import { CANVAS_NODE_TYPES, type VideoDirectorNodeData, type StoryboardGenNodeData } from '@/features/canvas/domain/canvasNodes';
 import { resolveNodeDisplayName } from '@/features/canvas/domain/nodeDisplay';
 import { NodeHeader, NODE_HEADER_FLOATING_POSITION_CLASS } from '@/features/canvas/ui/NodeHeader';
 import { CANVAS_NODE_INPUT_SURFACE_CLASS, canvasNodeFrameClass } from '@/features/canvas/ui/nodeFrameStyles';
@@ -17,7 +17,7 @@ import { DirectorImageSlot } from '@/features/canvas/director/DirectorImageSlot'
 import { useDirectorImageActions, type DirectorImageTarget } from '@/features/canvas/director/useDirectorImageActions';
 import { AssetLibraryModal } from '@/features/canvas/ui/AssetLibraryModal';
 import { directorSubmissionFingerprint, projectDirectorDraft, resolveDirectorInputMode, setDirectorInputMode } from '@/features/canvas/domain/videoDirectorInputs';
-import { readDirectorBinding, resolveDirectorBindings } from '@/features/canvas/domain/videoDirectorBindings';
+import { readDirectorBinding, resolveDirectorBindings, isStoryboardPreparationStale } from '@/features/canvas/domain/videoDirectorBindings';
 import { updateSegment } from '@/features/canvas/domain/videoDirectorDraft';
 import { directorErrorText } from '@/features/canvas/director/directorValidation';
 
@@ -45,10 +45,16 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
   const nodes = useCanvasStore((state) => state.nodes);
   const edges = useCanvasStore((state) => state.edges);
+  const sourceBoard = nodes.find((node) => node.type === CANVAS_NODE_TYPES.storyboardGen &&
+    edges.some((edge) => edge.target === id && edge.source === node.id));
+  const sourceStale = !!data.storyboardPreparation && (!sourceBoard ||
+    isStoryboardPreparationStale(data.storyboardPreparation, { ...(sourceBoard.data as StoryboardGenNodeData), id: sourceBoard.id }));
   const segments = data.draft?.segments ?? [];
   const segment = segments.find((item) => item.id === data.visibleSegmentId) ?? segments[0];
   const mode = resolveDirectorInputMode(data);
-  const binding = resolveDirectorBindings(data.draft, nodes, edges.filter((edge) => edge.target === id), mode);
+  const binding = resolveDirectorBindings(data.draft, nodes, edges.filter((edge) => edge.target === id), mode, data.storyboardPreparation);
+  const preparationStale = sourceStale || !!data.storyboardPreparation && (data.storyboardPreparation.inputMode !==
+    (data.inputModeIntent === 'manual' && data.activeInputMode === 'frames' ? 'frames' : 'ref') || !!binding.errors.references);
   const effective = projectDirectorDraft(binding.draft, mode);
   const visible = effective.segments.find((item) => item.id === segment?.id);
   const durationSeconds = segments.reduce((total, segment) => total + segment.durationSeconds, 0);
@@ -62,8 +68,12 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
     return target?.kind === field && target.segmentId === segment.id;
   });
   const setMode = (next: 'ref' | 'frames') => {
+    if (sourceBoard || data.autoStoryboard || data.storyboardPreparation) {
+      updateNodeData(id, { activeInputMode: next, inputModeIntent: 'manual' });
+      return;
+    }
     const updated = setDirectorInputMode(data, next);
-    updateNodeData(id, { activeInputMode: updated.activeInputMode, draft: updated.draft });
+    updateNodeData(id, { activeInputMode: updated.activeInputMode, draft: updated.draft, inputModeIntent: 'manual' });
   };
   const dropCard = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -142,6 +152,9 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
           </div>
         </>}
         {dropError && <p role="alert" className="nodrag px-3 text-xs text-red-300">{dropError}</p>}
+        {task.error && <p role="alert" className="nodrag text-xs text-red-300">{task.error}</p>}
+        {preparationStale ? <p className="text-xs text-amber-300">分镜来源已变化，请重新准备</p> : data.storyboardPreparation &&
+          <p className="text-xs">请求 {data.storyboardPreparation.requestedDurationSeconds.toFixed(2)}s / 实际 {data.storyboardPreparation.actualDurationSeconds.toFixed(2)}s</p>}
         <div className="flex items-center justify-between gap-2 px-3 py-2 text-xs text-text-muted">
           <span>{t('node.videoDirector.node.segments', { count: segments.length })}</span>
           <span>{t('node.videoDirector.node.duration', { seconds: (data.durationMs ? data.durationMs / 1000 : durationSeconds).toFixed(1) })}</span>
@@ -150,7 +163,7 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
             if (onOpenEditor) onOpenEditor(id);
             else setEditorOpen(true);
           }}>{t('node.videoDirector.node.edit')}</button>
-          <button type="button" className="nodrag text-cyan-300" onClick={() => {
+          <button type="button" disabled={task.isPreparing} className="nodrag text-cyan-300" onClick={() => {
             if (task.capabilities) task.generate();
             else setEditorOpen(true);
           }}>{tr('generate')}</button>

@@ -32,4 +32,20 @@ class VoiceSpec(BaseModel):
     negative_constraints: tuple[str, ...] = ()
 
 
-__all__ = ["VoiceProfileStatus", "VoiceSpec", "VoiceSpecError"]
+class VoicePerformance(BaseModel):
+    intention: str = ""
+    emotion: str = ""
+    emphasis: str = ""
+    pauses: str = ""
+    delivery_scale: str = ""
+
+
+class CharacterVoiceDesign(BaseModel):
+    voice_spec: VoiceSpec
+    performance: VoicePerformance
+    rationale: str = ""
+    audition_text: str = ""
+    audition_source: str = "example"
+
+
+__all__ = ["VoiceProfileStatus", "VoiceSpec", "VoiceSpecError", "VoicePerformance", "CharacterVoiceDesign"]

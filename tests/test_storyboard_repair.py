@@ -31,6 +31,19 @@ def test_repair_input_missing_original_is_honest(tmp_path):
     assert data['original_prompt'] is None
     assert data['prompt'] == 'current description'
     assert data['source_revision'] == 1
+    assert data['keyframe_prompt'] is None
+    assert data['adjacent_keyframe_context'] is None
+
+
+def test_repair_input_exposes_only_saved_frozen_spatial_context(tmp_path):
+    from novelvideo.narrative_groups.storyboard_repair import repair_input, save_prompt_snapshot
+    group = fixture_group(tmp_path)
+    save_prompt_snapshot(tmp_path, group.stages['render'].cell_assets[0]['path'], {
+        'keyframe_prompt': 'body toward door, gaze toward partner',
+        'adjacent_keyframe_context': 'previous endpoint at stair'})
+    data = repair_input(tmp_path, group, 'render', 's1', synthesized='new plan')
+    assert data['keyframe_prompt'] == 'body toward door, gaze toward partner'
+    assert data['adjacent_keyframe_context'] == 'previous endpoint at stair'
 
 
 def test_reservation_deduplicates_without_clearing_images(tmp_path):
@@ -233,12 +246,16 @@ def test_single_prompt_preserves_reference_mapping_for_next_repair(tmp_path):
     Image.new('RGB', (16, 9)).save(identity)
     result = single_generation_input({'project_dir': str(tmp_path), 'stage': 'render',
         'aspect_ratio': '16:9', 'repair_prompt': 'desk', 'repair_feedback': 'dry',
+        'keyframe_prompt': 'body faces the door; gaze at the window; camera stays by stair landmark',
         'repair_references': [{'path': str(p), 'sha256': sha256(p.read_bytes()).hexdigest()}
                               for p in (original, identity)],
         'repair_reference_mappings': ['character Hero, identity Hero_casual; use for panels 2.']})
     assert len(result.reference_mappings) == len(result.references)
     assert 'Hero_casual' in result.reference_mappings[1]
     assert 'panels 2' not in result.prompt
+    assert 'body faces the door' in result.prompt
+    assert 'gaze at the window' in result.prompt
+    assert 'camera stays by stair landmark' in result.prompt
 
 
 @pytest.mark.asyncio
@@ -385,6 +402,8 @@ async def test_normal_grid_generation_attaches_prompt_to_split_cell(tmp_path, mo
         Image.new('RGB', (320, 90), 'blue').save(grid)
         return {'grid_asset': str(grid), 'prompt_snapshot': {
             'original_prompt': 'exact original full grid prompt',
+            'adjacent_keyframe_context': 'pack-only context',
+            'panel_contexts': {'s1': 'next s2 at door', 's2': 'previous s1 facing stair'},
             'panel_prompts': {'s1': 'first shot description', 's2': 'second shot description'}}}
     monkeypatch.setattr(runner, '_generate_grid', generate)
     await runner._execute({'episode': 1, 'payload': {'project_dir': str(tmp_path), 'group_id': group.id,
@@ -394,6 +413,9 @@ async def test_normal_grid_generation_attaches_prompt_to_split_cell(tmp_path, mo
     data = repair_input(tmp_path, current, 'render', 's1')
     assert data['original_prompt'] == 'exact original full grid prompt'
     assert data['prompt'] == 'first shot description'
+    from novelvideo.narrative_groups.storyboard_repair import load_prompt_snapshot
+    snapshot = load_prompt_snapshot(tmp_path, current.stages['render'].cell_assets[0]['path'])
+    assert snapshot['adjacent_keyframe_context'] == 'next s2 at door'
 
 
 def test_task_reconciliation_cannot_overwrite_concurrent_completion(tmp_path, monkeypatch):

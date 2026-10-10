@@ -135,6 +135,12 @@ export function extractCanvasAssets(nodes: CanvasNode[]): CanvasAssetBuckets {
       }
       case CANVAS_NODE_TYPES.storyboardSplit:
       case CANVAS_NODE_TYPES.storyboardGen: {
+        const completeStoryboard = node.type === CANVAS_NODE_TYPES.storyboardGen
+          ? firstStr(data.imageUrl, data.previewImageUrl) : null;
+        if (completeStoryboard) {
+          push('image', completeStoryboard, { nodeId: node.id, label, timestamp });
+          break;
+        }
         const frames = Array.isArray(data.frames) ? data.frames : [];
         frames.forEach((frame, index) => {
           const frameData = asRecord(frame);

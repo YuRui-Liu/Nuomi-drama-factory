@@ -41,6 +41,28 @@ def test_slot_conflicting_custom_description_rejected():
         prepare(character(), slot="elder", voice_description="青年男声，清亮")
 
 
+@pytest.mark.parametrize("description", [
+    "语速轻快但不急。避免夸张的少年腔或过度戏剧化。",
+    "青年男声，不要儿童声线。",
+    "young adult male; avoid a child voice.",
+])
+def test_negated_age_is_not_a_requested_voice_age(description):
+    payload = prepare(character(), slot="default", voice_description=description)
+    assert description in payload["voice_description"]
+
+
+def test_negative_clause_does_not_hide_later_positive_age_conflict():
+    with pytest.raises(ValueError, match="age"):
+        prepare(character(), slot="default", voice_description="避免少年腔，但使用老年男声")
+
+
+def test_negative_dimension_does_not_hide_another_dimensions_age():
+    with pytest.raises(ValueError, match="age"):
+        prepare(character(), slot="default", voice_spec=VoiceSpec(
+            pitch="避免少年腔", texture="老年男声",
+        ))
+
+
 def test_snapshot_changes_with_character_facts():
     a = prepare(character(), slot="default")
     b = prepare(character(age="elder"), slot="default")

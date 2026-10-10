@@ -314,7 +314,9 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   }, [externalPrompt]);
   const prompt = promptDraft;
   const promptEditorRef = useRef<PromptMentionEditorHandle>(null);
-  const aspectRatio = typeof data.aspectRatio === 'string' && data.aspectRatio
+  const aspectRatio = typeof data.requestAspectRatio === 'string' && data.requestAspectRatio !== 'auto' && data.requestAspectRatio
+    ? data.requestAspectRatio
+    : typeof data.aspectRatio === 'string' && data.aspectRatio
     ? data.aspectRatio
     : '16:9';
   const size = (data.size ?? '2K') as ImageSize;
@@ -945,6 +947,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     // should only reflect the most recent attempt.
     updateNodeData(id, {
       isGenerating: true,
+      requestAspectRatio: baseGenPayload.aspectRatio,
       generationStartedAt: Date.now(),
       generationError: null,
       generationErrorDetails: null,
@@ -1859,7 +1862,10 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
                 size={size}
                 quality={quality}
                 showQuality={isImage2}
-                onChange={(patch) => updateNodeData(id, patch)}
+                onChange={(patch) => updateNodeData(id, {
+                  ...patch,
+                  ...(patch.aspectRatio ? { requestAspectRatio: patch.aspectRatio } : {}),
+                })}
               />
               <CameraChip
                 selection={cameraSelection}

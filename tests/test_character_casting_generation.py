@@ -13,6 +13,60 @@ def context(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_repair_under_same_task_has_separate_cost_attempt_and_replay_does_not_resubmit(tmp_path):
+    from novelvideo.task_backend.runners.character_casting import generate_casting_candidate
+    from novelvideo.costs.providers import ProviderCapture
+    from novelvideo.costs.service import CostService
+    from novelvideo.costs.store import CostStore
+    store = store_at(tmp_path)
+    service = CostService(CostStore(tmp_path / 'costs.db'))
+    capture = ProviderCapture('grsai', account_id='test', service=service)
+    base = pending()
+    store.create_pending(base)
+    store.create_pending(base.model_copy(update={'candidate_id':'c1-repair', 'repair_parent_id':'c1', 'repair_count':1}))
+    async def generate(**kwargs):
+        capture.prepare(model='test', media_type='image')
+        path = Path(kwargs['output_path'])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (30, 20)).save(path)
+        return path
+    args = dict(ctx=context(tmp_path), character_id=base.character_id, identity_id=None, task_id='task1',
+        resolution=SimpleNamespace(model='test',requested_model='test',resolution_source='request'),generate=generate)
+    for candidate_id in ('c1', 'c1-repair', 'c1', 'c1-repair'):
+        await generate_casting_candidate(candidate_id=candidate_id, **args)
+    attempts = service.store.list_attempts()
+    assert len(attempts) == 2
+    assert len({a.attempt_id for a in attempts}) == 2
+    assert {a.task_id for a in attempts} == {'task1'}
+    assert {a.resource_id for a in attempts} == {'c1', 'c1-repair'}
+
+
+@pytest.mark.asyncio
+async def test_sheet_candidate_generates_full_sheet_without_prior_portrait(tmp_path):
+    from novelvideo.task_backend.runners.character_casting import generate_casting_candidate
+    store = store_at(tmp_path)
+    candidate = pending().model_copy(update={'sheet_contract': 'character_sheet_v4',
+        'identity_constraints': {'gender': '男', 'age_group': 'youth'}})
+    store.create_pending(candidate)
+    calls = []
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        path = Path(kwargs['output_path'])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (120, 80)).save(path)
+        return path
+    await generate_casting_candidate(ctx=context(tmp_path), candidate_id='c1', character_id=candidate.character_id,
+        identity_id=None, task_id='task1', resolution=SimpleNamespace(model='gpt-image-2', requested_model='gpt-image-2',
+        resolution_source='request'), generate=generate)
+    assert len(calls) == 1
+    assert calls[0]['aspect_ratio'] == '3:2'
+    assert '无头侧面' in calls[0]['prompt']
+    assert '男' in calls[0]['prompt'] and 'youth' in calls[0]['prompt']
+    assert '不展示身体或完整服装' not in calls[0]['prompt']
+    assert store.get('c1').generation_prompt == calls[0]['prompt']
+
+
+@pytest.mark.asyncio
 async def test_generate_only_exact_snapshot_and_idempotent_replay(tmp_path):
     from novelvideo.task_backend.runners.character_casting import generate_casting_candidate
     store = store_at(tmp_path)

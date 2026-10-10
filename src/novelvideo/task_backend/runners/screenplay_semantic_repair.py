@@ -61,6 +61,7 @@ async def _run_screenplay_semantic_repair(
     episode = int(payload["episode"])
     expected_source_revision = int(payload["source_revision"])
     semantic_revision_id = str(payload["semantic_revision_id"])
+    scope = str(envelope.get("scope") or f"revision:{expected_source_revision}:semantic:{semantic_revision_id}")
     max_rounds = min(max(int(payload.get("max_rounds", 2)), 1), 2)
     concurrency = max(1, min(int(payload.get("concurrency", 3)), 20))
     repository = await _build_episode_source_store(ctx)
@@ -114,6 +115,7 @@ async def _run_screenplay_semantic_repair(
             ctx,
             "screenplay_semantic_repair",
             episode,
+            scope=scope,
             progress=min(0.95, 0.1 + 0.4 * current_round),
             current_task=f"Runtime 修复第 {current_round}/{max_rounds} 轮",
             logs=[
@@ -126,6 +128,7 @@ async def _run_screenplay_semantic_repair(
         ctx,
         "screenplay_semantic_repair",
         episode,
+        scope=scope,
         progress=0.05,
         current_task="锁定剧本与语义基础版本",
         logs=[
@@ -162,8 +165,12 @@ async def _run_screenplay_semantic_repair(
         ctx,
         "screenplay_semantic_repair",
         episode,
+        scope=scope,
         progress=1.0,
-        current_task="导演拆解 Runtime 修复已生成待审版本",
+        current_task=(
+            f"自动修复已结束，仍有 {len(remaining_errors)} 个校验问题，尚不能确认校对"
+            if remaining_errors else "自动修复已通过校验，请确认此版校对"
+        ),
         logs=[
             f"repaired_scenes={len(repaired_scene_ids)}",
             f"remaining_issues={len(remaining_errors)}",
@@ -180,6 +187,7 @@ async def _run_screenplay_semantic_repair(
         "repaired_scenes": len(repaired_scene_ids),
         "failed_scenes": len(remaining_scene_ids),
         "remaining_issues": len(remaining_errors),
+        "validation_passed": child.validation_report.passed,
         "contract_violations": contract_violations,
         "validation_report": child.validation_report.model_dump(mode="json"),
     }

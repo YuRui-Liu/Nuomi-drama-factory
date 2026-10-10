@@ -30,6 +30,41 @@ from novelvideo.freezone.paths import output_path_for_job, outputs_dir
 logger = logging.getLogger(__name__)
 
 
+def _grsai_canvas_size(model: str, aspect_ratio: str, image_size: str) -> str:
+    if model not in {"gpt-image-2", "gpt-image-2-vip"}:
+        return image_size
+    from novelvideo.narrative_groups.image_resolution import resolve_grid_image_resolution
+    return resolve_grid_image_resolution(model, image_size, aspect_ratio, 1, 1).provider_size
+
+
+async def _run_grsai_image(*, out: Path, prompt: str, reference_paths: list[str],
+                           model: str | None, aspect_ratio: str, image_size: str) -> Path:
+    """Use the existing configured runtime, concurrency lease and billing boundary."""
+    import base64
+    import io
+    import mimetypes
+    from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
+    from novelvideo.media_capabilities.models import ImageGenerationRequest, MediaCapability
+    from novelvideo.media_capabilities.runtime.configuration import load_grsai_runtime_configuration
+    from novelvideo.media_capabilities.runtime.grsai_execution import execute_grsai_generation
+
+    runtime = load_grsai_runtime_configuration(get_media_capability_store(), get_media_credential_resolver())
+    references = []
+    for path in reference_paths:
+        content = Path(path).read_bytes()
+        mime = mimetypes.guess_type(path)[0] or "image/png"
+        references.append(f"data:{mime};base64,{base64.b64encode(content).decode('ascii')}")
+    resolved_model = model or runtime.model
+    resolved_size = _grsai_canvas_size(resolved_model, aspect_ratio, image_size)
+    request = ImageGenerationRequest(capability=MediaCapability.IMAGE_SINGLE, prompt=prompt,
+        model=resolved_model, references=references, aspect_ratio=aspect_ratio, image_size=resolved_size)
+    result = await execute_grsai_generation(runtime, request)
+    with Image.open(io.BytesIO(result.content)) as image:
+        image.load()
+        image.save(out, format="PNG")
+    return out
+
+
 async def run_freezone_gen(
     *,
     project_dir: Path,
@@ -50,6 +85,10 @@ async def run_freezone_gen(
     """
     out = output_path_for_job(project_dir, output_task_type or "freezone_gen", job_id)
     out.parent.mkdir(parents=True, exist_ok=True)
+
+    if provider == "grsai":
+        return await _run_grsai_image(out=out, prompt=prompt, reference_paths=reference_paths or [],
+                                      model=model, aspect_ratio=aspect_ratio, image_size=image_size)
 
     # Routing (v1.2):
     #   provider == "volcengine"  → Volcengine Seedream (text-only path; refs ignored)
@@ -261,6 +300,10 @@ async def run_freezone_edit(
     refs: list[str] = [base_path]
     if extra_reference_paths:
         refs.extend(extra_reference_paths)
+
+    if provider == "grsai":
+        return await _run_grsai_image(out=out, prompt=prompt, reference_paths=refs,
+                                      model=model, aspect_ratio=aspect_ratio, image_size=image_size)
 
     from novelvideo.config import get_grid_generation_config
     from novelvideo.generators.nanobanana_grid import generate_reference_edit_image

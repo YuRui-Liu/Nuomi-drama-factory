@@ -23,10 +23,20 @@ function makeData(): VideoDirectorNodeData {
 }
 function task(overrides: Partial<ReturnType<typeof useVideoDirectorTask>> = {}): ReturnType<typeof useVideoDirectorTask> {
   return { capabilities, techniques: [], techniqueError: false, attempts: [], error: '', fieldErrors: {}, generate: vi.fn(), recoverPending: vi.fn(),
-    retry: vi.fn(), refresh: vi.fn(), ...overrides };
+    retry: vi.fn(), refresh: vi.fn(), prepare: vi.fn(), isPreparing: false, preparationConflict: false, ...overrides };
 }
 
 describe('video director panel', () => {
+  it('keeps adaptation visible in explicit Ref mode', () => {
+    const data = { ...makeData(), activeInputMode: 'ref' as const, inputModeIntent: 'manual' as const };
+    useCanvasStore.setState({ nodes: [{ id: 'board', type: CANVAS_NODE_TYPES.storyboardGen, position: { x: 0, y: 0 },
+      data: { imageUrl: '/board.png', gridRows: 2, gridCols: 2, frames: [] } }],
+      edges: [{ id: 'link', source: 'board', target: 'director' }] } as never);
+    render(<I18nextProvider i18n={zhI18n}><VideoDirectorPanel nodeId="director" data={data} task={task()} onDraftChange={vi.fn()} onClose={vi.fn()} /></I18nextProvider>);
+    expect(screen.getByText(/Picture 1/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '准备 / 刷新分镜参考' })).toBeInTheDocument();
+    useCanvasStore.setState({ nodes: [], edges: [] });
+  });
   it('shows a nested server technique error beside the selected card with segment context', () => {
     const data = makeData();
     data.draft.segments[0].technique = { id: 'ending', version: '1' };

@@ -67,7 +67,7 @@ async def _run_voice_design(envelope: dict[str, Any], ctx: ProjectContext) -> di
         candidate = candidates.create(str(payload["request_id"]), saved_payload)
         candidate_id = candidate["candidate_id"]
         if not candidate["path"]:
-            raise_if_envelope_cancel_requested(envelope, task_type="character_voice_design")
+            await asyncio.to_thread(raise_if_envelope_cancel_requested, envelope, task_type="character_voice_design")
             if not candidate["provider_task_id"] and not candidates.claim_submission(candidate_id):
                 raise ValueError("submission_unknown: reconcile supplier task before retrying")
 
@@ -86,7 +86,7 @@ async def _run_voice_design(envelope: dict[str, Any], ctx: ProjectContext) -> di
             content = candidates.read_audio(candidate_id)
             report = await asyncio.to_thread(check_voice_audio, content, kind="dialogue")
             candidate = candidates.save_report(candidate_id, report)
-        raise_if_envelope_cancel_requested(envelope, task_type="character_voice_design")
+        await asyncio.to_thread(raise_if_envelope_cancel_requested, envelope, task_type="character_voice_design")
         progress(1.0, f"候选已保存，质检状态：{candidate['report'].get('status', 'qc_unavailable')}")
         return {"character_name": name, "slot": slot, "candidate_id": candidate_id,
                 "path": candidate["path"], "sha256": candidate["sha256"],

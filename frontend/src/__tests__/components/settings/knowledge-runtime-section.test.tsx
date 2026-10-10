@@ -2,6 +2,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { toast } from "sonner";
 import { beforeEach, expect, it, vi } from "vitest";
 
+vi.mock("@/components/settings/chat-runtime-panel", () => ({ ChatRuntimePanel: () => null }));
+
 const knowledgeRuntimeMockState = vi.hoisted(() => ({
   codex: {
     installed: true,
@@ -235,6 +237,7 @@ it("shows the actual local knowledge and media providers", () => {
   expect(screen.getByLabelText("带 Ref 导演台全局 Ref 上限")).toHaveAttribute("step", "1");
   expect(screen.getByLabelText("Qwen3 音色设计 Workflow ID")).toBeInTheDocument();
   expect(screen.getByLabelText("IndexTTS2 声音克隆 Workflow ID")).toBeInTheDocument();
+  expect(screen.getByLabelText("ACE-Step 配乐 Workflow ID")).toHaveValue("2059090557116440578");
   expect(screen.getByRole("button", { name: "测试并保存" })).toBeInTheDocument();
   expect(screen.queryByText(/RelayClaw/i)).not.toBeInTheDocument();
   expect(screen.queryByText(/NewAPI/i)).not.toBeInTheDocument();
@@ -244,6 +247,16 @@ it("passes the closed state to the task concurrency card", () => {
   render(<KnowledgeRuntimeSection open={false} />);
 
   expect(knowledgeRuntimeMockState.concurrencyOpen).toBe(false);
+});
+
+it("saves the music workflow with the RunningHub settings", async () => {
+  render(<KnowledgeRuntimeSection open />);
+  fireEvent.change(screen.getByLabelText("RunningHub API Key"), { target: { value: "rh-test-key" } });
+  fireEvent.change(screen.getByLabelText("ACE-Step 配乐 Workflow ID"), { target: { value: "123456789" } });
+  fireEvent.click(screen.getAllByRole("button", { name: "保存" })[1]);
+  await waitFor(() => expect(knowledgeRuntimeMockState.saveProvider).toHaveBeenCalledWith(expect.objectContaining({
+    workflows: expect.objectContaining({ music_acestep: "123456789" }),
+  })));
 });
 
 it.each(["1", "10"])("accepts a Ref image limit of %s and preserves the legacy workflow", async (limit) => {

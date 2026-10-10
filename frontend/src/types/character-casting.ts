@@ -50,6 +50,7 @@ export interface CastingDossier {
     personality?: string[];
     dramatic_function?: string;
     relationships?: string[];
+    authoring_context?: {source_document?: string; title?: string; text: string}[];
   };
   hard_constraints: CastingFact[];
   interpretations: CastingFact[];
@@ -107,6 +108,14 @@ export interface CastingReviewAttempt {
   provenance: Record<string, unknown>;
 }
 export interface CastingCandidate {
+  sheet_contract?: 'character_sheet_v4' | null;
+  avatar_url?: string | null;
+  asset_version?: number;
+  crop_box?: [number, number, number, number] | null;
+  repair_child_id?: string | null;
+  sheet_quality?: { passed: boolean; issues: { region: string; problem: string; suggestion: string }[] } | null;
+  repair_history?: {candidate_id?: string; user_change_request?: string; changes?: string[];
+    generation_prompt?: string; issues?: {issues?: {region:string;problem:string;suggestion:string}[]}}[];
   schema_version: 1;
   candidate_id: string;
   project_id: string;
@@ -173,6 +182,7 @@ export interface CastingWorkspace {
   current: {
     version_id: string;
     adoption_status: string;
+    sheet_url?: string | null;
     url: string;
     candidate_id: string | null;
     immutable: boolean;
@@ -188,6 +198,7 @@ export interface CastingWorkspace {
   tasks: CastingSubmission[];
 }
 export interface CastingAdoption {
+  expected_asset_version?: number;
   candidate_id: string;
   expected_revision: string;
   idempotency_key: string;
@@ -214,7 +225,12 @@ export type CastingAction =
         idempotency_key: string;
         expected_revision: string;
         model?: string;
+        sheet_contract?: 'character_sheet_v4';
+        reuse_stale_draft?: boolean;
+        source_candidate_id?: string;
+        change_request?: string;
       };
     }
   | { kind: "review"; candidateId: string; body: { idempotency_key: string } }
-  | { kind: "adopt"; candidateId: string; body: CastingAdoption };
+  | { kind: "adopt"; candidateId: string; body: CastingAdoption }
+  | { kind: "crop"; candidateId: string; body: { crop_box: [number, number, number, number]; expected_version: number } };

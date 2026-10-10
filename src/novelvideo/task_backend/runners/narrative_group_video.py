@@ -651,6 +651,9 @@ def _optimizer_director_context(
 def _source_state_context(active, segment: H3DirectorSegment, director_context: str,
                           *, source_blocks: Mapping[str, Mapping[str, str]] | None = None) -> str:
     """Retain exact shot boundaries even when segment prose merges several shots."""
+    from novelvideo.media_capabilities.video.h3_creative_mapping import (
+        creative_h3_slots, creative_h3_rigid_slots, creative_h3_execution_slots,
+    )
     shots = {shot.id: shot for group in getattr(active, "groups", ()) for shot in group.shots}
     states = [
         {"shot_id": shot_id, "visible_start_state": shots[shot_id].visible_start_state,
@@ -661,6 +664,17 @@ def _source_state_context(active, segment: H3DirectorSegment, director_context: 
     ]
     if not states:
         return director_context
+    for state in states:
+        shot = shots[state["shot_id"]]
+        if getattr(shot, "creative", None) is not None:
+            creative = shot.creative.model_dump(mode="json")
+            state.update(creative_contract_version=1, creative=creative,
+                         action=shot.action,
+                         cinematography=shot.cinematography.model_dump(mode="json") if shot.cinematography else {},
+                         duration_seconds=shot.duration_seconds,
+                         creative_h3_slots=creative_h3_slots(creative),
+                         creative_h3_rigid_slots=creative_h3_rigid_slots(creative))
+            state["creative_h3_execution_slots"] = creative_h3_execution_slots(state)
     if source_blocks is not None:
         for state in states:
             state["screenplay_source"] = [
@@ -758,6 +772,10 @@ async def _optimize_missing_prompts(
     retry_planning: bool = False,
 ) -> list[H3DirectorSegment]:
     del max_parallel
+    from novelvideo.media_capabilities.video.h3_speaker_voices import (
+        required_voice_speakers, resolve_speaker_voices, speaker_voice_preflight,
+    )
+    voice_characters = None
     requested_ids = {segment.segment_id for segment in segments}
     episode_segments: list[H3DirectorSegment] = []
     episode_context_beats: list[Mapping[str, Any]] = []
@@ -767,7 +785,8 @@ async def _optimize_missing_prompts(
         if frozen_frames is None:
             raise ValueError("storyboard prompt requires frozen frames")
         storyboard_images = build_storyboard_prompt_images(
-            storyboard_binding, frozen_frames, segments, media_root=project_dir)
+            storyboard_binding, frozen_frames, segments, media_root=project_dir,
+            reference_only=bool(global_references))
         segment_group_ids.update({segment.segment_id: storyboard_binding.group_id for segment in segments})
     source_beats = list(episode_beats or beats)
     for group in (
@@ -790,6 +809,15 @@ async def _optimize_missing_prompts(
             # A stale/incomplete sibling render is context that can be omitted;
             # the requested group's segments were validated before this call.
             continue
+        candidate_speakers = [speaker for item in candidate for speaker in required_voice_speakers(
+            item.dialogue_lines, speaker=item.speaker, dialogue=item.dialogue)]
+        if candidate_speakers and not any(item.segment_id in requested_ids for item in candidate):
+            if voice_characters is None:
+                voice_characters = await _load_speaker_voice_characters(ctx)
+            if not speaker_voice_preflight(candidate_speakers, voice_characters)["ready"]:
+                # Neighbours are optional continuity context, not the requested
+                # generation scope. Never require repairing their unused voices.
+                continue
         candidate_beats = _canonical_beats_for_segments(candidate, group_beats)
         episode_segments.extend(candidate)
         episode_context_beats.extend(candidate_beats)
@@ -818,11 +846,10 @@ async def _optimize_missing_prompts(
         global_references
     )
     resolved_reference_tags = tuple(fact.tag for fact in resolved_references)
-    from novelvideo.media_capabilities.video.h3_speaker_voices import resolve_speaker_voices
-
-    voice_characters = await _load_speaker_voice_characters(ctx) if any(
-        s.dialogue_lines or s.dialogue.strip() for s in segments
-    ) else []
+    if voice_characters is None:
+        voice_characters = await _load_speaker_voice_characters(ctx) if any(
+            s.dialogue_lines or s.dialogue.strip() for s in segments
+        ) else []
     contexts = []
     for index, (segment, beat) in enumerate(zip(segments, beats, strict=True)):
         context = _prompt_context(
@@ -836,8 +863,7 @@ async def _optimize_missing_prompts(
         )
         context_updates: dict[str, object] = {
             "speaker_voices": resolve_speaker_voices(
-                [line.speaker for line in segment.dialogue_lines]
-                or ([segment.speaker] if segment.dialogue.strip() else []),
+                required_voice_speakers(segment.dialogue_lines, speaker=segment.speaker, dialogue=segment.dialogue),
                 voice_characters,
             ),
             "director_context": _source_state_context(active, segment, context.director_context,
@@ -2212,6 +2238,7 @@ async def _review_cinematography(
     from novelvideo.text_task_runtime.runtime import current_text_task_runtime
 
     kwargs = {"shots_by_id": shots_by_id, "runtime": current_text_task_runtime(),
+              "evidence_dir": project_dir / "videos" / f"ep{episode:03d}" / "cinematography_evidence",
               "cache_dir": Path(ctx.state_dir) / "cinematography_review_cache"}
     if phase == "reference":
         reports = await review_reference_inputs(
@@ -2273,6 +2300,10 @@ async def _execute_inner(
         group for group in load_materialized_groups(project_dir, episode)
         if group.id == group_id
     )
+    video_stage = getattr(materialized_group, "stages", {}).get("video")
+    capability_error = getattr(video_stage, "provider_parameters", {}).get("capability_conflict")
+    if capability_error:
+        raise ValueError(str(capability_error))
     global_references = ()
     reference_revision = None
     reference_limit = None
@@ -2459,9 +2490,24 @@ async def _execute_inner(
             if manifest_path.is_file()
             else None
         )
+        replay_output = output
+        # A user retry reserves a new group revision, but an interrupted RH
+        # request is already paid. Keep its old idempotency target only after
+        # the complete frozen-input checks below have accepted the manifest.
+        if replay_manifest is None and revision > 1 and not requested_segment_id:
+            prior_output = video_dir / f"{group_id}_r{revision - 1}.mp4"
+            prior_path = prior_output.with_suffix(".manifest.json")
+            if prior_path.is_file():
+                prior = load_h3_director_manifest(prior_path)
+                if (prior.status in {"submitted", "transport_failed"}
+                        and prior.workflow_parameters == workflow_parameters
+                        and any(entry.provider_task_id for entry in prior.entries)):
+                    replay_manifest = prior
+                    replay_output = prior_output
         storyboard_images = (
             build_storyboard_prompt_images(storyboard_binding, frozen_frames, raw_segments,
-                                          media_root=project_dir)
+                                          media_root=project_dir,
+                                          reference_only=bool(global_references))
             if storyboard_binding is not None else ()
         )
         replay_entries = (
@@ -2497,7 +2543,9 @@ async def _execute_inner(
             and any(review.get("status") != "passed" for review in replay_manifest.cinematography_reviews)
         )
         review_shots = {}
-        if payload.get("cinematography_review_required") and not recover_qc_media:
+        # Freeze the adopted facts even when paid review is not requested, so a
+        # later review can inspect these clips without borrowing a newer plan.
+        if not recover_qc_media:
             from novelvideo.director_plan.models import ShotPlan
 
             if replay_entries:
@@ -2511,7 +2559,7 @@ async def _execute_inner(
                 active = _load_active_director_plan(project_dir, episode)
                 review_shots = {
                     shot.id: shot.model_copy(deep=True)
-                    for group in active.groups for shot in group.shots
+                    for group in getattr(active, 'groups', ()) for shot in group.shots
                     if group.id == group_id
                 } if active else {}
         requested_mode = (
@@ -2793,6 +2841,8 @@ async def _execute_inner(
                     "status": replay_entries[entry.segment.segment_id].status,
                 }) for entry in manifest.entries),
             })
+        if replay_entries and replay_output != output:
+            manifest = _merge_replay_evidence(manifest, replay_manifest)
         if manifest_path.is_file():
             # The stage revision is encoded in this revision-scoped path.
             manifest = _merge_replay_evidence(
@@ -2831,8 +2881,9 @@ async def _execute_inner(
                     project_dir, episode, group_id, revision, plan_revision
                 )
                 durable_segment_id = durable_segment_ids[segment_index - 1]
-                segment_output = output.with_name(
-                    f"{output.stem}_segment_{segment_index:03d}{output.suffix}"
+                segment_target = replay_output if replay_entries else output
+                segment_output = segment_target.with_name(
+                    f"{segment_target.stem}_segment_{segment_index:03d}{segment_target.suffix}"
                 )
                 if recover_qc_media:
                     from .narrative_group_video_recovery import recover_reviewed_clip

@@ -297,6 +297,14 @@ def parse_location_line(line: str) -> list[tuple[str, str, bool]]:
     if not text:
         return []
 
+    delivery = re.fullmatch(
+        rf"(?P<location>.+?)\s+(?P<interior>内|外)景\s*[·•]\s*(?P<time>{TIME_TOKEN_RE})",
+        text,
+    )
+    if delivery:
+        return [(delivery.group("location").strip(), delivery.group("time"),
+                 delivery.group("interior") == "内")]
+
     # Workspace scene headings use "## 1-1｜账房 · 夜 · 内". Keep the
     # separators out of the location while preserving the authored header.
     workspace = re.fullmatch(

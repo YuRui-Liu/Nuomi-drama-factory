@@ -469,12 +469,51 @@ def _materialize_active_groups(
                 else active.project_style_snapshot_id
             )
             previous = previous_by_id.get(group.id)
+            generation_batches = plan_generation_batches(
+                group, revision_id=active.revision_id,
+                style_snapshot_hash=style_snapshot_hash, aspect_ratio=aspect_ratio,
+            )
+            keyframe_projections = {}
+            if group.creative_contract_version == 1:
+                from novelvideo.director_plan.keyframes import project_keyframe
+
+                for shot in group.shots:
+                    if shot.creative is None:
+                        continue
+                    projection = project_keyframe({
+                        **shot.model_dump(mode="json"), "creative_contract_version": 1,
+                        "director_revision_id": active.revision_id,
+                        "scene_name": group.scene_anchor, "time_of_day": group.time_anchor,
+                        "style_snapshot_id": snapshot_id, "style_snapshot_hash": style_snapshot_hash,
+                        "detected_identities": list(dict.fromkeys(
+                            item.entity_key.strip() for item in shot.asset_requirements
+                            if item.kind in {"character_identity", "character_state"} and item.entity_key.strip())),
+                    })
+                    keyframe_projections[shot.id] = {
+                        "keyframe_projection_hash": projection.dependency_hash,
+                        "dependency_fields": list(projection.dependency_fields),
+                        "anchor": projection.anchor, "director_revision_id": active.revision_id,
+                    }
+            capability_error = ""
+            try:
+                video_segments = plan_video_segments(
+                    group, revision_id=active.revision_id,
+                    style_snapshot_hash=style_snapshot_hash,
+                )
+            except ValueError as exc:
+                if not str(exc).startswith("capability_conflict:"):
+                    raise
+                capability_error = str(exc)
+                video_segments = ()
             base = NarrativeGroup(
                 id=group.id,
                 storyboard_contract_version=previous.storyboard_contract_version if previous else 0,
                 ordinal=group.ordinal,
                 beat_ids=group.source_span_ids,
-                layout=layout_for_group(len(shot_ids)),
+                layout=(GridLayout(rows=(len(shot_ids) + 3) // 4, columns=4,
+                                   capacity=((len(shot_ids) + 3) // 4) * 4)
+                        if len(shot_ids) > 9 and group.creative_contract_version == 1
+                        else layout_for_group(len(shot_ids))),
                 cell_to_beat=tuple(
                     CellMapping(cell=cell, beat_id=shot_id)
                     for cell, shot_id in enumerate(shot_ids)
@@ -504,13 +543,11 @@ def _materialize_active_groups(
                         "actual_resolution": "",
                         "style_hash": style_snapshot_hash,
                         "cleanup_reports": [],
+                        **({"keyframe_projections": {shot_id: keyframe_projections[shot_id]
+                                                     for shot_id in item.shot_ids}}
+                           if keyframe_projections else {}),
                     }
-                    for item in plan_generation_batches(
-                        group,
-                        revision_id=active.revision_id,
-                        style_snapshot_hash=style_snapshot_hash,
-                        aspect_ratio=aspect_ratio,
-                    )
+                    for item in generation_batches
                 ),
                 video_segments=tuple(
                     {
@@ -520,11 +557,7 @@ def _materialize_active_groups(
                         "provider_task_id": None,
                         "result": {},
                     }
-                    for item in plan_video_segments(
-                        group,
-                        revision_id=active.revision_id,
-                        style_snapshot_hash=style_snapshot_hash,
-                    )
+                    for item in video_segments
                 ),
                 effective_style_snapshot=(
                     {
@@ -537,17 +570,6 @@ def _materialize_active_groups(
                         "source": "inherited",
                     }
                 ),
-            )
-            generation_batches = plan_generation_batches(
-                group,
-                revision_id=active.revision_id,
-                style_snapshot_hash=style_snapshot_hash,
-                aspect_ratio=aspect_ratio,
-            )
-            video_segments = plan_video_segments(
-                group,
-                revision_id=active.revision_id,
-                style_snapshot_hash=style_snapshot_hash,
             )
             base = replace(
                 base,
@@ -623,11 +645,46 @@ def _materialize_active_groups(
                     ),
                 )
             elif previous is not None:
-                base = replace(
-                    base, stages=_empty_stages()
-                )
+                if group.creative_contract_version == 1:
+                    from novelvideo.director_plan.creative_invalidation import invalidate_creative_stages
+
+                    try:
+                        old_revision = DirectorPlanStore(project_path).load(episode, previous.director_revision_id)
+                    except (OSError, ValueError, KeyError):
+                        old_revision = None
+                    base = replace(base, stages=invalidate_creative_stages(
+                        old_revision, active, group.id, previous.stages))
+                else:
+                    base = replace(base, stages=_empty_stages())
             else:
                 base = replace(base, stages=_empty_stages())
+            if capability_error:
+                base = replace(
+                    base,
+                    video_plan=VideoPlan(revision=1),
+                    video_segments=(),
+                    errors=tuple(error for error in base.errors
+                                 if error.get("code") != "capability_conflict") + ({
+                        "code": "capability_conflict", "stage": "video",
+                        "message": capability_error,
+                    },),
+                    stages={**base.stages, "video": replace(
+                        base.stages["video"], status="failed", error=capability_error,
+                        provider_parameters={**base.stages["video"].provider_parameters,
+                                             "capability_conflict": capability_error},
+                    )},
+                )
+            elif (base.stages["video"].provider_parameters.get("capability_conflict")
+                  or any(error.get("code") == "capability_conflict" for error in base.errors)):
+                video = base.stages["video"]
+                was_conflict = video.error.startswith("capability_conflict:")
+                base = replace(base,
+                    errors=tuple(error for error in base.errors if error.get("code") != "capability_conflict"),
+                    stages={**base.stages, "video": replace(video,
+                        status="pending" if was_conflict and video.status == "failed" else video.status,
+                        error="" if was_conflict else video.error,
+                        provider_parameters={key: value for key, value in video.provider_parameters.items()
+                                             if key != "capability_conflict"})})
             projected.append(base)
 
         if projected != previous_groups:
@@ -810,6 +867,12 @@ def generation_beats_for_group(
             "camera_motion": shot.camera_motion,
             "cinematography": shot.cinematography.model_dump(mode="json") if shot.cinematography else None,
             "director_intent": shot.intent.model_dump(mode="json") if shot.intent else None,
+            "creative_contract_version": active.creative_contract_version,
+            "director_revision_id": active.revision_id,
+            "creative": shot.creative.model_dump(mode="json") if shot.creative else None,
+            "project_style_snapshot_id": active.project_style_snapshot_id,
+            "style_snapshot_id": group.style_snapshot_id or active.project_style_snapshot_id,
+            "style_snapshot_hash": active.project_style_snapshot.style_hash if active.project_style_snapshot else active.project_style_snapshot_id,
             "dialogue_source_ids": list(shot.dialogue_source_ids),
             "dialogue_lines": dialogue_lines,
             "dialogue": "\n".join(line["text"] for line in dialogue_lines),
@@ -1995,7 +2058,6 @@ def update_video_manifest_dialogue_source(
     from novelvideo.media_capabilities.video.h3_timeline import (
         DialogueSource,
         H3DirectorOutputManifest,
-        H3TimelineEntry,
         load_h3_director_manifest,
         save_h3_director_manifest,
     )

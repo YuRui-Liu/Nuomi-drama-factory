@@ -19,7 +19,7 @@ def builtin_methods():
 
     for task, files in CRAFT_BY_KIND.items():
         add('writer', task, '写作技法', 'creative_skill',
-            'script_creation/prompts.py:craft_guidance → nuomi-drama-scripts/references/' + ', '.join(files), craft_guidance(task))
+            'script_creation/craft_resources/（script-master v3.1 提炼，来源见 sources.json）/' + ', '.join(files), craft_guidance(task))
         add('writer', task, '固定写作协议示例（单篇第 1 集、空引用、无用户要求）', 'protocol',
             f'script_creation/generation.py:GENERATION_SYSTEM_PROMPT + script_creation/prompts.py:build_prompt(kind={task}, script_mode=single, episode_number=1, episode_count=1, instruction="", references=[])；含 STAGE_CONTRACTS',
             GENERATION_SYSTEM_PROMPT + '\n\n' + build_prompt(kind=task, script_mode='single',

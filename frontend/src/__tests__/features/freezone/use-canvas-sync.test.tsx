@@ -18,6 +18,7 @@ import {
 } from "@/features/freezone/canvasDraftStorage";
 import {
   applyRemoteFreezoneCanvas,
+  flushFreezoneCanvasRuntime,
   consumeQueuedLocalFreezoneProjections,
   queueLocalFreezoneProjection,
   removeLocalFreezoneProjection,
@@ -42,6 +43,14 @@ vi.mock("@xyflow/react", () => ({
 }));
 
 describe("useCanvasSync hydrate lifecycle", () => {
+  it("does not PUT an unchanged hydrated canvas before a server run refresh", async () => {
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ nodes: [], edges: [], revision: 12, metadata: {} });
+    const hook = renderHook(() => useCanvasSync("project-a", "run-refresh-clean"));
+    await waitFor(() => expect(hook.result.current.status).toBe("ready"));
+    await act(async () => { expect(await flushFreezoneCanvasRuntime("project-a", "run-refresh-clean")).toBe(true); });
+    expect(putFreezoneCanvas).not.toHaveBeenCalled();
+    hook.unmount();
+  });
   beforeEach(() => {
     vi.useRealTimers();
     vi.mocked(getFreezoneCanvas).mockReset();

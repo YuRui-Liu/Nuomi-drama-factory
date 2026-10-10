@@ -576,6 +576,7 @@ function BeatsTabContent() {
         project={project}
         episode={epNum}
         onClose={() => setWorkbenchMode("groups")}
+        onActivated={() => setWorkbenchMode("groups")}
       />
     );
   }

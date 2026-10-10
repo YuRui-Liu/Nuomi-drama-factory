@@ -104,22 +104,23 @@ def revise_draft(store, character_id, *, identity_id, expected_revision, selecte
     return store.mutate(character_id, identity_id=identity_id, expected_revision=expected_revision, change=change)
 
 
-def compile_current(workspace, identity_id, expected_revision, source_revision, style):
+def compile_current(workspace, identity_id, expected_revision, source_revision, style, *, reuse_stale_draft=False):
     draft = stage_workspace(workspace, identity_id)
     revision = draft.casting_revision
     if revision is None or revision.revision_id != expected_revision:
         raise ValueError('casting revision conflict')
-    if revision.source_revision != source_revision or revision.style_revision != style:
+    if not reuse_stale_draft and (revision.source_revision != source_revision or revision.style_revision != style):
         raise ValueError('source/style changed; recast required')
     proposal = next((p for p in draft.design_proposals if p.proposal_id == draft.selected_proposal_id), None)
     if proposal is None:
         raise ValueError('select a casting proposal first')
-    return compile_casting_snapshot(revision, proposal, draft.profile, style)
+    return compile_casting_snapshot(revision, proposal, draft.profile, revision.style_revision if reuse_stale_draft else style)
 
 
 def is_stale(candidate, workspace, identity_id, source_revision, style):
     try:
-        snapshot = compile_current(workspace, identity_id, candidate.snapshot.revision_id, source_revision, style)
+        snapshot = compile_current(workspace, identity_id, candidate.snapshot.revision_id, source_revision, style,
+            reuse_stale_draft=candidate.reuse_stale_draft)
         return snapshot.snapshot_hash != candidate.snapshot.snapshot_hash
     except ValueError:
         return True
@@ -127,7 +128,7 @@ def is_stale(candidate, workspace, identity_id, source_revision, style):
 
 async def design_and_publish(*, store, character_id, identity_id, expected_revision,
                              grounded_profile, source_revision, style, runtime, assert_live,
-                             original_hash=None, before_commit=None):
+                             original_hash=None, before_commit=None, variant_context=None):
     from novelvideo.character_design_stage import CharacterDesignOutput, CHARACTER_DESIGN_SYSTEM_PROMPT
     original = store.get(character_id)
     original_hash = original_hash or snapshot_digest(original.model_dump(mode='json'))
@@ -152,7 +153,9 @@ async def design_and_publish(*, store, character_id, identity_id, expected_revis
         return strip_nonvisual_evidence_decisions(design_profile, items)
 
     design_request = json.dumps({'casting_dossier': dossier.model_dump(mode='json'), 'identity_id': identity_id,
-                                 'project_style': style}, ensure_ascii=False)
+                                 'project_style': style,
+                                 'user_variant_requirements': variant_context,
+                                 'variant_policy': '变体要求是用户创作意图，不作为原文事实；三案都须遵循变体要求，同时有明显造型差异。'}, ensure_ascii=False)
     budget_key = snapshot_digest({'input': design_request, 'policy': 2, 'revision': expected_revision})
     proposals: list[CharacterDesignProposal] = []
     issues: list[str] = []
@@ -172,6 +175,9 @@ async def design_and_publish(*, store, character_id, identity_id, expected_revis
                 '\ncasting_dossier.narrative.authoring_context 是当前项目的作者创作设定，不是原文事实。'
                 '用其中明确的人物职业、时代和世界设定约束设计方向，结合 project_style；'
                 '不要忽略已有小传，也不要把创作计划当成已发生经历。'
+                'authoring_context 中 character-profile 基础资料的性别、年龄段、身份、身形必须约束全部三案；'
+                '变体使用当前 identity_id 对应的身份资料，未覆盖字段继承基础角色。不得套用其他变体。'
+                '原文明示与基础资料冲突时明确报告，不得悄悄改变性别或年龄。'
                 '这些内容不提供 fact_ids，不得升级为 evidence 或伪造外貌事实；'
                 '由此形成的设计仍使用 creative_choice 并说明依据。'
             ),

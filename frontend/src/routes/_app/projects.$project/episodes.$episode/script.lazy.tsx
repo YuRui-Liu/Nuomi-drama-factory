@@ -661,7 +661,7 @@ function ScriptTabContent() {
                 }}
               />
             </section></section>
-          {workspace === "review" && <DirectorReviewWorkbench project={project} episode={epNum} onClose={() => setWorkspace("semantics")} />}
+          {workspace === "review" && <DirectorReviewWorkbench project={project} episode={epNum} onClose={() => setWorkspace("semantics")} onActivated={() => { void navigate({ to: "/projects/$project/episodes/$episode/beats", params: { project, episode }, search: { sub: "render" } as never }); }} />}
         </div>
       </div>
 

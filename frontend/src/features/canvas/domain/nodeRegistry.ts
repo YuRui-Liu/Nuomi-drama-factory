@@ -696,6 +696,7 @@ const UPSTREAM_SOURCE_WHITELIST: Partial<Record<CanvasNodeType, readonly CanvasN
     CANVAS_NODE_TYPES.imageEdit,
     CANVAS_NODE_TYPES.imageGen,
     CANVAS_NODE_TYPES.exportImage,
+    CANVAS_NODE_TYPES.storyboardGen,
   ],
 };
 

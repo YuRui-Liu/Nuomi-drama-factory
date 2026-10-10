@@ -687,6 +687,21 @@ async def test_explicit_incomplete_planning_retry_is_bounded_and_recorded(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_explicit_visual_conflict_retry_does_not_replay_same_rejection(tmp_path):
+    blocked = {"segments": [{"decision": {"status": "conflict"}}]}
+    agent = FakeAgent((blocked, blocked))
+    first = H3EpisodePackOptimizer(agent, tmp_path)
+    await first._run_recorded("visual conflict")
+    await first._run_recorded("visual conflict")
+    assert len(agent.calls) == 1
+    retry = H3EpisodePackOptimizer(agent, tmp_path, retry_incomplete=True)
+    await retry._run_recorded("visual conflict")
+    assert len(agent.calls) == 2
+    await retry._run_recorded("visual conflict")
+    assert len(agent.calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_text_cache_separates_runtime_models(tmp_path):
     plans = _pack(tuple((entry.segment_id, _plan()) for entry in _input().segments))
     agent = FakeAgent((plans, plans))

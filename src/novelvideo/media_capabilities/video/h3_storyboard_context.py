@@ -18,7 +18,7 @@ from novelvideo.knowledge_runtime.codex import StructuredImage, validate_structu
 from novelvideo.narrative_groups.storyboard_binding import StoryboardBinding
 from novelvideo.text_task_runtime.runtime import StructuredRuntimeAgent
 
-STORYBOARD_POLICY_VERSION = 6
+STORYBOARD_POLICY_VERSION = 7
 STORYBOARD_PROMPT_RULES = """
 Inspect every labeled storyboard image and return a structured visual decision.
 Bind each visible dialogue speaker to exactly one visible person using supplied
@@ -34,6 +34,10 @@ as unknown (never infer exact focal length or 3D coordinates from a still).
 Compare starting-frame facts with the director plan's starting requirements.
 A planned later push-in or turn is not a starting-frame conflict. Preserve the
 start_frame/end_frame/storyboard_context roles; context is NOT a video end frame.
+For Ref2VA, storyboard_context images guide cast, setting and action design, not
+an exact opening or ending frame. Stage the source-required action from its needed
+starting state; a context image depicting a later action phase is not a starting
+state or prop_action_phase conflict. Do not duplicate props from context images.
 If source images conflict with the required starting state, return conflict with
 the image label, shot ID, field, observation and requirement as advisory evidence.
 Use the inspected opening image for initial prop location, holder, scale and
@@ -186,7 +190,8 @@ class StoryboardPromptImage:
 
 
 def build_storyboard_prompt_images(binding: StoryboardBinding, frames, segments,
-                                  *, media_root: Path) -> tuple[StoryboardPromptImage, ...]:
+                                  *, media_root: Path, reference_only: bool = False
+                                  ) -> tuple[StoryboardPromptImage, ...]:
     from .h3_timeline import source_shot_ids_for
 
     cells = {cell["shot_id"]: cell for cell in binding.cell_assets(media_root)}
@@ -204,9 +209,9 @@ def build_storyboard_prompt_images(binding: StoryboardBinding, frames, segments,
             if frame.sha256 != cell["sha256"]:
                 raise ValueError("storyboard prompt frame digest mismatch")
             roles = []
-            if cell["path"] == segment.first_frame:
+            if not reference_only and cell["path"] == segment.first_frame:
                 roles.append("start_frame")
-            if cell["path"] == segment.last_frame:
+            if not reference_only and cell["path"] == segment.last_frame:
                 roles.append("end_frame")
             for role in roles or ["storyboard_context"]:
                 images.append(StoryboardPromptImage(

@@ -8,6 +8,8 @@ import type { ScriptDocument } from "./types";
 const api = vi.hoisted(() => ({ listGenerations: vi.fn(), startGeneration: vi.fn(),
   getGeneration: vi.fn(), retryGeneration: vi.fn(), rebaseGeneration: vi.fn(), getCandidate: vi.fn() }));
 vi.mock("./api", () => ({ scriptCreationApi: api }));
+vi.mock("./generation-preflight", () => ({ GenerationPreflight: () => null }));
+vi.mock("./production-style-bridge", () => ({ ProductionStyleBridge: () => null }));
 import { GenerationPanel } from "./generation-panel";
 
 function doc(id: string, kind: ScriptDocument["kind"], markdown: string, episode: number | null = null): ScriptDocument {
@@ -20,6 +22,23 @@ function doc(id: string, kind: ScriptDocument["kind"], markdown: string, episode
 beforeEach(() => { vi.clearAllMocks(); api.listGenerations.mockResolvedValue([]); });
 
 describe("GenerationPanel", () => {
+  it("keeps a needs-review draft readable without retry or candidate adoption", async () => {
+    const brief = doc("brief", "brief", "故事想法已保存");
+    const manager = new DraftManager(vi.fn()); manager.load(brief);
+    api.listGenerations.mockResolvedValue([{ id: "review-run", status: "needs_review", steps: [
+      { key: "episode", title: "第一集", status: "needs_review", craft_review: { status: "needs_revision" }, output: { kind: "candidate", candidate_id: "c1" } },
+    ] }]);
+    api.getCandidate.mockResolvedValue({ id: "c1", markdown: "需要继续打磨的草稿", craft_review: { status: "needs_revision" } });
+    render(<GenerationPanel project="demo" documents={[brief]} manager={manager} settings={defaultSettings()}
+      selected={brief} instruction="增强动机" onSelect={vi.fn()} onRefresh={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "查看候选正文" }));
+    expect(await screen.findByText("需要继续打磨的草稿")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "进入候选审阅" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "继续未完成步骤" })).not.toBeInTheDocument();
+    expect(screen.queryByText("已完成")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成故事框架与首集" })).toBeEnabled();
+    manager.dispose();
+  });
   it("submits saved brief to the queued bootstrap API", async () => {
     const user = userEvent.setup();
     const brief = doc("brief", "brief", "故事想法已保存");
@@ -62,6 +81,19 @@ describe("GenerationPanel", () => {
 });
 
 describe("GenerationPanel retry", () => {
+  it("creates only the first episode from an existing framework", async () => {
+    const user = userEvent.setup();
+    const brief = doc("brief", "brief", "山海短剧");
+    const docs = [brief, doc("outline", "outline", "既有大纲"), doc("synopsis", "episode_synopsis", "第1集：追踪异兽")];
+    const manager = new DraftManager(vi.fn());
+    docs.forEach(item => manager.load(item));
+    api.startGeneration.mockResolvedValue({ run: { id: "first-only", status: "completed", steps: [] }, task_id: "task" });
+    render(<GenerationPanel project="demo" documents={docs} manager={manager} settings={defaultSettings()}
+      selected={brief} instruction="修正动机与代价" onSelect={vi.fn()} onRefresh={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "沿用框架创作第 1 集" }));
+    expect(api.startGeneration).toHaveBeenCalledWith("demo", expect.objectContaining({ mode: "continue", episode_number: 1, instruction: "修正动机与代价" }));
+    manager.dispose();
+  });
   it("keeps polling after a failed run is requeued", async () => {
     const user = userEvent.setup();
     const brief = doc("brief", "brief", "故事想法已保存");

@@ -62,6 +62,7 @@ async def _resolve_source_revision(ctx: Any, episode: int) -> int:
 
 def _dump_revision(revision: Any) -> dict[str, Any]:
     from novelvideo.director_plan.cinematography import production_direction_errors
+    from novelvideo.director_plan.creative_review import creative_clearance
 
     dumped = dict(revision.model_dump(mode="json"))
     if hasattr(revision, "groups"):
@@ -71,6 +72,21 @@ def _dump_revision(revision: Any) -> dict[str, Any]:
             for code in production_direction_errors(shot)
         ]
         dumped["production_ready"] = bool(revision.groups) and not dumped["direction_errors"]
+        status = "legacy_unreviewed"
+        if revision.creative_contract_version == 1:
+            feedback = revision.creative_feedback
+            status = "unreviewed"
+            if feedback is not None:
+                status = "needs_revision"
+                if any(issue.status == "needs_human" for issue in feedback.open_issues):
+                    status = "needs_human"
+                if revision.validation_report.passed and creative_clearance(revision):
+                    status = "passed"
+            if any(issue.code in {"creative_qc_unavailable", "creative_repair_invalid"}
+                   for issue in revision.validation_report.issues):
+                status = "unavailable"
+            dumped["production_ready"] = dumped["production_ready"] and status == "passed"
+        dumped["creative_review_status"] = status
     report = dumped.get("validation_report")
     if not isinstance(report, Mapping):
         return dumped
@@ -194,6 +210,27 @@ async def create_director_plan(
         "queue": queued.queue,
         "source_revision": source_revision,
     }
+
+
+@router.post("/projects/{project}/episodes/{episode}/director-plans/{revision_id}/review",
+             status_code=status.HTTP_202_ACCEPTED)
+async def review_director_plan(project: str, episode: int, revision_id: str,
+                               user: dict = Depends(require_scope("tasks:submit"))):
+    ctx = await _resolve(project, user, role="editor")
+    store = _build_director_plan_store(ctx)
+    candidate = _load_revision(store, episode, revision_id)
+    if candidate.creative_contract_version != 1 or candidate.status not in {"draft", "review_required", "failed"}:
+        raise HTTPException(status_code=409, detail={"code": "CREATIVE_REVIEW_NOT_AVAILABLE"})
+    store.require_current(candidate)
+    source_revision = await _resolve_source_revision(ctx, episode)
+    scope = f"creative-review:{revision_id}"
+    queued = await get_task_backend().enqueue_project_task(ctx,
+        task_type="director_plan", queue_kind="default", episode=episode, scope=scope,
+        payload={"project_id": str(ctx.project_id), "episode": episode,
+                 "source_revision": source_revision, "review_revision_id": revision_id})
+    return {"ok": True, "task_type": "director_plan", "task_id": queued.task_state.task_id,
+            "task_key": project_task_state_key("director_plan", str(ctx.project_id), episode, scope=scope),
+            "backend": queued.backend, "queue": queued.queue, "source_revision": source_revision}
 
 
 @router.get("/projects/{project}/episodes/{episode}/director-plans")

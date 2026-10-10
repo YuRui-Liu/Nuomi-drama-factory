@@ -18,6 +18,28 @@ vi.mock("@/lib/queries/shot-continuity", () => ({
 }));
 
 describe("GroupVideoResult", () => {
+  it("shows retained frames even when an unavailable reviewer provides no observations", () => {
+    render(<GroupVideoResult stage={{ status: "completed", revision: 1, video_asset: "/video.mp4",
+      quality_status: "needs_review", quality_reviews: [{ status: "unavailable", evidence: [],
+        frame_assets: { start: "/start.png", middle: "/middle.png", end: "/end.png" } }],
+    }} />);
+    expect(screen.getByRole("link", { name: "原始帧 start" })).toHaveAttribute("href", "/start.png");
+    expect(screen.getByRole("link", { name: "原始帧 middle" })).toHaveAttribute("href", "/middle.png");
+    expect(screen.getByRole("link", { name: "原始帧 end" })).toHaveAttribute("href", "/end.png");
+  });
+  it("distinguishes technical completion from quality acceptance and shows evidence", () => {
+    render(<GroupVideoResult stage={{ status: "completed", revision: 1, video_asset: "/video.mp4",
+      quality_status: "needs_review", quality_reviews: [{ status: "failed", review_id: "r1",
+        issues: [{ dimension: "face_integrity", description: "面部五官融合", frame_labels: ["middle"] }],
+        evidence: [{ frame_label: "middle", observation: "远景面部轮廓异常" }],
+        frame_assets: { middle: "/frame.png" } }],
+    }} />);
+    expect(screen.getByText("待质检处理")).toBeInTheDocument();
+    expect(screen.getByText(/技术生成完成不代表质量验收通过/)).toBeInTheDocument();
+    expect(screen.getByText(/面部五官融合/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "原始帧 middle" })).toHaveAttribute("href", "/frame.png");
+    expect(document.querySelector("video")).not.toBeNull();
+  });
   it("identifies only a completed nonvisual result without a video as skipped", () => {
     expect(isNonvisualVideoSkip({ status: "completed", revision: 6, actual_mode: "skipped_nonvisual" })).toBe(true);
     expect(isNonvisualVideoSkip({ status: "running", revision: 6, actual_mode: "skipped_nonvisual" })).toBe(false);

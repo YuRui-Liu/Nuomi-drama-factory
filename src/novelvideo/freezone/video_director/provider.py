@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
 from novelvideo.media_capabilities.models import MediaCapability, RunningHubWorkflowSettingsKey
 from novelvideo.media_capabilities.runtime.compiler import compile_node_info
 from novelvideo.media_capabilities.runtime.configuration import load_runninghub_runtime_configuration
+from novelvideo.media_capabilities.runtime.runninghub_client import RunningHubError
 from novelvideo.media_capabilities.video.runtime import get_h3_concurrency_coordinator, load_h3_workflow_profile
 from novelvideo.media_capabilities.video.workflow_registry import load_h3_reference_workflow_profile
 
@@ -40,7 +42,15 @@ class RunningHubDirectorProvider:
         async with self.coordinator.lease(self.runtime.account.id, capability):
             async with self.runtime.create_client() as client:
                 for image_id, path in paths.items():
-                    uploads[image_id] = {"imageFile": await client.upload(path)}
+                    # Uploading an input can be retried; paid submission cannot.
+                    for attempt in range(3):
+                        try:
+                            uploads[image_id] = {"imageFile": await client.upload(path)}
+                            break
+                        except RunningHubError as exc:
+                            if not exc.retriable or attempt == 2:
+                                raise
+                            await asyncio.sleep(2 ** attempt)
         payload = compile_director_payload(draft, optimized, uploads, reference_limit=reference_limit)
         semantic_values = {"timeline_data": payload.timeline_data}
         semantic_values.update({key: value for key, value in payload.semantic_values.items()

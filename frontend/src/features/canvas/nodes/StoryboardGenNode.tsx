@@ -59,12 +59,13 @@ import {
   resolveReferenceAwareDeleteRange,
 } from '@/features/canvas/application/referenceTokenEditing';
 import {
-  DEFAULT_IMAGE_MODEL_ID,
-  getImageModel,
-  listImageModels,
   resolveImageModelResolution,
   resolveImageModelResolutions,
 } from '@/features/canvas/models';
+import { catalogImageDefinition } from '@/features/canvas/models/catalogDefinition';
+import { useFreezoneImageModels } from '@/features/canvas/hooks/useFreezoneImageModels';
+import { startCanvasRun } from '@/features/canvas/infrastructure/orchestrationGateway';
+import { readUrl } from '@/lib/url-params';
 import { resolveModelPriceDisplay } from '@/features/canvas/pricing';
 import { ModelParamsControls } from '@/features/canvas/ui/ModelParamsControls';
 import { CanvasNodeImage } from '@/features/canvas/ui/CanvasNodeImage';
@@ -598,7 +599,14 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
   const frameTextareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
   const frameHighlightRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
-  const nodeData = data as StoryboardGenNodeData;
+  const nodeData = useMemo<StoryboardGenNodeData>(() => ({ ...data,
+    gridRows: data.gridRows ?? Number(data.rows ?? 2),
+    gridCols: data.gridCols ?? Number(data.cols ?? 2),
+    frames: (data.frames ?? []).map((frame, index) => ({ ...frame,
+      id: frame.id || `${id}-cell-${index + 1}`, referenceIndex: frame.referenceIndex ?? null })),
+  }), [data, id]);
+  const narrative = nodeData.storyboardMode === 'narrative' || Boolean(nodeData.group_id);
+  const [submitting, setSubmitting] = useState(false);
   const [frameDescriptionDrafts, setFrameDescriptionDrafts] = useState<Record<string, string>>(() =>
     buildFrameDescriptionDrafts(nodeData.frames)
   );
@@ -623,12 +631,15 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
     [incomingImageItems]
   );
 
-  const imageModels = useMemo(() => listImageModels(), []);
+  const catalog = useFreezoneImageModels();
+  const imageModels = useMemo(() => catalog.models.map(catalogImageDefinition), [catalog.models]);
 
   const selectedModel = useMemo(() => {
-    const modelId = nodeData.model ?? DEFAULT_IMAGE_MODEL_ID;
-    return getImageModel(modelId);
-  }, [nodeData.model]);
+    return imageModels.find(model => model.id === nodeData.model) ?? imageModels[0]
+      ?? catalogImageDefinition({ id: nodeData.model || '', apiModel: '', providerId: 'openai',
+        label: catalog.isLoading ? '加载模型…' : '无可用图片模型' });
+  }, [imageModels, nodeData.model, catalog.isLoading]);
+  const modelAvailable = imageModels.length > 0 && !catalog.isLoading && !catalog.isFallback;
   const effectiveExtraParams = useMemo(
     () => ({ ...(nodeData.extraParams ?? {}) }),
     [nodeData.extraParams]
@@ -655,7 +666,7 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
     return found ?? AUTO_ASPECT_RATIO_OPTION;
   }, [aspectRatioOptions, nodeData.requestAspectRatio]);
 
-  const ratioControlMode: StoryboardRatioControlMode = showStoryboardGenAdvancedRatioControls
+  const ratioControlMode: StoryboardRatioControlMode = narrative ? 'overall' : showStoryboardGenAdvancedRatioControls
     ? (nodeData.ratioControlMode === 'overall' ? 'overall' : 'cell')
     : 'cell';
   const controlAspectRatioValue = useMemo(() => {
@@ -871,6 +882,7 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
 
   // Sync model, size, aspect ratio with node data
   useEffect(() => {
+    if (!modelAvailable) return;
     if (nodeData.model !== selectedModel.id) {
       updateNodeData(id, { model: selectedModel.id });
     }
@@ -889,6 +901,7 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
     selectedResolution.value,
     selectedAspectRatio.value,
     updateNodeData,
+    modelAvailable,
   ]);
 
   useEffect(() => {
@@ -1024,7 +1037,17 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
   ]);
 
   const handleGenerate = useCallback(async (previewGridOnly = false) => {
-    if (!nodeData) {
+    if (!nodeData || !modelAvailable || submitting) {
+      return;
+    }
+    if (narrative) {
+      const { project, canvas } = readUrl();
+      if (!project || !canvas) { setError('请先保存画布再生成分镜。'); return; }
+      setSubmitting(true);
+      setError(null);
+      try { await startCanvasRun(project, canvas, id, 'generate'); }
+      catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+      finally { setSubmitting(false); }
       return;
     }
 
@@ -1231,6 +1254,9 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
     }
   }, [
     nodeData,
+    narrative,
+    modelAvailable,
+    submitting,
     incomingImages,
     requestResolution.requestModel,
     effectiveExtraParams,
@@ -1528,7 +1554,7 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
             </div>
           )}
           <div className={GRID_SUMMARY_CLASS}>
-            {t('node.storyboardGen.frameCount', { count: totalFrames })}
+            {narrative ? `${totalFrames} 格连续分镜` : t('node.storyboardGen.frameCount', { count: totalFrames })}
           </div>
         </div>
       </div>
@@ -1544,8 +1570,18 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
         </div>
       )}
 
-      {/* Frame Grid */}
-      <div className="mb-2.5 flex min-h-0 flex-1 items-center justify-center">
+      {narrative && (
+        <div className="mb-2.5 flex min-h-0 flex-1 flex-col gap-2">
+          <textarea aria-label="叙事组分镜提示词" value={String(nodeData.prompt ?? '')}
+            onChange={event => updateNodeData(id, { prompt: event.target.value })}
+            className="nodrag nowheel min-h-24 flex-1 resize-none rounded-lg border border-white/10 bg-black/20 p-3 text-xs text-text-dark" />
+          {nodeData.imageUrl && <CanvasNodeImage src={nodeData.imageUrl} alt="叙事组分镜图"
+            className="max-h-52 w-full rounded-lg object-contain" />}
+          <span className="text-xs text-text-muted">整组剧情按顺序生成一张分镜图，作为下游视频参考。</span>
+        </div>
+      )}
+      {/* Candidate frames remain independent from the narrative group prompt. */}
+      <div className={narrative ? 'hidden' : 'mb-2.5 flex min-h-0 flex-1 items-center justify-center'}>
         <div
           className="grid"
           style={{
@@ -1718,6 +1754,7 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
         </div>
 
         <UiButton
+          disabled={!modelAvailable || submitting || (narrative && !String(nodeData.prompt ?? '').trim())}
           onClick={(event: ReactMouseEvent<HTMLButtonElement>) => {
             event.stopPropagation();
             const previewGridOnly =

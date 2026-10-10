@@ -297,6 +297,7 @@ class H3DirectorOutputManifest(BaseModel):
     transition_rules: tuple[H3TransitionRule, ...] = ()
     cinematography_reviews: tuple[dict[str, Any], ...] = ()
     cinematography_shots: tuple[dict[str, Any], ...] = ()
+    quality_dispositions: tuple[dict[str, Any], ...] = ()
     qc_recovery_pending: bool = False
     actual_output: dict[str, int] = Field(default_factory=dict)
     original_audio_path: str | None = None

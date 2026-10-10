@@ -199,6 +199,26 @@ class FakeProvider:
         return b"video"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure, expected", [
+    (RunningHubError("secret-provider-payload", http_status=401), "RunningHub 认证失败"),
+    (RunningHubError("secret-provider-payload", retriable=True), "RunningHub 网络或服务暂时不可用"),
+])
+async def test_preparation_failure_exposes_safe_actionable_reason(setup, failure, expected):
+    import json
+    ctx, service, provider, _ = setup
+    (ctx.output_dir / "frame.png").write_bytes(png("red"))
+    item, _ = service.create("c", "n", "r", draft("frame.png"))
+    async def fail(*args):
+        raise failure
+    provider.prepare = fail
+    failed = await service.resume(item["id"])
+    assert expected in failed["error"]
+    assert "secret-provider-payload" not in json.dumps(failed)
+    assert failed["preparation_error_type"] == "RunningHubError"
+    assert provider.submit_calls == 0
+
+
 @pytest.fixture
 def setup(tmp_path):
     output = tmp_path / "output"

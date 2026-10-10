@@ -5,6 +5,7 @@ import os
 import re
 import threading
 import uuid
+import hashlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -91,6 +92,10 @@ class DirectorPlanStore:
         with self._guard(episode):
             target = self._load(episode, revision_id)
             self.require_current(target)
+            if target.creative_contract_version is not None:
+                from .creative_review import creative_clearance
+                if not creative_clearance(target):
+                    raise ValueError("independent creative QC must clear current revision before activation")
             if not target.validation_report.passed:
                 raise ValueError("revision validation must pass before activation")
             if target.status not in {"review_required", "superseded"}:
@@ -108,6 +113,33 @@ class DirectorPlanStore:
             _atomic_write_json(self._journal_path(episode), journal)
             self._apply_activation(episode, journal)
             return self._load(episode, revision_id)
+
+    def load_creative_checkpoint(self, episode: int, chain_id: str):
+        with self._guard(episode):
+            path = self._checkpoint_path(episode, chain_id)
+            return json.loads(path.read_text()) if path.exists() else None
+
+    @contextmanager
+    def creative_chain_guard(self, episode: int, chain_id: str):
+        path = self._checkpoint_path(episode, chain_id).with_suffix(".lock")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a+b") as handle:
+            try:
+                portalocker.lock(handle, portalocker.LOCK_EX | portalocker.LOCK_NB)
+            except portalocker.exceptions.LockException as exc:
+                raise ValueError("creative_chain_busy") from exc
+            try:
+                yield
+            finally:
+                portalocker.unlock(handle)
+
+    def save_creative_checkpoint(self, episode: int, chain_id: str, payload):
+        with self._guard(episode):
+            _atomic_write_json(self._checkpoint_path(episode, chain_id), payload)
+
+    def _checkpoint_path(self, episode, chain_id):
+        key = hashlib.sha256(chain_id.encode()).hexdigest()
+        return self._episode_dir(episode) / "creative_checkpoints" / (key + ".json")
 
     @contextmanager
     def _guard(self, episode: int) -> Iterator[None]:

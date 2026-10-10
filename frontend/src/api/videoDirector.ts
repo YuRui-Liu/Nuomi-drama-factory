@@ -1,4 +1,19 @@
 import { apiCall } from './client';
+import type { FreezoneCanvasPayload } from './canvas';
+import type { StoryboardPreparation } from '@/features/canvas/domain/canvasNodes';
+
+export interface StoryboardPreparationOptions {
+  resolution?: 'safe' | 'keep_edits' | 'replace_generated';
+  shots?: { description: string; duration_seconds?: number }[];
+  rects?: [number, number, number, number][];
+}
+export async function prepareDirectorStoryboard(project: string, request: StoryboardPreparationOptions & {
+  canvas_id: string; node_id: string; base_revision: number; request_id: string;
+}): Promise<{ canvas: FreezoneCanvasPayload; draft: DirectorDraft; preparation: StoryboardPreparation }> {
+  const result = await apiCall<{ canvas: FreezoneCanvasPayload; draft: Wire; preparation: StoryboardPreparation }>(
+    `${path(project)}/prepare-storyboard`, { method: 'post', json: { resolution: 'safe', ...request } });
+  return { ...result, draft: draftFromWire(result.draft) };
+}
 import type { DirectorDraft, DirectorImage, DirectorAttempt, OptimizedDirector } from '@/features/canvas/domain/canvasNodes';
 
 export interface DirectorCapabilities {
@@ -45,6 +60,7 @@ export function draftToWire(draft: DirectorDraft): Wire {
       id: segment.id, prompt: segment.prompt, duration_seconds: segment.durationSeconds,
       first_frame: imageToWire(segment.firstFrame), last_frame: imageToWire(segment.lastFrame),
       technique: segment.technique ?? null,
+      case_reference: segment.caseReference ?? null,
     })) };
 }
 export function draftFromWire(draft: Wire): DirectorDraft {
@@ -53,7 +69,8 @@ export function draftFromWire(draft: Wire): DirectorDraft {
     references: (draft.references ?? []).map(imageFromWire).filter(Boolean) as DirectorImage[],
     segments: (draft.segments ?? []).map((segment: Wire) => ({ id: segment.id, prompt: segment.prompt,
       durationSeconds: segment.duration_seconds, firstFrame: imageFromWire(segment.first_frame),
-      lastFrame: imageFromWire(segment.last_frame), technique: segment.technique ?? null })) };
+      lastFrame: imageFromWire(segment.last_frame), technique: segment.technique ?? null,
+      caseReference: segment.case_reference ?? null })) };
 }
 function optimizedFromWire(data: Wire | null): OptimizedDirector | null {
   return data && { revision: data.revision, route: data.route, profileId: data.profile_id,

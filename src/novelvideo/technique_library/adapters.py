@@ -1,11 +1,14 @@
 """Allowlisted metadata adapters for three pinned local repository snapshots."""
 import json
+import hashlib
+import html
 import os
 from pathlib import Path
 import re
 import subprocess
 
 from .models import Case, safe_url
+from .prompt_records import prompt_record
 
 SOURCES = (
     ('beatapi', 'BeatAPI/awesome-minimax-h3-prompts', '03a0d24259341413597b3c6ff0ce0c0164007e8b'),
@@ -104,18 +107,24 @@ def _json_row(item, name, repository, revision, path, anomalies):
                     author=item.get('author', ''), provenance=_provenance(item.get('promptProvenance', '')))
         media = item.get('mediaUrl')
     if media and media.startswith('/'):
-        # Repository-relative web paths have no verified public origin.
-        anomalies.append({'path': path, 'upstream_id': args['upstream_id'], 'reason': 'relative_media_omitted'})
-        media = None
+        # The source README names this deployment; ARCHITECTURE.md documents /media/ routes.
+        if name == 'skynotsilent' and re.fullmatch(r'/media/[\w.-]+\.mp4', media):
+            media = 'https://h3-field-notes-production.up.railway.app' + media
+        else:
+            anomalies.append({'path': path, 'upstream_id': args['upstream_id'], 'reason': 'relative_media_omitted'})
+            media = None
     metadata = json.dumps([item.get(key) for key in ('category', 'tags', 'styles', 'scenes', 'inputTypes')], ensure_ascii=False)
-    return _row(repository, revision, path, **args, metadata=metadata,
+    row = _row(repository, revision, path, **args, metadata=metadata,
                 mode=item.get('mode'), duration=item.get('duration'), media=media,
                 prompt_provenance=item.get('promptVisibility') if name == 'beatapi' else item.get('promptProvenance'),
                 source_verification=item.get('outputStatus') if name == 'beatapi' else item.get('verified'))
+    record = prompt_record(item.get('prompt'), row['sources'][0])
+    row['prompts'] = [record.model_dump(mode='json')] if record else []
+    return row
 
 
 def _markdown_row(text, repository, revision, path, category=''):
-    # Read metadata preceding the prompt only; never retain prompt prose or excerpts.
+    # Metadata and full body have separate provenance; gallery excerpts are not full prompts.
     header = text.split('## Prompt', 1)[0]
     title = re.search(r'^#{1,3}\s+(?:\d+\.\s+)?(.+)$', header, re.M)
     identity = re.search(r'https://apimodels\.app/minimax-h3-prompts#prompt-([\w-]+)', header)
@@ -130,17 +139,72 @@ def _markdown_row(text, repository, revision, path, category=''):
                          'Source:**' in line or 'Read the full prompt' in line or '(author\'s own)' in line)
     provenance = _provenance(evidence)
     duration = re.search(r'·\s*(\d+(?:\.\d+)?s)\b', header)
-    return _row(repository, revision, path, identity[1], title[1], source[2], source[1],
+    row = _row(repository, revision, path, identity[1], title[1], source[2], source[1],
                 provenance, metadata=category, duration=duration[1] if duration else None,
                 prompt_provenance=provenance)
+    body = None
+    section = re.search(r'^## Prompt\s*\n', text, re.M)
+    if section:
+        content = text[section.end():].lstrip('\n')
+        fenced = re.fullmatch(r'```(?:text)?\r?\n([\s\S]*?)```\s*', content)
+        body = fenced[1] if fenced else content
+    record = prompt_record(body, row['sources'][0])
+    row['prompts'] = [record.model_dump(mode='json')] if record else []
+    return row
 
 
-def enumerate_sources(root: Path):
+ARCHIVE_DIRS = {'beatapi': 'awesome-minimax-h3-prompts-main',
+                'skynotsilent': 'awesome-MiniMax-H3-cases-main',
+                'stimqq': 'stunning-minimax-h3-prompts-main'}
+
+
+def recover_gallery_prompts(row: dict, text: str, donors: list[dict]) -> None:
+    """Resolve an excerpt against local originals without conflating clips or attribution."""
+    from .ingest import normalize_url
+    if row.get('prompts') or row['provenance'] != 'author':
+        return
+    match = re.search(r'<strong>Prompt</strong>\s*—\s*([^\n]+)', text)
+    if not match:
+        return
+    def normalized(value):
+        return ' '.join(html.unescape(value).split())
+    prefix = normalized(match[1]).removesuffix('…').removesuffix('...').rstrip()
+    if not prefix:
+        return
+    url = normalize_url(row['sources'][0]['url'])
+    candidates = [p for donor in donors
+        if any(normalize_url(s['url']) == url for s in donor['sources'])
+        for p in donor.get('prompts', [])
+        if p['provenance'] in ('author', 'official') and (
+            normalized(p['text']) == prefix or len(prefix) >= 80 and normalized(p['text']).startswith(prefix))]
+    # Multiple distinct completions of one excerpt are ambiguous, even in the same post.
+    if len({normalized(p['text']) for p in candidates}) != 1:
+        return
+    row['prompts'] = list({(p['repository'], p['path'], p['content_sha256']): p for p in candidates}.values())
+
+
+def archive_revision(base: Path, name: str) -> str:
+    """Fingerprint only consumed source files; an archive is never claimed as a Git commit."""
+    paths = (sorted((base / 'prompts').glob('*.json')) if name == 'beatapi' else
+             [base / 'data/cases.json'] if name == 'skynotsilent' else
+             sorted((base / 'prompts').rglob('*.md')))
+    if not paths:
+        raise ValueError('archive source is empty')
+    digest = hashlib.sha256()
+    for path in paths:
+        if path.is_symlink() or not path.resolve().is_relative_to(base.resolve()):
+            raise ValueError('archive source must not reference files outside its root')
+        relative = path.relative_to(base).as_posix().encode()
+        data = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, 'big') + relative + len(data).to_bytes(8, 'big') + data)
+    return 'archive-sha256:' + digest.hexdigest()
+
+
+def enumerate_sources(root: Path, *, archives: bool = False):
     rows, manifests = [], []
     report = dict(enumerated=0, parsed=0, errors=0, merged=0, final=0, sources=[], anomalies=[])
     for name, repository, revision in SOURCES:
-        base = root / name
-        manifests.append(dict(repository=repository, revision=revision))
+        base = root / (ARCHIVE_DIRS[name] if archives else name)
         count = dict(repository=repository, enumerated=0, parsed=0, errors=0)
         report['sources'].append(count)
 
@@ -154,7 +218,12 @@ def enumerate_sources(root: Path):
                 report['anomalies'].append(dict(path=path, reason=str(exc)))
 
         try:
-            verify_snapshot(base, revision)
+            if archives:
+                revision = archive_revision(base, name)
+            else:
+                verify_snapshot(base, revision)
+            manifests.append(dict(repository=repository, revision=revision,
+                                  source_kind='user_archive' if archives else 'pinned_git'))
             if name == 'beatapi':
                 index_file = base / 'prompts/catalog.json'
                 index = json.loads(index_file.read_text(encoding='utf-8'))
@@ -182,16 +251,23 @@ def enumerate_sources(root: Path):
                 gallery = base / 'prompts/GALLERY.md'
                 content = gallery.read_text(encoding='utf-8')
                 category = ''
+                donors = list(rows)
+                def gallery_row(part, category):
+                    row = _markdown_row(part, repository, revision, 'prompts/GALLERY.md', category)
+                    recover_gallery_prompts(row, part, donors)
+                    return row
                 for part in re.split(r'(?=^##(?: |# ))', content, flags=re.M):
                     if part.startswith('## '):
                         category = part.splitlines()[0][3:]
                     elif part.startswith('### '):
-                        accept('prompts/GALLERY.md', lambda part=part, category=category: _markdown_row(part, repository, revision, 'prompts/GALLERY.md', category))
+                        accept('prompts/GALLERY.md', lambda part=part, category=category: gallery_row(part, category))
                 for file in sorted((base / 'prompts').rglob('*.md')):
                     if file.name.startswith('GALLERY'):
                         continue
                     relative = file.relative_to(base).as_posix()
                     accept(relative, lambda f=file, p=relative: _markdown_row(f.read_text(encoding='utf-8'), repository, revision, p))
+            if archives and archive_revision(base, name) != revision:
+                raise ValueError('archive changed during import')
             if not count['enumerated']:
                 raise ValueError('source contains no cases')
         except (OSError, ValueError, TypeError, KeyError) as exc:

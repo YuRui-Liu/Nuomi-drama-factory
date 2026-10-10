@@ -38,3 +38,14 @@ def test_context_cast_comes_from_director_subjects_without_continuity(monkeypatc
     segment = runner.H3DirectorSegment(segment_id="shot-1", beat_number=1, prompt="test", duration_seconds=4, first_frame="frame.png")
     assert runner._prompt_context(segment, beat, None, None).active_character_ids == ("甲", "乙")
     assert runner._prompt_context(segment, pair, None, None).active_character_ids == ("甲", "乙", "丙")
+
+
+def test_five_creative_shots_remain_five_transport_segments_not_one_25s_call():
+    beats = [{"id": f"shot-{i}", "duration_seconds": 5, "creative_contract_version": 1,
+              "creative": {"motion": {"mode": "fixed"}}, "visual_description": "Hold the door"}
+             for i in range(5)]
+    saved = {"cell_assets": [{"beat_id": beat["id"], "path": f"{beat['id']}.png"} for beat in beats],
+             "video_plan": {"units": [{"beat_ids": [beat["id"]], "duration_seconds": 5} for beat in beats]}}
+    segments = _build_segments({"mode": "auto"}, beats, saved)
+    assert [segment.source_shot_ids for segment in segments] == [(beat["id"],) for beat in beats]
+    assert [segment.duration_seconds for segment in segments] == [5] * 5

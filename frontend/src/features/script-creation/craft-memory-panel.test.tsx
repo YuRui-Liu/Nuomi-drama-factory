@@ -1,0 +1,34 @@
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, expect, it, vi } from "vitest";
+import { CraftMemoryPanel } from "./craft-memory-panel";
+import type { CraftMemoryEntry } from "./types";
+const api = vi.hoisted(() => ({ listCraftMemory: vi.fn(), dismissCraftMemory: vi.fn() }));
+vi.mock("./api", () => ({ scriptCreationApi: api }));
+const entry: CraftMemoryEntry = { id: "memory-id", kind: "outline", source: "qc", issue: { id: "issue-id", reason: "人物缺少动机", quote: "他离开了", repair_goal: "增加触发", dimension: "动机", severity: "blocker" }, history: [], status: "resolved", authority: "historical_qc_reminder_not_fact", references: {}, dismissed: false, dismissal_reason: null, stale: true };
+beforeEach(() => { vi.resetAllMocks(); api.listCraftMemory.mockResolvedValue([entry]); });
+it("loads collapsed memory on demand and dismisses it with a required reason", async () => {
+  const user = userEvent.setup();
+  api.dismissCraftMemory.mockResolvedValue({ ...entry, dismissed: true, dismissal_reason: "这是有意留白" });
+  render(<CraftMemoryPanel project="p" />);
+  expect(api.listCraftMemory).not.toHaveBeenCalled();
+  await user.click(screen.getByText("项目创作记忆"));
+  expect(await screen.findByText(/已解决 · 依据过期/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "撤销这条提醒" })).toBeDisabled();
+  await user.type(screen.getByRole("textbox", { name: "撤销原因" }), "这是有意留白");
+  await user.click(screen.getByRole("button", { name: "撤销这条提醒" }));
+  await waitFor(() => expect(api.dismissCraftMemory).toHaveBeenCalledWith("p", "memory-id", "这是有意留白"));
+  expect(await screen.findByText("撤销原因：这是有意留白")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "撤销这条提醒" })).not.toBeInTheDocument();
+});
+it("keeps the reminder and reason when editor authorization fails", async () => {
+  const user = userEvent.setup();
+  api.dismissCraftMemory.mockRejectedValue(new Error("需要编辑权限"));
+  render(<CraftMemoryPanel project="p" />);
+  await user.click(screen.getByText("项目创作记忆"));
+  await user.type(await screen.findByRole("textbox", { name: "撤销原因" }), "误判");
+  await user.click(screen.getByRole("button", { name: "撤销这条提醒" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("需要编辑权限");
+  expect(screen.getByRole("textbox")).toHaveValue("误判");
+  expect(screen.getByRole("button", { name: "撤销这条提醒" })).toBeEnabled();
+});

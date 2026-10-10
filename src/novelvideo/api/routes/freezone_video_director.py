@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
@@ -26,6 +28,40 @@ class CreateAttemptBody(BaseModel):
     node_id: str = Field(min_length=1, max_length=128)
     request_id: str = Field(min_length=1, max_length=128)
     draft: DirectorDraft
+
+
+class StoryboardShot(BaseModel):
+    description: str = Field(min_length=1)
+    duration_seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+
+class PrepareStoryboardBody(BaseModel):
+    canvas_id: str = Field(min_length=1, max_length=128)
+    node_id: str = Field(min_length=1, max_length=128)
+    base_revision: int = Field(ge=0)
+    request_id: str = Field(min_length=1, max_length=128)
+    resolution: Literal['safe', 'keep_edits', 'replace_generated'] = 'safe'
+    shots: list[StoryboardShot] | None = None
+    rects: list[tuple[int, int, int, int]] | None = None
+
+
+@router.post('/prepare-storyboard')
+async def prepare(project: str, body: PrepareStoryboardBody, user: dict = Depends(get_api_user)):
+    from novelvideo.freezone.canvas_store import CanvasRevisionConflict, CanvasIdempotencyConflict
+    from novelvideo.freezone.video_director.storyboard_preparation import prepare_storyboard
+    ctx, *_ = await _resolve_freezone_project(project, user, required_role='editor')
+    try:
+        result = prepare_storyboard(ctx, **body.model_dump(exclude_none=True), reference_limit=_limits()[1])
+    except CanvasRevisionConflict as exc:
+        raise HTTPException(409, detail={'code': 'canvas_revision_conflict', 'current_revision': exc.current_revision}) from exc
+    except CanvasIdempotencyConflict as exc:
+        raise HTTPException(409, detail={'code': 'request_id_conflict', 'message': str(exc)}) from exc
+    except ValueError as exc:
+        conflict = 'manual edits conflict' in str(exc)
+        raise HTTPException(409 if conflict else 422, detail={
+            'code': 'storyboard_edit_conflict' if conflict else 'storyboard_preparation_invalid',
+            'field': 'storyboard', 'message': str(exc)}) from exc
+    return {'ok': True, 'data': result}
 
 
 def _limits():
@@ -101,6 +137,10 @@ async def create_attempt(project: str, body: CreateAttemptBody,
                          user: dict = Depends(get_api_user)):
     ctx, service = await _service(project, user, role="editor")
     try:
+        # Replays own their immutable snapshot, even after the canvas changes.
+        if not any(item['request_id'] == body.request_id for item in service.list(body.canvas_id, body.node_id)):
+            from novelvideo.freezone.video_director.storyboard_preparation import guard_prepared
+            guard_prepared(ctx, body.canvas_id, body.node_id, body.draft)
         item, _ = service.create(body.canvas_id, body.node_id, body.request_id, body.draft)
     except DirectorCapabilityError as exc:
         raise HTTPException(422, detail={"field": exc.field, "segment_id": exc.segment_id,

@@ -7,10 +7,16 @@ import { useCanvasStore } from '@/stores/canvasStore';
 import * as api from '@/api/videoDirector';
 import { ApiError } from '@/api/client';
 import { readDirectorJournal, writeDirectorJournal } from '@/features/canvas/director/directorSubmissionJournal';
+import * as canvasApi from '@/api/canvas';
+import * as sync from '@/features/freezone/canvasSyncRuntime';
+vi.mock('@/api/canvas', () => ({ getFreezoneCanvas: vi.fn() }));
+vi.mock('@/features/freezone/canvasSyncRuntime', () => ({ flushFreezoneCanvasRuntime: vi.fn(), applyRemoteFreezoneCanvas: vi.fn() }));
 
-vi.mock('@/api/videoDirector', () => ({
+vi.mock('@/api/videoDirector', async (loadActual) => ({
+  draftToWire: (await loadActual<typeof import('@/api/videoDirector')>()).draftToWire,
   getDirectorCapabilities: vi.fn(), getDirectorTechniques: vi.fn(), listDirectorAttempts: vi.fn(), getDirectorAttempt: vi.fn(),
   createDirectorAttempt: vi.fn(), retryDirectorAttempt: vi.fn(), resumeDirectorAttempt: vi.fn(),
+  prepareDirectorStoryboard: vi.fn(),
 }));
 
 const draft = createDirectorDraft('s1');
@@ -43,6 +49,8 @@ function useTask() {
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.clearAllMocks();
+  vi.mocked(sync.flushFreezoneCanvasRuntime).mockReset();
+  vi.mocked(sync.applyRemoteFreezoneCanvas).mockReset();
   localStorage.clear();
   window.history.replaceState({}, '', '/projects/demo/freezone?canvas=canvas');
   setNode();
@@ -57,6 +65,173 @@ beforeEach(() => {
 });
 
 describe('video director task lifecycle', () => {
+  it('migrates an old automatic Frames draft to authoritative Ref without duplicate references', async () => {
+    setNode({ autoStoryboard: { sourceNodeId: 'board' }, activeInputMode: 'frames' });
+    vi.mocked(sync.flushFreezoneCanvasRuntime).mockResolvedValue(true);
+    vi.mocked(canvasApi.getFreezoneCanvas).mockResolvedValue({ nodes: [], edges: [], revision: 19 });
+    const prepared = structuredClone(draft);
+    prepared.references = [{ imageId: 'board', url: '/board.png' }, { imageId: 'hero', url: '/hero.png' }];
+    const refBindings = prepared.references.map((ref, i) => ({ sourceNodeId: ref.imageId, imageId: ref.imageId, url: ref.url, pictureIndex: i + 1, sha256: 'sha' }));
+    const remote = { nodes: [{ ...useCanvasStore.getState().nodes[0], data: { ...nodeData(), draft: prepared, activeInputMode: 'ref', storyboardPreparation: { inputMode: 'ref', refBindings } } },
+      ...prepared.references.map((ref) => ({ id: ref.imageId, type: CANVAS_NODE_TYPES.upload, position: { x: 0, y: 0 }, data: { imageUrl: ref.url } }))],
+      edges: prepared.references.map((ref) => ({ id: ref.imageId, source: ref.imageId, target: 'director', data: { edgeKind: 'videoDirectorImage', slot: { kind: 'reference' } } })), revision: 20 };
+    vi.mocked(api.prepareDirectorStoryboard).mockResolvedValue({ canvas: remote, draft: prepared } as never);
+    vi.mocked(sync.applyRemoteFreezoneCanvas).mockImplementation((_p, _c, value) => { useCanvasStore.setState({ nodes: value.nodes, edges: value.edges } as never); return true; });
+    vi.mocked(api.createDirectorAttempt).mockImplementation(() => new Promise(() => undefined));
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    await waitFor(() => expect(api.createDirectorAttempt).toHaveBeenCalledTimes(1));
+    const sent = vi.mocked(api.createDirectorAttempt).mock.calls[0][4];
+    expect(sent).toEqual(prepared);
+    expect(sent.segments[0].firstFrame).toBeNull();
+    expect(sent.segments[0].lastFrame).toBeNull();
+    expect(sync.flushFreezoneCanvasRuntime).toHaveBeenCalledTimes(1);
+  });
+  it.each(['success', 'save-failed', 'edited', 'navigate', 'unmount'])('persists bound prepared frames before submission: %s', async (outcome) => {
+    setNode({ autoStoryboard: { sourceNodeId: 'board' } });
+    let finishFlush!: (value: boolean) => void;
+    vi.mocked(sync.flushFreezoneCanvasRuntime).mockResolvedValueOnce(true).mockImplementationOnce(() => new Promise((done) => { finishFlush = done; }));
+    vi.mocked(canvasApi.getFreezoneCanvas).mockResolvedValue({ nodes: [], edges: [], revision: 19 });
+    const prepared = structuredClone(draft);
+    prepared.references = [];
+    prepared.segments[0].firstFrame = { imageId: 'cell', url: '/cell.png' };
+    const remote = { nodes: [{ ...useCanvasStore.getState().nodes[0], data: { ...nodeData(), draft: prepared, activeInputMode: 'frames' } },
+      { id: 'source', type: CANVAS_NODE_TYPES.upload, position: { x: 0, y: 0 }, data: { imageUrl: '/bound.png' } }],
+      edges: [{ id: 'bound', source: 'source', target: 'director', data: { edgeKind: 'videoDirectorImage', slot: { kind: 'firstFrame', segmentId: 's1' } } }], revision: 20 };
+    vi.mocked(api.prepareDirectorStoryboard).mockResolvedValue({ canvas: remote, draft: prepared, preparation: {} } as never);
+    vi.mocked(sync.applyRemoteFreezoneCanvas).mockImplementation((_p, _c, value) => { useCanvasStore.setState({ nodes: value.nodes, edges: value.edges } as never); return true; });
+    vi.mocked(api.createDirectorAttempt).mockImplementation(() => new Promise(() => undefined));
+    const { result, unmount } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    await waitFor(() => expect(sync.flushFreezoneCanvasRuntime).toHaveBeenCalledTimes(2));
+    expect(nodeData().draft.segments[0].firstFrame?.url).toBe('/bound.png');
+    expect(nodeData().draft.revision).toBe(prepared.revision + 1);
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+    expect(readDirectorJournal('demo', 'canvas', 'director')).toBeNull();
+    act(() => result.current.generate());
+    expect(api.prepareDirectorStoryboard).toHaveBeenCalledTimes(1);
+    if (outcome === 'edited') act(() => useCanvasStore.getState().updateNodeData('director', { displayName: 'new edit' }));
+    if (outcome === 'navigate') window.history.replaceState({}, '', '/projects/other/freezone?canvas=canvas');
+    if (outcome === 'unmount') unmount();
+    const persistedDraft = structuredClone(nodeData().draft);
+    await act(async () => finishFlush(outcome !== 'save-failed'));
+    if (outcome === 'success') {
+      expect(api.createDirectorAttempt).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(api.createDirectorAttempt).mock.calls[0][4]).toEqual(persistedDraft);
+    } else {
+      expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+      expect(readDirectorJournal('demo', 'canvas', 'director')).toBeNull();
+    }
+  });
+  it('explains missing shot descriptions in a request-validation response', async () => {
+    setNode({ autoStoryboard: { sourceNodeId: 'board' } });
+    vi.mocked(sync.flushFreezoneCanvasRuntime).mockResolvedValue(true);
+    vi.mocked(canvasApi.getFreezoneCanvas).mockResolvedValue({ nodes: [], edges: [], revision: 2 });
+    vi.mocked(api.prepareDirectorStoryboard).mockRejectedValue({ status: 422, body: { detail: [{ loc: ['body', 'shots', 0, 'description'], msg: 'String should have at least 1 character' }] } });
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    await act(async () => { await result.current.prepare({ shots: [{ description: '' }] }); });
+    expect(result.current.error).toContain('镜头 1');
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+  });
+  it('prepares legacy connected storyboards even if their saved input mode is Ref', async () => {
+    setNode({ activeInputMode: 'ref' });
+    useCanvasStore.setState((state) => ({ nodes: [...state.nodes, { id: 'board', type: CANVAS_NODE_TYPES.storyboardGen,
+      position: { x: 0, y: 0 }, data: {} }], edges: [{ id: 'board-director', source: 'board', target: 'director' }] } as never));
+    vi.mocked(sync.flushFreezoneCanvasRuntime).mockResolvedValue(false);
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    await waitFor(() => expect(sync.flushFreezoneCanvasRuntime).toHaveBeenCalled());
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+  });
+  it.each(['navigate', 'unmount'])('does not adopt late preparation after %s', async (action) => {
+    setNode({ autoStoryboard: { sourceNodeId: 'board' } });
+    vi.mocked(sync.flushFreezoneCanvasRuntime).mockResolvedValue(true);
+    vi.mocked(canvasApi.getFreezoneCanvas).mockResolvedValue({ nodes: [], edges: [], revision: 2 });
+    let resolve!: (value: never) => void;
+    vi.mocked(api.prepareDirectorStoryboard).mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const { result, unmount } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    await waitFor(() => expect(api.prepareDirectorStoryboard).toHaveBeenCalled());
+    if (action === 'navigate') window.history.replaceState({}, '', '/projects/other/freezone?canvas=canvas');
+    else unmount();
+    await act(async () => resolve({ canvas: { nodes: [], edges: [] } } as never));
+    expect(sync.applyRemoteFreezoneCanvas).not.toHaveBeenCalled();
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+  });
+  it.each([409, 422])('does not freeze or submit a rejected preparation (%s)', async (status) => {
+    setNode({ autoStoryboard: { sourceNodeId: 'board' } });
+    vi.mocked(sync.flushFreezoneCanvasRuntime).mockResolvedValue(true);
+    vi.mocked(canvasApi.getFreezoneCanvas).mockResolvedValue({ nodes: [], edges: [], revision: 2 });
+    vi.mocked(api.prepareDirectorStoryboard).mockRejectedValue({ status, body: { detail: { code: 'storyboard_edit_conflict', message: '请补充描述' } } });
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    await waitFor(() => expect(result.current.error).toBe('请补充描述'));
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+    expect(nodeData().pendingSubmission).toBeNull();
+  });
+  it('explicit manual Ref still prepares an auto-linked board', async () => {
+    setNode({ autoStoryboard: { sourceNodeId: 'board' }, activeInputMode: 'ref', inputModeIntent: 'manual' });
+    vi.mocked(api.createDirectorAttempt).mockImplementation(() => new Promise(() => undefined));
+    vi.mocked(sync.flushFreezoneCanvasRuntime).mockResolvedValue(false);
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    expect(api.prepareDirectorStoryboard).not.toHaveBeenCalled();
+    await waitFor(() => expect(sync.flushFreezoneCanvasRuntime).toHaveBeenCalledTimes(1));
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+  });
+  it.each([false, null])('does not submit when canvas flush returns %s', async (flushed) => {
+    setNode({ autoStoryboard: { sourceNodeId: 'board' } });
+    vi.mocked(sync.flushFreezoneCanvasRuntime).mockResolvedValue(flushed);
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    await waitFor(() => expect(result.current.error).toContain('保存失败'));
+    expect(api.prepareDirectorStoryboard).not.toHaveBeenCalled();
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+  });
+  it('retains local edits made during a preparation request', async () => {
+    setNode({ autoStoryboard: { sourceNodeId: 'board' } });
+    vi.mocked(sync.flushFreezoneCanvasRuntime).mockResolvedValue(true);
+    vi.mocked(canvasApi.getFreezoneCanvas).mockResolvedValue({ nodes: [], edges: [], revision: 19 });
+    let resolve!: (value: never) => void;
+    vi.mocked(api.prepareDirectorStoryboard).mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => result.current.generate());
+    await waitFor(() => expect(api.prepareDirectorStoryboard).toHaveBeenCalled());
+    act(() => useCanvasStore.getState().updateNodeData('director', { displayName: 'new edit' }));
+    await act(async () => resolve({ canvas: { nodes: [], edges: [] } } as never));
+    expect(sync.applyRemoteFreezoneCanvas).not.toHaveBeenCalled();
+    expect(api.createDirectorAttempt).not.toHaveBeenCalled();
+    expect(result.current.error).toContain('未覆盖本地编辑');
+  });
+  it('flushes, prepares with current revision and adopts the full graph before freezing; duplicate clicks prepare once', async () => {
+    setNode({ autoStoryboard: { sourceNodeId: 'board' } });
+    vi.mocked(sync.flushFreezoneCanvasRuntime).mockResolvedValue(true);
+    vi.mocked(canvasApi.getFreezoneCanvas).mockResolvedValue({ nodes: [], edges: [], revision: 19 });
+    const prepared = structuredClone(draft);
+    prepared.references = [];
+    prepared.segments[0].firstFrame = { imageId: 'cell', url: '/cell.png' };
+    const remote = { nodes: [{ ...useCanvasStore.getState().nodes[0], data: { ...nodeData(), draft: prepared, activeInputMode: 'frames' } }], edges: [], revision: 20 };
+    vi.mocked(api.prepareDirectorStoryboard).mockResolvedValue({ canvas: remote, draft: prepared, preparation: {} } as never);
+    vi.mocked(sync.applyRemoteFreezoneCanvas).mockImplementation((_p, _c, value) => { useCanvasStore.setState({ nodes: value.nodes, edges: value.edges } as never); return true; });
+    vi.mocked(api.createDirectorAttempt).mockImplementation(() => new Promise(() => undefined));
+    const { result } = renderHook(useTask);
+    await waitFor(() => expect(result.current.capabilities).not.toBeNull());
+    act(() => { result.current.generate(); result.current.generate(); });
+    await waitFor(() => expect(api.createDirectorAttempt).toHaveBeenCalledTimes(1));
+    expect(api.prepareDirectorStoryboard).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.prepareDirectorStoryboard).mock.calls[0][1]).toMatchObject({ base_revision: 19 });
+    expect(sync.applyRemoteFreezoneCanvas).toHaveBeenCalledWith('demo', 'canvas', remote);
+    expect(nodeData().pendingSubmission?.frozenDraftSnapshot.segments[0].firstFrame?.url).toBe('/cell.png');
+  });
   it('blocks selected unknown cards centrally before writing a submission journal', async () => {
     const selected = structuredClone(draft);
     selected.segments[0].technique = { id: 'unknown', version: '1' };

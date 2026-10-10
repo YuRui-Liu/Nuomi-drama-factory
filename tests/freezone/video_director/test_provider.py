@@ -94,7 +94,8 @@ async def test_reference_workflow_uses_its_settings_key_and_no_refine_node(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_known_ordinary_profile_receives_timeline_and_refine_dimensions(tmp_path):
+@pytest.mark.parametrize("upload_failures,retriable", [(0, True), (2, True), (3, True), (1, False)])
+async def test_known_ordinary_profile_receives_timeline_and_refine_dimensions(tmp_path, monkeypatch, upload_failures, retriable):
     image = DirectorImage(image_id="first", url="unused")
     draft = DirectorDraft(revision=1, aspect_ratio="9:16", resolution="720p",
                           segments=(DirectorSegment(id="s", prompt="Walk", duration_seconds=5,
@@ -110,6 +111,17 @@ async def test_known_ordinary_profile_receives_timeline_and_refine_dimensions(tm
                                       requested_duration_seconds=5, duration_seconds=aligned.duration_seconds,
                                       frames=aligned.frames, wire=wire, prompt=compile_h3_wire(wire)),))
     client = FakeClient()
+    from unittest.mock import AsyncMock
+    from novelvideo.media_capabilities.runtime.runninghub_client import RunningHubError
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    attempts = []
+    upload = client.upload
+    async def flaky_upload(path):
+        attempts.append(path)
+        if len(attempts) <= upload_failures:
+            raise RunningHubError("transport failed", retriable=retriable)
+        return await upload(path)
+    client.upload = flaky_upload
     runtime = SimpleNamespace(account=SimpleNamespace(id="account", max_concurrency=3,
                               capability_limits={}, queue_limit=17),
                               workflow_id=lambda capability: "2089723723468328961",
@@ -118,7 +130,14 @@ async def test_known_ordinary_profile_receives_timeline_and_refine_dimensions(tm
                                           coordinator=FakeCoordinator())
     path = tmp_path / "frozen.png"
     path.write_bytes(b"frozen")
+    if upload_failures == 3 or not retriable:
+        with pytest.raises(RunningHubError):
+            await provider.prepare(draft, optimized, {"first": path}, 5)
+        assert len(attempts) == (3 if retriable else 1)
+        assert client.submissions == []
+        return
     prepared = await provider.prepare(draft, optimized, {"first": path}, 5)
+    assert len(attempts) == upload_failures + 1
     nodes = prepared["node_info"]
     assert {node["nodeId"] for node in nodes} == {"12", "18"}
     timeline = next(node["fieldValue"] for node in nodes if node["nodeId"] == "12")

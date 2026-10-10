@@ -20,6 +20,7 @@ const MODEL_PICKER_OPTION_BASE_CLASS =
   'inline-flex h-8 w-full items-center gap-2 rounded-[6px] px-3 text-left text-xs font-medium transition-colors';
 
 export type ProviderId =
+  | 'grsai'
   | 'huimeng'
   | 'openrouter'
   | 'openai'

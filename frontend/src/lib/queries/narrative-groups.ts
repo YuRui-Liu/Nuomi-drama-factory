@@ -122,6 +122,17 @@ export interface NarrativeStageState {
   constraint_mode?: "strong_sketch" | "unconstrained" | "" | null;
   video_asset?: string | null;
   manifest_asset?: string | null;
+  quality_status?: "generated" | "needs_review" | "accepted";
+  quality_dispositions?: Array<{ disposition_id: string; review_id: string; issue_id: string; reason: string; decision: "acknowledged" | "needs_repair" | "dismissed"; created_at: string }>;
+  quality_reviews?: Array<{
+    status: "passed" | "failed" | "unavailable";
+    review_id?: string;
+    media_fingerprint?: string;
+    technical_error?: string | null;
+    issues?: Array<{ issue_id?: string; dimension: string; description: string; frame_labels: string[] }>;
+    evidence?: Array<{ frame_label: string; observation: string; face_observation?: string }>;
+    frame_assets?: Record<string, string | null>;
+  }>;
   original_audio_path?: string | null;
   dialogue_stem_path?: string | null;
   ambience_stem_path?: string | null;
@@ -589,10 +600,18 @@ export function useNarrativeGroupAction(project: string, episode: number) {
 }
 
 /** One H3 director task produces the complete group's physical video. */
+export interface VideoVoicePreflight { ready: boolean; issues: Array<{ speaker: string; reason: string }> }
+
+export async function getVideoVoicePreflight(project: string, episode: number, groupId: string) {
+  const response = await api.get(p`api/v1/projects/${project}/episodes/${episode}/narrative-groups/${groupId}/video/voice-preflight`).json<ApiResponse<VideoVoicePreflight>>();
+  if (!response.ok) throw new Error("声音设定预检失败，请重试");
+  return response.data;
+}
+
 export function useGenerateNarrativeGroupVideo(project: string, episode: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ groupId, model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution }: {
+    mutationFn: ({ groupId, model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution, retryPlanning }: {
       groupId: string;
       model: string;
       mode: H3VideoMode;
@@ -602,10 +621,11 @@ export function useGenerateNarrativeGroupVideo(project: string, episode: number)
       referenceRevision?: number;
       aspectRatio: "9:16" | "16:9";
       resolution?: string;
+      retryPlanning?: boolean;
     }) => api.post(narrativeGroupVideoPath(project, episode, groupId), {
-      json: narrativeGroupVideoPayload({
+      json: { ...narrativeGroupVideoPayload({
         model, mode, revision, planRevision, settingsRevision, referenceRevision, aspectRatio, resolution,
-      }),
+      }), ...(retryPlanning ? { retry_planning: true } : {}) },
     }).json<TaskResponse>(),
     onSuccess: (_response, input) => Promise.all([
       qc.invalidateQueries({ queryKey: queryKeys.narrativeGroups(project, episode) }),

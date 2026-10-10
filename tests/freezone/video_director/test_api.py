@@ -65,7 +65,7 @@ async def test_api_scopes_reads_and_writes_and_deduplicates_enqueue(tmp_path: Pa
     output.mkdir()
     (output / "frame.png").write_bytes(image.getvalue())
     ctx = SimpleNamespace(project_id="p1", owner_username="alice", project_name="show",
-                          output_dir=output, runtime_dir=tmp_path / "runtime")
+                          output_dir=output, state_dir=tmp_path / "state", runtime_dir=tmp_path / "runtime")
     roles = []
 
     async def resolve(project, user, *, required_role):

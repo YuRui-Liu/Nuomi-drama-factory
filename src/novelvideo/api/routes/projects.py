@@ -177,6 +177,7 @@ async def _summary_for_record(
     return ProjectSummary(
         id=record.id,
         name=record.name,
+        display_name=config.get("display_name") or record.name,
         owner_type=record.owner_type,
         owner_id=record.owner_id,
         owner_username=record.owner_username,
@@ -423,6 +424,7 @@ async def list_projects(user: dict = Depends(get_api_user)):
             {
                 "id": record.id,
                 "name": record.name,
+                "display_name": (load_project_config_file_from_state_dir(record.state_dir).get("display_name") or record.name) if is_record_home_node(record) else record.name,
                 "owner_username": record.owner_username,
                 "owner_type": record.owner_type,
                 "owner_id": record.owner_id,
@@ -499,6 +501,7 @@ async def create_project(
             record.state_dir,
             config={
                 "user": user["username"],
+                "display_name": body.display_name.strip(),
                 "knowledge_pipeline": KNOWLEDGE_PIPELINE_STRUCTURED,
                 KNOWLEDGE_PIPELINE_STATUS_KEY: STATUS_STRUCTURED_PENDING,
             },
@@ -519,6 +522,7 @@ async def create_project(
             "id": record.id,
             "project_id": record.id,
             "name": body.name,
+            "display_name": body.display_name.strip() or body.name,
             "knowledge_pipeline": KNOWLEDGE_PIPELINE_STRUCTURED,
             "knowledge_pipeline_status": STATUS_STRUCTURED_PENDING,
         },
@@ -543,6 +547,7 @@ async def get_project(project: str, user: dict = Depends(get_api_user)):
         {
             "project_id": ctx.project_id,
             "name": ctx.project_name,
+            "display_name": config.get("display_name") or ctx.project_name,
             "owner_username": ctx.owner_username,
             "effective_role": ctx.effective_role,
             "home_node_id": ctx.home_node_id,

@@ -4,6 +4,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { Canvas } from "@/features/canvas/Canvas";
+import { CanvasRunPanel } from "@/features/canvas/ui/CanvasRunPanel";
 import {
   CANVAS_NODE_TYPES,
   DEFAULT_NODE_WIDTH,
@@ -838,6 +839,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             />
           )}
           <BackupStatusIndicator status={sync.backupStatus} />
+          <CanvasRunPanel project={projectId} canvas={canvasId} enabled={sync.hydratedCanvasId === canvasId && sync.status !== 'conflict' && sync.status !== 'error'} />
           {/* 调试面板暂时隐藏，恢复时去掉 `false &&` 即可 */}
           {false && import.meta.env.DEV && (
             <CanvasDebugPanel

@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+from tests.craft_fakes import craft_reply
 
 from novelvideo.script_creation.store import DocumentStore
 from novelvideo.task_backend.registry import get_project_task_runner_registration
@@ -19,7 +20,7 @@ async def test_registered_runner_uses_frozen_runtime_and_persists_output(tmp_pat
         snapshot = SimpleNamespace(runtime='model_api', model='configured-model')
         async def run_structured(self, *, prompt, output_type, **kwargs):
             called.append(prompt)
-            return output_type(markdown='# 剧本\n\n主角在雨夜做出决定，真相终于揭开。')
+            return output_type.model_validate(craft_reply(prompt, '# 剧本\n\n主角在雨夜做出决定，真相终于揭开。'))
     monkeypatch.setattr(script_creation, 'current_text_task_runtime', lambda: Runtime())
     monkeypatch.setattr(script_creation, 'is_cancel_requested', lambda **kwargs: __import__('asyncio').sleep(0, result=False))
     monkeypatch.setattr(script_creation, 'get_task_manager', lambda: SimpleNamespace(
@@ -31,7 +32,7 @@ async def test_registered_runner_uses_frozen_runtime_and_persists_output(tmp_pat
                 'payload': {'project_id': 'project', 'run_id': run['id']}}
     result = await script_creation._run_script_creation(envelope, ctx)
     assert result['status'] == 'completed'
-    assert len(called) == 5
+    assert len(called) == 11
     assert get_project_task_runner_registration('script_creation_generation').text_task_role == 'script_creation'
     assert len([doc for doc in await store.list() if doc.kind == 'episode_script']) == 1
 

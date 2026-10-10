@@ -78,6 +78,17 @@ def issue_pairs(report: object) -> list[tuple[str, str]]:
     return [(issue.code, issue.location) for issue in report.issues]  # type: ignore[attr-defined]
 
 
+@pytest.mark.parametrize('version,required', [('director-plan-v3', True),
+    ('director-plan-v3-keyframe-instant', True), ('director-plan-v2', False),
+    ('director-plan-v3-unknown', False)])
+def test_noncreative_known_v3_versions_require_cinematography(version, required):
+    revision = make_revision((make_group(shots=(make_shot(),)),)).model_copy(
+        update={'prompt_version': version})
+    report = validate_director_plan(revision, (make_span('span-1', 1),))
+    assert ('cinematography_missing' in {issue.code for issue in report.issues}) is required
+    assert report.passed is (not required)
+
+
 def test_accepts_a_complete_valid_plan() -> None:
     spans = (
         make_span("span-1", 1, dialogue_text="Open it."),

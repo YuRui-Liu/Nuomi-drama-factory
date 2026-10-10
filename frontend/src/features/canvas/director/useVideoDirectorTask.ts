@@ -9,6 +9,9 @@ import { clearDirectorJournal, readDirectorJournal, writeDirectorJournal,
 import { resolveDirectorBindings } from '../domain/videoDirectorBindings';
 import { projectDirectorDraft, resolveDirectorInputMode } from '../domain/videoDirectorInputs';
 import { validateDirectorDraft } from './directorValidation';
+import { draftToWire, prepareDirectorStoryboard, type StoryboardPreparationOptions } from '@/api/videoDirector';
+import { getFreezoneCanvas } from '@/api/canvas';
+import { flushFreezoneCanvasRuntime, applyRemoteFreezoneCanvas } from '@/features/freezone/canvasSyncRuntime';
 
 const terminal = new Set(['completed', 'failed', 'submission_unknown']);
 
@@ -47,6 +50,9 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const bindingFieldErrors = useRef<Record<string, string>>({});
   const submitting = useRef(false);
+  const preparing = useRef(false);
+  const [isPreparing, setIsPreparing] = useState(false);
+  const [preparationConflict, setPreparationConflict] = useState(false);
   const mounted = useRef(true);
   const latestStages = useRef(new Map<string, string>());
   const resuming = useRef(new Map<string, number>());
@@ -72,7 +78,7 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
     const current = node.data as VideoDirectorNodeData;
     const mode = resolveDirectorInputMode(current);
     const incoming = liveEdges.filter((edge) => edge.target === nodeId);
-    const next = resolveDirectorBindings(current.draft, liveNodes, incoming, mode).errors;
+    const next = resolveDirectorBindings(current.draft, liveNodes, incoming, mode, current.storyboardPreparation).errors;
     const stale = Object.entries(bindingFieldErrors.current)
       .filter(([field, message]) => next[field] !== message);
     if (!stale.length) return;
@@ -160,28 +166,97 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
     }
   }, [project, canvasId, nodeId, applies, advanceToken, updateNodeData]);
 
-  const generate = useCallback(() => {
+  const prepare = useCallback(async (options: StoryboardPreparationOptions = {}) => {
+    if (!project || preparing.current || submitting.current || !mounted.current || !sameLocation(project, canvasId)) return false;
+    const original = currentData(nodeId);
+    if (!original || original.pendingSubmission) return false;
+    preparing.current = true;
+    setIsPreparing(true);
+    setError('');
+    setPreparationConflict(false);
+    const valid = () => mounted.current && sameLocation(project, canvasId) && currentData(nodeId) !== null;
+    const graph = () => JSON.stringify({ nodes: useCanvasStore.getState().nodes, edges: useCanvasStore.getState().edges });
+    const before = graph();
+    try {
+      if (await flushFreezoneCanvasRuntime(project, canvasId) !== true) throw new Error('画布保存失败，请先保存后重试');
+      if (!valid()) return false;
+      const saved = await getFreezoneCanvas(project, canvasId);
+      if (!valid()) return false;
+      if (graph() !== before) throw new Error('画布已变化，请重新准备分镜');
+      if (saved.revision == null) throw new Error('无法获取画布版本，请重新加载');
+      const result = await prepareDirectorStoryboard(project, { ...options, canvas_id: canvasId, node_id: nodeId,
+        base_revision: saved.revision, request_id: crypto.randomUUID() });
+      if (!valid()) return false;
+      if (graph() !== before) throw new Error('画布已变化，未覆盖本地编辑；请保存后重新准备');
+      if (!applyRemoteFreezoneCanvas(project, canvasId, result.canvas)) throw new Error('画布已关闭，请重新打开后重试');
+      return true;
+    } catch (cause) {
+      if (valid()) {
+        const rawDetail = (cause as { body?: { detail?: unknown } })?.body?.detail;
+        if (Array.isArray(rawDetail)) {
+          setError(rawDetail.map((item: { loc?: (string | number)[]; msg?: string }) => {
+            const index = item.loc?.indexOf('shots') ?? -1;
+            return index >= 0 ? `镜头 ${Number(item.loc?.[index + 1]) + 1}：请检查描述和时长（${item.msg ?? ''}）` : item.msg ?? '请检查分镜输入';
+          }).join('；'));
+          return false;
+        }
+        const detail = rawDetail as { code?: string; field?: string; message?: string } | undefined;
+        setPreparationConflict(detail?.code === 'storyboard_edit_conflict');
+        if (detail?.field) setFieldErrors({ [detail.field]: detail.message ?? '请补充分镜描述' });
+        setError(detail?.code === 'canvas_revision_conflict' ? '画布版本已更新，请重新加载后准备分镜' :
+          detail?.message ?? (cause instanceof Error ? cause.message : '分镜准备失败'));
+      }
+      return false;
+    } finally { preparing.current = false; if (mounted.current) setIsPreparing(false); }
+  }, [project, canvasId, nodeId]);
+
+  const freezeAndSubmit = useCallback(async (persistPreparedBindings = false) => {
     if (!project || !mounted.current || !sameLocation(project, canvasId)) return;
     const state = useCanvasStore.getState();
     const node = state.nodes.find((item) => item.id === nodeId);
-    const current = node?.type === CANVAS_NODE_TYPES.videoDirector ? node.data as VideoDirectorNodeData : null;
+    let current = node?.type === CANVAS_NODE_TYPES.videoDirector ? node.data as VideoDirectorNodeData : null;
     const active = attempts.find((item) => item.id === current?.activeAttemptId);
     if (!project || !capabilities || submitting.current || !current || current.pendingSubmission ||
       current.activeAttemptId && (!active || !['completed', 'failed'].includes(active.stage))) return;
     const mode = resolveDirectorInputMode(current);
     const directorIncomingEdges = state.edges.filter((edge) => edge.target === nodeId);
-    const binding = resolveDirectorBindings(current.draft, state.nodes, directorIncomingEdges, mode);
+    const binding = resolveDirectorBindings(current.draft, state.nodes, directorIncomingEdges, mode, current.storyboardPreparation);
     if (Object.keys(binding.errors).length) {
       bindingFieldErrors.current = binding.errors;
       setFieldErrors(binding.errors);
       return;
     }
     bindingFieldErrors.current = {};
-    const effective = projectDirectorDraft(binding.draft, mode);
+    let effective = projectDirectorDraft(binding.draft, mode);
     const errors = validateDirectorDraft(effective, capabilities, techniqueCatalog.current);
     setFieldErrors(errors);
     if (Object.keys(errors).length) return;
     setError('');
+    if (persistPreparedBindings && JSON.stringify(draftToWire(effective)) !== JSON.stringify(draftToWire(current.draft))) {
+      // The backend guards the entire persisted prepared draft. Live frame-edge
+      // projections must reach canvas storage before the submission is frozen.
+      preparing.current = true;
+      setIsPreparing(true);
+      effective = { ...effective, revision: current.draft.revision + 1 };
+      updateNodeData(nodeId, { draft: effective });
+      const graph = () => JSON.stringify({ nodes: useCanvasStore.getState().nodes, edges: useCanvasStore.getState().edges });
+      const persistedGraph = graph();
+      try {
+        const flushed = await flushFreezoneCanvasRuntime(project, canvasId);
+        if (!mounted.current || !sameLocation(project, canvasId) || !currentData(nodeId)) return;
+        if (graph() !== persistedGraph) throw new Error('画布已变化，请重新生成以保存最新首帧绑定');
+        if (flushed !== true) throw new Error('首帧绑定保存失败，请保存后重试');
+        current = currentData(nodeId)!;
+      } catch (cause) {
+        if (mounted.current && sameLocation(project, canvasId) && currentData(nodeId)) {
+          setError(cause instanceof Error ? cause.message : '首帧绑定保存失败');
+        }
+        return;
+      } finally {
+        preparing.current = false;
+        if (mounted.current) setIsPreparing(false);
+      }
+    }
     const frozenDraftSnapshot = structuredClone(effective);
     const pendingSubmission = { requestId: crypto.randomUUID(), frozenDraftSnapshot };
     if (!mounted.current || !sameLocation(project, canvasId) || currentData(nodeId) !== current) return;
@@ -202,6 +277,20 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
     updateNodeData(nodeId, { pendingSubmission });
     void submitPending(pendingSubmission);
   }, [project, canvasId, nodeId, submitPending, updateNodeData, attempts, capabilities]);
+
+  const generate = useCallback(() => {
+    if (preparing.current || submitting.current || !project || !mounted.current || !sameLocation(project, canvasId)) return;
+    const state = useCanvasStore.getState();
+    const current = currentData(nodeId);
+    if (!current || current.pendingSubmission) return;
+    const active = attempts.find((item) => item.id === current.activeAttemptId);
+    if (!capabilities || current.activeAttemptId && (!active || !['completed', 'failed'].includes(active.stage))) return;
+    const linked = !!current.autoStoryboard || !!current.storyboardPreparation || state.edges.some((edge) =>
+      edge.target === nodeId && state.nodes.some((node) => node.id === edge.source && node.type === CANVAS_NODE_TYPES.storyboardGen));
+    if (linked) {
+      void prepare().then((ok) => { if (ok && mounted.current && sameLocation(project, canvasId)) void freezeAndSubmit(true); });
+    } else void freezeAndSubmit();
+  }, [project, canvasId, nodeId, prepare, freezeAndSubmit, attempts, capabilities]);
 
   useEffect(() => {
     let active = true;
@@ -326,5 +415,6 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
     return () => { window.clearInterval(timer); window.removeEventListener('online', onOnline); };
   }, [project, data.activeAttemptId, applies, issueToken, resumeIfCurrent]);
 
-  return { capabilities, techniques, techniqueError, attempts, error, fieldErrors, generate, recoverPending, retry, refresh };
+  return { capabilities, techniques, techniqueError, attempts, error, fieldErrors, generate, recoverPending, retry, refresh,
+    prepare, isPreparing, preparationConflict };
 }

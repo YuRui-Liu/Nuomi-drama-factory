@@ -58,6 +58,8 @@ class CastingCandidateStore:
         snapshot = candidate.snapshot
         if snapshot.snapshot_hash != snapshot_digest(snapshot.model_dump(mode="json", exclude={"snapshot_hash"})):
             raise ValueError("candidate snapshot hash mismatch")
+        if candidate.effective_proposal is not None and snapshot_digest(candidate.effective_proposal) != candidate.effective_proposal_hash:
+            raise ValueError('effective proposal hash mismatch')
         return candidate
 
     def get(self, candidate_id: str) -> CastingCandidate | None:
@@ -77,7 +79,7 @@ class CastingCandidateStore:
             data = self._read()
             if candidate.candidate_id in data:
                 existing = self._decode(data[candidate.candidate_id])
-                immutable = {"candidate_id", "project_id", "character_id", "identity_id", "snapshot", "task_id", "requested_model", "submission_token"}
+                immutable = {"candidate_id", "project_id", "character_id", "identity_id", "snapshot", "task_id", "requested_model", "submission_token", "sheet_contract", "identity_constraints", "reuse_stale_draft"}
                 if existing.model_dump(include=immutable) != candidate.model_dump(include=immutable):
                     raise ValueError("candidate id already bound to different input")
                 return existing
@@ -85,7 +87,7 @@ class CastingCandidateStore:
             self._write(data)
         return self._decode(raw)
 
-    def claim_generation(self, candidate_id: str, *, task_id: str, generation_metadata: dict | None = None) -> bool:
+    def claim_generation(self, candidate_id: str, *, task_id: str, generation_metadata: dict | None = None, generation_prompt: str | None = None) -> bool:
         with production_workflow_project_lock(self.state_dir):
             data = self._read()
             candidate = self._decode(data[candidate_id])
@@ -94,7 +96,7 @@ class CastingCandidateStore:
             if candidate.generation_status != "queued":
                 return False
             updated = candidate.model_dump(mode="json")
-            updated.update(generation_status="running", generation_metadata=generation_metadata or {})
+            updated.update(generation_status="running", generation_metadata=generation_metadata or {}, generation_prompt=generation_prompt)
             data[candidate_id] = self._decode(updated).model_dump(mode="json")
             self._write(data)
             return True
@@ -185,6 +187,47 @@ class CastingCandidateStore:
             raise ValueError("candidate asset digest mismatch")
         return image_bytes
 
+    def crop_avatar(self, candidate_id, box, *, expected_version):
+        from .character_sheet import pixel_box
+        from .casting_recovery import durable_write
+        with production_workflow_project_lock(self.state_dir):
+            data = self._read()
+            candidate = self._decode(data[candidate_id])
+            if not candidate.sheet_contract:
+                raise ValueError('crop requires a character sheet')
+            if candidate.asset_version != expected_version:
+                raise ValueError('asset version conflict')
+            source = self.read_verified_asset(candidate_id)
+            with Image.open(io.BytesIO(source)) as image:
+                cropped = image.crop(pixel_box(box, image.size))
+                buffer = io.BytesIO()
+                cropped.save(buffer, format='PNG')
+            content = buffer.getvalue()
+            digest = hashlib.sha256(content).hexdigest()
+            path = self.safe_path(self.output_path(candidate_id).with_name('avatar-' + digest + '.png'))
+            durable_write(path, content)
+            candidate.avatar_image = str(path)
+            candidate.avatar_sha256 = digest
+            candidate.crop_box = tuple(box)
+            candidate.asset_version += 1
+            data[candidate_id] = candidate.model_dump(mode='json')
+            self._write(data)
+            return candidate
+
+    def read_verified_avatar(self, candidate_id):
+        candidate = self.get(candidate_id)
+        self.read_verified_asset(candidate_id)
+        if not candidate.avatar_image or not candidate.avatar_sha256:
+            raise ValueError('avatar_missing')
+        path = self.safe_path(candidate.avatar_image)
+        expected = self.output_path(candidate_id).with_name('avatar-' + candidate.avatar_sha256 + '.png')
+        if path != expected:
+            raise ValueError('avatar path mismatch')
+        content = path.read_bytes()
+        if hashlib.sha256(content).hexdigest() != candidate.avatar_sha256:
+            raise ValueError('avatar digest mismatch')
+        return content
+
     def fail_generation(self, candidate_id: str, error: str) -> CastingCandidate:
         with production_workflow_project_lock(self.state_dir):
             data = self._read()
@@ -242,3 +285,44 @@ class CastingCandidateStore:
     def fail_review(self, candidate_id, *, attempt_id, error):
         safe = error if error in {"review_failed", "review_timeout", "review_cancelled"} else "review_failed"
         return self._finish_review(candidate_id, attempt_id=attempt_id, error=safe)
+
+    def save_sheet_quality(self, candidate_id, *, attempt_id, quality):
+        with production_workflow_project_lock(self.state_dir):
+            rows = self._read()
+            candidate = self._decode(rows[candidate_id])
+            if candidate.review_attempt_id != attempt_id or candidate.review_status != 'running':
+                raise ValueError('sheet review superseded')
+            candidate.sheet_quality = quality
+            rows[candidate_id] = candidate.model_dump(mode='json')
+            self._write(rows)
+
+    def save_revision_prompt(self, candidate_id, prompt, *, proposal=None):
+        with production_workflow_project_lock(self.state_dir):
+            rows = self._read()
+            candidate = self._decode(rows[candidate_id])
+            if candidate.generation_status != 'queued':
+                raise ValueError('generation already started')
+            if not candidate.repair_prompt:
+                candidate.repair_prompt = prompt
+                if proposal is not None:
+                    candidate.effective_proposal = proposal
+                    candidate.effective_proposal_hash = snapshot_digest(proposal)
+                rows[candidate_id] = candidate.model_dump(mode='json')
+                self._write(rows)
+            return candidate
+
+    def reserve_sheet_repair(self, candidate_id, child):
+        with production_workflow_project_lock(self.state_dir):
+            rows = self._read()
+            parent = self._decode(rows[candidate_id])
+            if parent.repair_child_id:
+                return self._decode(rows[parent.repair_child_id])
+            if parent.repair_count or not parent.sheet_quality or parent.sheet_quality['passed']:
+                raise ValueError('repair budget exhausted or no blocking defects')
+            self.read_verified_asset(candidate_id)
+            parent.repair_count = 1
+            parent.repair_child_id = child.candidate_id
+            rows[candidate_id] = parent.model_dump(mode='json')
+            rows[child.candidate_id] = self._decode(child.model_dump(mode='json')).model_dump(mode='json')
+            self._write(rows)
+            return child

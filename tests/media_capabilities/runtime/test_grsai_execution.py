@@ -87,6 +87,28 @@ def _request():
 
 
 @pytest.mark.asyncio
+async def test_slow_image_keeps_polling_same_task_beyond_five_minutes(monkeypatch):
+    from novelvideo.media_capabilities.runtime import grsai_execution
+    state = {"active": 0, "peak": 0}
+    now = [0.0]
+    queries = []
+    class SlowClient(_Client):
+        async def query(self, task_id, *, api_key):
+            queries.append(task_id)
+            if len(queries) == 1:
+                now[0] = 360.0
+                return GrsaiSnapshot(id=task_id, status="running")
+            return await super().query(task_id, api_key=api_key)
+    monkeypatch.setattr(grsai_execution, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    result = await execute_grsai_generation(
+        _runtime(lambda: SlowClient(state)), _request(),
+        usage_meter=_Meter(), poll_interval_seconds=0.01,
+    )
+    assert queries == ["task-1", "task-1"]
+    assert result.content == b"image"
+
+
+@pytest.mark.asyncio
 async def test_grsai_execution_refunds_empty_download() -> None:
     state = {"active": 0, "peak": 0}
 

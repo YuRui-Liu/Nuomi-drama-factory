@@ -437,6 +437,9 @@ def compile_and_gate_h3_plan(
     from .h3_derived_contract import normalize_derived_contract
 
     normalized = normalize_derived_contract(normalized)
+    from .h3_creative_mapping import verify_h3_creative_contract
+
+    verify_h3_creative_contract(normalized, context.director_context)
     report = inspect_h3_plan(normalized, segment=segment, context=context)
     report.raise_for_failure()
     prompt = compile_h3_director_plan(normalized)
@@ -554,6 +557,9 @@ class H3PromptOptimizer:
                             )
                         }
                     )
+                from .h3_creative_mapping import project_adopted_h3_fields
+
+                plan = project_adopted_h3_fields(plan, context.director_context)
                 plan = normalize_h3_speaker_voices(plan, context)
                 plan = normalize_h3_action_timeline(normalize_h3_source_tones(plan, segment))
                 report = inspect_h3_plan(plan, segment=segment, context=context)

@@ -290,6 +290,7 @@ describe("narrative group reference hooks", () => {
       revision: 4,
       planRevision: 7,
       referenceRevision: 3,
+      retryPlanning: true,
       aspectRatio: "9:16",
     });
     await result.current.mutateAsync({
@@ -304,6 +305,7 @@ describe("narrative group reference hooks", () => {
     expect(bodies[0]).toMatchObject({
       model: "runninghub:minimax-h3-ref",
       reference_revision: 3,
+      retry_planning: true,
     });
     expect(bodies[1]).not.toHaveProperty("reference_revision");
   });

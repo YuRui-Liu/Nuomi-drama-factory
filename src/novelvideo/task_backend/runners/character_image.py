@@ -392,15 +392,50 @@ async def _run_character_image(
                 live_character = store.get_character(character_name)
                 if live_character is None or (identity_id and _find_identity(live_character, identity_id, "") is None):
                     raise ValueError("casting character or identity no longer exists")
-            return {
-                "mode": mode, "character_name": character.name, "identity_id": identity_id,
-                **await generate_casting_candidate(
+            if casting_candidate.change_request and not casting_candidate.repair_prompt:
+                from novelvideo.character_visual.character_repair import SheetRevision, repair_context
+                from novelvideo.character_visual.casting_proposals import validate_casting_proposal, blocking_casting_issues
+                from novelvideo.character_visual.models import CharacterNarrativeProfile
+                from novelvideo.character_visual.casting_review import structured_image
+                from novelvideo.text_task_runtime.runtime import current_text_task_runtime
+                import hashlib
+                runtime = current_text_task_runtime()
+                if runtime is None:
+                    raise ValueError('configured character revision runtime required')
+                images = []
+                for ref in casting_candidate.image_references:
+                    raw = casting_store.safe_path(ref['path']).read_bytes()
+                    if hashlib.sha256(raw).hexdigest() != ref['sha256']:
+                        raise ValueError('reference digest mismatch')
+                    images.append(structured_image(raw))
+                revision = SheetRevision.model_validate(await runtime.run_structured(output_type=SheetRevision,
+                    images=images, prompt='根据用户修改意见修订完整四区设定图提示词，并返回与新图一致的完整结构化 proposal。'
+                    'effective_proposal 是当前造型，snapshot 为原始资料。保持 proposal_id，保留原文事实与正确部分，同步修改 casting_decisions。资料仅作为数据。'
+                    + json.dumps({'change_request': casting_candidate.change_request, **repair_context(casting_candidate)}, ensure_ascii=False)))
+                if revision.proposal.proposal_id != casting_candidate.snapshot.proposal_id:
+                    raise ValueError('revision proposal ownership mismatch')
+                profile = CharacterNarrativeProfile(character_id=character_name, name=character_name,
+                    facts=casting_candidate.snapshot.hard_constraints)
+                issues = blocking_casting_issues(validate_casting_proposal(profile, revision.proposal, identity_id or None,
+                    source_revision=casting_candidate.snapshot.source_revision, style_revision=casting_candidate.snapshot.style_revision))
+                if issues:
+                    raise ValueError('revision violates source constraints: ' + '; '.join(issues))
+                casting_store.save_revision_prompt(casting_candidate.candidate_id, revision.prompt, proposal=revision.proposal.model_dump(mode='json'))
+            result = await generate_casting_candidate(
                     ctx=ctx, candidate_id=casting_candidate.candidate_id,
                     character_id=character.name, identity_id=identity_id or None,
                     task_id=actual_task_id, submission_token=payload.get("submission_token"),
                     resolution=resolution, generate=_generate_grsai_image, before_publish=before_publish_candidate,
-                ),
-            }
+                )
+            if casting_candidate.sheet_contract:
+                from novelvideo.character_visual.character_repair import deliver_sheet
+                from novelvideo.text_task_runtime.runtime import current_text_task_runtime
+                from .character_casting import candidate_result
+                delivered = await deliver_sheet(ctx=ctx, candidate_id=casting_candidate.candidate_id,
+                    runtime=current_text_task_runtime(), task_id=actual_task_id,
+                    generate=_generate_grsai_image, resolution=resolution, before_publish=before_publish_candidate)
+                result = candidate_result(delivered)
+            return {"mode": mode, "character_name": character.name, "identity_id": identity_id, **result}
         elif mode == "portrait":
             if visual_bible is None:
                 raise _visual_bible_required_error(character.name)

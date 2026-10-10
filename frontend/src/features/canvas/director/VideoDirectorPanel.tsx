@@ -14,6 +14,10 @@ import { useDirectorImageActions, type DirectorImageTarget } from './useDirector
 import { useCanvasStore } from '@/stores/canvasStore';
 import { readDirectorBinding, resolveDirectorBindings } from '../domain/videoDirectorBindings';
 import { projectDirectorDraft, resolveDirectorInputMode } from '../domain/videoDirectorInputs';
+import { readUrl } from '@/lib/url-params';
+import { applyCaseReference } from './applyCaseReference';
+import { StoryboardAdaptation } from './StoryboardAdaptation';
+import { CANVAS_NODE_TYPES, type StoryboardGenNodeData } from '../domain/canvasNodes';
 
 type Task = ReturnType<typeof useVideoDirectorTask>;
 
@@ -37,11 +41,13 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
     ...Object.fromEntries(Object.entries(task.fieldErrors).filter(([key]) => !clearedErrors.has(key))),
   }).map(([key, error]) => [key, directorErrorText(error, t)]));
   const draft = data.draft;
+  const location = readUrl();
   const nodes = useCanvasStore((state) => state.nodes);
   const edges = useCanvasStore((state) => state.edges);
   const mode = resolveDirectorInputMode(data);
   const incoming = edges.filter((edge) => edge.target === nodeId);
-  const binding = resolveDirectorBindings(draft, nodes, incoming, mode);
+  const board = nodes.find((node) => node.type === CANVAS_NODE_TYPES.storyboardGen && incoming.some((edge) => edge.source === node.id));
+  const binding = resolveDirectorBindings(draft, nodes, incoming, mode, data.storyboardPreparation);
   const effective = projectDirectorDraft(binding.draft, mode);
   const capabilities = task.capabilities;
   const setDraft = (next: DirectorDraft) => { onDraftChange(next); setClearedErrors(new Set()); };
@@ -63,6 +69,9 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-5">
         {task.error && <p role="alert" className="mb-3 text-sm text-red-300">{task.error}</p>}
+        {board && <StoryboardAdaptation data={data} sourceNodeId={board.id}
+          source={board.data as StoryboardGenNodeData} prepare={task.prepare} busy={task.isPreparing} conflict={task.preparationConflict} referenceError={binding.errors.references}
+          onSourceChange={(patch) => useCanvasStore.getState().updateNodeData(board.id, patch)} />}
         <p className="mb-3 text-sm">{t('node.videoDirector.activeRouteLabel', {
           route: mode === 'ref' ? t('node.videoDirector.editor.refRoute') : t('node.videoDirector.editor.framesRoute'),
         })}</p>
@@ -108,6 +117,23 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
                   className="h-20 w-20 rounded object-contain" />)}</div></div>}
         </section>
         <div className="space-y-3">{draft.segments.map((segment, index) => <DirectorSegmentEditor key={segment.id}
+          reference={location.project ? { project: location.project, canvasId: location.canvas ?? 'default', nodeId,
+            segmentId: segment.id, draft, effectiveDraft: effective,
+            onApply: async (proposal, prompt) => {
+              const currentLocation = readUrl();
+              if (currentLocation.project !== location.project || currentLocation.canvas !== location.canvas
+                || proposal.input.node_id !== nodeId || proposal.input.canvas_id !== (location.canvas ?? 'default')
+                || proposal.input.segment_id !== segment.id) throw new Error('目标画布已变化，请重新打开方案');
+              const state = useCanvasStore.getState();
+              const current = state.nodes.find((node) => node.id === nodeId)?.data as VideoDirectorNodeData | undefined;
+              if (!current?.draft) throw new Error('目标节点已删除');
+              const currentMode = resolveDirectorInputMode(current);
+              const bound = resolveDirectorBindings(current.draft, state.nodes, state.edges.filter((edge) => edge.target === nodeId), currentMode, current.storyboardPreparation);
+              const next = await applyCaseReference(current.draft, projectDirectorDraft(bound.draft, currentMode), proposal, prompt);
+              const latest = useCanvasStore.getState();
+              if (latest.nodes !== state.nodes || latest.edges !== state.edges) throw new Error('画布已变化，请重新应用');
+              setDraft(next);
+            } } : undefined}
           segment={segment} effectiveSegment={effective.segments[index]} index={index} count={draft.segments.length} capabilities={capabilities} techniques={task.techniques}
           hasReferences={effective.references.length > 0} errors={errors}
           effectiveFrames={{
@@ -133,7 +159,7 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
         <DirectorHistory attempts={task.attempts} activeId={data.activeAttemptId} onRetry={task.retry} onRefresh={() => void task.refresh()} />
       </div>
       <div className="flex items-center gap-3 border-t border-white/10 px-5 py-3 text-sm">
-        <button type="button" className="rounded bg-cyan-600 px-4 py-2 text-white disabled:opacity-50" disabled={!capabilities || generating} onClick={generate}>{tr('generate', '生成视频')}</button>
+        <button type="button" className="rounded bg-cyan-600 px-4 py-2 text-white disabled:opacity-50" disabled={!capabilities || generating || task.isPreparing} onClick={generate}>{task.isPreparing ? '正在准备分镜…' : tr('generate', '生成视频')}</button>
         {pending && <button type="button" onClick={task.recoverPending}>{tr('recover', '恢复待提交请求')}</button>}
         <span className="text-text-muted">{active ? directorStageLabel(active.stage, t) : pending ? tr('submitting', '提交中') : ''}</span>
       </div>

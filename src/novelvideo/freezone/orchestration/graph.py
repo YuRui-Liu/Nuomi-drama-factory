@@ -72,7 +72,9 @@ def validate_graph(nodes: list[dict], edges: list[dict]) -> dict:
             continue
         output_types = {port["name"] for port in src["outputs"]}
         input_types = {port["name"] for port in dst["inputs"]}
-        source_port, target_port = edge.get("sourceHandle"), edge.get("targetHandle")
+        ports = edge.get("data") or {}
+        source_port = ports.get("sourcePort", edge.get("sourceHandle"))
+        target_port = ports.get("targetPort", edge.get("targetHandle"))
         # Existing ReactFlow default handles carry no semantic type.
         if source_port not in (None, "", "source"):
             if source_port not in output_types:

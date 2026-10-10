@@ -26,7 +26,7 @@ from novelvideo.task_identity import task_state_key
 
 FREEZONE_DEFAULT_IMAGE_SELECTION = "newapi_gpt_image2"
 FREEZONE_DEFAULT_IMAGE_MODEL = FREEZONE_DEFAULT_IMAGE_SELECTION
-SUPPORTED_FREEZONE_IMAGE_PROVIDERS = {"huimeng", "newapi", "openrouter", "openai"}
+SUPPORTED_FREEZONE_IMAGE_PROVIDERS = {"huimeng", "newapi", "openrouter", "openai", "grsai"}
 FREEZONE_IMAGE_CAMERA_OPTIONS = {
     "camera_bodies": [
         {"id": "panavision_dxl2", "label": "Panavision DXL2"},
@@ -417,6 +417,9 @@ def split_provider_and_model(
 
     if provider:
         return provider, model_text or fallback_model
+    from novelvideo.media_capabilities.models import GRSAI_IMAGE_MODELS
+    if model_text in GRSAI_IMAGE_MODELS:
+        return "grsai", model_text
     if model_text and "/" in model_text:
         provider_token, model_token = model_text.split("/", 1)
         if provider_token in SUPPORTED_FREEZONE_IMAGE_PROVIDERS:

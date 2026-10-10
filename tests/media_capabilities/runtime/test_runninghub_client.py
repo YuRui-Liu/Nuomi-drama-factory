@@ -33,17 +33,45 @@ class ChunkStream(httpx.AsyncByteStream):
 
 
 @pytest.mark.asyncio
-async def test_client_disables_environment_and_closes() -> None:
+async def test_client_respects_environment_and_closes() -> None:
     client = RunningHubClient(
         api_key="memory-key",
         base_url="https://runninghub.invalid",
         transport=httpx.MockTransport(lambda _: json_response({"code": 0})),
     )
 
-    assert client._client._trust_env is False
+    assert client._client._trust_env is True
     async with client as entered:
         assert entered is client
     assert client._client.is_closed
+
+
+@pytest.mark.asyncio
+async def test_upload_uses_system_proxy_and_respects_no_proxy(monkeypatch, tmp_path):
+    import httpx._client
+    import httpx._utils
+
+    seen = []
+    def transport(**kwargs):
+        proxy = kwargs.get("proxy")
+        def handle(request):
+            seen.append((request.url.host, str(proxy.url) if proxy else None))
+            return json_response({"code": 0, "data": {"fileName": "frame.png"}})
+        return httpx.MockTransport(handle)
+
+    monkeypatch.setattr(httpx._client, "AsyncHTTPTransport", transport)
+    monkeypatch.setattr(httpx._utils, "getproxies", lambda: {
+        "https": "http://127.0.0.1:12450", "no": "direct.invalid",
+    })
+    source = tmp_path / "frame.png"
+    source.write_bytes(b"image")
+    for host in ("www.runninghub.cn", "direct.invalid"):
+        async with RunningHubClient("memory-key", base_url=f"https://{host}") as client:
+            assert await client.upload(source) == "frame.png"
+    assert seen == [
+        ("www.runninghub.cn", "http://127.0.0.1:12450"),
+        ("direct.invalid", None),
+    ]
 
 
 @pytest.mark.asyncio

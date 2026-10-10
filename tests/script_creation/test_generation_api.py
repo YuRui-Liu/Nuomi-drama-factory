@@ -48,6 +48,51 @@ def test_generation_submit_is_queued_idempotent_and_editor_only(client):
     assert 'editor' in roles and 'viewer' in roles
 
 
+def test_craft_memory_dismiss_is_editor_only_and_keeps_reason(client,tmp_path):
+    import asyncio
+    from novelvideo.script_creation.craft_memory import CraftMemory
+    from novelvideo.script_creation.store import DocumentStore
+    http,user,_ = client
+    base = '/api/v1/projects/one/script-creation'
+    http.get(base+'/documents')
+    async def seed():
+        await CraftMemory(DocumentStore(tmp_path/'data.db')).remember(kind='people',source='source',references={},
+            records=[{'stage':'structure_review','output':{'summary':'需核对','issues':[{'id':'i','reason':'无依据','quote':'知道','severity':'blocker'}]}}])
+    asyncio.run(seed())
+    entry = http.get(base+'/craft-memory?kind=people').json()['data'][0]
+    user['role']='viewer'
+    assert http.post(base+f"/craft-memory/{entry['id']}/dismiss",json={'reason':'误判'}).status_code==403
+    user['role']='editor'
+    dismissed = http.post(base+f"/craft-memory/{entry['id']}/dismiss",json={'reason':'前文已有依据'}).json()['data']
+    assert dismissed['dismissed'] is True
+    assert dismissed['dismissal_reason']=='前文已有依据'
+
+
+def test_rewrite_retry_enqueue_failure_can_be_retried(client, tmp_path, monkeypatch):
+    import asyncio
+    from novelvideo.api.routes import script_creation
+    from novelvideo.script_creation.rewrite import RewriteService
+    from novelvideo.script_creation.store import DocumentStore
+    http, _, _ = client
+    base = '/api/v1/projects/one/script-creation'
+    doc = http.post(base+'/documents', json={'kind':'episode_script','title':'原稿','markdown':'甲：留下。',
+        'client_mutation_id':'doc'}).json()['data']
+    async def setup():
+        service = RewriteService(DocumentStore(tmp_path/'data.db'))
+        job = await service.start(document_id=doc['id'], base_revision_id=doc['current_revision_id'],
+            start=0,end=5,scope='selection',mode='dialogue',instruction='',preserve='',client_mutation_id='rewrite')
+        await service.enqueue_failed(job['id'], 'offline')
+        return job
+    job = asyncio.run(setup())
+    async def unavailable(*args, **kwargs):
+        raise RuntimeError('queue unavailable')
+    monkeypatch.setattr(script_creation, 'enqueue_project_task', unavailable)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match='queue unavailable'):
+            http.post(base+f"/rewrites/{job['id']}/retry")
+        assert http.get(base+f"/rewrites/{job['id']}").json()['data']['status'] == 'failed'
+
+
 def test_rebase_reads_current_saved_brief_settings(client, tmp_path):
     import asyncio
     from novelvideo.script_creation.store import DocumentStore

@@ -6,6 +6,7 @@ import re
 
 from novelvideo.screenplay_semantics.models import DramaticBeat
 from .cinematography import production_direction_errors
+from .creative_contract import creative_shot_errors
 
 from .models import (
     DirectorPlanRevision,
@@ -15,6 +16,11 @@ from .models import (
 )
 
 
+def requires_production_direction(prompt_version: str) -> bool:
+    """Explicit known version family; do not infer contracts from version prefixes."""
+    return prompt_version in {'director-plan-v3', 'director-plan-v3-keyframe-instant'}
+
+
 def validate_director_plan(
     revision: DirectorPlanRevision,
     source_spans: Sequence[SourceSpan],
@@ -22,6 +28,9 @@ def validate_director_plan(
 ) -> ValidationReport:
     """Validate a director plan without mutating the plan or its source spans."""
     issues: list[ValidationIssue] = []
+    flat_shots = [shot for group in revision.groups for shot in group.shots]
+    next_ids = {shot.id: flat_shots[index + 1].id if index + 1 < len(flat_shots) else None
+                for index, shot in enumerate(flat_shots)}
     spans_by_id = {span.id: span for span in source_spans}
     ordered_spans = sorted(source_spans, key=lambda span: span.ordinal)
     expected_ids = [span.id for span in ordered_spans]
@@ -80,6 +89,24 @@ def validate_director_plan(
             _add_issue(issues, "invalid_dramatic_beat_grouping", f"Dramatic beat {beat_id!r} must belong to exactly one group.", "groups.0.dramatic_beat_ids")
     for group_index, group in enumerate(revision.groups):
         group_location = f"groups.{group_index}"
+        if group.creative_contract_version != revision.creative_contract_version:
+            _add_issue(issues, "creative_contract_version_mismatch", "Group and revision creative versions must agree.", group_location)
+        try:
+            type(group).model_validate(group.model_dump(mode="python"))
+        except ValueError as exc:
+            _add_issue(issues, "invalid_creative_contract", str(exc), group_location)
+        context = group.creative_context
+        if context is not None:
+            if not set(context.required_beat_ids).issubset(group.dramatic_beat_ids):
+                _add_issue(issues, "creative_context_beat_mismatch", "Shared context beats must belong to their group.", f"{group_location}.creative_context")
+            covered = {beat for shot in group.shots for beat in shot.dramatic_beat_ids}
+            if not set(context.required_beat_ids).issubset(covered):
+                _add_issue(issues, "creative_context_beat_uncovered", "Required beats must be covered by at least one shot.", f"{group_location}.creative_context")
+            if context.source.kind == "script_fact" and not set(context.source.reference_ids).issubset(group.source_span_ids):
+                _add_issue(issues, "creative_context_source_mismatch", "Shared script facts must reference this group's sources.", f"{group_location}.creative_context")
+            for shot in group.shots:
+                if shot.cinematography and not {light.light_id for light in shot.cinematography.lights}.issubset(context.light_source_ids):
+                    _add_issue(issues, "creative_context_light_mismatch", "Shot lights must reference the scene light inventory.", f"{group_location}.creative_context")
         if group.id in seen_group_ids:
             _add_issue(
                 issues,
@@ -131,6 +158,11 @@ def validate_director_plan(
         group_beat_ids = set(group.dramatic_beat_ids)
         for shot_index, shot in enumerate(group.shots):
             shot_location = f"{group_location}.shots.{shot_index}"
+            if group.creative_contract_version == 1:
+                for code in creative_shot_errors(shot):
+                    _add_issue(issues, code, "Creative decisions must reference valid source and shot facts.", f"{shot_location}.creative")
+                if shot.creative is not None and shot.creative.handoff.next_shot_id != next_ids[shot.id]:
+                    _add_issue(issues, "creative_handoff_mismatch", "Outgoing handoff must identify the actual next shot, including group boundaries.", f"{shot_location}.creative.handoff")
             if shot.id in seen_shot_ids:
                 _add_issue(
                     issues,
@@ -148,7 +180,7 @@ def validate_director_plan(
                     f"{shot_location}.source_span_ids",
                 )
 
-            if revision.prompt_version == "director-plan-v3" or shot.cinematography is not None:
+            if requires_production_direction(revision.prompt_version) or shot.cinematography is not None:
                 for code in production_direction_errors(shot):
                     _add_issue(issues, code, "Complete source-attributed blocking and lighting directions are required.",
                                f"{shot_location}.cinematography")
@@ -178,7 +210,8 @@ def validate_director_plan(
                         f"{shot_location}.{field_name}",
                     )
             if (
-                shot.visible_start_state.strip()
+                group.creative_contract_version is None
+                and shot.visible_start_state.strip()
                 and shot.visible_start_state.strip() == shot.visible_end_state.strip()
             ):
                 _add_issue(

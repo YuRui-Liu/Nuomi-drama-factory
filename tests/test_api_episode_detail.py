@@ -367,6 +367,38 @@ async def test_patch_episode_source_fields_persists_and_returns_detail(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_manual_identity_save_refreshes_active_director_references(tmp_path, monkeypatch):
+    from novelvideo.api.routes import episodes
+    from novelvideo.director_plan.store import DirectorPlanStore
+    from novelvideo.narrative_groups import reference_refresh
+
+    store = _EpisodeStore(NovelEpisode(number=1, title="第一集"))
+    ctx = SimpleNamespace(output_dir=tmp_path, state_dir=tmp_path, project_id="demo")
+
+    async def resolve(*args, **kwargs):
+        return SimpleNamespace(ctx=ctx)
+
+    async def make_store(*args):
+        return store
+
+    refreshed = []
+
+    async def refresh(ctx, current_store, plan_store, episode, revision):
+        refreshed.append((episode, revision, list(current_store.episode.identity_ids)))
+
+    monkeypatch.setattr(episodes, "resolve_project_scope", resolve)
+    monkeypatch.setattr(episodes, "make_sqlite_store_for_context", make_store)
+    monkeypatch.setattr(DirectorPlanStore, "load_active", lambda self, episode: SimpleNamespace(revision_id="active-1"))
+    monkeypatch.setattr(reference_refresh, "refresh_active_references", refresh)
+    response = await episodes.update_episode(
+        project="demo", episode_num=1,
+        body=EpisodeUpdate(identity_ids=["异兽_山林小兽"]), user={},
+    )
+    assert response["ok"] is True
+    assert refreshed == [(1, "active-1", ["异兽_山林小兽"])]
+
+
+@pytest.mark.asyncio
 async def test_plan_episode_identities_enqueues_celery_task(monkeypatch):
     from novelvideo.api.routes import episodes
 

@@ -8,7 +8,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from novelvideo.models import SceneRef
 from novelvideo.freezone.slots import PushTarget
 from novelvideo.shot_continuity.models import H3RequestedMode
-from novelvideo.media_capabilities.tts.models import VoiceSpec
+from novelvideo.media_capabilities.tts.models import CharacterVoiceDesign, VoiceSpec
 from novelvideo.character_voice_facts import VoiceFacts
 
 ProjectStatus = Literal["active", "archived", "deleted"]
@@ -52,11 +52,13 @@ class ErrorResponse(BaseModel):
 
 class ProjectCreate(BaseModel):
     name: str
+    display_name: str = Field(default="", max_length=120)
 
 
 class ProjectSummary(BaseModel):
     id: str = ""
     name: str
+    display_name: str = ""
     owner_type: str = "user"
     owner_id: str = ""
     owner_username: str = ""
@@ -93,6 +95,7 @@ class ProjectGrantSummary(BaseModel):
 
 
 class ProjectUpdate(BaseModel):
+    display_name: Optional[str] = Field(default=None, max_length=120)
     spine_template: Optional[Literal["drama", "narrated"]] = None
     aspect_ratio: Optional[Literal["2:3", "9:16", "16:9"]] = None
     visual_style: Optional[str] = None
@@ -2053,6 +2056,8 @@ class CharacterVoiceDesignRequest(BaseModel):
     audition_text: str = ""
     language: str = "Chinese"
     voice_spec: VoiceSpec | None = None
+    design: CharacterVoiceDesign | None = None
+    perceived_age: str = ""
 
 
 class NarratorVoiceCopyRequest(BaseModel):

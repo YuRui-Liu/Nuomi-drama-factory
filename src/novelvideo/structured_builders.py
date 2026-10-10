@@ -830,7 +830,7 @@ async def build_scenes_structured(
     on_progress: Any = None,
     on_log: Any = None,
 ) -> dict[str, Any]:
-    """Deterministically publish screenplay locations; defer narrated scenes."""
+    """Locate screenplay settings, enrich their environment, then publish atomically."""
     from novelvideo.novel_source import require_imported_novel
     from novelvideo.utils.screenplay_scene_parser import parse_scene_blocks
 
@@ -839,25 +839,34 @@ async def build_scenes_structured(
         _log(on_log, SCENE_BUILD_DEFERRED_MESSAGE)
         _report(on_progress, 1.0, "无需提前构建场景")
         return {"scenes": 0, "added_scenes": 0, "mode": "episode_on_demand", "message": SCENE_BUILD_DEFERRED_MESSAGE}
-    unique: dict[str, NovelScene] = {}
+    from novelvideo.cognee.pipeline import enrich_scene_environment_from_context
+
+    grouped: dict[str, list[Any]] = {}
     for block in parse_scene_blocks(text):
         name = str(block.location or "").strip()
-        if not name or name in unique:
+        if name:
+            grouped.setdefault(name, []).append(block)
+    scenes: list[NovelScene] = []
+    for index, (name, blocks) in enumerate(grouped.items()):
+        # Keep authored assets and media intact; only enrich missing settings.
+        if await store.get_scene(name) is not None:
             continue
-        details = "；".join(line for line in block.lines[:4] if line.strip())
-        prompt = f"{name}，{details}" if details else name
-        unique[name] = NovelScene(
-            name=name,
+        _report(on_progress, 0.1 + 0.7 * index / max(len(grouped), 1), f"提取场景环境：{name}")
+        block = blocks[0]
+        scene = await enrich_scene_environment_from_context(
+            scene_name=name,
             scene_type="exterior" if block.interior_exterior == "外" else "interior",
-            time_of_day=block.time_of_day,
-            environment_prompt=prompt,
-            description=details,
+            interior=block.interior_exterior != "外",
+            time_of_day="、".join(dict.fromkeys(b.time_of_day for b in blocks if b.time_of_day)),
+            characters=list(dict.fromkeys(c for b in blocks for c in b.characters)),
+            context_lines=[line for b in blocks for line in b.lines],
         )
+        scenes.append(scene)
     _report(on_progress, 0.8, "原子发布新增场景...")
-    added = await store.add_scenes_atomic(list(unique.values()), skip_existing=True)
-    _log(on_log, f"已新增 {len(added)} 个场景，保留已有 {len(unique) - len(added)} 个")
+    added = await store.add_scenes_atomic(scenes, skip_existing=True)
+    _log(on_log, f"已新增 {len(added)} 个场景，保留已有 {len(grouped) - len(added)} 个")
     _report(on_progress, 1.0, "场景构建完成")
-    return {"scenes": len(unique), "added_scenes": len(added), "mode": "script"}
+    return {"scenes": len(grouped), "added_scenes": len(added), "mode": "script"}
 
 
 async def build_props_structured(

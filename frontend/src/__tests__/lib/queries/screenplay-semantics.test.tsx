@@ -7,7 +7,22 @@ import type { ReactNode } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/api", () => ({ api: ky.create({ baseUrl: "http://localhost:3000/" }) }));
-import { useRepairScreenplaySemantics, useRetrySemanticScene } from "@/lib/queries/screenplay-semantics";
+import { useCreateScreenplaySemantics, useRepairScreenplaySemantics, useRetrySemanticScene } from "@/lib/queries/screenplay-semantics";
+import { queryKeys } from "@/lib/query-keys";
+
+it("refreshes the previous terminal task before reporting a parse submission as accepted", async () => {
+  const client = new QueryClient();
+  const key = queryKeys.tasks("demo");
+  client.setQueryDefaults(key, { queryFn: async () => ({ data: [{ task_id: "new", status: "running" }] }) });
+  client.setQueryData(key, { data: [{ task_id: "old", status: "completed" }] });
+  server.use(http.post("http://localhost:3000/api/v1/projects/demo/episodes/1/screenplay-semantics", () =>
+    HttpResponse.json({ ok: true, task_id: "new", scope: "revision:1" })));
+  const { result } = renderHook(() => useCreateScreenplaySemantics("demo", 1), {
+    wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+  });
+  await result.current.mutateAsync([]);
+  expect(client.getQueryData(key)).toEqual({ data: [{ task_id: "new", status: "running" }] });
+});
 
 const server = setupServer();
 beforeAll(() => server.listen());

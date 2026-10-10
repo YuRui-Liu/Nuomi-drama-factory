@@ -135,7 +135,10 @@ async def test_runner_repairs_frozen_base_and_returns_progress_summary(monkeypat
     assert result["failed_scenes"] == 1
     assert result["remaining_issues"] == 1
     assert result["contract_violations"] == 1
+    assert result["validation_passed"] is False
+    assert "仍有 1 个校验问题" in updates[-1]["current_task"]
     assert updates[-1]["expected_task_id"] == "task-1"
+    assert all(update["scope"] == "revision:7:semantic:sem-base" for update in updates)
 
 
 @pytest.mark.asyncio

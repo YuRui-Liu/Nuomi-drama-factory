@@ -111,6 +111,22 @@ class DocumentStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         async with self._db() as db:
             await db.executescript("""
+                CREATE TABLE IF NOT EXISTS script_craft_memory (
+                    id TEXT PRIMARY KEY, kind TEXT NOT NULL, source TEXT NOT NULL,
+                    data TEXT NOT NULL, dismissed INTEGER NOT NULL DEFAULT 0,
+                    dismissal_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS idx_craft_memory_kind ON script_craft_memory(kind,updated_at);
+                CREATE TABLE IF NOT EXISTS script_craft_contexts (
+                    owner_type TEXT NOT NULL, owner_id TEXT NOT NULL, step_key TEXT NOT NULL,
+                    data TEXT NOT NULL, PRIMARY KEY(owner_type,owner_id,step_key));
+                CREATE TABLE IF NOT EXISTS script_craft_records (
+                    owner_type TEXT NOT NULL, owner_id TEXT NOT NULL, step_key TEXT NOT NULL,
+                    stage TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL,
+                    PRIMARY KEY(owner_type, owner_id, step_key, stage));
+                CREATE TABLE IF NOT EXISTS script_craft_dependencies (
+                    candidate_id TEXT NOT NULL, document_id TEXT NOT NULL,
+                    source_candidate_id TEXT NOT NULL, content_hash TEXT NOT NULL,
+                    PRIMARY KEY(candidate_id, document_id));
                 CREATE TABLE IF NOT EXISTS script_documents (
                     id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL,
                     episode_number INTEGER, current_revision_id TEXT NOT NULL,
@@ -391,7 +407,7 @@ class DocumentStore:
 
     async def generation_commit_step(self, run_id, *, step_index, task_id, markdown, references,
                                      target_kind, target_episode, target_id, target_ids, target_revision,
-                                     context_slots, allow_fill, commit_guard=None):
+                                     context_slots, allow_fill, commit_guard=None, craft_dependencies=()):
         """Compare every input and target inside one write transaction before publishing output."""
         async with self._db() as db:
             await db.execute("BEGIN IMMEDIATE")
@@ -429,13 +445,28 @@ class DocumentStore:
                             from novelvideo.task_backend.cancel import TaskCancelled
                             raise TaskCancelled()
                 stamp = _now()
-                if target and not allow_fill:
+                if craft_dependencies and target is None:
+                    # A downstream candidate needs a reviewable destination, but its
+                    # unadopted upstream design must never become published content.
+                    target_id, target_revision = _id(), _id()
+                    await db.execute('INSERT INTO script_documents VALUES (?,?,?,?,?,?,?,?,?)',
+                        (target_id, target_kind, data['steps'][step_index]['title'], target_episode,
+                         target_revision, None, None, stamp, stamp))
+                    await db.execute('INSERT INTO script_revisions VALUES (?,?,?,?,?,?,?,?)',
+                        (target_revision, target_id, None, '', '[]', f'craft-slot:{run_id}:{step_index}', stamp, None))
+                    target = {'id': target_id, 'current_revision_id': target_revision}
+                    data['baseline_revisions'][target_id] = target_revision
+                if target and (not allow_fill or craft_dependencies):
                     candidate_id = _id()
                     await db.execute("INSERT INTO script_generation_candidates VALUES (?,?,?,?,?,?,?,?)",
                                      (candidate_id, run_id, data["steps"][step_index]["key"], target_id,
                                       target_revision, markdown, json.dumps(references), stamp))
                     output = {"kind": "candidate", "candidate_id": candidate_id,
                               "document_id": target_id, "baseline_revision_id": target_revision}
+                    for dependency in craft_dependencies:
+                        await db.execute('INSERT INTO script_craft_dependencies VALUES (?,?,?,?)',
+                            (candidate_id, dependency['document_id'], dependency['source_candidate_id'],
+                             dependency['content_hash']))
                 else:
                     document_id = target_id or _id()
                     revision_id = _id()
@@ -478,7 +509,12 @@ class DocumentStore:
             row = await (await db.execute("SELECT * FROM script_generation_candidates WHERE id=?", (candidate_id,))).fetchone()
             if not row:
                 raise DocumentNotFound("candidate not found")
-            return dict(row)
+            result = dict(row)
+            run = await (await db.execute('SELECT data FROM script_generation_runs WHERE id=?', (row['run_id'],))).fetchone()
+            if run:
+                step = next((s for s in json.loads(run['data'])['steps'] if s['key'] == row['step_key']), {})
+                result['craft_review'] = step.get('craft_review', {'status': 'unreviewed'})
+            return result
 
     async def find_import(self, episode_number):
         async with self._db() as db:

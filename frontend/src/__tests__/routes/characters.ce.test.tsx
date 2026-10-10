@@ -2,7 +2,7 @@
 // Copyright (c) 2026 ClaymoreLab
 import type { ComponentType, ReactNode } from "react";
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import i18next from "i18next";
 import { I18nextProvider, initReactI18next } from "react-i18next";
@@ -35,6 +35,9 @@ vi.mock("@/lib/queries/character-casting", () => ({
 }));
 vi.mock("@/components/assets/character-casting-panel", () => ({
   CharacterCastingPanel: ({ identityId }: { identityId?: string | null }) => <div>剧情驱动选角<span data-testid="casting-stage">{identityId ?? "base"}</span></div>,
+}));
+vi.mock("@/components/assets/character-delivery/character-delivery", () => ({
+  CharacterDelivery: ({ identityId, onIdentityChange }: { identityId: string | null; onIdentityChange: (id: string | null) => void }) => <section aria-label="角色交付区"><span data-testid="delivery-stage">{identityId ?? 'base'}</span><button onClick={()=>onIdentityChange(null)}>基础形象</button></section>,
 }));
 
 vi.mock("@/lib/runtime-config", () => ({
@@ -336,13 +339,15 @@ vi.mock("@/lib/queries/voice-acceptance", () => ({
   useReviewVoiceAcceptance: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
-function renderCharactersPage() {
+function renderCharactersPage(openSecondary = true) {
   const Component = Route.options.component as ComponentType;
-  return render(
+  const result = render(
     <I18nextProvider i18n={i18n}>
       <Component />
     </I18nextProvider>,
   );
+  if(openSecondary) { const details=result.container.querySelector('#character-secondary'); if(details) {details.setAttribute('open','');fireEvent(details,new Event('toggle'));} }
+  return result;
 }
 
 describe("characters page CE generation credit gating", () => {
@@ -398,14 +403,16 @@ describe("characters page CE generation credit gating", () => {
     })));
     expect(createCharacterMock).not.toHaveBeenCalled();
   });
-  it("opens the approved asset workspace on identity and keeps portrait, costume, casting, voice and history independently reachable", async () => {
-    renderCharactersPage();
-    expect(await screen.findByRole("tab", { name: "身份" })).toHaveAttribute("aria-selected", "true");
-    for (const name of ["肖像", "服装", "剧情选角", "声音", "历史"]) {
-      expect(screen.getByRole("tab", { name })).toBeInTheDocument();
-    }
-    await userEvent.click(screen.getByRole("tab", { name: "肖像" }));
-    expect(screen.getByRole("button", { name: "前往选角" })).toBeVisible();
+  it("opens on the delivery area and folds secondary role information", async () => {
+    renderCharactersPage(false);
+    expect(screen.getByRole('region', {name:'角色交付区'})).toBeVisible();
+    expect(screen.queryByRole('tab', {name:'肖像'})).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', {name:'剧情选角'})).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', {name:'角色资料'})).not.toBeInTheDocument();
+    await userEvent.click(screen.getByText('角色资料、声音设置与历史'));
+    expect(screen.getByRole('tab', {name:'角色资料'})).toHaveAttribute('aria-selected','true');
+    await userEvent.click(screen.getByRole('tab', {name:'图片复用'}));
+    expect(screen.getByRole('button', {name:'characters.summary.uploadImage'})).toBeVisible();
     await userEvent.click(screen.getByRole("tab", { name: "历史" }));
     expect(screen.getByText("按参考槽位查看与恢复，已有分镜和视频不会自动重生成。")).toBeVisible();
   });
@@ -449,7 +456,6 @@ describe("characters page CE generation credit gating", () => {
   it("hides portrait and identity generation costs and keeps credit styling out of CE dialogs", async () => {
     const user = userEvent.setup();
     renderCharactersPage();
-    await user.click(await screen.findByRole("tab", { name: "肖像" }));
 
     expect(await screen.findAllByText("Li Qing")).not.toHaveLength(0);
     expect(
@@ -457,11 +463,10 @@ describe("characters page CE generation credit gating", () => {
         name: "前往选角",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Middle", hidden: true })).toBeInTheDocument();
 
     expect(screen.queryByText("12 credits")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "身份" }));
+    await user.click(screen.getByRole("tab", { name: "角色资料" }));
     const identityGenerate = screen
       .getAllByRole("button", { name: "characters.identities.generate" })
       .find((button) => !button.hasAttribute("disabled"));
@@ -519,18 +524,15 @@ describe("characters page CE generation credit gating", () => {
     },
   );
 
-  it("locks character extraction and keeps previous visual proposals read only", async () => {
+  it("locks character extraction while retaining the delivery area", async () => {
     const user = userEvent.setup();
     const firstRender = renderCharactersPage();
 
     await user.click(await screen.findByRole("button", { name: "锁定角色" }));
     expect(extractionLockMutationMock).toHaveBeenCalledWith(true);
 
-    await user.click(screen.getByRole("tab", { name: "剧情选角" }));
-    await user.click(screen.getByText("现有设定（只读）"));
-    expect(screen.getByRole("button", { name: /Urban sharpness/ })).toBeDisabled();
+    expect(screen.getByRole('region', {name:'角色交付区'})).toBeVisible();
     expect(visualWorkspaceMutationMock).not.toHaveBeenCalled();
-    expect(screen.getByText("推荐")).toBeInTheDocument();
 
     firstRender.unmount();
     characterVisualState.extractionLocked = true;
@@ -539,11 +541,10 @@ describe("characters page CE generation credit gating", () => {
     expect(extractionLockMutationMock).toHaveBeenLastCalledWith(false);
   });
 
-  it("guides portrait actions to the casting panel", async () => {
+  it("guides legacy identity portrait actions to the delivery area", async () => {
     const user = userEvent.setup();
     renderCharactersPage();
-    expect(await screen.findByRole("tab", { name: "身份" })).toHaveAttribute("aria-selected", "true");
-    await user.click(screen.getByRole("tab", { name: "肖像" }));
+    expect(await screen.findByRole("tab", { name: "角色资料" })).toHaveAttribute("aria-selected", "true");
 
     const generateButton = await screen.findByRole("button", {
       name: "前往选角",
@@ -551,7 +552,7 @@ describe("characters page CE generation credit gating", () => {
     expect(generateButton).toBeEnabled();
     await user.click(generateButton);
 
-    expect(screen.getByText("剧情驱动选角")).toBeVisible();
+    expect(screen.getByTestId('delivery-stage')).toHaveTextContent('id-middle');
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(generatePortraitMutationMock).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "选择推荐提案" })).not.toBeInTheDocument();
@@ -559,12 +560,11 @@ describe("characters page CE generation credit gating", () => {
   it("routes identity portrait entry with its stable ID and base entry with null", async () => {
     const user = userEvent.setup();
     renderCharactersPage();
-    await user.click(await screen.findByRole("tab", { name: "身份" }));
+    await user.click(await screen.findByRole("tab", { name: "角色资料" }));
     await user.click(screen.getByRole("button", { name: "前往选角" }));
-    expect(screen.getByTestId("casting-stage")).toHaveTextContent("id-middle");
-    await user.click(screen.getByRole("tab", { name: "肖像" }));
-    await user.click(screen.getByRole("button", { name: "前往选角" }));
-    expect(screen.getByTestId("casting-stage")).toHaveTextContent("base");
+    expect(screen.getByTestId("delivery-stage")).toHaveTextContent("id-middle");
+    await user.click(screen.getByRole("button", { name: "基础形象" }));
+    expect(screen.getByTestId("delivery-stage")).toHaveTextContent("base");
   });
 
   it("uses casting even when the legacy VisualBible is confirmed", async () => {
@@ -572,7 +572,6 @@ describe("characters page CE generation credit gating", () => {
     characterVisualState.selectedProposalId = "proposal-a";
     characterVisualState.visualBibleStatus = "confirmed";
     renderCharactersPage();
-    await user.click(await screen.findByRole("tab", { name: "肖像" }));
 
     const generateButton = await screen.findByRole("button", {
       name: "前往选角",
@@ -582,19 +581,14 @@ describe("characters page CE generation credit gating", () => {
 
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(generatePortraitMutationMock).not.toHaveBeenCalled();
-    expect(screen.getByText("剧情驱动选角")).toBeVisible();
-    await user.click(screen.getByText("现有设定（只读）"));
-    expect(screen.getByText("VisualBible 已确认")).toBeInTheDocument();
+    expect(screen.getByRole('region', {name:'角色交付区'})).toBeVisible();
   });
 
   it("does not expose the old VisualBible confirmation alongside casting", async () => {
-    const user = userEvent.setup();
     characterVisualState.selectedProposalId = "proposal-a";
     characterVisualState.visualBibleStatus = "draft";
     renderCharactersPage();
 
-    await user.click(await screen.findByRole("tab", { name: "剧情选角" }));
-    await user.click(screen.getByText("现有设定（只读）"));
     expect(screen.queryByRole("button", { name: "确认 VisualBible" })).not.toBeInTheDocument();
     expect(confirmVisualBibleMutationMock).not.toHaveBeenCalled();
   });

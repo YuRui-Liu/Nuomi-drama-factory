@@ -74,13 +74,18 @@ class MusicStore:
             db.execute('UPDATE assets SET revision=?,body=? WHERE id=?', (revision + 1, dump(body), asset_id))
         return body
 
-    def version(self, version_id, *, owner=None, project=None):
+    def version(self, version_id, *, owner=None, project=None, current_metadata=False):
         with self.db() as db:
-            row = db.execute('SELECT v.body,a.owner FROM versions v JOIN assets a ON a.id=v.asset WHERE v.id=?', (version_id,)).fetchone()
+            row = db.execute('SELECT v.body,a.owner,a.body AS metadata FROM versions v JOIN assets a ON a.id=v.asset WHERE v.id=?', (version_id,)).fetchone()
             grant = project is not None and db.execute('SELECT 1 FROM refs WHERE project=? AND version=?', (project, version_id)).fetchone()
             if not row or not (owner is not None and row['owner'] == owner or grant):
                 raise PermissionError('音乐不存在或不可访问')
-            return json.loads(row['body'])
+            version = json.loads(row['body'])
+            if not current_metadata:
+                return version
+            metadata = json.loads(row['metadata'])
+            # Media identity stays frozen; editable catalog metadata stays current.
+            return {**version, **{key: metadata[key] for key in ('name', 'tags', 'description', 'vocals', 'archived', 'library', 'revision') if key in metadata}}
 
     def reference(self, owner, project, version_id, *, favorite=False):
         with self.db() as db:
@@ -96,7 +101,8 @@ class MusicStore:
 
     def favorites(self, project):
         with self.db() as db:
-            return [json.loads(r['body']) for r in db.execute('SELECT v.body FROM refs r JOIN versions v ON v.id=r.version WHERE r.project=? AND r.favorite=1', (project,))]
+            versions = [r['version'] for r in db.execute('SELECT version FROM refs WHERE project=? AND favorite=1', (project,))]
+        return [self.version(version, project=project, current_metadata=True) for version in versions]
 
     def plan(self, project, canvas, node):
         with self.db() as db:

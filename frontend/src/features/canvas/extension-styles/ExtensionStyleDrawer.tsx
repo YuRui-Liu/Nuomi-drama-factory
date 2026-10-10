@@ -18,8 +18,10 @@ import {
   type ExtensionStyleCategory,
 } from "@/features/canvas/extension-styles/catalog";
 import { cn } from "@/lib/utils";
+import { extensionStylePreviewUrl } from "@/lib/style-preview-url";
 
 type CategoryFilter = "all" | ExtensionStyleCategory;
+
 
 const CATEGORY_FILTERS: ReadonlyArray<{ value: CategoryFilter; label: string }> = [
   { value: "all", label: "全部" },
@@ -89,7 +91,7 @@ function StyleCard({
           <PreviewFallback label={`${style.name}预览暂不可用`} />
         ) : (
           <img
-            src={style.preview_asset}
+            src={extensionStylePreviewUrl(style.preview_asset)}
             alt={`${style.name}预览`}
             loading="lazy"
             className="h-full w-full object-cover"
@@ -142,7 +144,7 @@ function StyleDetails({
           </div>
         ) : (
           <img
-            src={style.preview_asset}
+            src={extensionStylePreviewUrl(style.preview_asset)}
             alt={`${style.name}详情预览`}
             loading="lazy"
             className="aspect-[16/9] w-full object-cover"

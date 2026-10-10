@@ -114,6 +114,36 @@ async def test_new_project_defaults_to_structured_pending_without_embedding_bind
     assert "cognee_embedding_model" not in raw
 
 
+async def test_project_chinese_display_name_preserves_internal_slug(tmp_path, monkeypatch):
+    registry = _Registry(tmp_path)
+    monkeypatch.setattr(projects, "get_project_registry", lambda: registry)
+    monkeypatch.setattr(projects, "user_id_from_api_user", _async_value("user-1"))
+    validated = []
+    monkeypatch.setattr(projects, "validate_project_name", validated.append)
+    response = await projects.create_project(
+        ProjectCreate(name="mijing_shanhai", display_name="秘境山海"),
+        user={"username": "alice"},
+    )
+    assert validated == ["mijing_shanhai"]
+    assert response["data"]["name"] == "mijing_shanhai"
+    assert response["data"].get("display_name") == "秘境山海"
+    raw = json.loads((registry.record.state_dir / "project_config.json").read_text())
+    assert raw["display_name"] == "秘境山海"
+    assert projects.ProjectUpdate(display_name="山海续篇").model_dump(exclude_none=True) == {"display_name": "山海续篇"}
+
+
+async def test_display_name_update_keeps_slug_and_other_config(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    projects.save_project_config_in_state_dir(state, config={"display_name": "旧片名", "visual_style": "guoman"})
+    ctx = SimpleNamespace(state_dir=state, owner_username="alice", project_name="stable_slug")
+    monkeypatch.setattr(projects, "resolve_project_context", _async_value(ctx))
+    monkeypatch.setattr(projects, "require_project_home_node", lambda *_args, **_kwargs: None)
+    response = await projects.update_project("project-id", projects.ProjectUpdate(display_name="新片名"), user={"username": "alice"})
+    assert response["data"]["display_name"] == "新片名"
+    assert projects.load_project_config_file_from_state_dir(state)["visual_style"] == "guoman"
+    assert ctx.project_name == "stable_slug"
+
+
 class _Store:
     def __init__(self, count: int | Exception) -> None:
         self.count = count

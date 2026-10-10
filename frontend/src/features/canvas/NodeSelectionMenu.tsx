@@ -139,6 +139,10 @@ export function NodeSelectionMenu({
           : undefined,
         disabled: !allowedTypeSet.has(CANVAS_NODE_TYPES.audio),
       },
+      ...(allowedTypeSet.has(CANVAS_NODE_TYPES.musicDesk) ? [{
+        key: 'musicDesk', label: '配乐台', Icon: Music,
+        type: CANVAS_NODE_TYPES.musicDesk, disabled: false,
+      }] : []),
       {
         key: 'script',
         label: '脚本',

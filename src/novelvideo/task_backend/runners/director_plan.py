@@ -150,6 +150,7 @@ async def _build_director_plan_input(
             int(submitted.get("document_revision", 0)),
         )
     return DirectorPlanInput(
+        creative_contract_version=1,
         episode=episode,
         source_script_hash=str(source.content_hash),
         source_spans=_semantic_source_spans(semantic),
@@ -376,8 +377,12 @@ async def _execute_director_plan(
     service = _build_director_plan_service(ctx)
     old_plan, assets = _load_asset_migration_context(ctx, episode)
     try:
-        revision = await service.create_draft(
+        review_id = str(payload.get("review_revision_id") or "")
+        operation = service.review_revision if review_id else service.create_draft
+        review_args = {"candidate": DirectorPlanStore(ctx.output_dir).load(episode, review_id)} if review_id else {}
+        revision = await operation(
             input_value,
+            **review_args,
             on_stage=lambda stage: progress(
                 0.55 if stage == "episode_planned" else 0.8,
                 f"M1 {stage}",
@@ -393,7 +398,9 @@ async def _execute_director_plan(
     report = _validation_report(revision)
     if getattr(ctx, "output_dir", None) is not None:
         DirectorPlanStore(ctx.output_dir).require_current(revision)
-    if not bool(report.get("passed")) or str(revision.status) != "review_required":
+    if not bool(report.get("passed")) or str(revision.status) not in {
+        "review_required", "active", "superseded", "abandoned",
+    }:
         raise DirectorPlanTaskError(
             "DIRECTOR_PLAN_VALIDATION_FAILED", validation_report=report
         )

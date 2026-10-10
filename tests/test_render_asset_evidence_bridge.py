@@ -4,6 +4,40 @@ import pytest
 from PIL import Image
 
 
+def test_image_references_follow_explicit_shot_scope_after_creature_exits(tmp_path):
+    from novelvideo.task_backend.runners.narrative_group import _snapshot_generation_input
+    root = tmp_path / 'assets'
+    root.mkdir()
+    images = []
+    for entity, scope in [('forest_creature', ['shot-07']), ('traveler', ['shot-07', 'shot-08']),
+                          ('unmapped', None)]:
+        path = root / f'{entity}.png'
+        Image.new('RGB', (32, 32), 'red').save(path)
+        images.append({'image_path': str(path), 'entity_id': entity,
+            'asset_kind': 'character_identity', 'resolution': 'matched', 'shot_ids': scope})
+    snapshot = {'schema_version': 'narrative-reference-decision/v1', 'id': 'original',
+        'images': images, 'ignored_requirement_ids': []}
+    def render(shot):
+        return _snapshot_generation_input({'project_dir': str(tmp_path),
+            'beats': [{'id': shot, 'beat_number': 8 if shot == 'shot-08' else 3,
+                       'visible_start_state': 'traveler alone' if shot == 'shot-08'
+                       else 'creature escaping beside traveler'}]}, snapshot)
+    earlier, later = render('shot-07'), render('shot-08')
+    assert len(earlier.references) == 3
+    assert len(later.references) == 2
+    assert 'forest_creature' not in later.prompt
+    assert 'traveler' in later.prompt
+    assert any('unmapped' in path for path in later.references)
+    assert later.reference_audit['out_of_scope'] == 1
+    assert 'Panel 1:' in later.prompt
+    assert 'use for panels 1.' in later.prompt
+    assert 'use for panels 8.' not in later.prompt
+    beats = [{'id': 'shot-07', 'beat_number': 3}, {'id': 'shot-08', 'beat_number': 8}]
+    full = _snapshot_generation_input({'project_dir': str(tmp_path), 'beats': beats}, snapshot)
+    assert 'use for panels 1, 2.' in full.prompt
+    assert [beat['beat_number'] for beat in beats] == [3, 8]
+
+
 @pytest.mark.parametrize("character_name", [None, "林舟", "林_舟"])
 @pytest.mark.parametrize("portrait", [False, True])
 def test_verified_render_snapshot_reaches_video_asset_evidence(tmp_path, monkeypatch, character_name, portrait):

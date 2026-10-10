@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { NodeSelectionMenu } from "@/features/canvas/NodeSelectionMenu";
@@ -18,6 +18,7 @@ const translations: Record<string, string> = {
   "node.menu.textAnnotation": "文本",
   "node.menu.video": "视频",
   "node.menu.audio": "音频",
+  "node.menu.musicDesk": "配乐台",
   "node.menu.videoStory": "视频故事",
   "node.menu.videoCompose": "视频合成",
   "node.menu.script": "脚本",
@@ -32,6 +33,12 @@ vi.mock("react-i18next", () => ({
 }));
 
 describe("NodeSelectionMenu", () => {
+  it("offers the music desk in the ordinary add-node menu", async () => {
+    const select = vi.fn();
+    render(<NodeSelectionMenu position={{ x: 12, y: 16 }} onSelect={select} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "配乐台" }));
+    await waitFor(() => expect(select).toHaveBeenCalledWith("musicDeskNode", expect.any(Object)));
+  });
   it("shows standalone shot context in the add-node menu", () => {
     render(
       <NodeSelectionMenu

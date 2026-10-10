@@ -4,6 +4,7 @@ import { CircleSlash2, FileText, Music2, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { GroupVideoPromptDrawer } from "@/components/episode/narrative-workbench/group-video-prompt-drawer";
 import type { NarrativeStageState } from "@/lib/queries/narrative-groups";
+import { GroupVideoQualityControls } from "./group-video-quality-controls";
 
 const stemLabel = (status: NarrativeStageState["dialogue_stem_status"], name: string) =>
   `${name}：${status === "succeeded" ? "已就绪" : status === "unavailable" ? "不可用" : "待处理"}`;
@@ -42,6 +43,21 @@ export function GroupVideoResult({ stage, project = "", episode = 0, groupId = "
   return <section className="mt-4 rounded-xl border border-white/10 bg-white/[0.025] p-4" data-group-video-result>
     <div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2"><Video className="size-4 text-primary" /><h3 className="text-sm font-semibold">组合视频</h3></div>{canRecordPostflight ? <Button type="button" variant="outline" size="sm" onClick={() => setPromptsOpen(true)}><FileText className="mr-1 size-3" />生成提示词</Button> : null}</div>
     {stage.video_asset ? <video className="mt-3 max-h-72 w-full rounded-md bg-black" controls src={stage.video_asset} /> : null}
+    {stage.video_asset ? <div className="mt-3 rounded-md border border-white/10 p-3 text-xs" data-video-quality>
+      <strong>{stage.quality_status === "accepted" ? "质量验收通过" : stage.quality_status === "needs_review" ? "待质检处理" : "已生成 · 待质检"}</strong>
+      <p className="mt-1 text-muted-foreground">技术生成完成不代表质量验收通过；可继续预览已有视频。</p>
+      {project && groupId && stage.manifest_asset ? <GroupVideoQualityControls key={`${project}:${episode}:${groupId}:${stage.revision}`} project={project} episode={episode} groupId={groupId} stage={stage} /> : null}
+      {stage.quality_reviews?.map((review, index) => <details key={`${review.review_id || "review"}-${index}`} className="mt-2">
+        <summary>检查 {index + 1} · {review.status === "passed" ? "通过" : review.status === "failed" ? "发现问题" : "证据不足 / 检查不可用"}</summary>
+        {review.technical_error ? <p className="mt-1 text-amber-300">{review.technical_error}</p> : null}
+        {review.issues?.map((issue, issueIndex) => <p key={issueIndex} className="mt-1 text-amber-300">{issue.dimension}：{issue.description}（{issue.frame_labels.join("、")}）</p>)}
+        {review.evidence?.map((item, evidenceIndex) => <div key={evidenceIndex} className="mt-2">
+          <p>{item.frame_label}：{item.observation} {item.face_observation}</p>
+        </div>)}
+        <div className="mt-2 flex flex-wrap gap-3">{Object.entries(review.frame_assets || {}).map(([label, asset]) => asset ?
+          <a key={label} className="underline" href={asset} target="_blank" rel="noreferrer">原始帧 {label}</a> : null)}</div>
+      </details>)}
+    </div> : null}
     <div className="mt-3 flex flex-wrap gap-3 text-xs text-muted-foreground"><span><Music2 className="mr-1 inline size-3" />{stemLabel(stage.dialogue_stem_status, "对白音轨")}</span><span>{stemLabel(stage.ambience_stem_status, "环境音轨")}</span></div>
     {stage.video_spans?.length ? <div className="mt-3 space-y-2">{stage.video_spans.map((span, index) => {
       const native = span.dialogue_source === "h3_native";

@@ -1,7 +1,22 @@
-import type { CanvasEdge, CanvasNode, DirectorDraft, DirectorImage } from './canvasNodes';
+import type { CanvasEdge, CanvasNode, DirectorDraft, DirectorImage, StoryboardPreparation } from './canvasNodes';
 import { extractCanvasAssets } from './canvasAssets';
+import { resolveMediaUrl } from '@/lib/media-url';
 
 export type DirectorBinding = { kind: 'reference' } | { kind: 'firstFrame' | 'lastFrame'; segmentId: string };
+
+export function isStoryboardPreparationStale(prepared: StoryboardPreparation | undefined, source: {
+  id?: string; imageUrl?: string | null; gridRows?: number; gridCols?: number;
+}): boolean {
+  if (!prepared) return false;
+  if (source.id !== undefined && source.id !== prepared.sourceNodeId ||
+      source.imageUrl !== undefined && source.imageUrl !== prepared.sourceUrl) return true;
+  if (source.gridRows !== undefined && source.gridCols !== undefined) {
+    return source.gridRows * source.gridCols !== prepared.cells.length ||
+      prepared.sourceGridRows !== undefined && source.gridRows !== prepared.sourceGridRows ||
+      prepared.sourceGridCols !== undefined && source.gridCols !== prepared.sourceGridCols;
+  }
+  return false;
+}
 
 export function readDirectorBinding(edge: CanvasEdge): DirectorBinding | null {
   const data = edge.data;
@@ -23,7 +38,7 @@ export function sameDirectorFrameSlot(left: CanvasEdge, right: CanvasEdge): bool
 }
 
 /** Project live images from the target director node's incoming edges onto a copy of its manual draft. */
-export function resolveDirectorBindings(draft: DirectorDraft, nodes: CanvasNode[], directorIncomingEdges: CanvasEdge[], mode: 'ref' | 'frames'): { draft: DirectorDraft; errors: Record<string, string> } {
+export function resolveDirectorBindings(draft: DirectorDraft, nodes: CanvasNode[], directorIncomingEdges: CanvasEdge[], mode: 'ref' | 'frames', preparation?: StoryboardPreparation): { draft: DirectorDraft; errors: Record<string, string> } {
   const projected: DirectorDraft = {
     ...draft,
     references: draft.references.map((image) => ({ ...image })),
@@ -36,6 +51,25 @@ export function resolveDirectorBindings(draft: DirectorDraft, nodes: CanvasNode[
   // The extractor deduplicates URLs within one call. Read each node separately so
   // two distinct source nodes sharing a URL remain addressable by nodeId.
   const images = new Map(nodes.flatMap((node) => extractCanvasAssets([node]).image.map((asset) => [asset.nodeId, asset] as const)));
+  if (mode === 'ref' && preparation?.inputMode === 'ref') {
+    // Prepared Ref IDs, URL spelling and Picture ordering are server-owned.
+    // Validate current sources without appending extractor asset IDs again.
+    const sources = new Set<string>();
+    for (const binding of preparation.refBindings ?? []) {
+      if (!binding.sourceNodeId) continue;
+      sources.add(binding.sourceNodeId);
+      const live = images.get(binding.sourceNodeId);
+      if (!live) errors.references = 'Connected reference image is unavailable';
+      else if (live.url !== resolveMediaUrl(binding.url) || !directorIncomingEdges.some((edge) => edge.source === binding.sourceNodeId &&
+        (!readDirectorBinding(edge) || readDirectorBinding(edge)?.kind === 'reference'))) {
+        errors.references = '参考图来源已变化，请重新准备分镜';
+      }
+    }
+    if (directorIncomingEdges.some((edge) => readDirectorBinding(edge)?.kind === 'reference' && !sources.has(edge.source))) {
+      errors.references = '参考图连线已变化，请重新准备分镜';
+    }
+    return { draft: projected, errors };
+  }
   const seenReferences = new Set(projected.references.map((image) => image.imageId));
   const occupiedFrames = new Set<string>();
   for (const edge of directorIncomingEdges) {

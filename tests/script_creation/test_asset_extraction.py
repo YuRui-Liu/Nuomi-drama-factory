@@ -151,10 +151,11 @@ async def test_linked_context_changes_voice_snapshot_and_reaches_identity_design
     assert not any(c['source_revision_id'] for c in load_asset_authoring_context(assets.db_path, 'character', '岑砚'))
 
 
-async def test_fullwidth_scene_visual_label_preserves_exact_quote(setup):
+@pytest.mark.parametrize('label', ['视觉／光线', '视觉与光线'])
+async def test_fullwidth_scene_visual_label_preserves_exact_quote(setup, label):
     from novelvideo.script_creation.prop_extraction import AssetExtractionOutput, _candidates
     store, _, _ = setup
-    doc = await store.create(kind='scenes', title='场景', markdown='## 折湾站\n\n- **视觉／光线：**冷灰混凝土、褪色的站内导向标记与手绘路线并置。\n- **剧情作用：**建立断水压力', client_mutation_id='doc')
+    doc = await store.create(kind='scenes', title='场景', markdown=f'## 折湾站\n\n- **{label}：**冷灰混凝土、褪色的站内导向标记与手绘路线并置。\n- **剧情作用：**建立断水压力', client_mutation_id='doc')
     output = AssetExtractionOutput(assets=[dict(name='折湾站', source_block_id=doc.revision.blocks[0].id,
         evidence='折湾站', visual_evidence=[dict(block_id=doc.revision.blocks[1].id, text='冷灰混凝土、褪色的站内导向标记与手绘路线并置。')])])
     assert _candidates(output, doc, 'scene')[0]['fields']['environment_prompt'] == '冷灰混凝土、褪色的站内导向标记与手绘路线并置。'

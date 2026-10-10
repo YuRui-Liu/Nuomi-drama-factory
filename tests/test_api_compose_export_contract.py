@@ -81,6 +81,35 @@ def test_export_zip_contains_beat_media_final_video_and_srt(monkeypatch, tmp_pat
     assert "ep003.srt" in names
 
 
+def test_prepare_zip_returns_retryable_native_attachment(monkeypatch, tmp_path):
+    _write_export_assets(tmp_path)
+    client = _client(monkeypatch, tmp_path)
+    response = client.post('/projects/demo/episodes/3/export/zip?prepare_only=true')
+    assert response.headers['content-type'].startswith('application/json')
+    path = response.json()['download_url']
+    assert path == '/api/v1/projects/demo/episodes/3/export/zip'
+    for _ in range(2):
+        download = client.get(path.removeprefix('/api/v1'))
+        assert download.status_code == 200
+        assert download.headers['content-type'].startswith('application/zip')
+        assert 'attachment' in download.headers['content-disposition']
+        with zipfile.ZipFile(BytesIO(download.content)) as archive:
+            assert 'ep003.srt' in archive.namelist()
+
+
+@pytest.mark.asyncio
+async def test_zip_failure_preserves_previous_archive(monkeypatch, tmp_path):
+    from novelvideo.export.episode_export import build_episode_zip_file
+    _write_export_assets(tmp_path)
+    old = tmp_path / 'videos/episodes/demo_第3集.zip'
+    old.write_bytes(b'previous complete archive')
+    def fail(*args, **kwargs): raise OSError('disk unavailable')
+    monkeypatch.setattr(zipfile.ZipFile, 'write', fail)
+    with pytest.raises(OSError):
+        await build_episode_zip_file(tmp_path, 'demo', 3, [{'beat_number': 1, 'narration_segment': 'Hello'}])
+    assert old.read_bytes() == b'previous complete archive'
+
+
 def test_srt_export_falls_back_when_audio_duration_probe_fails(monkeypatch, tmp_path):
     from novelvideo.export import episode_export
 
@@ -96,3 +125,44 @@ def test_srt_export_falls_back_when_audio_duration_probe_fails(monkeypatch, tmp_
 
     assert response.status_code == 200
     assert b"00:00:00,000 --> 00:00:05,000" in response.content
+
+
+def test_srt_export_accepts_director_episode_without_legacy_beats(monkeypatch, tmp_path):
+    from novelvideo.export import episode_export
+
+    async def empty_beats(self, episode):
+        return []
+
+    async def director_srt(project_dir, episode, beats):
+        assert beats == []
+        return "1\n00:00:00,000 --> 00:00:08,000\n阿岑：先进山。\n"
+
+    monkeypatch.setattr(_FakeStore, "get_beats_as_dicts", empty_beats)
+    monkeypatch.setattr(episode_export, "build_srt_content", director_srt)
+    response = _client(monkeypatch, tmp_path).get("/projects/demo/episodes/3/export/srt")
+    assert response.headers["content-type"].startswith("text/srt")
+    assert "阿岑" in response.text
+
+
+def test_srt_export_incomplete_director_returns_error_status(monkeypatch, tmp_path):
+    from novelvideo.export import episode_export
+
+    async def incomplete(*args):
+        raise ValueError("DIRECTOR_COMPOSITION_INCOMPLETE: 第二组视频未完成")
+
+    monkeypatch.setattr(episode_export, "build_srt_content", incomplete)
+    response = _client(monkeypatch, tmp_path).get("/projects/demo/episodes/3/export/srt")
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_srt_file_accepts_director_episode_without_legacy_beats(monkeypatch, tmp_path):
+    from novelvideo.export import episode_export
+
+    async def director_srt(*args):
+        return "1\n00:00:00,000 --> 00:00:08,000\n你好\n"
+
+    monkeypatch.setattr(episode_export, "build_srt_content", director_srt)
+    result = await episode_export.build_episode_srt_file(tmp_path, 3, [])
+    assert result is not None
+    assert "你好" in result.read_text()

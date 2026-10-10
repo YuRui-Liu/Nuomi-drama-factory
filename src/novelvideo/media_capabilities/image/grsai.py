@@ -133,7 +133,8 @@ class GrsaiClient:
         payload: dict[str, Any] = {
             "model": model,
             "prompt": request.prompt,
-            "replyType": "json",
+            # Obtain a durable task ID before waiting for slow image generation.
+            "replyType": "async",
         }
         if request.references:
             payload["images"] = [

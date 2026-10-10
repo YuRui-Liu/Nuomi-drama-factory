@@ -3,7 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { getDirectorCapabilities } from '@/api/videoDirector';
 import { readUrl } from '@/lib/url-params';
 import type { CanvasEdge, CanvasNode, VideoDirectorNodeData } from '../domain/canvasNodes';
-import { readDirectorBinding, resolveDirectorBindings, type DirectorBinding } from '../domain/videoDirectorBindings';
+import { readDirectorBinding, type DirectorBinding } from '../domain/videoDirectorBindings';
+import { extractCanvasAssets } from '../domain/canvasAssets';
 
 export function DirectorConnectionTargetDialog({ sourceId, target, nodes, edges, onSelect, onCancel, error }: {
   sourceId: string;
@@ -35,11 +36,18 @@ export function DirectorConnectionTargetDialog({ sourceId, target, nodes, edges,
     return () => { live = false; };
   }, [project, i18n?.language]);
 
-  const draft = (target.data as VideoDirectorNodeData).draft;
+  const { draft } = target.data as VideoDirectorNodeData;
   const incoming = edges.filter((edge) => edge.target === target.id);
-  const references = resolveDirectorBindings(draft, nodes, incoming, 'ref').draft.references;
+  // Match the backend budget: manual IDs remain intact, connected images use
+  // source node IDs. Distinct nodes sharing a URL still consume distinct slots.
+  const availableSources = new Set(nodes.filter((node) => extractCanvasAssets([node]).image.length > 0).map((node) => node.id));
+  const referenceIds = new Set(draft.references.map((image) => image.imageId));
+  for (const edge of incoming) {
+    if (readDirectorBinding(edge)?.kind === 'reference' && availableSources.has(edge.source)) referenceIds.add(edge.source);
+  }
+  const referenceCount = referenceIds.size;
   const alreadyBoundReference = incoming.some((edge) => edge.source === sourceId && readDirectorBinding(edge)?.kind === 'reference');
-  const referenceDisabled = alreadyBoundReference || referenceLimit === null || references.length >= referenceLimit;
+  const referenceDisabled = alreadyBoundReference || referenceLimit === null || referenceCount >= referenceLimit;
   const referenceReason = alreadyBoundReference ? tr('alreadyBound') : capabilityError || (referenceLimit === null ? tr('loadingLimit')
     : referenceDisabled ? tr('limitReached', { count: referenceLimit }) : '');
 

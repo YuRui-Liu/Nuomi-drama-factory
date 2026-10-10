@@ -35,6 +35,30 @@ class BlockBody(Strict):
     markdown: str
 
 
+class DismissCraftMemoryBody(Strict):
+    reason: str = Field(min_length=1,max_length=2000)
+
+
+@router.get(PREFIX + '/craft-memory')
+async def list_craft_memory(project: str, kind: str | None = None, user: dict = Depends(get_api_user)):
+    from novelvideo.script_creation.craft_memory import CraftMemory
+    store, _ = await _store(project,user,'viewer')
+    return {'ok':True,'data':await CraftMemory(store).list(kind=kind)}
+
+
+@router.post(PREFIX + '/craft-memory/{memory_id}/dismiss')
+async def dismiss_craft_memory(project: str, memory_id: str, body: DismissCraftMemoryBody,
+                               user: dict = Depends(require_scope('tasks:submit'))):
+    from novelvideo.script_creation.craft_memory import CraftMemory
+    store, _ = await _store(project,user,'editor')
+    try:
+        await CraftMemory(store).dismiss(memory_id,body.reason)
+        updated = next(entry for entry in await CraftMemory(store).list() if entry['id']==memory_id)
+        return {'ok':True,'data':updated}
+    except (DocumentNotFound,DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
 class CreateBody(Strict):
     kind: str
     title: str
@@ -191,7 +215,7 @@ def _validate_saved_settings(brief, body: GenerationBody):
 async def _queue_generation(resolved, run, *, requeue=False):
     if resolved.ctx is None:
         raise HTTPException(409, detail={'code': 'project_context_required'})
-    if run['status'] in {'completed', 'failed', 'paused'} and not requeue:
+    if run['status'] in {'completed', 'failed', 'paused', 'needs_review'} and not requeue:
         return {'run': run, 'task_id': run.get('task_id'), 'task_type': 'script_creation_generation'}
     scope = f"run:{run['id']}"
     if run['status'] in {'failed', 'paused'}:
@@ -245,6 +269,26 @@ async def get_generation(project: str, run_id: str, user: dict = Depends(get_api
         raise _generation_error(exc) from exc
 
 
+@router.get(PREFIX + '/generations/{run_id}/craft')
+async def get_generation_craft(project: str, run_id: str, user: dict = Depends(get_api_user)):
+    from novelvideo.script_creation.craft_store import craft_details
+    store, _ = await _store(project, user, 'viewer')
+    try:
+        return {'ok': True, 'data': await craft_details(store, 'generation', run_id)}
+    except DocumentNotFound as exc:
+        raise _generation_error(exc) from exc
+
+
+@router.get(PREFIX + '/rewrites/{job_id}/craft')
+async def get_rewrite_craft(project: str, job_id: str, user: dict = Depends(get_api_user)):
+    from novelvideo.script_creation.craft_store import craft_details
+    store, _ = await _store(project, user, 'viewer')
+    try:
+        return {'ok': True, 'data': await craft_details(store, 'rewrite', job_id)}
+    except DocumentNotFound as exc:
+        raise _generation_error(exc) from exc
+
+
 @router.post(PREFIX + '/generations/{run_id}/retry', status_code=status.HTTP_202_ACCEPTED)
 async def retry_generation(project: str, run_id: str,
                            user: dict = Depends(require_scope('tasks:submit'))):
@@ -273,7 +317,7 @@ async def rebase_generation(project: str, run_id: str, body: RebaseBody,
     service = GenerationService(store)
     try:
         old = await service.get(run_id)
-        if old['status'] not in {'needs_rebase', 'failed', 'paused'}:
+        if old['status'] not in {'needs_rebase', 'failed', 'paused', 'needs_review'}:
             raise GenerationConflict('run does not need rebase')
         brief = await store.get(old['brief_id'])
         settings = _saved_settings(brief)
@@ -332,6 +376,25 @@ async def create_rewrite(project: str, body: RewriteBody,
             resolved.ctx, task_type='script_creation_rewrite', queue_kind='default', episode=0,
             scope=f"rewrite:{job['id']}",
             payload={'project_id': str(resolved.ctx.project_id), 'job_id': job['id']})
+        return {'ok': True, 'data': {**job, 'queued_task_id': queued.task_state.task_id}}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + '/rewrites/{job_id}/retry', status_code=status.HTTP_202_ACCEPTED)
+async def retry_rewrite(project: str, job_id: str,
+                        user: dict = Depends(require_scope('tasks:submit'))):
+    store, resolved = await _store(project, user, 'editor')
+    try:
+        job = await RewriteService(store).retry(job_id)
+        try:
+            queued = await enqueue_project_task(
+                resolved.ctx, task_type='script_creation_rewrite', queue_kind='default', episode=0,
+                scope=f"rewrite:{job['id']}",
+                payload={'project_id': str(resolved.ctx.project_id), 'job_id': job['id']})
+        except Exception as exc:
+            await RewriteService(store).enqueue_failed(job_id, f'任务提交失败：{exc}')
+            raise
         return {'ok': True, 'data': {**job, 'queued_task_id': queued.task_state.task_id}}
     except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
         raise _error(exc) from exc

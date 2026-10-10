@@ -225,7 +225,7 @@ def public_job(job, project):
         if job.get('path'):
             data['videoUrl'] = prefix + '/video'
     if job.get('candidate'):
-        data['candidate'] = public_asset(job['candidate'], project)
+        data['candidate'] = public_asset(get_store().version(job['candidate']['versionId'], project=project, current_metadata=True), project)
     return data
 
 
@@ -289,11 +289,12 @@ async def resume(project: str, job_id: str, user: dict = Depends(require_scope('
 
 
 @router.get(PREFIX + '/jobs/{job_id}/{kind}')
-async def output(project: str, job_id: str, kind: str, user: dict = Depends(get_api_user)):
+async def output(project: str, job_id: str, kind: str, user: dict = Depends(get_api_user), download: bool = False):
     await resolve_project_scope(project, user, required_role='viewer')
     with errors():
         job = get_store().job(project, job_id)
         path = job.get('audioPath' if kind=='audio' else 'path' if kind=='video' else '')
         if job['status'] != 'completed' or not path:
             raise ValueError('输出尚未完成')
-        return FileResponse(path, headers={'X-Content-Type-Options':'nosniff'})
+        filename = f'music-{job_id}{Path(path).suffix}' if download else None
+        return FileResponse(path, filename=filename, headers={'X-Content-Type-Options':'nosniff'})

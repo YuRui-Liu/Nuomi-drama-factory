@@ -15,6 +15,59 @@ def _png(path: Path, color: str = "blue") -> str:
     return str(path.resolve())
 
 
+@pytest.mark.asyncio
+async def test_multi_pack_runs_real_split_and_aggregates_selected_cells(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from novelvideo.narrative_groups.models import CellMapping, GridLayout
+    from novelvideo.narrative_groups.service import group_beats, save_groups, load_groups
+
+    ids = [f"shot-{i}" for i in range(5)]
+    packs = [{"id": "pack-a", "shot_ids": ids[:4], "layout": "grid_2x2"},
+             {"id": "pack-b", "shot_ids": ids[4:], "layout": "single"}]
+    group = group_beats([{"id": ids[0]}])[0]
+    group = replace(group, beat_ids=tuple(ids), shot_ids=tuple(ids), layout=GridLayout(2, 3, 6),
+                    cell_to_beat=tuple(CellMapping(i, shot) for i, shot in enumerate(ids)),
+                    generation_batches=tuple(packs), storyboard_contract_version=1,
+                    stages={**group.stages, "render": replace(group.stages["render"], revision=1)})
+    save_groups(tmp_path, 1, [group])
+    calls = []
+
+    async def generate(data, ctx):
+        calls.append(data)
+        path = tmp_path / f"{data['batch_id']}.png"
+        Image.new("RGB", (160, 160), "blue").save(path)
+        return {"grid_asset": str(path)}
+
+    monkeypatch.setattr(narrative_group, "_generate_grid", generate)
+    result = await narrative_group._execute({"task_id": "multi-task", "episode": 1, "payload": {
+        "project_dir": str(tmp_path), "project_id": "project", "group_id": group.id,
+        "stage": "render", "revision": 1, "storyboard_contract_version": 1,
+        "generation_batches": packs, "beats": [{"id": shot,
+            "visible_start_state": f"opening {shot}", "visible_end_state": f"ending {shot}"}
+            for shot in ids], "aspect_ratio": "9:16",
+    }}, SimpleNamespace(output_dir=tmp_path), split_only=False)
+    assert [call["beat_ids"] for call in calls] == [ids[:4], ids[4:]]
+    assert [[beat["id"] for beat in call["beats"]] for call in calls] == [ids[:4], ids[4:]]
+    assert 'opening shot-4' in calls[0]['adjacent_keyframe_context']
+    assert 'ending shot-3' in calls[1]['adjacent_keyframe_context']
+    assert [beat['id'] for beat in calls[1]['keyframe_context_beats']] == ids
+    assert 'reverse angle' in narrative_group._grid_prompt(calls[1])
+    assert [cell["shot_id"] for cell in result["cell_assets"]] == ids, result["errors"]
+    saved = load_groups(tmp_path, 1)[0].stages["render"]
+    assert len(saved.storyboard_sources) == 2
+    assert len(saved.cell_assets) == 5
+    assert set(saved.selected_storyboard_sources) == {"pack-a", "pack-b"}
+    split_packs = [{**pack, "storyboard_split_input": saved.provider_parameters["storyboard_split_inputs"][pack["id"]]}
+                   for pack in packs]
+    retried = await narrative_group._execute({"task_id": "retry", "episode": 1, "payload": {
+        "project_dir": str(tmp_path), "project_id": "project", "group_id": group.id,
+        "stage": "render", "revision": 1, "storyboard_contract_version": 1,
+        "generation_batches": split_packs, "aspect_ratio": "9:16",
+    }}, SimpleNamespace(output_dir=tmp_path), split_only=True)
+    assert len(calls) == 2
+    assert len(retried["cell_assets"]) == 5
+
+
 def test_split_partial_grid_does_not_promote_padding_cell(tmp_path):
     grid = tmp_path / "grid.png"
     Image.new("RGB", (360, 640), "blue").save(grid)

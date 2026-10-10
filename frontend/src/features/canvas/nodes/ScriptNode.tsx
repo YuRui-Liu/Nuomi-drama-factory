@@ -13,6 +13,7 @@ import {
   ArrowUp,
   AlertCircle,
   ChevronDown,
+  Copy,
   Expand,
   FileText,
   ImageIcon,
@@ -22,6 +23,7 @@ import {
   Video,
   X,
 } from 'lucide-react';
+import { toast } from 'sonner';
 
 import {
   CANVAS_NODE_TYPES,
@@ -672,6 +674,12 @@ export const ScriptNode = memo(({ id, data, selected, width, height }: ScriptNod
               className="flex h-full flex-col justify-center gap-2 py-4"
               style={{ marginInline: 32 }}
             >
+              {hasUpstream && !data.generationError && !isGenerating && (
+                <div className="space-y-2 text-sm text-text-muted">
+                  <p>已连接 {references.length} 个参考节点</p>
+                  <p>点击节点，在下方填写剧情要求并生成分镜脚本。</p>
+                </div>
+              )}
               {!hasUpstream && (
                 <>
                   <div className="text-xs text-[var(--canvas-node-input-helper)]">试试：</div>
@@ -714,7 +722,7 @@ export const ScriptNode = memo(({ id, data, selected, width, height }: ScriptNod
         )}
       </div>
 
-      {isNodeSelected && (hasUpstream || promptHasContent(data)) && (
+      {isNodeSelected && (
         <ScriptOperationsPanel
           nodeId={id}
           data={data}
@@ -762,10 +770,6 @@ export const ScriptNode = memo(({ id, data, selected, width, height }: ScriptNod
 });
 
 ScriptNode.displayName = 'ScriptNode';
-
-function promptHasContent(data: ScriptNodeData): boolean {
-  return typeof data.prompt === 'string' && data.prompt.trim().length > 0;
-}
 
 interface ScriptResultHeaderProps {
   title: string;
@@ -888,6 +892,7 @@ interface ScriptResultCellProps {
 }
 
 function ScriptResultCell({ row, col, onCommit }: ScriptResultCellProps) {
+  const textRef = useRef<HTMLDivElement>(null);
   const raw = row[col.key];
 
   if (col.render === 'image') {
@@ -931,6 +936,35 @@ function ScriptResultCell({ row, col, onCommit }: ScriptResultCellProps) {
     );
   }
 
+  if (col.key === 'shot_prompt' || col.key === 'video_motion_prompt') {
+    return (
+      <div className="flex items-start gap-2">
+        <div ref={textRef} className="min-w-0 flex-1">
+          <EditableTableCell value={initialText} onCommit={onCommit} />
+        </div>
+        <button
+          type="button"
+          title={`复制${col.label}`}
+          aria-label={`复制${col.label}`}
+          disabled={!initialText.trim()}
+          className="nodrag sticky top-0 shrink-0 rounded p-1 text-text-muted hover:bg-white/10 hover:text-text-dark disabled:opacity-30"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={async (event) => {
+            event.stopPropagation();
+            const text = textRef.current?.innerText ?? initialText;
+            try {
+              await navigator.clipboard.writeText(text);
+              toast.success('已复制完整提示词');
+            } catch {
+              toast.error('复制失败，请选中文字后手动复制');
+            }
+          }}
+        >
+          <Copy className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    );
+  }
   return <EditableTableCell value={initialText} onCommit={onCommit} />;
 }
 
@@ -1004,14 +1038,12 @@ function ScriptOperationsPanel({
     }
   }, [isGenerating, isTranslating, nodeId, prompt, updateNodeData]);
 
-  // 文本 / 视频 / 角色图任一有内容即可提交（与 useScriptStorySubmit 的分流一致）。
+  // 与提交和后端保持一致：当前接口必须有文字剧情。
   const hasContent =
     prompt.trim().length > 0 ||
     references.some(
       (ref) =>
-        (ref.kind === 'text' && (ref.text ?? '').trim().length > 0) ||
-        (ref.kind === 'video' && Boolean(ref.videoUrl)) ||
-        (ref.kind === 'image' && Boolean(ref.thumbUrl)),
+        ref.kind === 'text' && (ref.text ?? '').trim().length > 0,
     );
   const submitDisabled = isGenerating || !hasContent;
 
@@ -1045,12 +1077,18 @@ function ScriptOperationsPanel({
         <textarea
           value={prompt}
           onChange={(event) => updateNodeData(nodeId, { prompt: event.target.value })}
-          placeholder="描述剧情或添加角色参考、视频参考等，为你生成分镜脚本"
+          placeholder="输入剧情，或连接剧本文本后补充改编要求"
           rows={3}
           className={`nodrag nowheel ui-scrollbar w-full resize-none bg-transparent text-[14px] leading-[1.6] text-text-dark outline-none ${CANVAS_NODE_INPUT_PLACEHOLDER_CLASS} ${panelExpanded ? 'h-full' : 'min-h-[72px]'}`}
           disabled={isGenerating}
         />
       </div>
+
+      {references.some((ref) => ref.kind === 'image' || ref.kind === 'video') && (
+        <p className="px-3 pb-2 text-xs text-text-muted">
+          当前按文字剧情生成，不会自动解析图片或视频；请补充素材中的人物、动作和剧情。
+        </p>
+      )}
 
       {data.generationError && !isGenerating && (
         <div className="px-3 pb-1 text-[11px] text-red-400 break-words [overflow-wrap:anywhere]">{data.generationError}</div>

@@ -1,5 +1,6 @@
 import { useId } from 'react';
 import { useTranslation } from 'react-i18next';
+import { AdditionalTechniqueSketch, additionalSketchIds } from './AdditionalTechniqueSketch';
 
 function Person({ x, y = 51, scale = 1, gaze = 0 }: { x: number; y?: number; scale?: number; gaze?: number }) {
   return <g transform={`translate(${x} ${y}) scale(${scale})`} stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round">
@@ -12,7 +13,8 @@ function Person({ x, y = 51, scale = 1, gaze = 0 }: { x: number; y?: number; sca
 export function TechniqueSketch({ id, large = false }: { id: string; large?: boolean }) {
   const marker = useId().replace(/:/g, '');
   const { t } = useTranslation();
-  if (!['fixed-reaction', 'expression-build', 'two-person-gaze', 'lateral-follow', 'slow-push-in', 'subject-entrance', 'contained-climax', 'endpoint-continuity'].includes(id)) {
+  const additional = additionalSketchIds.includes(id);
+  if (!additional && !['fixed-reaction', 'expression-build', 'two-person-gaze', 'lateral-follow', 'slow-push-in', 'subject-entrance', 'contained-climax', 'endpoint-continuity'].includes(id)) {
     return <div className="flex min-h-28 items-center justify-center rounded-lg bg-[#101923] p-4 text-center text-xs leading-relaxed text-slate-400">{t('techniqueLibrary.sketchUnavailable', { defaultValue: '此手法暂无镜头示意，请参阅文字说明' })}</div>;
   }
   const arrow = `url(#${marker})`;
@@ -23,7 +25,7 @@ export function TechniqueSketch({ id, large = false }: { id: string; large?: boo
         <rect x="0" y="0" width="110" height="102" rx="5" fill="#16232e" stroke="#344657" />
         <path d="M7 85h96" stroke="#344657" strokeDasharray="3 4" />
         <text x="8" y="15" fill="#7a97aa" fontSize="10">0{phase + 1}</text>
-        {id === 'two-person-gaze' ? <><Person x={30} scale={0.85} gaze={phase > 0 ? 1 : 0} /><Person x={82} scale={0.85} gaze={phase === 2 ? -1 : 0} />
+        {additional ? <AdditionalTechniqueSketch id={id} phase={phase} arrow={arrow} /> : id === 'two-person-gaze' ? <><Person x={30} scale={0.85} gaze={phase > 0 ? 1 : 0} /><Person x={82} scale={0.85} gaze={phase === 2 ? -1 : 0} />
           {phase > 0 && <path d={phase === 1 ? 'M42 31h27' : 'M69 28H42'} stroke="#fbbf24" markerEnd={arrow} />}</>
           : id === 'slow-push-in' ? <><Person x={55} y={54 + phase * 7} scale={0.7 + phase * 0.27} /><path d={`M${16 + phase * 5} 23h9m-9 0v9 M${94 - phase * 5} 23h-9m9 0v9`} stroke="#fbbf24" fill="none" /></>
           : id === 'lateral-follow' ? <><path d={`M${20 - phase * 8} 20v62m55-62v62`} stroke="#344657" /><Person x={48 + phase * 7} /><path d="M25 93h58" stroke="#fbbf24" markerEnd={arrow} /></>

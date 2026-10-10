@@ -5,7 +5,7 @@ from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, get_args
 from uuid import UUID
 
 import portalocker
@@ -71,10 +71,43 @@ class AuthorSessionStore:
             if path.exists():
                 saved = AuthorBinding.model_validate_json(path.read_text(encoding="utf-8"))
                 if saved.model_copy(update={"session_id": None}) != binding:
-                    raise ValueError("author_scope_or_route_mismatch")
+                    # Reasoning effort is per-call execution tuning, not author
+                    # identity. Older bindings contain only a hash: verify an
+                    # exact historical route differing solely in this field.
+                    # Model, skill, method snapshot and project scope stay fixed.
+                    from novelvideo.text_task_runtime.models import TextTaskReasoningEffort
+                    same_scope = (saved.project_id, saved.task_kind, saved.chain_id) == (
+                        binding.project_id, binding.task_kind, binding.chain_id)
+                    efforts = (None, *get_args(TextTaskReasoningEffort))
+                    compatible = (same_scope and route.get("runtime") == "codex"
+                        and route.get("reasoning_effort") in efforts
+                        and any(saved.route_hash == hashlib.sha256(json.dumps(
+                            {**route, "reasoning_effort": effort}, sort_keys=True,
+                            ensure_ascii=False).encode()).hexdigest() for effort in efforts))
+                    if not compatible:
+                        raise ValueError("author_scope_or_route_mismatch")
                 return saved
             _atomic_write_json(path, binding.model_dump(mode="json"))
             return binding
+
+    def require_existing_session(self, chain_id: str, session_id: str) -> AuthorBinding:
+        """Read-only resume preflight. Missing evidence must never create a binding."""
+        try:
+            expected = str(UUID(session_id))
+            locator = AuthorBinding(project_id=self.project_id, task_kind=self.task_kind,
+                chain_id=chain_id, route_hash="")
+            directory = self.session_dir(locator)
+            saved = AuthorBinding.model_validate_json((directory / "binding.json").read_text(encoding="utf-8"))
+            if ((saved.project_id, saved.task_kind, saved.chain_id)
+                    != (self.project_id, self.task_kind, chain_id)
+                    or saved.session_id != expected):
+                raise ValueError("author binding identity mismatch")
+            metadata = json.loads((directory / ".session.json").read_text(encoding="utf-8"))
+            if str(UUID(metadata["id"])) != expected:
+                raise ValueError("native session metadata mismatch")
+            return saved
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise ValueError("session_resume_unavailable") from exc
 
     def record_session(self, binding: AuthorBinding, session_id: str) -> AuthorBinding:
         session_id = str(UUID(session_id))

@@ -2162,6 +2162,7 @@ def test_group_video_incomplete_snapshot_rebuilds_without_claiming_replay(
     ("policy", "tamper"),
     [
         ("legacy", None),
+        ("legacy", "interrupted_revision"),
         ("observe", None),
         ("guard", None),
         ("enforce", None),
@@ -2365,6 +2366,14 @@ def test_same_revision_replay_validates_snapshot_before_reusing_optimizer_result
     first_prepare_calls = prepare_calls
     first_provider_calls = provider_calls
 
+    if tamper == "interrupted_revision":
+        from novelvideo.narrative_groups.service import reserve_video_revision
+
+        first = first.model_copy(update={"status": "submitted"})
+        save_h3_director_manifest(manifest_path, first)
+        reserve_video_revision(tmp_path, 1, "ng-01", expected_revision=1)
+        envelope["payload"]["revision"] = 2
+
     if tamper is not None:
         entry = first.entries[0]
         replacement = entry
@@ -2423,9 +2432,11 @@ def test_same_revision_replay_validates_snapshot_before_reusing_optimizer_result
             narrative_group_video.run_narrative_group_video(envelope, ctx)
         monkeypatch.setattr(narrative_group_video_recovery, "probe_video", original_probe)
     narrative_group_video.run_narrative_group_video(envelope, ctx)
-    replayed = load_h3_director_manifest(manifest_path)
+    replayed = load_h3_director_manifest(load_groups(tmp_path, 1)[0].stages["video"].manifest_asset)
 
-    if tamper is None or tamper.startswith("qc_"):
+    if tamper == "interrupted_revision":
+        assert all("_r1_segment_" in entry.physical_video for entry in replayed.entries)
+    if tamper is None or tamper == "interrupted_revision" or tamper.startswith("qc_"):
         assert optimizer_calls == first_optimizer_calls
         assert prepare_calls == first_prepare_calls
     else:
@@ -3208,8 +3219,9 @@ def test_pair_optimizer_context_contains_start_and_target_director_context(
     }]
 
 
+@pytest.mark.parametrize("sibling_missing_voice", [False, True])
 def test_episode_prompt_pack_ignores_sibling_groups_without_rendered_frames(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, sibling_missing_voice
 ):
     from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
     from novelvideo.task_backend.runners import narrative_group_video
@@ -3251,8 +3263,8 @@ def test_episode_prompt_pack_ignores_sibling_groups_without_rendered_frames(
             }
             if group_id == "group-01"
             else {
-                "status": "pending",
-                "cell_assets": [],
+                "status": "completed" if sibling_missing_voice else "pending",
+                "cell_assets": [{"beat_id": "shot-02-01", "path": str(frame)}] if sibling_missing_voice else [],
                 "video_plan": {
                     "units": [{"beat_ids": ["shot-02-01"]}]
                 },
@@ -3267,6 +3279,7 @@ def test_episode_prompt_pack_ignores_sibling_groups_without_rendered_frames(
                 "id": "shot-01-01" if group_id == "group-01" else "shot-02-01",
                 "beat_number": 1 if group_id == "group-01" else 2,
                 "content": "人物抬头" if group_id == "group-01" else "门外有人",
+                "dialogue_lines": [{"speaker": "缺声音的旁组人物", "text": "门开了。"}] if group_id == "group-02" and sibling_missing_voice else [],
             }
         ],
     )
@@ -3275,8 +3288,13 @@ def test_episode_prompt_pack_ignores_sibling_groups_without_rendered_frames(
         def model_dump(self, **_kwargs):
             return {}
 
+    async def voice_characters(_ctx):
+        return []
+    monkeypatch.setattr(narrative_group_video, "_load_speaker_voice_characters", voice_characters)
+
     class Optimizer:
         async def optimize(self, episode_input):
+            assert [item.segment_id for item in episode_input.segments] == ["shot-01-01"]
             return SimpleNamespace(
                 segments=tuple(
                     SimpleNamespace(
@@ -3881,7 +3899,7 @@ def test_blocked_policy_rejects_before_transport_and_records_failure_once(
     assert all(entry.status == "quality_rejected" for entry in manifest.entries)
 
 
-@pytest.mark.parametrize("rejected_phase", [None, "reference", "generated", "reference_unavailable", "generated_unavailable"])
+@pytest.mark.parametrize("rejected_phase", [None, "reference", "generated", "reference_unavailable", "generated_unavailable", "not_requested"])
 def test_enforce_uses_compiled_bundle_prompt_at_adapter_boundary(
     tmp_path, monkeypatch, rejected_phase
 ):
@@ -4009,7 +4027,7 @@ def test_enforce_uses_compiled_bundle_prompt_at_adapter_boundary(
                     "resolution": "720p",
                     "continuity_policy": "enforce",
                 },
-                "cinematography_review_required": True,
+                "cinematography_review_required": rejected_phase != "not_requested",
             },
         },
         ctx,
@@ -4028,6 +4046,11 @@ def test_enforce_uses_compiled_bundle_prompt_at_adapter_boundary(
 
     manifest = load_h3_director_manifest(result["manifest_asset"])
     assert manifest.entries[0].compiled_bundle == {"prompt": "bundle:beat-1"}
+    assert {item['id'] for item in manifest.cinematography_shots} == {'beat-1', 'beat-2'}
+    if rejected_phase == 'not_requested':
+        assert reviews == []
+        assert manifest.cinematography_reviews == ()
+        return
     assert reviews == ["reference", "generated"]
     assert len(manifest.cinematography_reviews) == 2
     assert all(entry.status == "completed" for entry in manifest.entries)

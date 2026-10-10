@@ -100,6 +100,57 @@ class FakeStore:
         )]
 
 
+def test_voice_preflight_is_read_only_and_checks_only_requested_group(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    monkeypatch.setattr(narrative_group_service, "load_groups", lambda *_args: [SimpleNamespace(id="g1", beat_ids=["1"], production_beat_ids=["1"])])
+    closed = []
+    class VoiceStore:
+        async def get_beats_as_dicts(self, _episode):
+            return [{"id": "1", "dialogue_lines": [{"speaker": "阿岑", "text": "出发。"}, {"speaker": "闻禾", "text": "好。"}]},
+                    {"id": "2", "dialogue_lines": [{"speaker": "别组人物", "text": "走。"}]}]
+        def get_all_characters(self):
+            return [SimpleNamespace(name="阿岑", aliases=[], voice_facts=SimpleNamespace(voice_traits="自然男声", conflicts=[]))]
+        async def close(self):
+            closed.append(True)
+    async def store(_ctx):
+        return VoiceStore()
+    monkeypatch.setattr(narrative_groups, "make_sqlite_store_for_context", store)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file() and path.suffix != ".lock"}
+    response = client.get("/api/v1/projects/demo/episodes/1/narrative-groups/g1/video/voice-preflight")
+    assert response.status_code == 200
+    result = response.json()["data"]
+    assert result["ready"] is False
+    assert [issue["speaker"] for issue in result["issues"]] == ["闻禾"]
+    assert backend.calls == []
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file() and path.suffix != ".lock"} == before
+    assert closed == [True]
+
+
+def test_voice_preflight_uses_director_shot_ids_instead_of_source_spans(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    activate_director_plan(tmp_path)
+    [group] = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()["data"]
+    assert group["source_span_ids"] == ["span-1", "span-2"]
+    assert group["shot_ids"] == ["shot-1"]
+    monkeypatch.setattr(narrative_groups, "generation_beats_for_group", lambda *_args: [
+        {"id": "shot-1", "dialogue_lines": [{"speaker": "闻禾", "text": "出发。"}]}])
+    class VoiceStore:
+        async def get_beats_as_dicts(self, _episode):
+            return []
+        def get_all_characters(self):
+            return []
+        async def close(self):
+            pass
+    async def store(_ctx):
+        return VoiceStore()
+    monkeypatch.setattr(narrative_groups, "make_sqlite_store_for_context", store)
+    response = client.get("/api/v1/projects/demo/episodes/1/narrative-groups/director-group/video/voice-preflight")
+    assert response.status_code == 200
+    assert response.json()["data"]["ready"] is False
+    assert [issue["speaker"] for issue in response.json()["data"]["issues"]] == ["闻禾"]
+    assert backend.calls == []
+
+
 class FakeBackend:
     def __init__(self):
         self.calls = []
@@ -483,6 +534,39 @@ def test_render_skips_sketch_by_default_but_can_require_it(monkeypatch, tmp_path
     assert payload["constraint_mode"] == "unconstrained"
     assert payload["model"] == "gpt-image-2"
     assert payload["image_size"] == "1K"
+
+
+def test_render_enqueues_physical_packs_for_large_director_group(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    planned = install_empty_planned_snapshot(monkeypatch, tmp_path)
+    activate_director_plan(tmp_path, group_id="ng-01", shot_id="shot-0")
+    revision = DirectorPlanStore(tmp_path).load_active(1)
+    group = revision.groups[0]
+    expanded = revision.model_copy(update={"groups": (group.model_copy(update={"shots": tuple(
+        group.shots[0].model_copy(update={"id": f"shot-{i}"}) for i in range(5))}),)})
+    monkeypatch.setattr(DirectorPlanStore, "load_active", lambda *args: expanded)
+    monkeypatch.setattr(DirectorPlanStore, "load", lambda *args: expanded)
+    response = client.post("/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate", json=planned)
+    assert response.status_code == 202, response.text
+    payload = backend.calls[0][1]["payload"]
+    assert [batch["shot_ids"] for batch in payload["generation_batches"]] == [
+        ["shot-0", "shot-1", "shot-2", "shot-3"], ["shot-4"]]
+
+
+def test_video_capability_conflict_rejected_before_enqueue(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    groups = narrative_group_service.load_groups(tmp_path, 1)
+    group = groups[0]
+    error = "capability_conflict: shot-1 requires 20s; maximum 15s"
+    narrative_group_service.save_groups(tmp_path, 1, [replace(group, stages={**group.stages,
+        "video": replace(group.stages["video"], status="failed", error=error,
+                         provider_parameters={"capability_conflict": error})})])
+    response = client.post("/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+                           json={"revision": 0, "plan_revision": 1})
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "capability_conflict"
+    assert not backend.calls
 
 
 def test_render_freezes_completed_sketch_revision_and_temporary_model(monkeypatch, tmp_path):
@@ -2109,7 +2193,7 @@ def test_generation_time_reference_matching_helpers_are_not_public_api():
 
 
 def test_new_render_upgrades_legacy_visual_contract_and_freezes_style(monkeypatch, tmp_path):
-    from novelvideo.narrative_groups.service import load_materialized_groups, save_groups
+    from novelvideo.narrative_groups.service import load_materialized_groups
     client, backend = make_client(monkeypatch, tmp_path)
     from novelvideo.director_plan.models import StyleSnapshot, StyleProjections
     activate_director_plan(tmp_path, style_snapshot=StyleSnapshot(
@@ -3980,3 +4064,12 @@ def test_put_video_plan_uses_active_director_shot_ids(monkeypatch, tmp_path):
     plan = response.json()["data"]["video_plan"]
     assert plan["units"][0]["beat_ids"] == ["shot-1"]
     assert plan["units"][0]["duration_seconds"] == 3.0
+def test_quality_projection_never_calls_completed_video_accepted(tmp_path):
+    from types import SimpleNamespace
+    from novelvideo.api.routes.narrative_groups import _serialize_video_quality
+    state = {}
+    manifest = SimpleNamespace(cinematography_reviews=(), quality_dispositions=(), entries=[])
+    _serialize_video_quality('demo', tmp_path, state, manifest)
+    assert state['quality_status'] == 'generated'
+    assert state['quality_reviews'] == []
+    assert state['quality_dispositions'] == []

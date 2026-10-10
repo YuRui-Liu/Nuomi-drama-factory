@@ -603,6 +603,32 @@ def _reconcile_orphan_stages(
     return [repaired.get(group.id, group) for group in groups]
 
 
+@router.get("/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/video/voice-preflight")
+async def get_group_video_voice_preflight(project: str, episode: int, group_id: str, user: dict = Depends(get_api_user)):
+    from novelvideo.media_capabilities.video.h3_speaker_voices import required_voice_speakers, speaker_voice_preflight
+    from novelvideo.media_capabilities.video.h3_beat_adapter import h3_dialogue_text, h3_speaker_text
+    from novelvideo.task_backend.runners.narrative_group_video import _source_dialogue_lines
+    from novelvideo.narrative_groups.service import load_groups
+
+    resolved = await resolve_project_scope(project, user, required_role="editor")
+    groups = load_groups(resolved.project_dir, episode)
+    group = next((group for group in groups if group.id == group_id), None)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Narrative group not found")
+    store = await make_sqlite_store_for_context(resolved.ctx)
+    try:
+        beats = await store.get_beats_as_dicts(episode)
+        group_beats = generation_beats_for_group(resolved.project_dir, episode, group_id, beats)
+        production_ids = set(group.production_beat_ids)
+        group_beats = [beat for beat in group_beats if str(beat.get("id") or beat.get("beat_id") or beat.get("beat_number")) in production_ids]
+        speakers = [speaker for beat in group_beats for speaker in required_voice_speakers(
+            _source_dialogue_lines((beat,)), speaker=h3_speaker_text(beat), dialogue=h3_dialogue_text(beat))]
+        result = speaker_voice_preflight(speakers, store.get_all_characters())
+    finally:
+        await store.close()
+    return {"ok": True, "data": result}
+
+
 async def _resolve_groups(project: str, episode: int, user: dict, *, rebuild: bool = False):
     resolved = await resolve_project_scope(project, user, required_role="editor")
     store = await make_sqlite_store_for_context(resolved.ctx)
@@ -784,6 +810,77 @@ def _normalize_video_reference_upload(content: bytes, content_type: str) -> byte
     return output.getvalue()
 
 
+def _serialize_video_quality(project: str, project_dir: Path, state: dict, manifest) -> None:
+    from novelvideo.shot_continuity.production_review import quality_status
+    from novelvideo.shot_continuity.quality_workflow import issue_id
+    reviews = manifest.cinematography_reviews
+    state['quality_status'] = quality_status(reviews,
+        [entry.segment.segment_id for entry in manifest.entries])
+    state['quality_reviews'] = []
+    state['quality_dispositions'] = list(manifest.quality_dispositions)
+    for review in reviews:
+        if review.get('phase') != 'generated':
+            continue
+        safe = _sanitize_manifest_snapshot({key: review[key] for key in (
+            'status', 'review_id', 'policy_version', 'review_kind', 'source_segment_ids',
+            'issues', 'evidence', 'technical_error', 'media_fingerprint', 'attempt_id', 'checked_at') if key in review})
+        safe['issues'] = [{**issue, 'issue_id': issue_id(issue)} for issue in safe.get('issues', [])]
+        safe['frame_assets'] = {label: _asset_url(project, project_dir, str(path))
+            for label, path in (review.get('frame_assets') or {}).items()}
+        state['quality_reviews'].append(safe)
+
+
+class VideoQualityCheckRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    revision: int = Field(ge=0)
+
+
+class VideoQualityDispositionRequest(VideoQualityCheckRequest):
+    review_id: str = Field(pattern=r'^[a-f0-9]{64}$')
+    issue_id: str = Field(pattern=r'^[a-f0-9]{64}$')
+    media_fingerprint: str = Field(pattern=r'^[a-f0-9]{64}$')
+    reason: str = Field(min_length=1, max_length=2000)
+    decision: Literal['acknowledged', 'needs_repair', 'dismissed']
+
+
+@router.post('/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/video/quality-check',
+             status_code=status.HTTP_202_ACCEPTED)
+async def check_existing_group_video(project: str, episode: int, group_id: str,
+        request: VideoQualityCheckRequest, user: dict = Depends(get_api_user)):
+    from novelvideo.shot_continuity.quality_workflow import load_snapshot, digest, media_fingerprint
+    resolved, _, _ = await _resolve_groups(project, episode, user)
+    def prepare_snapshot():
+        with narrative_group_sidecar_guard(resolved.project_dir, episode):
+            raw, _, manifest = load_snapshot(resolved.project_dir, episode, group_id, request.revision)
+            fingerprint = media_fingerprint(manifest, resolved.project_dir)
+            return digest(raw), fingerprint
+    try:
+        manifest_digest, fingerprint = await asyncio.to_thread(prepare_snapshot)
+    except (ValueError, RuntimeError, OSError, KeyError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    scope = f'group_{group_id}_video_quality_r{request.revision}_{uuid.uuid4().hex[:12]}'
+    queued = await get_task_backend().enqueue_project_task(resolved.ctx,
+        task_type='narrative_group_video_quality', queue_kind='default', episode=episode, scope=scope,
+        payload={'episode': episode, 'group_id': group_id, 'revision': request.revision,
+                 'manifest_digest': manifest_digest, 'media_fingerprint': fingerprint})
+    return {'ok': True, 'data': {'task_id': queued.task_state.task_id, 'scope': scope,
+        'backend': queued.backend, 'queue': queued.queue, 'status': 'pending'}}
+
+
+@router.post('/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/video/quality-disposition')
+async def save_group_video_quality_disposition(project: str, episode: int, group_id: str,
+        request: VideoQualityDispositionRequest, user: dict = Depends(get_api_user)):
+    from novelvideo.shot_continuity.quality_workflow import record_disposition
+    resolved, _, _ = await _resolve_groups(project, episode, user)
+    try:
+        row = await asyncio.to_thread(record_disposition, resolved.project_dir, episode, group_id,
+            request.revision, **request.model_dump(exclude={'revision'}),
+            actor=str(user.get('id') or user.get('user_id') or user.get('username') or 'authenticated-user'))
+    except (ValueError, RuntimeError, OSError, KeyError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {'ok': True, 'data': row}
+
+
 def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup]) -> list[dict]:
     result = []
     for group in groups:
@@ -805,12 +902,15 @@ def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup]) ->
         for stage_name, state in item["stages"].items():
             state.pop("revision_history", None)
             if stage_name == "video":
+                state['quality_status'] = 'generated'
+                state['quality_reviews'] = []
                 manifest_name = str(state.get("manifest_asset") or "").strip()
                 if manifest_name:
                     try:
                         from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
 
                         manifest = load_h3_director_manifest(manifest_name)
+                        _serialize_video_quality(project, project_dir, state, manifest)
                         state["video_spans"] = [
                             {
                                 "span_index": index,
@@ -2113,20 +2213,35 @@ async def _enqueue_group_action(
             from novelvideo.narrative_groups.storyboard_sources import StoryboardSplitInput
 
             try:
-                snapshot = StoryboardSplitInput.model_validate(
-                    source_group.stages["render"].provider_parameters.get("storyboard_split_input"))
-                if snapshot.shot_ids != source_group.production_beat_ids:
-                    raise ValueError("split retry shot mapping changed")
-                storyboard_payload.update(snapshot.restore(Path(resolved.output_dir),
-                    project_id=str(resolved.ctx.project_id), episode=episode, group_id=group_id))
-                storyboard_payload["storyboard_split_input"] = snapshot.model_dump(mode="json")
+                if len(source_group.generation_batches) > 1:
+                    saved_inputs = source_group.stages["render"].provider_parameters.get("storyboard_split_inputs", {})
+                    packs = []
+                    for batch in source_group.generation_batches:
+                        snapshot = StoryboardSplitInput.model_validate(saved_inputs.get(batch["id"]))
+                        if snapshot.shot_ids != tuple(batch["shot_ids"]):
+                            raise ValueError("split retry shot mapping changed")
+                        snapshot.restore(Path(resolved.output_dir), project_id=str(resolved.ctx.project_id),
+                                         episode=episode, group_id=group_id)
+                        packs.append({**batch, "storyboard_split_input": snapshot.model_dump(mode="json")})
+                    storyboard_payload["generation_batches"] = packs
+                else:
+                    snapshot = StoryboardSplitInput.model_validate(
+                        source_group.stages["render"].provider_parameters.get("storyboard_split_input"))
+                    if snapshot.shot_ids != source_group.production_beat_ids:
+                        raise ValueError("split retry shot mapping changed")
+                    storyboard_payload.update(snapshot.restore(Path(resolved.output_dir),
+                        project_id=str(resolved.ctx.project_id), episode=episode, group_id=group_id))
+                    storyboard_payload["storyboard_split_input"] = snapshot.model_dump(mode="json")
             except (ValueError, OSError) as exc:
                 raise HTTPException(status_code=422, detail={"code": "STORYBOARD_SPLIT_INPUT_INVALID"}) from exc
         elif source_group.generation_batches:
             batches = source_group.generation_batches
-            if len(batches) != 1 or tuple(batches[0].get("shot_ids") or ()) != source_group.production_beat_ids:
+            if tuple(shot for batch in batches for shot in batch.get("shot_ids", ())) != source_group.production_beat_ids:
                 raise HTTPException(status_code=422, detail={"code": "STORYBOARD_BATCH_SCOPE_UNSUPPORTED"})
-            storyboard_payload["batch_id"] = batches[0]["id"]
+            if len(batches) == 1:
+                storyboard_payload["batch_id"] = batches[0]["id"]
+            else:
+                storyboard_payload["generation_batches"] = list(batches)
     reference_snapshot = None
     if not split_only:
         if request.reference_resolution is not None:
@@ -2332,6 +2447,9 @@ async def _enqueue_group_video(
     source_group = next((item for item in groups if item.id == group_id), None)
     if source_group is None:
         raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found")
+    capability_error = source_group.stages["video"].provider_parameters.get("capability_conflict")
+    if capability_error:
+        raise HTTPException(status_code=422, detail={"code": "capability_conflict", "message": capability_error})
     if source_group.stages["render"].needs_regeneration:
         raise HTTPException(status_code=409, detail={
             "code": "STORYBOARD_REFERENCE_STALE",

@@ -41,6 +41,29 @@ export interface CharacterVoiceFacts {
   conflicts?: string[];
 }
 
+export interface CharacterVoiceRecommendation {
+  design?: CharacterVoiceDesign | null;
+  design_context?: Record<string, unknown>;
+  voice_description: string;
+  audition_text: string;
+  audition_source: "dialogue" | "example";
+  rationale: string;
+  voice_facts: CharacterVoiceFacts;
+  source_digest: string;
+}
+
+export interface CharacterVoiceDesign {
+  voice_spec: {
+    age_impression?: string; pitch?: string; texture?: string; resonance?: string;
+    articulation?: string; pace?: string; accent?: string; emotional_baseline?: string;
+    negative_constraints?: string[];
+  };
+  performance: { intention?: string; emotion?: string; emphasis?: string; pauses?: string; delivery_scale?: string };
+  rationale?: string;
+  audition_text?: string;
+  audition_source?: string;
+}
+
 export interface CharacterVoiceCandidate {
   candidate_id: string;
   slot: string;
@@ -49,7 +72,8 @@ export interface CharacterVoiceCandidate {
   path?: string;
   url?: string;
   sha256?: string;
-  payload?: { voice_description?: string; voice_spec?: Record<string, unknown>; effective_language?: string };
+  created_at?: string;
+  payload?: { voice_description?: string; voice_spec?: Record<string, unknown>; effective_language?: string; design?: CharacterVoiceDesign | null; audition_text?: string };
   report?: { status?: string; reason?: string; technical?: unknown };
 }
 

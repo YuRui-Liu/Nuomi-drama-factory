@@ -125,7 +125,9 @@ def _merge_groups(
     if right_index != left_index + 1:
         raise _edit_error("groups_not_adjacent", "Only adjacent groups can be merged.")
     left, right = groups[left_index], groups[right_index]
-    if len(left.shots) + len(right.shots) > 4:
+    if left.creative_contract_version != right.creative_contract_version:
+        raise _edit_error("creative_contract_version_mismatch", "Merged groups must use the same creative contract.")
+    if left.creative_contract_version is None and len(left.shots) + len(right.shots) > 4:
         raise _edit_error("too_many_shots", "Merged group cannot contain more than 4 shots.")
     merged = left.model_copy(
         update={
@@ -152,7 +154,9 @@ def _move_shot(
     target_length = len(target_group.shots) - int(source_group_index == target_group_index)
     if command.index > target_length:
         raise _edit_error("invalid_index", "Target shot index is out of range.")
-    if source_group_index != target_group_index and len(target_group.shots) >= 4:
+    if source_group.creative_contract_version != target_group.creative_contract_version:
+        raise _edit_error("creative_contract_version_mismatch", "Moving shots requires matching creative contracts.")
+    if source_group_index != target_group_index and target_group.creative_contract_version is None and len(target_group.shots) >= 4:
         raise _edit_error("too_many_shots", "Target group cannot contain more than 4 shots.")
 
     mutable = list(groups)

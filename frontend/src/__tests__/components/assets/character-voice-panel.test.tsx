@@ -4,11 +4,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 import i18next from "i18next";
-import { http, HttpResponse } from "msw";
-import { setupServer } from "msw/node";
+import { delay, http, HttpResponse } from "msw";
+import { server } from "@/__mocks__/msw/server";
 import ky from "ky";
-import type { ReactNode } from "react";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
+import { useState, type ReactNode } from "react";
+import { beforeEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/hooks/use-task-controller", () => ({
   useTaskController: () => ({ started: false, start: vi.fn(), stop: vi.fn(), stopping: false, stream: {}, logs: [] }),
@@ -21,7 +22,8 @@ vi.mock("@/lib/api", () => ({
 import { CharacterVoicePanel } from "@/components/assets/character-voice-panel";
 import type { Character } from "@/types/character";
 
-const server = setupServer();
+beforeEach(() => server.use(http.post("http://localhost:3000/api/v1/projects/:project/characters/:name/voice-recommendation", () =>
+  HttpResponse.json({ ok: false, error: "推荐服务暂不可用" }, { status: 503 }))));
 const i18n = i18next.createInstance();
 
 beforeAll(async () => {
@@ -67,13 +69,10 @@ beforeAll(async () => {
     },
     interpolation: { escapeValue: false },
   });
-  server.listen();
 });
-afterEach(() => server.resetHandlers());
-afterAll(() => server.close());
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const [qc] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }));
   return (
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={qc}>{children}</QueryClientProvider>
@@ -89,12 +88,134 @@ function renderPanel(character: Character) {
 }
 
 describe("CharacterVoicePanel", () => {
+  it("shows the backend validation reason when audition submission returns 422", async () => {
+    const errorToast = vi.spyOn(toast, "error");
+    emptySamples({ voice_facts: { vocalization_mode: "dialogue" } });
+    server.use(http.post("*/voice-samples/default/design", () =>
+      HttpResponse.json({ ok: false, error: "声音年龄与所选槽位冲突" }, { status: 422 })));
+    renderPanel({ name: "秦" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("自定义声音描述"), { target: { value: "老年男声" } });
+    fireEvent.change(screen.getByLabelText("试听文本"), { target: { value: "请跟我来。" } });
+    fireEvent.click(screen.getByRole("button", { name: "一键生成声音" }));
+    await waitFor(() => expect(errorToast).toHaveBeenCalledWith("声音年龄与所选槽位冲突"));
+    errorToast.mockRestore();
+  });
+
+  it("clears stale automatic suggestions after a same-character role change fails to refresh", async () => {
+    emptySamples({ voice_facts: { vocalization_mode: "dialogue" } });
+    let calls = 0;
+    server.use(http.post("*/voice-recommendation", () => {
+      calls += 1;
+      return calls === 1 ? HttpResponse.json({ ok: true, data: {
+        voice_description: "旧身份声音", audition_text: "旧身份台词", audition_source: "dialogue",
+        rationale: "原文", source_digest: "old", voice_facts: { vocalization_mode: "dialogue" },
+      } }) : HttpResponse.json({ ok: false, error: "不可用" }, { status: 503 });
+    }));
+    const view = renderPanel({ name: "秦", role: "学生" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
+    fireEvent.click(await screen.findByRole("button", { name: "一键生成声音" }));
+    await screen.findByText("旧身份声音");
+    view.rerender(<CharacterVoicePanel project="demo" character={{ name: "秦", role: "教师" }} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
+    expect(calls).toBe(1);
+    expect(screen.getByLabelText("自定义声音描述")).toHaveValue("");
+    expect(screen.getByLabelText("试听文本")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled();
+  });
+
+  it("allows one-step speaking confirmation and keeps advanced settings collapsed", async () => {
+    emptySamples();
+    let saved: unknown;
+    server.use(http.patch("http://localhost:3000/api/v1/projects/demo/characters/%E7%A7%A6", async ({ request }) => {
+      saved = await request.json(); return HttpResponse.json({ ok: true });
+    }));
+    renderPanel({ name: "秦" });
+    const confirm = await screen.findByRole("button", { name: "需要人声对白" });
+    expect(screen.getByText("更多设置").closest("details")).not.toHaveAttribute("open");
+    fireEvent.change(screen.getByLabelText("自定义声音描述"), { target: { value: "温和清晰" } });
+    fireEvent.change(screen.getByLabelText("试听文本"), { target: { value: "请跟我来。" } });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(saved).toMatchObject({ voice_facts: { vocalization_mode: "dialogue", provenance: "human" } }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
+  });
+
+  it("requires a filled recommendation or manual fallback after recommendation failure", async () => {
+    emptySamples({ voice_facts: { vocalization_mode: "dialogue" } });
+    renderPanel({ name: "秦" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
+    const generate = screen.getByRole("button", { name: "一键生成声音" });
+    expect(generate).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("自定义声音描述"), { target: { value: "温和清晰" } });
+    expect(generate).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("试听文本"), { target: { value: "请跟我来。" } });
+    expect(generate).toBeEnabled();
+  });
+
+  it("prepares an AI recommendation and audition without starting audio generation", async () => {
+    emptySamples({ voice_facts: { vocalization_mode: "dialogue" } });
+    let generated: unknown;
+    server.use(
+      http.post("*/voice-recommendation", () => HttpResponse.json({ ok: true, data: {
+        voice_description: "沉稳、克制，语速适中", audition_text: "先别急，把事情说清楚。",
+        audition_source: "dialogue", rationale: "依据角色处理冲突时的对白", source_digest: "s1",
+        voice_facts: { vocalization_mode: "dialogue" },
+      } })),
+      http.post("*/voice-samples/default/design", async ({ request }) => {
+        generated = await request.json(); return HttpResponse.json({ ok: true, scope: "voice" });
+      }),
+    );
+    renderPanel({ name: "秦" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(generated).toBeUndefined();
+    fireEvent.click(screen.getByRole("button", { name: "一键生成声音" }));
+    expect(await screen.findByText("沉稳、克制，语速适中")).toBeVisible();
+    expect(screen.getByText("角色原文对白")).toBeVisible();
+    await waitFor(() => expect(generated).toMatchObject({
+      voice_description: "沉稳、克制，语速适中", audition_text: "先别急，把事情说清楚。",
+    }));
+  });
+
+  it("does not overwrite user edits when a slow recommendation arrives", async () => {
+    emptySamples({ voice_facts: { vocalization_mode: "dialogue" } });
+    let submitted: unknown;
+    server.use(http.post("*/voice-samples/default/design", async ({ request }) => {
+      submitted = await request.json(); return HttpResponse.json({ ok: true, scope: "default" });
+    }));
+    server.use(http.post("*/voice-recommendation", async () => {
+      await delay(100);
+      return HttpResponse.json({ ok: true, data: { voice_description: "AI 建议", audition_text: "例句",
+        audition_source: "example", rationale: "创作建议", source_digest: "s1", voice_facts: { vocalization_mode: "dialogue" } } });
+    }));
+    renderPanel({ name: "秦" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "一键生成声音" }));
+    fireEvent.change(screen.getByLabelText("自定义声音描述"), { target: { value: "用户的声线" } });
+    fireEvent.change(screen.getByLabelText("试听文本"), { target: { value: "用户的台词" } });
+    await screen.findByText("AI 创作建议，可调整，不改变角色原文事实。");
+    expect(screen.getByLabelText("自定义声音描述")).toHaveValue("用户的声线");
+    expect(screen.getByLabelText("试听文本")).toHaveValue("用户的台词");
+    await waitFor(() => expect(submitted).toMatchObject({ voice_description: "用户的声线", audition_text: "用户的台词" }));
+  });
   it("keeps the current voice before generation and facts, with candidates adopted locally", async () => {
+    let recommendations = 0;
+    let audioRequests = 0;
+    server.use(
+      http.post("*/voice-recommendation", () => { recommendations += 1; return HttpResponse.json({ ok: false, error: "unavailable" }); }),
+      http.post("*/voice-samples/default/design", () => { audioRequests += 1; return HttpResponse.json({ ok: true }); }),
+    );
     emptySamples({ voice_facts: { vocalization_mode: "dialogue", age_group: "youth" }, candidates: [{ candidate_id: "c1", slot: "default", status: "qc_unavailable", url: "/candidate.wav" }] });
     const { container } = renderPanel({ name: "秦" });
     await screen.findByRole("button", { name: "采用为角色声音" });
+    expect(screen.queryByRole("button", { name: "一键生成声音" })).not.toBeInTheDocument();
+    expect(recommendations).toBe(0);
+    expect(audioRequests).toBe(0);
+    fireEvent.click(screen.getByRole("button", { name: "设计新的声音" }));
+    expect(recommendations).toBe(0);
+    expect(audioRequests).toBe(0);
     const current = screen.getByRole("heading", { name: "当前声音" });
-    const generation = screen.getByRole("heading", { name: "生成声音" });
+    const generation = screen.getByRole("heading", { name: "为这个角色推荐的声音" });
     expect(current.compareDocumentPosition(generation) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(generation.compareDocumentPosition(screen.getByText("声音设定与依据")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(container.querySelector('[data-voice-slot]')).toHaveAttribute("data-voice-slot", "default");
@@ -165,8 +286,9 @@ describe("CharacterVoicePanel", () => {
     fireEvent.change(screen.getByLabelText("自定义声音描述"), { target: { value: "低沉沙哑" } });
     fireEvent.change(screen.getByLabelText("试听文本"), { target: { value: "你好。" } });
     await screen.findByText("青年（默认 · 必填）");
-    const buttons = screen.getAllByRole("button", { name: "AI 设计音色" });
-    fireEvent.click(buttons[0]);
+    const generate = screen.getByRole("button", { name: "一键生成声音" });
+    await waitFor(() => expect(generate).toBeEnabled());
+    fireEvent.click(generate);
     await waitFor(() => expect(body).toEqual({ voice_spec: { age_impression: "老年", texture: "低沉沙哑" }, audition_text: "你好。" }));
     expect(screen.getByLabelText("事实年龄")).toHaveValue("youth");
   });
@@ -184,9 +306,9 @@ describe("CharacterVoicePanel", () => {
   it("requires explicit facts before generating a legacy character", async () => {
     emptySamples();
     renderPanel({ name: "秦" });
-    expect(await screen.findByText("请先核对发声事实，再生成人声候选。" )).toBeInTheDocument();
+    expect(await screen.findByText("资料中尚未确认：这个角色需要人声对白吗？")).toBeInTheDocument();
     expect(screen.getByLabelText("发声模式")).toHaveValue("unknown");
-    for (const button of await screen.findAllByRole("button", { name: "AI 设计音色" })) expect(button).toBeDisabled();
+    expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled();
   });
 
   it.each(["nonverbal", "none"])("hides human generation for %s", async (mode) => {
@@ -246,7 +368,7 @@ describe("CharacterVoicePanel", () => {
     emptySamples({ voice_facts: { vocalization_mode: "dialogue", conflicts: ["age_group: child vs elder"] } });
     renderPanel({ name: "秦" });
     expect(await screen.findByRole("alert")).toHaveTextContent("age_group: child vs elder");
-    expect(screen.getByRole("button", { name: "AI 设计音色" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "一键生成声音" })).toBeDisabled();
   });
 
   it("uses source voice age instead of legacy appearance age", async () => {
@@ -334,7 +456,7 @@ describe("CharacterVoicePanel", () => {
     fireEvent.click(screen.getByText("不同年龄的声音（可选）"));
     expect(screen.getAllByRole("button", { name: "上传声音样本" })).toHaveLength(4);
     expect(screen.getAllByRole("button", { name: "录音" })).toHaveLength(4);
-    expect(screen.getAllByRole("button", { name: "AI 设计音色" })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "设计新的声音" })).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "裁剪到 3-5 秒" })).toHaveLength(2);
     expect(screen.getAllByRole("button", { name: "清除" })).toHaveLength(2);
 
@@ -377,7 +499,7 @@ describe("CharacterVoicePanel", () => {
     renderPanel({ name: "秦" });
 
     await waitFor(() =>
-      expect(screen.getByText("未配置 → 角色将无法出声")).toBeInTheDocument(),
+      expect(screen.getByText("尚未设置声音，试听满意后即可采用")).toBeInTheDocument(),
     );
   });
 

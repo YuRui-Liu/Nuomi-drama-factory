@@ -1,5 +1,5 @@
 import { apiCall } from "@/api/client";
-import type { PropExtractionRun, AssetExtractionRun } from "./types";
+import type { PropExtractionRun, AssetExtractionRun, CraftReport, CraftMemoryEntry } from "./types";
 import type { NarrativeEntity, NarrativeAsset, NarrativeAssetType, EntityInput, ScriptDocument, ScriptDocumentKind, ScriptRevision, GenerationRun, GenerationQueued, GenerationCandidate, ScriptProposal, RewriteJob, ConsistencyRun, ConsistencyIssue, HandoffPrepareRequest, ScriptHandoff } from "./types";
 
 const root = (project: string) => `projects/${encodeURIComponent(project)}/script-creation`;
@@ -7,6 +7,11 @@ const docPath = (project: string, id: string) => `${root(project)}/documents/${e
 const mutation = () => crypto.randomUUID();
 
 export const scriptCreationApi = {
+  listCraftMemory: (project: string, kind?: ScriptDocumentKind) => apiCall<CraftMemoryEntry[]>(`${root(project)}/craft-memory${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`),
+  dismissCraftMemory: (project: string, id: string, reason: string) => apiCall<CraftMemoryEntry>(`${root(project)}/craft-memory/${encodeURIComponent(id)}/dismiss`, { method: "post", retry: { limit: 0 }, json: { reason } }),
+  getGenerationCraft: (project: string, id: string) => apiCall<CraftReport>(`${root(project)}/generations/${encodeURIComponent(id)}/craft`),
+  getRewriteCraft: (project: string, id: string) => apiCall<CraftReport>(`${root(project)}/rewrites/${encodeURIComponent(id)}/craft`),
+  retryRewrite: (project: string, id: string) => apiCall<RewriteJob>(`${root(project)}/rewrites/${encodeURIComponent(id)}/retry`, { method: "post", retry: { limit: 0 } }),
   revalidateAssetExtraction: (project: string, id: string) =>
     apiCall<AssetExtractionRun>(`${root(project)}/asset-extractions/${encodeURIComponent(id)}/revalidate`, { method: "post", retry: { limit: 0 } }),
   listAssetExtractions: (project: string, assetType: NarrativeAssetType, documentId: string) => apiCall<AssetExtractionRun[]>(`${root(project)}/asset-extractions?asset_type=${assetType}&document_id=${encodeURIComponent(documentId)}`),

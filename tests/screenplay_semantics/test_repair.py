@@ -278,3 +278,43 @@ async def test_repair_recovers_legacy_fields_before_invoking_runtime(tmp_path):
     assert child.scenes[0].characters == ("阿远",)
     assert [(b.id, b.text, b.source_range) for b in child.scenes[0].blocks] == [(b.id, b.text, b.source_range) for b in legacy.blocks]
     assert base.scenes[0].characters == ()
+
+
+@pytest.mark.asyncio
+async def test_rejected_candidate_and_exact_issues_are_supplied_to_next_round(tmp_path):
+    base = _base_revision(failed_scene_ids=("scene-1",))
+    rejected = _draft(10, cover_all=False, fact="门完全打开")
+    seen = []
+
+    async def invoke(scene, prompt):
+        payload = json.loads(prompt)
+        seen.append(payload)
+        if payload["repair_round"] == 1:
+            return SceneRepairDraft(scene_id=scene.id, beats=(rejected,))
+        previous = payload["previous_attempt"]
+        assert previous["beats"] == [rejected.model_dump(mode="json")]
+        assert {issue["code"] for issue in previous["validation_issues"]} == {
+            "unsupported_script_fact", "uncovered_story_block",
+        }
+        assert previous["validation_issues"][0]["location"] == "beats.0.script_facts"
+        assert payload["current_beats"][0]["script_facts"] == ["阿远推门"]
+        return SceneRepairDraft(scene_id=scene.id, beats=(_draft(10, fact="门完全打开"),))
+
+    child = await ScreenplaySemanticRepairService(CountingStore(tmp_path), invoke=invoke).repair(base)
+    assert len(seen) == 2
+    assert child.validation_report.passed
+    assert child.beats_for("scene-1")[0].script_facts == ("门完全打开",)
+
+
+def test_repair_prompt_explains_verbatim_evidence_and_coverage_contract():
+    from novelvideo.screenplay_semantics.repair_prompts import build_scene_repair_prompt
+
+    base = _base_revision()
+    prompt = json.loads(build_scene_repair_prompt(
+        base.scenes[0], base.beats_for("scene-1"), base.validation_report.issues,
+        repair_round=1,
+    ))
+    rules = "\n".join(prompt["validation_rules"])
+    assert "script_facts" in rules and "逐字" in rules
+    assert "source_ranges" in rules and "覆盖" in rules
+    assert "dialogue_source_ids" in rules and "dialogue" in rules

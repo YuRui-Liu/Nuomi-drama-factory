@@ -8,15 +8,15 @@ import tempfile
 
 from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
 from novelvideo.media_capabilities.runtime.configuration import load_runninghub_runtime_configuration
-from novelvideo.media_capabilities.music.runninghub_acestep import DEFAULT_WORKFLOW_ID, MusicRequest, compile_request, validate_contract
+from novelvideo.media_capabilities.music.runninghub_acestep import MusicRequest, compile_request, validate_contract
 from .media import persist_media
 
 
 async def generation_configuration():
-    workflow = os.getenv('NUOMI_MUSIC_WORKFLOW_ID', DEFAULT_WORKFLOW_ID)
+    runtime = load_runninghub_runtime_configuration(get_media_capability_store(), get_media_credential_resolver())
+    workflow = os.getenv('NUOMI_MUSIC_WORKFLOW_ID', runtime.workflows.music_acestep)
     if not workflow.isdecimal():
         raise ValueError('配乐工作流 ID 必须为数字字符串')
-    runtime = load_runninghub_runtime_configuration(get_media_capability_store(), get_media_credential_resolver())
     async with runtime.create_client() as client:
         graph = await client.workflow_json(workflow)
     validate_contract(graph)
@@ -43,8 +43,8 @@ async def advance_generation(store, project, job_id, client, root):
     snapshot = await client.query(remote)
     if snapshot.status == 'failed':
         return store.update_job(project, job_id, status='failed', error='RunningHub 配乐生成失败，请查看远端任务', usage=snapshot.usage)
-    if snapshot.status != 'completed':
-        return store.update_job(project, job_id, status='running', usage=snapshot.usage)
+    if snapshot.status != 'succeeded':
+        return store.update_job(project, job_id, status='running', error=None, usage=snapshot.usage)
     outputs = [item for item in snapshot.results if item.node_id in {'107', None} and (item.output_type or '').lower() not in {'image','video'}]
     if not outputs:
         return store.update_job(project, job_id, status='failed', error='工作流未返回预期的音频输出')
@@ -56,4 +56,4 @@ async def advance_generation(store, project, job_id, client, root):
         info = persist_media(path, root, job['input']['owner'], 'audio')
         asset = store.add_asset(job['input']['owner'], path=info['path'], sha256=info['sha256'], duration_ms=info['durationMs'], name='配乐候选 '+job_id[:6], library=False, origin='generated', description=job['input']['request']['tags'])
     store.reference(job['input']['owner'], project, asset['versionId'])
-    return store.update_job(project, job_id, status='completed', candidate=asset, usage=snapshot.usage)
+    return store.update_job(project, job_id, status='completed', error=None, candidate=asset, usage=snapshot.usage)

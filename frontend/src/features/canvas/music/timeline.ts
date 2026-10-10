@@ -20,7 +20,7 @@ function validate(p: MusicPlan) {
 function sourceAt(c: MusicClip, delta: number) { if (!c.loop)
     return c.sourceInMs + delta; return c.loop.startMs + (c.sourceInMs - c.loop.startMs + delta) % (c.loop.endMs - c.loop.startMs); }
 function portion(c: MusicClip, a: number, b: number): MusicClip { const length = b - a; const fadeIn = a === c.startMs ? Math.min(c.fadeInMs, length) : 0; return { ...c, id: id(), startMs: a, sourceInMs: sourceAt(c, a - c.startMs), lengthMs: length, fadeInMs: fadeIn, fadeOutMs: b === c.startMs + c.lengthMs ? Math.min(c.fadeOutMs, length - fadeIn) : 0 }; }
-export function insertClip(plan: MusicPlan, trackId: string, clip: MusicClip, mode: 'ask' | 'replace' | 'layer'): MusicPlan {
+export function insertClip(plan: MusicPlan, trackId: string, clip: MusicClip, mode: 'ask' | 'replace' | 'layer', replacementRange?: [number, number]): MusicPlan {
     const p = structuredClone(plan);
     let t = p.tracks.find(t => t.id === trackId);
     if (!t)
@@ -29,7 +29,9 @@ export function insertClip(plan: MusicPlan, trackId: string, clip: MusicClip, mo
         t = newTrack('叠加配乐');
         p.tracks.push(t);
     }
-    const a = clip.startMs, b = a + clip.lengthMs;
+    const [a, b] = replacementRange || [clip.startMs, clip.startMs + clip.lengthMs];
+    if (mode === 'ask' && t.clips.some(c => c.startMs < b && c.startMs + c.lengthMs > a))
+        throw Error('当前选区已有配乐');
     if (mode === 'replace')
         t.clips = t.clips.flatMap(c => { const end = c.startMs + c.lengthMs; if (end <= a || c.startMs >= b)
             return [c]; return [...(c.startMs < a ? [portion(c, c.startMs, a)] : []), ...(end > b ? [portion(c, b, end)] : [])]; });

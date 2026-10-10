@@ -1,0 +1,13 @@
+{
+  "version": "nuomi-craft-1.0",
+  "upstream_version": "script-master-v3.1",
+  "sources": [
+    {"file": "script-master/references/framework.md", "sha256": "340e246a2d4eee265862d930fe7ae17a25330c007494aefb075ca73bbc15569b", "chapters": ["1.4 语言风格", "2.8 台词机制蒸馏库检索", "Step 1 核心信息收集"], "purpose": "人物与架构、风格权威"},
+    {"file": "script-master/references/writing.md", "sha256": "ec876448cc60769a25d98208106af5e611ae135755b815eff5a36a586ee80e41", "chapters": ["4B.4.1 金手指三道锁", "4B.9 角色驱动写作法", "4B.13 信息边界校验"], "purpose": "场景行动、代价、信息边界"},
+    {"file": "script-master/references/doctor.md", "sha256": "4f86a53afd3f526fdc536fdb623c184e5da172b0b03cb8c2c0474e2562dffaae", "chapters": ["2.5 编剧内核诊断", "2.6 信息边界会诊维度", "2.11 规则一致性诊断", "2.12 风格符合度诊断"], "purpose": "结构审查与连续性"},
+    {"file": "script-master/references/dialogue.md", "sha256": "77b51b9e4956843b036cec0b31634a2bccce3377c86a1340885de0706c4acea2", "chapters": ["角色辨识度", "信息效率", "信息越界检查", "三遍过滤"], "purpose": "逐场对白诊断"},
+    {"file": "script-master/references/writing-craft-library.md", "sha256": "31e15ee88f0ce7ea20789bb277e02b18d8a3416d6c9b39bb6ba38296a5a302c6", "chapters": ["使用规则", "区1 场景结构样本", "区3 信息编织", "区4 情绪设计"], "purpose": "场景功能与情绪因果"},
+    {"file": "script-master/references/lines-library.md", "sha256": "e8937a5c10d2761580d99183d786be12bc2fd2a4cb69bc66577697201400d7ae", "chapters": ["使用规则", "区3 角色语言指纹", "区4 潜台词设计", "区7 AI 台词通病急救"], "purpose": "声音、潜台词及反机械改写"},
+    {"file": "script-master/references/pattern-library.md", "sha256": "5011f3498ed6931c3c6102a314ad4d539de94d8fe7345635edc9deab762afe2d", "chapters": ["使用规则", "规律维度"], "purpose": "按题材取舍节奏与回报"}
+  ]
+}

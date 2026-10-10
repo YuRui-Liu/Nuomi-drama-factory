@@ -1033,7 +1033,7 @@ register_project_task_runner("freezone_video_upscale", run_freezone_video_upscal
 register_project_task_runner("freezone_audio_separate", run_freezone_audio_separate)
 register_project_task_runner("freezone_video_compose", run_freezone_video_compose)
 register_project_task_runner("freezone_text_translate", run_freezone_text_translate)
-register_project_task_runner("freezone_story_script", run_freezone_story_script)
+register_project_task_runner("freezone_story_script", run_freezone_story_script, text_task_role="script_creation")
 register_project_task_runner(
     "freezone_image_reverse_prompt",
     run_freezone_image_reverse_prompt,

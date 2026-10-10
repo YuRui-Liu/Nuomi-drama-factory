@@ -1,4 +1,5 @@
 import pytest
+from tests.craft_fakes import craft_reply
 from novelvideo.script_creation.generation import GenerationService, GenerationConflict, GenerationValidation
 from novelvideo.script_creation.store import DocumentStore
 
@@ -16,21 +17,21 @@ class Runtime:
         self.calls.append(prompt)
         if len(self.calls) == self.fail_at:
             raise RuntimeError('model unavailable')
-        return output_type(markdown=f'# 生成 {len(self.calls)}\n\n人物做出选择，冲突随之升级。')
+        return output_type.model_validate(craft_reply(prompt, f'# 生成 {len(self.calls)}\n\n人物做出选择，冲突随之升级。'))
 
 async def test_series_bootstrap_resumes_after_failure_without_redoing_completed_steps(store):
     brief = await store.create(kind='brief', title='简报', markdown='都市悬疑，三集', client_mutation_id='brief')
     service = GenerationService(store)
     run = await service.start(mode='bootstrap', brief_id=brief.id, script_mode='series', episode_count=3, instruction='节奏紧凑', mutation_id='start')
     with pytest.raises(RuntimeError, match='model unavailable'):
-        await service.execute(run['id'], runtime=Runtime(fail_at=3), task_id='task-a')
+        await service.execute(run['id'], runtime=Runtime(fail_at=5), task_id='task-a')
     saved = await service.get(run['id'])
     assert [step['status'] for step in saved['steps']][:3] == ['completed', 'completed', 'failed']
     runtime = Runtime()
     completed = await service.execute(run['id'], runtime=runtime, task_id='task-b')
     assert completed['status'] == 'completed'
-    assert len(runtime.calls) == 4
-    assert [doc.kind for doc in await store.list()] == ['brief', 'outline', 'episode_synopsis', 'people', 'scenes', 'props', 'episode_script']
+    assert len(runtime.calls) == 9
+    assert [doc.kind for doc in await store.list()] == ['brief', 'outline', 'people', 'scenes', 'props', 'episode_synopsis', 'episode_script']
 
 async def test_single_bootstrap_has_no_synopsis(store):
     brief = await store.create(kind='brief', title='简报', markdown='独立短片', client_mutation_id='brief')
@@ -65,6 +66,21 @@ async def test_continue_uses_prior_script_and_existing_target_becomes_candidate(
     assert '码头找到钥匙' in runtime.calls[0]
     assert finished['steps'][0]['output']['kind'] == 'candidate'
     assert (await store.get(target.id)).revision.markdown == target.revision.markdown
+
+async def test_first_episode_can_use_saved_framework_without_regenerating_it(store):
+    brief = await store.create(kind='brief', title='简报', markdown='三集山海短剧', client_mutation_id='brief')
+    outline = await store.create(kind='outline', title='大纲', markdown='两人追踪异兽，发现泉水异常。', client_mutation_id='outline')
+    synopsis = await store.create(kind='episode_synopsis', title='梗概', markdown='## 第1集：夜痕\n\n两人在村道追踪异兽，因隐瞒线索错失追踪机会。', client_mutation_id='synopsis')
+    service = GenerationService(store)
+    run = await service.start(mode='continue', brief_id=brief.id, script_mode='series', episode_count=3,
+                              episode_number=1, instruction='让隐瞒产生后果', mutation_id='first-only')
+    assert [s['kind'] for s in run['steps']] == ['episode_script']
+    runtime = Runtime()
+    completed = await service.execute(run['id'], runtime=runtime, task_id='task')
+    assert completed['status'] == 'completed'
+    assert '让隐瞒产生后果' in runtime.calls[0]
+    assert (await store.get(outline.id)).current_revision_id == outline.current_revision_id
+    assert (await store.get(synopsis.id)).current_revision_id == synopsis.current_revision_id
 
 async def test_same_mutation_replays_and_new_payload_conflicts(store):
     brief = await store.create(kind='brief', title='简报', markdown='A', client_mutation_id='brief')

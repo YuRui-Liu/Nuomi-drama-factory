@@ -316,17 +316,24 @@ def _master_prompt(
   storyboard sketch, render, and video first-frame production.
 - It establishes the real environment identity, material language, color palette,
   lighting mood, and main visible fixtures.
-- Spatial coverage convention: master represents the front-facing 180-degree half
-  of the scene: front center + roughly half of the left side + roughly half of the right side.
+- Spatial coverage convention: master anchors the scene's front-side identity with
+  an oblique view of the main wall/backdrop and an adjacent side, revealing depth.
 - Advanced/freeform tools may derive other assets from it later, but this image itself
-  must remain a clean canonical front-facing wide scene reference."""
-    composition_geometry = """- MANDATORY: Show the scene from its canonical FRONT-FACING establishing angle.
-- The camera looks straight at the scene's primary entry / main wall / featured backdrop.
-- Eye-level horizon. No back view, no rear angle, no aerial, no fisheye, no VR.
-- Wide establishing framing with about 160-180 degrees of horizontal coverage:
-  front center plus visible left-side half and right-side half.
+  must remain a clean canonical three-quarter wide scene reference."""
+    composition_geometry = """- DEFAULT: Use a three-quarter establishing angle, approximately 45 degrees
+  horizontally relative to a straight-on view of the primary entry / main wall / featured backdrop.
+- Show the main feature and an adjacent side together, with visible floor/ground,
+  foreground-to-background depth, and clear spatial relationships between fixed objects.
+- Keep an eye-level horizon; the 45-degree angle is horizontal yaw, NOT downward pitch.
+- Use natural wide perspective, not a flat straight-on elevation or forced 180-degree coverage.
+- No back view, no rear angle, no aerial, no fisheye, no VR.
 - The room/street/stage reads as the "default cover shot" a director would pick to introduce this location.
 - Keep enough fixed objects visible to reconstruct the space later from this single image."""
+    if has_master_reference:
+        composition_geometry += """
+- REFERENCE CAMERA OVERRIDE: Preserve the attached base-scene master's camera position,
+  orientation, horizon, and framing for time/state variants; do not rotate an existing
+  reference merely to satisfy the default 45-degree angle."""
     time_of_day = str(getattr(scene, "time_of_day", "") or "").strip()
     variant_id = str(getattr(scene, "variant_id", "") or "").strip()
     base_scene_id = str(getattr(scene, "base_scene_id", "") or "").strip()
@@ -356,11 +363,11 @@ def _master_prompt(
   use a neutral, eye-level establishing exposure unless the text explicitly says the location IS literally outdoors at night."""
     front_anchor = f"""- ANCHOR THE FRONT WALL FROM THE TEXT:
   - Read the SCENE DESCRIPTION carefully for the keyword "正面" / "front side" / "主面" / "主入口" / "正前方".
-  - Whatever the text describes as the FRONT side (正面) IS the wall the camera looks at in this image.
+  - Whatever the text describes as the FRONT side (正面) remains the main wall/feature viewed obliquely in this image.
   - If the text says "正面是 X" (e.g. "正面是明档厨房"), then X is the main feature visible across the back of the frame.
   - Do NOT swap front and back: do not put 正面 content behind the camera and 背面 content in front.
   - The text labels "背面" / "后面" describe what is BEHIND the camera and must NOT appear in this image at all.
-  - The text labels "左侧" / "右侧" describe side walls/zones visible as partial left/right coverage.
+  - The text labels "左侧" / "右侧" describe fixed scene-side walls/zones; preserve their spatial identities when framing the oblique view.
 {time_instruction}"""
 
     return f"""Generate ONE master reference image for this scene.
@@ -377,7 +384,7 @@ COMPOSITION:
 {composition_geometry}
 
 HARD REQUIREMENTS:
-- FRONT-FACING HALF ONLY. Show front center plus left/right half-side coverage.
+- Anchor the front-side main feature and show an adjacent side with clear spatial depth.
 - Do not output the back side, rear angle, aerial, fisheye, or 360 panorama.
 - No people, no characters, no temporary story props.
 - Preserve only fixed environment objects: walls, floor, ceiling, doors, windows,

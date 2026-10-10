@@ -100,6 +100,9 @@ class ProposalService:
                     ref = await self.store._document(db, ref_id)
                     if ref.current_revision_id != revision_id:
                         raise DocumentConflict("proposal context changed", ref.current_revision_id)
+                if source_candidate_id:
+                    from .craft_store import validate_candidate_dependencies
+                    await validate_candidate_dependencies(db, self.store, source_candidate_id)
                 stamp = _now()
                 await db.execute("INSERT INTO script_proposals VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (client_mutation_id, document_id, base_revision_id, block_id, start, end,
@@ -190,6 +193,9 @@ class ProposalService:
                             left["start"] == left["end"] == right["start"] == right["end"]):
                             raise DocumentConflict("overlapping proposals require whole-range regeneration", doc.current_revision_id)
                 for p in rows:
+                    if p['source_candidate_id']:
+                        from .craft_store import validate_candidate_dependencies
+                        await validate_candidate_dependencies(db, self.store, p['source_candidate_id'])
                     for ref_id, revision_id in p["context_revisions"].items():
                         ref = await self.store._document(db, ref_id)
                         if ref.current_revision_id != revision_id:
@@ -270,6 +276,8 @@ class ProposalService:
             if row["target_document_id"] is None or row["target_revision_id"] is None:
                 raise DocumentValidation("candidate has no target")
             base = await self.store._revision(db, row["target_revision_id"])
+            from .craft_store import validate_candidate_dependencies
+            dependency_ids = await validate_candidate_dependencies(db, self.store, candidate_id)
             existing = await (await db.execute("SELECT * FROM script_proposals WHERE source_candidate_id=?", (candidate_id,))).fetchone()
             if existing:
                 return _proposal(existing)
@@ -279,4 +287,5 @@ class ProposalService:
             start=0, end=len(base.markdown), before=base.markdown,
             after=data["markdown"], reason="整文生成候选", round_id="candidate:" + candidate_id,
             client_mutation_id="candidate:" + candidate_id,
-            context_revisions=json.loads(data["context_revisions"]), source_candidate_id=candidate_id)
+            context_revisions={k: v for k, v in json.loads(data['context_revisions']).items() if k not in dependency_ids},
+            source_candidate_id=candidate_id)

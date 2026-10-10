@@ -66,6 +66,15 @@ class IssueDisposition(_Frozen):
     evidence_paths: Paths
 
 
+class CreativeAssessment(_Frozen):
+    shot_id: Text
+    dimension: Literal["optics", "framing", "camera_position", "composition", "motion", "performance", "lighting", "handoff"]
+    conclusion: Literal["passed", "needs_revision", "needs_human"]
+    reason: Text
+    evidence_paths: Paths
+    issue_ids: tuple[Text, ...] = ()
+
+
 class QCFeedbackRound(_Frozen):
     round_id: Text
     revision_id: Text
@@ -73,6 +82,7 @@ class QCFeedbackRound(_Frozen):
     qc_context_id: Text
     dispositions: tuple[IssueDisposition, ...] = ()
     new_issues: tuple[FeedbackIssue, ...] = ()
+    assessments: tuple[CreativeAssessment, ...] = ()
 
 
 class FeedbackIssueState(_Frozen):

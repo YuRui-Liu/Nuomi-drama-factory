@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -92,6 +93,28 @@ def submission_view(row, ctx, manager):
         'scope', 'status', 'candidate_id', 'attempt_id', 'reference_coverage', 'result', 'error', 'execution_status')}
     if state is not None:
         result.update(task_id=state.task_id, status=state.status)
+    # A durable submission receipt is not evidence that a worker is still
+    # running. Old local tasks can outlive their manager/worker process.
+    if result.get('execution_status') in ('completed', 'failed'):
+        return result
+    if row.get('candidate_id') and hasattr(ctx, 'output_dir') and (state is None or state.status not in ('running', 'queued', 'pending')):
+        from .casting_store import CastingCandidateStore
+        store = CastingCandidateStore(ctx.output_dir, state_dir=ctx.state_dir, project_id=ctx.project_id)
+        candidate = store.get(row['candidate_id'])
+        while candidate and candidate.repair_child_id:
+            candidate = store.get(candidate.repair_child_id)
+        if candidate and (candidate.generation_status == 'failed' or
+                candidate.generation_status == 'succeeded' and (not candidate.sheet_contract or candidate.review_status in ('completed', 'failed'))):
+            result['execution_status'] = 'failed' if candidate.generation_status == 'failed' or candidate.review_status == 'failed' else 'completed'
+            return result
+    if result['status'] in ('submitting', 'pending', 'queued', 'running'):
+        from novelvideo.task_state import parse_task_timestamp
+        stamp = parse_task_timestamp(getattr(state, 'updated_at', '') or getattr(state, 'created_at', '')) if state else None
+        lost_receipt = state is None and row.get('task_id')
+        stale_dispatch = result['status'] == 'submitting' and stamp and (datetime.now(timezone.utc) - stamp).total_seconds() > 300
+        if lost_receipt or stale_dispatch:
+            result.update(status='submission_unknown', execution_status='unknown', error={
+                'code': 'CASTING_TASK_UNKNOWN', 'message': '旧任务状态无法确认。已有图片保留在历史中；系统不会自动重复出图。'})
     return result
 
 

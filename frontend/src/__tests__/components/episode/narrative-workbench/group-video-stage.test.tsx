@@ -26,6 +26,39 @@ beforeAll(async () => {
 beforeEach(async () => { await i18n.changeLanguage("zh"); });
 
 describe("GroupVideoStage", () => {
+  it("shows the configured model and does not invent channel or billing", () => {
+    render(<GroupVideoStage modelId="custom:model" mode="auto" hasFirstFrame hasLastFrame={false} />);
+    expect(screen.getByText(/模型标识：custom:model/)).toBeInTheDocument();
+    expect(screen.getByText(/渠道：暂未知/)).toBeInTheDocument();
+    expect(screen.getByText(/计费单位与金额暂未知/)).toBeInTheDocument();
+  });
+  it("explains storyboard conflicts and exposes a planning retry", () => {
+    const generate = vi.fn();
+    render(<GroupVideoStage modelId="runninghub:minimax-h3" mode="auto" hasFirstFrame hasLastFrame={false}
+      taskStatus="failed" taskError={JSON.stringify({ code: "storyboard_prompt_blocked", conflicts: [{ shot_id: "shot-06", observed: "hands touch stone", required: "hands approach stone" }] })}
+      plan={recommendedPlan} onGenerate={generate} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("首帧与导演动作可能冲突");
+    expect(screen.getByRole("alert")).toHaveTextContent("shot-06");
+    fireEvent.click(screen.getByRole("button", { name: "复核原图并继续视频" }));
+    expect(generate).toHaveBeenCalled();
+  });
+  it("explains an oversized adopted shot and blocks an empty video plan", () => {
+    render(<GroupVideoStage modelId="runninghub:minimax-h3" mode="auto" hasFirstFrame hasLastFrame={false}
+      taskStatus="failed" taskError="capability_conflict: shot shot-1 requires 23s; video backend supports at most 15s without cutting the adopted shot"
+      plan={{ ...recommendedPlan, units: [], total_duration_seconds: 0 }} onGenerate={vi.fn()} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("镜头 shot-1 预计 23 秒，超过当前视频模型单镜头 15 秒上限");
+    expect(screen.getByRole("alert")).toHaveTextContent("导演方案");
+    expect(screen.getByRole("button", { name: "生成组合视频" })).toBeDisabled();
+  });
+  it("lets a failed group synchronize the already selected Ref model", () => {
+    const changeModel = vi.fn();
+    render(<GroupVideoStage modelId="runninghub:minimax-h3-ref" mode="ref2va"
+      hasFirstFrame hasLastFrame={false} taskStatus="failed"
+      workflowSynchronized={false} onModelChange={changeModel} onGenerate={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "同步本组视频模型" }));
+    expect(changeModel).toHaveBeenCalledWith("runninghub:minimax-h3-ref");
+    expect(screen.getByRole("button", { name: "生成组合视频" })).toBeDisabled();
+  });
   it("distinguishes unsynchronized workflow settings from an active plan save", () => {
     render(<GroupVideoStage modelId="runninghub:minimax-h3" mode="auto" hasFirstFrame hasLastFrame
       plan={recommendedPlan} workflowSynchronized={false} onPlanSave={vi.fn()} onGenerate={vi.fn()} />);

@@ -94,6 +94,7 @@ export async function fetchCanvasGenerationHistory(
 // /freezone/gen ----------------------------------------------------------- //
 
 export type FreezoneProvider =
+  | "grsai"
   | "openrouter"
   | "huimeng"
   | "openai";
@@ -888,7 +889,7 @@ function pickStringArray(record: Record<string, unknown>, ...keys: string[]): st
 function normalizeProviderId(raw: string | null): FreezoneProvider | null {
   if (!raw) return null;
   const lowered = raw.toLowerCase();
-  if (lowered === "huimeng" || lowered === "openrouter" || lowered === "openai") {
+  if (lowered === "grsai" || lowered === "huimeng" || lowered === "openrouter" || lowered === "openai") {
     return lowered;
   }
   return null;
@@ -898,7 +899,8 @@ function modelEntryFromObject(entry: Record<string, unknown>): FreezoneImageMode
   const apiModel = pickString(entry, "model", "apiModel", "api_model", "name");
   if (!apiModel) return null;
   const providerId =
-    normalizeProviderId(pickString(entry, "providerId", "provider_id", "provider")) ??
+    normalizeProviderId(pickString(entry, "provider")) ??
+    normalizeProviderId(pickString(entry, "providerId", "provider_id")) ??
     inferProvider(apiModel);
   const id = pickString(entry, "id") ?? `${providerId}/${apiModel}`;
   const label = pickString(entry, "label", "displayName", "display_name") ?? apiModel;

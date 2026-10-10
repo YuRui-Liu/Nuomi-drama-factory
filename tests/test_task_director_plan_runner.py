@@ -20,7 +20,8 @@ from tests.director_plan.test_migration import _plan, _shot
 
 
 @pytest.mark.asyncio
-async def test_director_plan_runner_reports_real_stages_and_returns_revision(monkeypatch):
+@pytest.mark.parametrize("revision_status", ["review_required", "active", "superseded", "abandoned"])
+async def test_director_plan_runner_reports_real_stages_and_returns_revision(monkeypatch, revision_status):
     from novelvideo.task_backend.runners import director_plan
     from novelvideo.task_backend.registry import get_project_task_runner
 
@@ -33,7 +34,7 @@ async def test_director_plan_runner_reports_real_stages_and_returns_revision(mon
     assets = (object(),)
     revision = SimpleNamespace(
         revision_id="revision-1",
-        status="review_required",
+        status=revision_status,
         validation_report=SimpleNamespace(
             passed=True,
             model_dump=lambda **_kwargs: {"passed": True, "issues": []},
@@ -97,7 +98,7 @@ async def test_director_plan_runner_reports_real_stages_and_returns_revision(mon
     ]
     assert result == {
         "revision_id": "revision-1",
-        "status": "review_required",
+        "status": revision_status,
         "validation_report": {"passed": True, "issues": []},
     }
 

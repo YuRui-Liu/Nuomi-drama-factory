@@ -516,7 +516,15 @@ class H3EpisodePackOptimizer:
         if path.exists():
             saved = json.loads(path.read_text(encoding="utf-8"))
             if saved.get("status") == "completed":
-                return SimpleNamespace(output=saved["output"])
+                output = saved["output"]
+                blocked = isinstance(output, dict) and any(
+                    isinstance(item, dict) and isinstance(item.get("decision"), dict)
+                    and item["decision"].get("status") in {"conflict", "uncertain"}
+                    for item in output.get("segments", ())
+                )
+                if not (blocked and self._retry_incomplete and not replay_only
+                        and int(saved.get("request_count", 1)) < 2):
+                    return SimpleNamespace(output=output)
             if (not self._retry_incomplete or replay_only
                     or int(saved.get("request_count", 1)) >= 2):
                 raise H3PromptOptimizationUnavailable(
@@ -604,6 +612,9 @@ def create_h3_episode_pack_optimizer(
 def _compile(
     entry: H3EpisodeVideoSegment, plan: H3DirectorPlan, input_hash: str
 ) -> H3PromptOptimizationResult:
+    from .h3_creative_mapping import project_adopted_h3_fields
+
+    plan = project_adopted_h3_fields(plan, entry.context.director_context)
     return compile_and_gate_h3_plan(
         plan,
         segment=entry.source_segment,

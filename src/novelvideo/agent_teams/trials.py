@@ -37,7 +37,8 @@ def freeze_methods(service, project, request, frozen_input, route):
     return result
 
 
-async def candidate(role, subtask, frozen):
+async def candidate(role, subtask, frozen, *, records=(), checkpoint=None, cancel_check=None,
+                    author_session=None, session_checkpoint=None, session_dir=None):
     if role == 'writer':
         from novelvideo.script_creation.models import Document, Revision, Block
         from novelvideo.script_creation.prompts import build_prompt, craft_guidance
@@ -50,12 +51,21 @@ async def candidate(role, subtask, frozen):
             revision['blocks'] = tuple(Block(**b) for b in revision['blocks'])
             value['revision'] = Revision(**revision)
             refs.append(Document(**value))
-        output = GenerationOutput.model_validate(await method_runtime(role,subtask).run_structured(
-            prompt=build_prompt(kind=subtask,script_mode=frozen['script_mode'],episode_number=frozen['episode'],
-                                episode_count=frozen['episode_count'],instruction=frozen['instruction'],references=refs),
-            output_type=GenerationOutput,system_prompt=GENERATION_SYSTEM_PROMPT + craft_method(role,subtask,craft_guidance(subtask))))
-        validate_stage_output(subtask,output.markdown,has_written_script=any(d.kind == 'episode_script' for d in refs))
-        return {'markdown':output.markdown,'validation_report':{'passed':True}}
+        from novelvideo.script_creation.craft_pipeline import run_craft
+        from .runtime import method_hash
+        def validate(text):
+            GenerationOutput(markdown=text)
+            validate_stage_output(subtask, text, has_written_script=any(d.kind == 'episode_script' for d in refs))
+        prompt = build_prompt(kind=subtask,script_mode=frozen['script_mode'],episode_number=frozen['episode'],
+                              episode_count=frozen['episode_count'],instruction=frozen['instruction'],references=refs)
+        prompt += f'\n冻结方法：{method_hash(role, subtask)}'
+        result = await run_craft(runtime=method_runtime(role, subtask), prompt=prompt, kind=subtask,
+            system_prompt=GENERATION_SYSTEM_PROMPT + craft_method(role,subtask,craft_guidance(subtask)),
+            records=records, checkpoint=checkpoint, cancel_check=cancel_check, validate_text=validate,
+            author_session=author_session, session_checkpoint=session_checkpoint, session_dir=session_dir)
+        return {'markdown': result.markdown, 'validation_report': {'passed': True, 'scope': 'document_contract'},
+                'craft_review': {**result.review.model_dump(mode='json'), 'status': result.status},
+                'craft_records': [r.model_dump(mode='json') for r in result.records]}
     if role == 'script_parser':
         from novelvideo.screenplay_semantics.parser import parse_screenplay_document
         from novelvideo.screenplay_semantics.extractor import extract_scene_beats, SceneExtractionFailure
@@ -95,7 +105,32 @@ async def execute_side(store, project, id, side, attempt, cancel_check=None):
             if inspect.isawaitable(check):
                 await check
         with method_scope([trial['methods'][side]],project_id=project):
-            output = await candidate(trial['role_id'],trial['subtask_id'],trial['frozen_input'])
+            saved_records = list(trial['sides'][side].get('craft_records', []))
+            async def checkpoint(record):
+                saved_records.append(record)
+                updated = store.transition(project, id, side, attempt, {'running'}, craft_records=saved_records)
+                if updated is None:
+                    from novelvideo.task_backend.cancel import TaskCancelled
+                    raise TaskCancelled()
+            async def check():
+                if cancel_check:
+                    pending = cancel_check()
+                    if inspect.isawaitable(pending):
+                        await pending
+            kwargs = {}
+            if 'checkpoint' in inspect.signature(candidate).parameters:
+                kwargs = dict(records=saved_records, checkpoint=checkpoint, cancel_check=check)
+            if 'author_session' in inspect.signature(candidate).parameters:
+                import uuid
+                session = trial['sides'][side].get('author_session') or {'id':str(uuid.uuid4())}
+                async def save_session(value):
+                    updated = store.transition(project,id,side,attempt,{'running'},author_session=value)
+                    if updated is None:
+                        from novelvideo.task_backend.cancel import TaskCancelled
+                        raise TaskCancelled()
+                kwargs.update(author_session=session, session_checkpoint=save_session,
+                              session_dir=store.path.parent/'craft-trial-sessions'/session['id'])
+            output = await candidate(trial['role_id'],trial['subtask_id'],trial['frozen_input'], **kwargs)
         if cancel_check:
             check = cancel_check()
             if inspect.isawaitable(check):

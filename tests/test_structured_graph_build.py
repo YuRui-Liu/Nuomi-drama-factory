@@ -502,7 +502,7 @@ async def test_character_build_does_not_report_failed_workspace_skipped_by_late_
 
 @pytest.mark.asyncio
 async def test_structured_scene_build_is_atomic_and_preserves_existing_scene(
-    structured_store,
+    structured_store, monkeypatch,
 ) -> None:
     from novelvideo.models import NovelScene
     from novelvideo.structured_builders import build_scenes_structured
@@ -519,12 +519,65 @@ async def test_structured_scene_build_is_atomic_and_preserves_existing_scene(
         NovelScene(name="林家客厅", environment_prompt="用户场景提示")
     )
 
+    async def enrich(**kwargs):
+        assert kwargs["scene_name"] == "巷口"
+        assert "林默离开。" in kwargs["context_lines"]
+        return NovelScene(name="巷口", scene_type="exterior", environment_prompt="石板巷道，两侧砖墙。")
+
+    monkeypatch.setattr("novelvideo.cognee.pipeline.enrich_scene_environment_from_context", enrich)
+
     result = await build_scenes_structured(store)
 
     assert result["scenes"] == 2
     assert result["added_scenes"] == 1
     assert (await store.get_scene("林家客厅")).environment_prompt == "用户场景提示"
     assert (await store.get_scene("巷口")).scene_type == "exterior"
+    assert (await store.get_scene("巷口")).environment_prompt == "石板巷道，两侧砖墙。"
+
+
+@pytest.mark.asyncio
+async def test_structured_scene_build_enriches_grouped_delivery_locations(structured_store, monkeypatch):
+    from novelvideo.models import NovelScene
+    from novelvideo.structured_builders import build_scenes_structured
+
+    store = structured_store
+    store.save_novel_content("## 1-1 教室 内景·日\n**时间：00:00—00:18**\n△ 林澈走过课桌。\n\n## 1-2 教室 内景·夜\n△ 周野关上窗户。")
+    (Path(store.state_dir) / "project_config.json").write_text(json.dumps({"spine_template": "drama"}), encoding="utf-8")
+    calls = []
+
+    async def enrich(**kwargs):
+        calls.append(kwargs)
+        return NovelScene(name=kwargs["scene_name"], environment_prompt="课桌成排排列，侧墙设有窗户。")
+
+    monkeypatch.setattr("novelvideo.cognee.pipeline.enrich_scene_environment_from_context", enrich)
+    result = await build_scenes_structured(store)
+    assert result["added_scenes"] == 1
+    assert len(calls) == 1
+    assert calls[0]["scene_name"] == "教室"
+    assert "△ 周野关上窗户。" in calls[0]["context_lines"]
+    scene = await store.get_scene("教室")
+    assert scene.environment_prompt == "课桌成排排列，侧墙设有窗户。"
+    assert not scene.time_of_day
+
+
+@pytest.mark.asyncio
+async def test_structured_scene_build_does_not_publish_partial_enrichment(structured_store, monkeypatch):
+    from novelvideo.models import NovelScene
+    from novelvideo.structured_builders import build_scenes_structured
+
+    store = structured_store
+    store.save_novel_content("1-1 教室 日 内\n课桌排列整齐。\n1-2 走廊 日 内\n窗户沿墙排列。")
+    (Path(store.state_dir) / "project_config.json").write_text(json.dumps({"spine_template": "drama"}), encoding="utf-8")
+
+    async def enrich(**kwargs):
+        if kwargs["scene_name"] == "走廊":
+            raise RuntimeError("SCENE_PROMPT_QUALITY_FAILED")
+        return NovelScene(name="教室", environment_prompt="课桌排列整齐。")
+
+    monkeypatch.setattr("novelvideo.cognee.pipeline.enrich_scene_environment_from_context", enrich)
+    with pytest.raises(RuntimeError, match="SCENE_PROMPT_QUALITY_FAILED"):
+        await build_scenes_structured(store)
+    assert await store.get_scene("教室") is None
 
 
 @pytest.mark.asyncio

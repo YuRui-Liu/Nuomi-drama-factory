@@ -5,6 +5,8 @@ import { BackendStatusError } from '@/lib/api-errors';
 import { MarkdownPreview } from './markdown-preview';
 import { read, post, teamPath, errorText, type Trial, type TrialInputs } from './tools-api';
 import type { TeamToolsProps } from './team-tools';
+import { CraftDetails } from '@/features/script-creation/craft-report';
+import type { CraftQuality, CraftRecord } from '@/features/script-creation/types';
 
 export const canRetrySide = (status: string) => status === 'failed' || status === 'cancelled';
 export const metric = (value: unknown) => value == null ? '未提供' : typeof value === 'object' ? JSON.stringify(value) : String(value);
@@ -15,7 +17,8 @@ export function TrialCandidate({ candidate }: { candidate: unknown }) {
   const report = value.validation_report && typeof value.validation_report === 'object' ? value.validation_report as Record<string, unknown> : null;
   return <div className="space-y-3">
     {markdown && <MarkdownPreview markdown={markdown} />}
-    {report && <p className={report.passed === true ? 'text-lime-300' : 'text-amber-200'}>校验结果：{report.passed === true ? '通过' : report.passed === false ? '未通过' : '未提供结论'}</p>}
+    {report && <p className={report.passed === true ? 'text-lime-300' : 'text-amber-200'}>{report.scope === 'document_contract' ? '格式校验结果' : '校验结果'}：{report.passed === true ? '通过' : report.passed === false ? '未通过' : '未提供结论'}</p>}
+    {markdown && <CraftDetails quality={value.craft_review as CraftQuality | undefined} records={Array.isArray(value.craft_records) ? value.craft_records as CraftRecord[] : []} />}
     {typeof candidate !== 'string' && <details><summary className="cursor-pointer text-zinc-400">结构化候选与校验详情</summary><pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs">{JSON.stringify(candidate, null, 2)}</pre></details>}
   </div>;
 }

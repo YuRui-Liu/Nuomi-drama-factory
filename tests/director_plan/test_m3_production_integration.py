@@ -76,3 +76,70 @@ def test_local_composition_plan_keeps_segment_order_and_transition_rules() -> No
     assert plan.paths == ("a.mp4", "b.mp4")
     assert plan.transitions[0].kind == "dissolve"
     assert plan.transitions[0].frames == 8
+
+
+def test_capability_conflict_blocks_only_video_for_affected_group(tmp_path):
+    from types import SimpleNamespace
+    from novelvideo.narrative_groups.service import _materialize_active_groups
+
+    original = _group()
+    long_group = original.model_copy(update={"creative_contract_version": 1, "shots": (
+        original.shots[0].model_copy(update={"duration_seconds": 20}),)})
+    other = original.model_copy(update={"id": "ng-02", "ordinal": 2})
+    active = SimpleNamespace(groups=(long_group, other), revision_id="revision-1",
+                             project_style_snapshot=None, project_style_snapshot_id="snapshot-real")
+    groups = _materialize_active_groups(tmp_path, 1, active)
+    assert len(groups) == 2
+    assert groups[0].generation_batches
+    assert groups[0].stages["render"].status == "pending"
+    assert groups[0].stages["video"].status == "failed"
+    assert groups[0].errors[0]["code"] == "capability_conflict"
+    assert "shot-1" in groups[0].errors[0]["message"]
+    assert not groups[0].video_plan.units
+    assert len(groups[1].video_plan.units) == 2
+    assert _materialize_active_groups(tmp_path, 1, active)[0].errors == groups[0].errors
+    repaired = long_group.model_copy(update={"shots": (
+        long_group.shots[0].model_copy(update={"duration_seconds": 10}),)})
+    active.groups = (repaired, other)
+    active.revision_id = "revision-repaired"
+    recovered = _materialize_active_groups(tmp_path, 1, active)[0]
+    assert recovered.video_plan.units[0].duration_seconds == 10
+    assert recovered.stages["video"].status == "pending"
+    assert "capability_conflict" not in recovered.stages["video"].provider_parameters
+    assert not recovered.errors
+
+
+def test_large_creative_group_materializes_all_physical_packs(tmp_path):
+    from types import SimpleNamespace
+    from novelvideo.narrative_groups.service import _materialize_active_groups
+
+    original = _group()
+    group = original.model_copy(update={"creative_contract_version": 1, "shots": tuple(
+        original.shots[0].model_copy(update={"id": f"shot-{index}", "duration_seconds": 5}) for index in range(10))})
+    active = SimpleNamespace(groups=(group,), revision_id="revision-1",
+                             project_style_snapshot=None, project_style_snapshot_id="snapshot-real")
+    result = _materialize_active_groups(tmp_path, 1, active)[0]
+    assert [len(batch["shot_ids"]) for batch in result.generation_batches] == [4, 4, 2]
+    assert result.shot_ids == tuple(f"shot-{index}" for index in range(10))
+    assert len(result.video_plan.units) == 10
+
+
+def test_creative_materialization_retains_static_media_on_motion_revision(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from tests.director_plan.test_creative_invalidation import revision, stages
+    from novelvideo.narrative_groups.service import _materialize_active_groups, save_groups
+
+    old = revision()
+    new = revision(motion="move only after opening").model_copy(update={"revision_id": "changed-motion"})
+    materialized = _materialize_active_groups(tmp_path, 1, old)[0]
+    previous_stages = stages()
+    save_groups(tmp_path, 1, [replace(materialized, stages=previous_stages)])
+    monkeypatch.setattr(DirectorPlanStore, "load", lambda *args: old)
+    updated = _materialize_active_groups(tmp_path, 1, new)[0]
+    assert updated.stages["render"] == previous_stages["render"]
+    assert updated.stages["video"].needs_regeneration
+    assert updated.stages["video"].video_asset == "old.mp4"
+    provenance = updated.generation_batches[0]["keyframe_projections"]
+    assert provenance == {shot_id: {**value, "director_revision_id": new.revision_id}
+                          for shot_id, value in materialized.generation_batches[0]["keyframe_projections"].items()}
+    assert all(value["keyframe_projection_hash"] and value["dependency_fields"] for value in provenance.values())

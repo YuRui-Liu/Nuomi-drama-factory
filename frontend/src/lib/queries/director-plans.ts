@@ -30,6 +30,7 @@ export interface DirectorPlanValidationReport {
 }
 
 export interface ShotPlan {
+  creative?: Record<string, unknown> | null;
   id: string;
   source_span_ids: string[];
   subject: string;
@@ -106,6 +107,13 @@ export interface AssetMigrationReport {
 }
 
 export interface DirectorPlanRevision {
+  creative_contract_version?: 1 | null;
+  creative_review_status?: "passed" | "needs_revision" | "unreviewed" | "needs_human" | "legacy_unreviewed" | "unavailable";
+  creative_feedback?: {
+    issues: Array<{ issue: { issue_id: string; description: string; acceptance_criteria: string }; status: string }>;
+    author_rounds: Array<{ round_id: string; responses: Array<{ issue_id: string; status: string; explanation: string }> }>;
+    qc_rounds: Array<{ round_id: string; dispositions: Array<{ issue_id: string; status: string; explanation: string }>; assessments?: Array<{ shot_id: string; dimension: string; conclusion: string; reason: string; evidence_paths: string[] }> }>;
+  } | null;
   revision_id: string;
   parent_revision_id: string | null;
   episode: number;
@@ -181,6 +189,7 @@ export function useDirectorPlans(project: string, episode: number) {
     queryFn: ({ signal }) => api.get(collectionPath(project, episode), { signal })
       .json<ApiResponse<DirectorPlanRevision[]>>(),
     enabled: Boolean(project) && episode > 0,
+    refetchInterval: 5000,
   });
 }
 
@@ -231,6 +240,14 @@ export function useCreateDirectorPlan(project: string, episode: number) {
   const invalidate = useInvalidateDirectorPlan(project, episode);
   return useMutation({
     mutationFn: () => api.post(collectionPath(project, episode), { json: {} }).json<TaskResponse>(),
+    onSuccess: invalidate,
+  });
+}
+
+export function useReviewDirectorPlan(project: string, episode: number) {
+  const invalidate = useInvalidateDirectorPlan(project, episode);
+  return useMutation({
+    mutationFn: (revisionId: string) => api.post(`${revisionPath(project, episode, revisionId)}/review`, { json: {} }).json(),
     onSuccess: invalidate,
   });
 }

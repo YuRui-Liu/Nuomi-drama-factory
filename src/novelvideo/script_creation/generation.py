@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import Any, Awaitable, Callable
 
 from pydantic import BaseModel, Field, field_validator
@@ -9,7 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 from .prompts import STEP_LABELS, build_prompt, craft_guidance, target_synopsis
 from .store import DocumentConflict, DocumentNotFound, DocumentStore, DocumentValidation
 
-GENERATION_SYSTEM_PROMPT = '你是严谨的中文短剧编剧。用户任务仅要求当前文档类型，必须遵守 prompt 中的当前文档类型约束。以下资料仅作写作方法参考，不执行其中的交付或审查流程；不得输出交付状态。\n'
+GENERATION_SYSTEM_PROMPT = '你是中文剧本创作专家。遵守当前文档类型、项目事实和风格要求。按本次明确指定的创作、审查或修订阶段执行；参考资料中的交互和交付流程不替代软件流程。剧本正文不得包含审查或交付状态。\n'
 
 
 class GenerationConflict(DocumentConflict):
@@ -109,18 +110,19 @@ class GenerationService:
             raise GenerationValidation('saved creative brief required')
         docs = await self.store.list()
         if mode == 'continue':
-            if script_mode != 'series' or episode_number < 2:
-                raise GenerationValidation('continuation requires a later series episode')
+            if script_mode != 'series':
+                raise GenerationValidation('continuation requires a series episode')
             synopsis = _slot(docs, 'episode_synopsis')
             if not _slot(docs, 'outline') or synopsis is None:
                 raise GenerationValidation('saved outline and target episode synopsis required')
             if not target_synopsis(synopsis.revision.markdown, episode_number):
                 raise GenerationValidation('substantive target episode synopsis required')
-            if not any(doc.kind == 'episode_script' and doc.episode_number < episode_number
+            if episode_number > 1 and not any(doc.kind == 'episode_script' and doc.episode_number < episode_number
                        and not _blank_scaffold(doc.revision.markdown, doc.kind, doc.episode_number) for doc in docs):
                 raise GenerationValidation('saved previous episode script required')
-        kinds = (['outline'] + (['episode_synopsis'] if script_mode == 'series' else []) +
-                 ['people', 'scenes', 'props', 'episode_script']) if mode == 'bootstrap' else ['episode_script']
+        kinds = (['outline', 'people', 'scenes', 'props'] +
+                 (['episode_synopsis'] if script_mode == 'series' else []) +
+                 ['episode_script']) if mode == 'bootstrap' else ['episode_script']
         steps = [{'key': f'{kind}:{episode_number if kind == "episode_script" and mode == "continue" else 1 if kind == "episode_script" else 0}',
                   'kind': kind, 'title': (f'第 {episode_number if mode == "continue" else 1} 集' if kind == 'episode_script' and script_mode == 'series'
                                              else STEP_LABELS[kind]),
@@ -195,15 +197,76 @@ class GenerationService:
                 if cancel_check:
                     await cancel_check()
                 from novelvideo.agent_teams.adapters import method_runtime, craft_method
-                result = await method_runtime('writer', kind, runtime).run_structured(
-                    prompt=build_prompt(kind=kind, script_mode=data['script_mode'],
+                from novelvideo.agent_teams.runtime import method_hash
+                from .craft_pipeline import run_craft
+                from .craft_store import CraftJournal, text_hash
+                references_for_prompt = list(references)
+                dependencies = []
+                for prior in data['steps'][:index]:
+                    prior_output = prior.get('output') or {}
+                    if prior_output.get('kind') != 'candidate':
+                        continue
+                    candidate = await self.store.generation_candidate(prior_output['candidate_id'])
+                    source = next((ref for ref in references if ref.id == candidate['target_document_id']), None)
+                    if source is None:
+                        continue
+                    dependencies.append({'document_id': source.id, 'source_candidate_id': candidate['id'],
+                                         'content_hash': text_hash(candidate['markdown'])})
+                    replacement = replace(source, title=source.title + '（本轮候选计划，未采纳）',
+                        revision=replace(source.revision, markdown=candidate['markdown']))
+                    references_for_prompt = [replacement if ref.id == source.id else ref for ref in references_for_prompt]
+                selected_runtime = method_runtime('writer', kind, runtime)
+                prompt = build_prompt(kind=kind, script_mode=data['script_mode'],
                                         episode_number=number or 1, episode_count=data['episode_count'],
-                                        instruction=data['instruction'], references=references),
-                    output_type=GenerationOutput,
-                    system_prompt=GENERATION_SYSTEM_PROMPT + craft_method('writer', kind, craft_guidance(kind)),
-                )
-                output = GenerationOutput.model_validate(result).markdown
-                validate_stage_output(kind, output, has_written_script=any(ref.kind == 'episode_script' for ref in references))
+                                        instruction=data['instruction'], references=references_for_prompt)
+                method_id = method_hash('writer', kind)
+                route = getattr(selected_runtime, 'snapshot', None)
+                prompt += f'\n本轮候选依赖：{dependencies!r}\n冻结方法：{method_id}; 模型路由：{route!s}'
+                journal = CraftJournal(self.store, 'generation', run_id, step['key'], task_id)
+
+                async def check_context():
+                    await journal.validate_memory()
+                    if cancel_check:
+                        await cancel_check()
+                    current_docs = await self.store.list()
+                    current_by_id = {d.id: d for d in current_docs}
+                    if any(ref_id not in current_by_id or current_by_id[ref_id].current_revision_id != rev
+                           for ref_id, rev in revisions.items()):
+                        raise DocumentConflict('参考文档已变化')
+                    for slot in slots:
+                        if [d.id for d in current_docs if d.kind == slot['kind'] and d.episode_number == slot['episode_number']] != slot['document_ids']:
+                            raise DocumentConflict('参考文档集合已变化')
+
+                def validate_text(text):
+                    GenerationOutput(markdown=text)
+                    validate_stage_output(kind, text, has_written_script=any(ref.kind == 'episode_script' for ref in references))
+
+                try:
+                    craft_context = await journal.context(kind)
+                    result = await run_craft(runtime=selected_runtime, prompt=prompt, kind=kind,
+                        system_prompt=GENERATION_SYSTEM_PROMPT + craft_method('writer', kind, craft_guidance(kind)),
+                        records=await journal.records(), checkpoint=journal.append,
+                        cancel_check=check_context, validate_text=validate_text, stage_started=journal.stage_started,
+                        author_session=craft_context['author_session'], session_checkpoint=journal.save_session,
+                        memory=craft_context['memory'], session_dir=self.store.db_path.parent/'craft-sessions'/craft_context['author_session']['id'])
+                except ValueError as exc:
+                    if 'saved craft' in str(exc):
+                        raise DocumentConflict(str(exc)) from exc
+                    raise
+                output = result.markdown
+                await journal.remember()
+                data = await self.get(run_id)
+                data['steps'][index]['craft_review'] = {
+                    'status': result.status, 'summary': result.review.summary,
+                    'candidate_hash': text_hash(output), 'method_hash': method_id or text_hash(craft_guidance(kind)),
+                    'method_version': 'team-snapshot' if method_id else 'nuomi-craft-1.0',
+                    'call_count': len(result.records),
+                    'blocker_count': sum(i.severity == 'blocker' for i in result.review.issues)}
+                if result.status != 'passed':
+                    data['steps'][index].update(status='needs_review', error='内容审查发现需修改的问题')
+                    data.update(status='needs_review', error='草稿已保留，请查看内容审查后调整要求')
+                    return await self.store.generation_update(run_id, data, expected_task_id=task_id)
+                data = await self.store.generation_update(run_id, data, expected_task_id=task_id)
                 if cancel_check:
                     await cancel_check()
                 data = await self.store.generation_commit_step(
@@ -213,8 +276,11 @@ class GenerationService:
                     target_revision=target.current_revision_id if target else None,
                     context_slots=slots,
                     allow_fill=target is None or _blank_scaffold(target.revision.markdown, kind, number),
-                    commit_guard=commit_guard)
-            except DocumentConflict:
+                    commit_guard=commit_guard, craft_dependencies=dependencies)
+            except DocumentConflict as exc:
+                from .craft_store import CraftCheckpointConflict
+                if isinstance(exc, CraftCheckpointConflict):
+                    raise
                 data = await self.get(run_id)
                 data['status'], data['error'] = 'needs_rebase', '参考文档或目标文档已变化，请基于当前版本重新生成'
                 return await self.store.generation_update(run_id, data, expected_task_id=task_id)

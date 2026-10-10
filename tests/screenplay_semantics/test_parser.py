@@ -4,6 +4,23 @@ import pytest
 from novelvideo.utils.screenplay_scene_parser import parse_scene_blocks
 
 
+def test_markdown_delivery_preserves_separate_speaker_and_dialogue_evidence():
+    text = "### 1-1　教室　内景·日\n**时间：00:00—00:18｜时长：18 秒**\n**人物：林澈、周野**\n\n**林澈：**\n最后一题，你会？\n\n△ 周野抬头。\n**周野：**\n会。\n---\n### 1-2　教室　内景·傍晚\n△ 两人坐下。"
+    first, second = parse_screenplay_document(text).scenes
+    assert (first.location, first.time_of_day, first.interior_exterior) == ("教室", "日", "interior")
+    assert second.time_of_day == "傍晚"
+    assert first.characters == ("林澈", "周野")
+    assert [(b.id, b.kind, b.text) for b in first.blocks] == [
+        ("line-2", "formatting", "**时间：00:00—00:18｜时长：18 秒**"),
+        ("line-5", "speaker", "**林澈：**"),
+        ("line-6", "dialogue", "最后一题，你会？"),
+        ("line-8", "action", "△ 周野抬头。"),
+        ("line-9", "speaker", "**周野：**"),
+        ("line-10", "dialogue", "会。"),
+        ("line-11", "formatting", "---"),
+    ]
+
+
 @pytest.mark.parametrize('episode', ['第一集', '第1集', '第二集', '第2集'])
 def test_xyq_heading_keeps_scene_and_dialogue_evidence(episode):
     number = 2 if '二' in episode or '2' in episode else 1

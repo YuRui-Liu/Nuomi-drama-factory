@@ -13,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    ValidationInfo,
     field_serializer,
     field_validator,
     model_validator,
@@ -20,6 +21,8 @@ from pydantic import (
 from ulid import ULID
 
 from .cinematography import ShotCinematography
+from .creative_contract import GroupCreativeContext, ShotCreativeDecisions, creative_shot_errors
+from .revision_feedback import FeedbackHistory
 
 
 class FrozenModel(BaseModel):
@@ -350,11 +353,31 @@ class ShotPlan(FrozenModel):
     dramatic_beat_ids: tuple[str, ...] = ()
     intent: DirectorShotIntent | None = None
     cinematography: ShotCinematography | None = None
+    creative: ShotCreativeDecisions | None = None
     asset_requirements: tuple[AssetRequirement, ...] = ()
-    duration_seconds: float = Field(gt=0, le=15)
+    duration_seconds: float = Field(gt=0, allow_inf_nan=False)
+
+    @field_validator("duration_seconds")
+    @classmethod
+    def legacy_duration(cls, value: float, info: ValidationInfo) -> float:
+        if info.data.get("creative") is None and value > 15:
+            raise ValueError("legacy shot duration cannot exceed 15 seconds")
+        return value
+
+    @model_validator(mode="after")
+    def validate_creative_duration(self) -> Self:
+        if self.creative is None and self.duration_seconds > 15:
+            raise ValueError("legacy shot duration cannot exceed 15 seconds")
+        if self.creative is not None:
+            errors = creative_shot_errors(self)
+            if errors:
+                raise ValueError(";".join(errors))
+        return self
 
 
 class NarrativeGroupPlan(FrozenModel):
+    creative_contract_version: Literal[1] | None = None
+    creative_context: GroupCreativeContext | None = None
     id: str
     ordinal: int = Field(gt=0)
     source_span_ids: tuple[str, ...]
@@ -366,8 +389,26 @@ class NarrativeGroupPlan(FrozenModel):
     relation_to_previous: Literal[
         "single", "causal", "progressive", "contrast", "montage", "time_jump"
     ]
-    shots: tuple[ShotPlan, ...] = Field(min_length=1, max_length=4)
+    shots: tuple[ShotPlan, ...] = Field(min_length=1)
     style_snapshot_id: str | None = None
+
+    @field_validator("shots")
+    @classmethod
+    def legacy_shot_count(cls, value: tuple[ShotPlan, ...], info: ValidationInfo) -> tuple[ShotPlan, ...]:
+        if info.data.get("creative_contract_version") is None and len(value) > 4:
+            raise ValueError("legacy group cannot exceed 4 shots")
+        return value
+
+    @model_validator(mode="after")
+    def validate_contract(self) -> Self:
+        if self.creative_contract_version is None:
+            if len(self.shots) > 4 or any(shot.duration_seconds > 15 for shot in self.shots):
+                raise ValueError("legacy groups permit at most 4 shots and 15 seconds per shot")
+            if any(shot.creative is not None for shot in self.shots):
+                raise ValueError("creative decisions require explicit creative_contract_version")
+        elif any(shot.creative is None or shot.cinematography is None for shot in self.shots):
+            raise ValueError("creative contract requires all eight decisions and cinematography")
+        return self
 
 
 class SplitGroup(FrozenModel):
@@ -408,9 +449,10 @@ class UpdateShot(FrozenModel):
     composition: str | None = None
     camera_motion: str | None = None
     cinematography: ShotCinematography | None = None
+    creative: ShotCreativeDecisions | None = None
     dialogue_source_ids: tuple[str, ...] | None = None
     asset_requirements: tuple[AssetRequirement, ...] | None = None
-    duration_seconds: float | None = Field(default=None, gt=0, le=15)
+    duration_seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 
 class UpdateShots(FrozenModel):
@@ -425,6 +467,9 @@ DirectorEdit = Annotated[
 
 
 class DirectorPlanRevision(FrozenModel):
+    creative_contract_version: Literal[1] | None = None
+    creative_feedback: FeedbackHistory | None = None
+    author_chain_id: str | None = None
     revision_id: str
     parent_revision_id: str | None = None
     episode: int = Field(gt=0)
@@ -470,9 +515,11 @@ class DirectorPlanRevision(FrozenModel):
         project_style_snapshot: StyleSnapshot | None = None,
         semantic_revision_id: str | None = None,
         parent_revision_id: str | None = None,
+        creative_contract_version: Literal[1] | None = None,
     ) -> Self:
         return cls(
             revision_id=str(ULID()),
+            creative_contract_version=creative_contract_version,
             parent_revision_id=parent_revision_id,
             episode=episode,
             status="draft",

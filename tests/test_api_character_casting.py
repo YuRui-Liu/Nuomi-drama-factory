@@ -59,6 +59,30 @@ async def request(env, method, suffix='', **kw):
 
 
 @pytest.mark.asyncio
+async def test_explicitly_reusing_old_design_allows_generation_after_style_change(setup_casting):
+    e = setup_casting
+    e.monkeypatch.setattr(e.api, 'resolved_style', lambda ctx: '新画风')
+    response = await request(e, 'POST', '/candidates', json={'idempotency_key':'reuse',
+        'expected_revision':e.revision.revision_id, 'sheet_contract':'character_sheet_v4', 'reuse_stale_draft':True})
+    assert response.status_code == 202, response.text
+    candidate = e.api.candidate_store(e.ctx).get(response.json()['data']['candidate_id'])
+    assert candidate.reuse_stale_draft
+    assert (await request(e, 'GET', '/candidates')).json()['data'][0]['stale'] is False
+
+
+@pytest.mark.asyncio
+async def test_sheet_request_freezes_contract_and_uses_review_runtime_task(setup_casting):
+    e = setup_casting
+    response = await request(e, 'POST', '/candidates', json={'idempotency_key':'sheet',
+        'expected_revision':e.revision.revision_id,'sheet_contract':'character_sheet_v4'})
+    assert response.status_code == 202, response.text
+    assert e.queued[0]['task_type'] == 'identity_image'
+    candidate = e.api.candidate_store(e.ctx).get(response.json()['data']['candidate_id'])
+    assert candidate.sheet_contract == 'character_sheet_v4'
+    assert candidate.snapshot.proposal_id == e.proposal.proposal_id
+
+
+@pytest.mark.asyncio
 async def test_read_does_not_enqueue_and_exposes_permissions(setup_casting):
     e = setup_casting
     e.ctx.effective_role = 'viewer'
@@ -73,7 +97,8 @@ async def test_read_does_not_enqueue_and_exposes_permissions(setup_casting):
 @pytest.mark.parametrize('suffix,body', [('/recast', {'idempotency_key': 'k'}),
     ('/candidates', {'idempotency_key': 'k', 'expected_revision': 'v'}),
     ('/candidates/c/review', {'idempotency_key': 'k'}),
-    ('/candidates/c/adopt', {'candidate_id': 'c', 'idempotency_key': 'k', 'expected_revision': 'v'})])
+    ('/candidates/c/adopt', {'candidate_id': 'c', 'idempotency_key': 'k', 'expected_revision': 'v'}),
+    ('/candidates/c/crop', {'crop_box':[0,0,.2,.5],'expected_version':0})])
 async def test_all_mutations_require_editor(setup_casting, suffix, body):
     e = setup_casting
     e.ctx.effective_role = 'viewer'
@@ -107,6 +132,39 @@ async def test_generate_key_is_durable_and_current_unchanged(setup_casting):
     assert 'asset_path' not in rows[0]
     assert rows[0]['requested_model'] == 'nano-banana-pro'
     assert e.store.get('甲').model_dump() == before
+
+
+@pytest.mark.asyncio
+async def test_sheet_crop_and_modification_keep_original_source(setup_casting):
+    from PIL import Image
+    e=setup_casting
+    body={'idempotency_key':'sheet','expected_revision':e.revision.revision_id,'sheet_contract':'character_sheet_v4'}
+    generated=(await request(e,'POST','/candidates',json=body)).json()['data']['candidate_id']
+    store=e.api.candidate_store(e.ctx)
+    candidate=store.get(generated)
+    store.claim_generation(generated,task_id=candidate.task_id)
+    path=store.output_path(generated)
+    path.parent.mkdir(parents=True)
+    Image.new('RGB',(120,80),'red').save(path)
+    store.complete_generation(generated,path)
+    crop={'crop_box':[0,0,.25,.5],'expected_version':0}
+    assert (await request(e,'POST',f'/candidates/{generated}/crop',json=crop)).status_code==200
+    assert (await request(e,'POST',f'/candidates/{generated}/crop',json=crop)).status_code==409
+    revised=await request(e,'POST','/candidates',json={**body,'idempotency_key':'revision','source_candidate_id':generated,'change_request':'改为红外套'})
+    assert revised.status_code==202, revised.text
+    pending=store.get(revised.json()['data']['candidate_id'])
+    assert pending.image_references[-1]['path']==store.get(generated).asset_path
+    assert pending.repair_history[-1]['user_change_request']=='改为红外套'
+    assert len(e.queued)==2
+
+
+@pytest.mark.asyncio
+async def test_modification_requires_both_source_and_feedback(setup_casting):
+    e=setup_casting
+    result=await request(e,'POST','/candidates',json={'idempotency_key':'invalid','expected_revision':e.revision.revision_id,
+        'sheet_contract':'character_sheet_v4','change_request':'换外套'})
+    assert result.status_code==422
+    assert not e.queued
 
 
 @pytest.mark.asyncio

@@ -43,16 +43,19 @@ def run_character_casting_proposals(envelope, ctx):
             if workspace is None or snapshot_digest(workspace.model_dump(mode='json')) != payload['workspace_hash']:
                 raise ValueError('casting inputs changed before recast')
             documents, revision = await load_sources(ctx.output_dir, sql)
-            revision = character_source_revision(documents, revision, name, expected_revision=payload['source_revision'])
+            revision = character_source_revision(documents, revision, name, expected_revision=payload['source_revision'], identity_id=identity_id)
             if revision != payload['source_revision'] or resolved_style(ctx) != payload['style']:
                 raise ValueError('source/style changed before recast')
             artifact_facts = await reuse_artifact_facts(workspace.profile, documents, revision, sql)
             profile = await ground_profile(workspace.profile, documents, revision, runtime=runtime,
                 identity_id=identity_id, artifact_facts=artifact_facts)
+            identity = next((i for i in character.identities if i.identity_id == identity_id), None)
+            variant_context = {key: getattr(identity, key, None) for key in
+                ('identity_name', 'appearance_details', 'face_prompt', 'age_group', 'body_type')} if identity else None
             async def assert_live():
                 await asyncio.to_thread(cancel)
                 live_documents, current = await load_sources(ctx.output_dir, sql)
-                current = character_source_revision(live_documents, current, name, expected_revision=revision)
+                current = character_source_revision(live_documents, current, name, expected_revision=revision, identity_id=identity_id)
                 if current != revision or resolved_style(ctx) != payload['style']:
                     raise ValueError('source/style changed during recast')
             def before_commit():
@@ -63,7 +66,7 @@ def run_character_casting_proposals(envelope, ctx):
             result = await design_and_publish(store=store, character_id=name, identity_id=identity_id,
                 expected_revision=payload.get('expected_revision'), grounded_profile=profile,
                 source_revision=revision, style=payload['style'], runtime=runtime, assert_live=assert_live,
-                before_commit=before_commit, original_hash=payload['workspace_hash'])
+                before_commit=before_commit, original_hash=payload['workspace_hash'], variant_context=variant_context)
             selected = result.casting_revision if identity_id is None else result.identity_casting_revisions[identity_id]
             return {'character_id': name, 'identity_id': identity_id, 'revision_id': selected.revision_id}
         finally:

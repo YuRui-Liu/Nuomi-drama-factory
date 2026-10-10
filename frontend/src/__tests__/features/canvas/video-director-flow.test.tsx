@@ -183,8 +183,26 @@ describe('Director real component flow', () => {
     render(<CurrentNode />);
     fireEvent.click(screen.getByRole('button', { name: 'Ref' }));
     expect(nodeData().activeInputMode).toBe('ref');
+    expect(nodeData().inputModeIntent).toBe('manual');
     expect(nodeData().draft.segments[0].firstFrame?.imageId).toBe('frame');
     expect(screen.getByText('已保留，当前不参与生成')).toBeInTheDocument();
+  });
+
+  it('records an explicit Ref opt-out even when Ref was already selected', () => {
+    useCanvasStore.getState().updateNodeData('director', { activeInputMode: 'ref', autoStoryboard: { sourceNodeId: 'board' } });
+    render(<CurrentNode />);
+    fireEvent.click(screen.getByRole('button', { name: 'Ref' }));
+    expect(nodeData().inputModeIntent).toBe('manual');
+  });
+
+  it('switches automatic storyboard mode without modifying its baseline draft', () => {
+    const draft = createDirectorDraft('s1');
+    draft.references = [{ imageId: 'board', url: '/board.png' }];
+    useCanvasStore.getState().updateNodeData('director', { draft, activeInputMode: 'frames', autoStoryboard: { sourceNodeId: 'board' } });
+    render(<CurrentNode />);
+    fireEvent.click(screen.getByRole('button', { name: 'Ref' }));
+    expect(nodeData().draft).toEqual(draft);
+    expect(nodeData().inputModeIntent).toBe('manual');
   });
 
   it('switches to frames when a first frame is selected without references', async () => {

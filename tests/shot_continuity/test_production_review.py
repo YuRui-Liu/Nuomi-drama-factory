@@ -3,6 +3,7 @@ import io
 import json
 import shutil
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -41,8 +42,57 @@ class Runtime:
             raise RuntimeError('private error')
         context = json.loads(kwargs['prompt'][kwargs['prompt'].index('\n{') + 1:])
         return {'status': 'passed', 'evidence': [{'frame_label': label,
+            'face_status': 'assessed', 'face_observation': 'Visible facial features remain coherent.',
             'observation': 'Subject faces uphill with warm lantern light from below.'}
             for label in context['ordered_frames']], 'issues': []}
+
+
+async def test_actual_review_requires_face_assessment_and_retains_frames(tmp_path, frozen):
+    from novelvideo.shot_continuity.production_review import _review
+    path = tmp_path / 'original.png'
+    path.write_bytes(frozen['s1-start.png'].content)
+    runtime = Runtime()
+    reports = await _review([(segment(), {'start': path, 'middle': path, 'end': path}, [shot()])],
+        runtime, tmp_path / 'cache', 'actual')
+    context = json.loads(runtime.calls[0]['prompt'][runtime.calls[0]['prompt'].index('\n{') + 1:])
+    assert context['require_face_integrity'] is True
+    assert set(reports[0].frame_assets) == {'start', 'middle', 'end'}
+    assert reports[0].source_segment_ids == ('s1',)
+    assert reports[0].review_kind == 'actual_segment'
+    assert all(Path(value).read_bytes() == path.read_bytes()
+               for value in reports[0].frame_assets.values())
+
+
+def test_quality_acceptance_requires_complete_current_actual_coverage():
+    from novelvideo.shot_continuity.production_review import quality_status
+    from novelvideo.shot_continuity.visual_review import POLICY_VERSION
+    def record(kind, ids):
+        labels = ['start', 'middle', 'end'] if kind == 'actual_segment' else [
+            f'{side}_{role}' for side in ('previous', 'next') for role in ('start', 'middle', 'end')]
+        return {'phase': 'generated', 'status': 'passed', 'policy_version': POLICY_VERSION,
+            'review_id': 'a' * 64, 'review_kind': kind, 'source_segment_ids': ids,
+            'frame_digests': {label: 'b' * 64 for label in labels},
+            'frame_assets': {label: '/frames/' + 'b' * 64 + '.png' for label in labels},
+            'evidence': [{'frame_label': label, 'observation': 'Visible',
+                'face_status': 'assessed', 'face_observation': 'Coherent face'} for label in labels]}
+    a = record('actual_segment', ['a'])
+    b = record('actual_segment', ['b'])
+    cut = record('actual_boundary', ['a', 'b'])
+    assert quality_status([], ['a', 'b']) == 'generated'
+    assert quality_status([a, b], ['a', 'b']) == 'needs_review'
+    assert quality_status([a, b, cut], ['a', 'b']) == 'accepted'
+    assert quality_status([a, b, {**cut, 'status': 'unavailable'}], ['a', 'b']) == 'needs_review'
+    assert quality_status([{**a, 'policy_version': 'legacy'}, b, cut], ['a', 'b']) == 'needs_review'
+    assert quality_status([a, b, cut, {'phase': 'generated', 'status': 'unavailable'}], ['a', 'b']) == 'needs_review'
+    for incomplete in (
+        {**a, 'review_id': 'digest'}, {**a, 'frame_digests': {}},
+        {**a, 'frame_assets': {}}, {**a, 'evidence': a['evidence'][:1]},
+        {**a, 'evidence': a['evidence'] + a['evidence'][:1]},
+        {**a, 'frame_assets': {**a['frame_assets'], 'start': '/frames/wrong.png'}},
+        {**a, 'frame_digests': {**a['frame_digests'], 'start': 'bad'}},
+    ):
+        assert quality_status([incomplete, b, cut], ['a', 'b']) == 'needs_review'
+    assert quality_status([a, b, {**cut, 'evidence': cut['evidence'][:-1]}], ['a', 'b']) == 'needs_review'
 
 
 @pytest.mark.parametrize('error_name', ['TaskCancelled', 'TaskTimedOut', 'TaskLeaseLost'])
@@ -129,6 +179,9 @@ async def test_generated_segments_extract_frames_and_review_boundary(tmp_path):
     assert boundary['ordered_frames'] == [f'{side}_{role}' for side in ('previous', 'next')
                                           for role in ('start', 'middle', 'end')]
     assert 'actual middle' in runtime.calls[0]['prompt']
+    from novelvideo.shot_continuity.production_review import quality_status
+    assert quality_status([{'phase': 'generated', **report.model_dump(mode='json')}
+                           for report in reports], ['s1', 's2']) == 'accepted'
 
 
 async def test_generated_missing_media_does_not_call_reviewer(tmp_path):

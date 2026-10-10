@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 import pytest
+from tests.craft_fakes import craft_reply
 
 from novelvideo.agent_teams.trial_store import TrialStore, TrialConflict
 from novelvideo.agent_teams.trials import execute_side, freeze_methods, candidate
@@ -80,7 +81,7 @@ async def test_native_writer_fixed_model_and_contract(tmp_path,monkeypatch,kind)
     class Fake:
         async def run_structured(self,**kwargs):
             calls.append(kwargs)
-            return {'markdown':'这是一个足够完整的候选故事内容，主人公面临真实冲突并做出关键选择。'}
+            return craft_reply(kwargs['prompt'], '这是一个足够完整的候选故事内容，主人公面临真实冲突并做出关键选择。')
     def build(route):
         assert route.model == 'frozen-model'
         fake=Fake(); fake.snapshot=route
@@ -90,7 +91,9 @@ async def test_native_writer_fixed_model_and_contract(tmp_path,monkeypatch,kind)
     with method_scope([snap(kind=kind)],project_id='p'):
         result=await candidate('writer',kind,{'documents':[asdict(doc)],'episode':1,'script_mode':'single','episode_count':1,'instruction':''})
     assert result['validation_report']['passed']
-    assert '不得输出交付状态' in calls[0]['system_prompt']
+    assert result['craft_review']['status'] == 'passed'
+    assert len(calls) == (3 if kind == 'episode_script' else 2)
+    assert '不得包含审查或交付状态' in calls[0]['system_prompt']
     assert '已保存的故事需求' in calls[0]['prompt']
     assert (tmp_path/'data.db').read_bytes() == before
 
@@ -161,7 +164,9 @@ async def test_native_semantics_and_director_validate_without_store_writes(monke
     from novelvideo.director_plan.models import SourceSpan
     text='1-1 房间 日 内\n△林默推开木门。'
     scene=parse_screenplay_document(text).scenes[0]
-    outputs=[{'scene_id':scene.id,'beats':[]},{'groups':[]}]
+    from tests.director_plan.test_validation import make_group
+    # Structurally valid output with an unknown source span must fail semantic validation.
+    outputs=[{'scene_id':scene.id,'beats':[]},{'groups':[make_group().model_dump(mode='json')]}]
     calls=[]
     class Fake:
         async def run_structured(self,**kwargs):

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CANVAS_NODE_TYPES, type CanvasEdge, type CanvasNode } from '@/features/canvas/domain/canvasNodes';
+import { CANVAS_NODE_TYPES, type CanvasEdge, type CanvasNode, type StoryboardPreparation } from '@/features/canvas/domain/canvasNodes';
 import { addSegment, createDirectorDraft, updateDraft, updateSegment } from '@/features/canvas/domain/videoDirectorDraft';
 import { readDirectorBinding, resolveDirectorBindings, sameDirectorFrameSlot } from '@/features/canvas/domain/videoDirectorBindings';
 import { getAllowedUpstreamSourceTypes } from '@/features/canvas/domain/nodeRegistry';
@@ -17,6 +17,17 @@ const edge = (id: string, source: string, slot: object): CanvasEdge => ({
 });
 
 describe('video director image bindings', () => {
+  it('preserves authoritative prepared Ref IDs and URLs without adding asset IDs', () => {
+    const draft = createDirectorDraft('s1');
+    draft.references = [{ imageId: 'board', url: '/board.png' }, { imageId: 'hero', url: '/hero.png' }];
+    const preparation = { inputMode: 'ref', refBindings: draft.references.map((ref, i) => ({ sourceNodeId: ref.imageId,
+      imageId: ref.imageId, url: ref.url, pictureIndex: i + 1, sha256: 'sha' })) } as StoryboardPreparation;
+    const result = resolveDirectorBindings(draft, [imageNode('board', '/board.png'), imageNode('hero', '/hero.png')],
+      [edge('board', 'board', { kind: 'reference' }), edge('hero', 'hero', { kind: 'reference' })], 'ref', preparation);
+    expect(result.draft.references).toEqual(draft.references);
+    expect(result.errors).toEqual({});
+    expect(resolveDirectorBindings(draft, [imageNode('board', '/board.png')], [], 'ref', preparation).errors.references).toBeTruthy();
+  });
   it('reads only structurally valid slots and compares frame slots by target and segment', () => {
     expect(readDirectorBinding(edge('r', 'one', { kind: 'reference' }))).toEqual({ kind: 'reference' });
     expect(readDirectorBinding(edge('f', 'one', { kind: 'firstFrame', segmentId: 's1' }))).toEqual({ kind: 'firstFrame', segmentId: 's1' });
@@ -82,13 +93,24 @@ describe('video director image bindings', () => {
 
   it('limits director upstream node types to image sources', () => {
     expect(getAllowedUpstreamSourceTypes(CANVAS_NODE_TYPES.videoDirector)).toEqual([
-      CANVAS_NODE_TYPES.upload, CANVAS_NODE_TYPES.imageEdit, CANVAS_NODE_TYPES.imageGen, CANVAS_NODE_TYPES.exportImage,
+      CANVAS_NODE_TYPES.upload, CANVAS_NODE_TYPES.imageEdit, CANVAS_NODE_TYPES.imageGen, CANVAS_NODE_TYPES.exportImage, CANVAS_NODE_TYPES.storyboardGen,
     ]);
     useCanvasStore.getState().setCanvasData([
       { id: 'video', type: CANVAS_NODE_TYPES.video, position: { x: 0, y: 0 }, data: { videoUrl: '/video.mp4' } } as CanvasNode,
       directorNode(),
     ], []);
     expect(useCanvasStore.getState().addEdgeWithData('video', 'director', { edgeKind: 'videoDirectorImage', slot: { kind: 'reference' } })).toBeNull();
+  });
+
+  it('preserves the planned storyboard edge on hydrate and resolves its complete image', () => {
+    const board = { id: 'board', type: CANVAS_NODE_TYPES.storyboardGen, position: { x: 0, y: 0 },
+      data: { imageUrl: '/storyboard.png', frames: [], group_id: 'g1' } } as CanvasNode;
+    const link = edge('board-video', 'board', { kind: 'reference' });
+    useCanvasStore.getState().setCanvasData([board, directorNode()], [link]);
+    expect(useCanvasStore.getState().edges).toHaveLength(1);
+    const resolved = resolveDirectorBindings(createDirectorDraft('s1'), [board], [link], 'ref');
+    expect(resolved.errors).toEqual({});
+    expect(resolved.draft.references[0].url).toContain('/storyboard.png');
   });
 
   it('allows the same image node to bind first and last frames across segments', () => {

@@ -140,6 +140,7 @@ class ScreenplaySemanticRepairService:
         beats_by_scene = {scene.id: base.beats_for(scene.id) for scene in base.scenes}
         report = base.validation_report
         operational_issues: dict[str, SemanticValidationIssue] = {}
+        rejected_attempts: dict[str, tuple[SceneRepairDraft, tuple[SemanticValidationIssue, ...]]] = {}
         target_ids = _issue_scene_ids(report.issues)
         repaired_scene_ids: set[str] = set()
 
@@ -158,6 +159,7 @@ class ScreenplaySemanticRepairService:
                         issue for issue in report.issues if issue.scene_id == scene.id
                     )
                     try:
+                        previous = rejected_attempts.get(scene.id)
                         draft = await self.invoke(
                             scene,
                             build_scene_repair_prompt(
@@ -165,6 +167,8 @@ class ScreenplaySemanticRepairService:
                                 beats_by_scene[scene.id],
                                 scene_issues,
                                 repair_round=repair_round,
+                                previous_beats=previous[0].beats if previous else (),
+                                previous_issues=previous[1] if previous else (),
                             ),
                         )
                         return scene, draft
@@ -203,6 +207,7 @@ class ScreenplaySemanticRepairService:
                     if issue.code in _CONTRACT_CODES
                 )
                 if violations:
+                    rejected_attempts[scene.id] = (result, proposal_report.issues)
                     operational_issues[scene.id] = SemanticValidationIssue(
                         code="repair_contract_violation",
                         message="；".join(issue.message for issue in violations),
@@ -212,6 +217,7 @@ class ScreenplaySemanticRepairService:
                 beats_by_scene[scene.id] = _materialize_beats(scene, result)
                 repaired_scene_ids.add(scene.id)
                 operational_issues.pop(scene.id, None)
+                rejected_attempts.pop(scene.id, None)
 
             merged = tuple(
                 beat

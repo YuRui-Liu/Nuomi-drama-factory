@@ -6,7 +6,7 @@ from pathlib import Path
 import hashlib
 
 from novelvideo.production_workflow import ProductionWorkflowStore, production_workflow_project_lock
-from novelvideo.production_workflow.slot_ids import character_portrait_slot_id, character_identity_portrait_slot_id
+from novelvideo.production_workflow.slot_ids import character_portrait_slot_id, character_identity_portrait_slot_id, character_state_slot_id
 from .casting_compiler import snapshot_digest
 from .casting_models import CastingAdoption
 from .casting_store import CastingCandidateStore
@@ -24,11 +24,25 @@ def adoption_requirements(candidate):
     blocked = None
     if candidate.generation_status != 'succeeded':
         blocked = 'generation_not_succeeded'
+    elif getattr(candidate, 'sheet_contract', None):
+        if not candidate.avatar_image:
+            blocked = 'avatar_missing'
+        elif candidate.review_status != 'completed':
+            blocked = 'review_not_completed'
     return {'expected_review_attempt_id': candidate.review_attempt_id, 'required_acknowledgements': [],
-        'override_reason_required': False, 'blocked_reason': blocked}
+        'override_reason_required': bool(getattr(candidate, 'sheet_contract', None) and candidate.review_status == 'completed'
+            and not (candidate.sheet_quality or {}).get('passed')), 'blocked_reason': blocked}
 
 
 def _review_decision(candidate, command):
+    if getattr(candidate, 'sheet_contract', None):
+        blocked = adoption_requirements(candidate)['blocked_reason']
+        if blocked:
+            raise ValueError(blocked)
+        if adoption_requirements(candidate)['override_reason_required'] and not command.override_reason:
+            raise ValueError('human approval reason required')
+        if command.expected_asset_version != candidate.asset_version:
+            raise ValueError('asset version conflict')
     # Adoption binds the image/snapshot; an optional review may finish at any
     # time without revoking that choice. Record the latest result in the audit.
     if candidate.generation_status != 'succeeded':
@@ -51,6 +65,8 @@ def _binding(ctx, character_id, identity_id, command, actor):
 
 def _verified_asset(store, candidate_id):
     try:
+        if store.get(candidate_id).sheet_contract:
+            return store.read_verified_avatar(candidate_id)
         return store.read_verified_asset(candidate_id)
     except OSError as exc:
         raise ValueError('candidate asset unavailable; generate a new candidate') from exc
@@ -145,14 +161,19 @@ async def adopt_candidate(*, ctx, character_id, identity_id=None, command, actor
                     raise ValueError('workspace character ownership mismatch')
                 draft = casting_service.stage_workspace(workspace, identity_id)
                 source_revision = casting_source.character_source_revision(documents, source_revision,
-                    character_id, expected_revision=draft.casting_revision.source_revision if draft.casting_revision else None)
+                    character_id, expected_revision=draft.casting_revision.source_revision if draft.casting_revision else None, identity_id=identity_id)
                 names = casting_source.attested_names(workspace.profile, documents)
-                for fact in draft.profile.facts:
-                    casting_source.verified_fact(fact, documents, names, source_revision, strict=True)
-                live = casting_service.compile_current(workspace, identity_id, command.expected_revision, source_revision, style)
                 candidate = candidate_store.get(command.candidate_id)
                 if candidate is None or (candidate.character_id, candidate.identity_id) != (character_id, identity_id):
                     raise ValueError('candidate ownership mismatch')
+                # Reusing an old design is an explicit generation choice. Its facts
+                # remain attributed to the frozen revision, not relabelled as new evidence.
+                reuse = candidate.reuse_stale_draft and bool(candidate.sheet_contract)
+                if not reuse:
+                    for fact in draft.profile.facts:
+                        casting_source.verified_fact(fact, documents, names, source_revision, strict=True)
+                live = casting_service.compile_current(workspace, identity_id, command.expected_revision, source_revision, style,
+                    reuse_stale_draft=reuse)
                 if candidate.snapshot.model_dump(mode='json') != live.model_dump(mode='json'):
                     raise ValueError('candidate snapshot changed; generate a new candidate')
                 image_bytes = _verified_asset(candidate_store, command.candidate_id)
@@ -167,8 +188,9 @@ async def adopt_candidate(*, ctx, character_id, identity_id=None, command, actor
                 if immutable.exists() and immutable.read_bytes() != image_bytes:
                     raise ValueError('immutable adopted portrait mismatch')
                 bible_fields = set(CharacterVisualBible.model_fields) - {'character_id', 'revision_id', 'status', 'source_fact_ids', 'confirmed_by'}
-                bible = CharacterVisualBible(**{k: v for k, v in candidate.snapshot.proposal_snapshot.items() if k in bible_fields},
-                    character_id=character_id, revision_id=candidate.snapshot.revision_id, status='confirmed',
+                effective_proposal = candidate.effective_proposal or candidate.snapshot.proposal_snapshot
+                bible = CharacterVisualBible(**{k: v for k, v in effective_proposal.items() if k in bible_fields},
+                    character_id=character_id, revision_id=('casting-modified-' + candidate.effective_proposal_hash[:24]) if candidate.effective_proposal_hash else candidate.snapshot.revision_id, status='confirmed',
                     source_fact_ids=candidate.snapshot.source_fact_ids, confirmed_by=actor)
                 if identity_id is None:
                     workspace.visual_bible = bible
@@ -185,7 +207,9 @@ async def adopt_candidate(*, ctx, character_id, identity_id=None, command, actor
                 result = {'candidate_id': candidate.candidate_id, 'version_id': version_id, 'revision_id': bible.revision_id,
                     'identity_id': identity_id, 'snapshot_hash': candidate.snapshot.snapshot_hash, 'adoption_status': 'adopted'}
                 audit = {'actor': actor, 'candidate_id': candidate.candidate_id, 'command_hash': command_hash,
+                    'effective_proposal': candidate.effective_proposal, 'effective_proposal_hash': candidate.effective_proposal_hash,
                     'snapshot': candidate.snapshot.model_dump(mode='json'), 'asset_sha256': candidate.asset_sha256,
+                    'portrait_sha256': hashlib.sha256(image_bytes).hexdigest(),
                     'review_status': candidate.review_status, 'review_attempt_id': candidate.review_attempt_id,
                     'review_report': candidate.report.model_dump(mode='json') if candidate.report else None,
                     'review_attempt': next((a.model_dump(mode='json') for a in candidate.review_attempts if a.attempt_id == candidate.review_attempt_id), None),
@@ -216,9 +240,23 @@ async def adopt_candidate(*, ctx, character_id, identity_id=None, command, actor
                     workflow.register_candidate_version(slot_id=slot_id, asset_kind='character_portrait', version_id=version_id,
                         asset_path=immutable.relative_to(root).as_posix(), source_attempt_id=candidate.task_id,
                         qc_passed=candidate.review_status == 'completed' and not warnings, soft_issues=warnings,
-                        generation_metadata={'canonical_path': entry['canonical_path'], 'candidate_id': candidate.candidate_id, 'casting_adoption': audit},
+                        generation_metadata={'canonical_path': entry['canonical_path'], 'candidate_id': candidate.candidate_id, 'casting_adoption': audit,
+                            **({'sheet_path': candidate.asset_path, 'sheet_sha256': candidate.asset_sha256,
+                                'sheet_contract': candidate.sheet_contract, 'crop_box': candidate.crop_box} if candidate.sheet_contract else {})},
                         actor=actor, at=at, auto_provisional=False)
                     workflow.adopt_casting_version(slot_id=slot_id, version_id=version_id, actor=actor, at=at)
+                    if candidate.sheet_contract and identity_id:
+                        # The same workflow journal publishes the full variant
+                        # sheet for downstream shots alongside its cropped face.
+                        sheet_slot = character_state_slot_id(character_id, identity_id)
+                        sheet_version = version_id + '-sheet'
+                        workflow.register_candidate_version(slot_id=sheet_slot, asset_kind='character_state',
+                            version_id=sheet_version, asset_path=candidate.asset_path,
+                            source_attempt_id=candidate.task_id, qc_passed=True, soft_issues=[],
+                            generation_metadata={'candidate_id': candidate.candidate_id, 'sheet_contract': candidate.sheet_contract,
+                                'sheet_sha256': candidate.asset_sha256}, actor=actor, at=at, auto_provisional=False)
+                        workflow.adopt_version(slot_id=sheet_slot, version_id=sheet_version, actor=actor,
+                            reason='采用角色变体设定图', at=at)
                     recovery.durable_write(workflow_path, workflow_path.read_bytes())
                     _checkpoint('workflow_before_commit')
                     entry['status'] = 'committed'
