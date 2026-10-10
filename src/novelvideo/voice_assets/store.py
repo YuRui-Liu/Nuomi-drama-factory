@@ -80,10 +80,17 @@ class VoiceAssetStore:
                     if source not in sources:
                         sources.append(source)
                         db.execute("UPDATE assets SET sources=? WHERE id=?", (json.dumps(sources), old["id"]))
-                    return self.get(owner, old["id"]), False
+                    result = self.decode(old)
+                    result["sources"] = sources
+                    return result, False
                 asset_id = uuid4().hex
                 path = self.root / f"{asset_id}{extension}"
-                path.write_bytes(content)
+                temporary = path.with_suffix(".tmp")
+                try:
+                    temporary.write_bytes(content)
+                    temporary.replace(path)
+                finally:
+                    temporary.unlink(missing_ok=True)
                 db.execute("INSERT INTO assets(id,owner,sha256,extension,duration,metadata,sources) VALUES(?,?,?,?,?,?,?)",
                            (asset_id, owner, digest, extension, duration, metadata.model_dump_json(), json.dumps([source])))
             return self.get(owner, asset_id), True

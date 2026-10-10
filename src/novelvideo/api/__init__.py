@@ -135,6 +135,8 @@ api_router.include_router(knowledge_runtime.router, tags=["knowledge-runtime"])
 api_router.include_router(media_capabilities.catalog_router, tags=["media-capabilities"])
 api_router.include_router(media_capabilities.router, tags=["media-capabilities"])
 api_router.include_router(characters.router, tags=["characters"])
+from novelvideo.api.routes import global_voice_assets
+api_router.include_router(global_voice_assets.router, tags=["voice-assets"])
 api_router.include_router(assets.router, tags=["assets"])
 api_router.include_router(asset_imports.router, tags=["asset-imports"])
 api_router.include_router(scenes.router, tags=["scenes"])

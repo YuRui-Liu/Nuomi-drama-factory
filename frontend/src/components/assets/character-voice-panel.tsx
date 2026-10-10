@@ -41,6 +41,7 @@ import { queryKeys } from "@/lib/query-keys";
 import type { Character, CharacterVoiceDesign, CharacterVoiceFacts, CharacterVoiceSlot, CharacterVoiceSlotId } from "@/types/character";
 import { CharacterVoiceDesignForm, voiceDesignPreview } from "./character-voice-design-form";
 import { useProject } from "@/lib/queries/projects";
+import { GlobalVoicePicker, VoiceAssetFavorite } from "./global-voice-assets";
 
 type VoiceDraft = { description: string; audition: string; age: string; design: CharacterVoiceDesign | null; context?: Record<string, unknown>; edited: { description: boolean; audition: boolean } };
 const voiceDrafts = new Map<string, VoiceDraft>();
@@ -701,6 +702,7 @@ function CharacterVoicePanelContent({
                 </div>
 
                 <details className="shrink-0"><summary className="cursor-pointer text-xs text-muted-foreground">管理音频</summary><div className="mt-2 flex items-center gap-1">
+                  <GlobalVoicePicker project={project} character={character.name} slot={slotId} reference={{ path: actionSlot.inherited_from_default ? "" : actionSlot.path || "", sha256: actionSlot.inherited_from_default ? "" : actionSlot.sha256 || "" }} />
                   <VoiceActionButton
                     label={t("characters.voiceSamples.upload")}
                     icon={<Upload className="size-3.5" />}
@@ -818,6 +820,7 @@ function CharacterVoicePanelContent({
           {(candidate.status === "qc_unavailable" || candidate.report?.status === "qc_unavailable") && <p>质检不可用，自动质检尚未判定合格</p>}
           {candidate.url && <audio controls src={resolveMediaUrl(candidate.url) ?? undefined} />}
           <p>{candidate.report?.reason}</p>
+          {candidate.status === "approved" && candidate.kind !== "nonverbal" && <VoiceAssetFavorite project={project} character={character.name} candidateId={candidate.candidate_id} description={candidate.payload?.voice_description || ""} suggestedTags={{ timbre: [candidate.payload?.design?.voice_spec.texture, candidate.payload?.design?.voice_spec.pitch, candidate.payload?.design?.voice_spec.resonance].filter((value): value is string => Boolean(value && value.length <= 30)) }} />}
           <details><summary>实际生成描述与参数</summary><p>{candidate.payload?.voice_description || "未提供描述"}</p><pre className="whitespace-pre-wrap">{JSON.stringify(candidate.payload, null, 2)}</pre></details>
           <label className="block"><input type="checkbox" checked={confirmations[candidate.candidate_id] ?? false} onChange={(event) => setConfirmations({ ...confirmations, [candidate.candidate_id]: event.target.checked })} /> 我已试听，确认适合此角色</label>
           <details><summary className="cursor-pointer text-muted-foreground">补充采用说明（可选）</summary><Input aria-label="采用理由" placeholder="可选，记录喜欢或需要改进的地方" value={reasons[candidate.candidate_id] ?? ""} onChange={(event) => setReasons({ ...reasons, [candidate.candidate_id]: event.target.value })} /></details>
