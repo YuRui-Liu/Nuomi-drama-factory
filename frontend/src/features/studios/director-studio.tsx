@@ -11,6 +11,7 @@ import { directorPresets, directorSuggestions, emptyDirectorConfig, type Directo
 import { readStudioContext } from "./studio-context";
 import { useTasks } from "@/lib/queries/tasks";
 import { DirectorAdaptations } from "./director-adaptations";
+import { DirectorActivation } from "./director-activation";
 import { ArrowRight, Check, Clapperboard, Film, SlidersHorizontal, Sparkles } from "lucide-react";
 
 type Doc = { id: string; name: string; data: DirectorConfig; revision: number };
@@ -137,6 +138,7 @@ function DirectorWorkspace({ project }: { project: string }) {
       <p className="text-xs text-muted-foreground">默认保持剧情、人物动机和对白。本地建议应用运镜和构图；AI 规划会读取节奏、表演和补充方法。</p>
       <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={!!shared || !!active} checked={config.allow_adaptation} onChange={(event) => update({ ...config, allow_adaptation: event.target.checked })} />允许提出故事与对白改编建议（单独审阅）</label>
       <Button disabled={!team.isSuccess || save.isPending || !name.trim()} onClick={() => save.mutate()}>保存配置版本{dirty ? " *" : ""}</Button>
+      {shared && <DirectorActivation project={project} draftRevision={shared.draft_revision} activeRevision={active?.active_revision ?? 0} dirty={dirty || save.isPending} onActivated={async () => { await team.refetch(); window.dispatchEvent(new Event('agent-team-changed')); setWorkflow('ai'); setMessage('导演方法已启用。请选择剧集，提交 AI 整集规划；已有方案与视频不会自动重做。'); }} />}
       {!shared && doc && <Button variant="outline" disabled={!team.isSuccess || dirty || importLegacy.isPending} onClick={() => importLegacy.mutate()}>将旧配置导入团队草稿（不启用）</Button>}
       {shared && <div className="space-y-2"><label className="block text-sm">导入已保存导演方法<select className={fieldClass} value={legacyImportId} disabled={importLegacy.isPending} onChange={event => setLegacyImportId(event.target.value)}><option value="">选择旧配置</option>{docs.data?.data.filter(item => !item.data.purpose).map(item => <option key={item.id} value={item.id}>{item.name} · v{item.revision}</option>)}</select></label><Button variant="outline" disabled={!team.isSuccess || !legacyImportId || dirty || importLegacy.isPending || save.isPending} onClick={() => importLegacy.mutate()}>将所选旧配置导入团队草稿（不启用）</Button>{dirty && <p className="text-xs text-muted-foreground">请先保存或放弃本地修改，再导入旧配置。</p>}</div>}
       <label className="block text-sm">重新加载已保存配置<select disabled={save.isPending || !!shared} className={fieldClass} value={doc?.id ?? ""} onChange={(event) => { if (save.isPending) return; const value = docs.data?.data.find((item) => item.id === event.target.value); if (value && (!dirty || window.confirm("放弃未保存的配置修改并加载所选版本？"))) { setDoc(value); setConfig(value.data); setName(value.name); setDirty(false); setSuggestions([]); } }}><option value="">选择配置</option>{docs.data?.data.filter((item) => !item.data.purpose).map((item) => <option key={item.id} value={item.id}>{item.name} · v{item.revision}</option>)}</select></label>
