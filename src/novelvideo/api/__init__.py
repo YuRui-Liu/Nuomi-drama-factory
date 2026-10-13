@@ -62,6 +62,7 @@ from novelvideo.api.routes import (  # noqa: E402
     freezone,
     freezone_video_director,
     freezone_orchestration,
+    creation,
     generation,
     ingest,
     knowledge_runtime,
@@ -168,6 +169,7 @@ api_router.include_router(narrative_groups.router, tags=["narrative-groups"])
 api_router.include_router(freezone.router)
 api_router.include_router(freezone_video_director.router)
 api_router.include_router(freezone_orchestration.router)
+api_router.include_router(creation.router)
 api_router.include_router(technique_library.router)
 api_router.include_router(case_reference.router)
 api_router.include_router(release_notifications.router, tags=["release-notifications"])
