@@ -1,0 +1,270 @@
+"""References and immutable snapshots over the existing project asset library.
+
+Source names are explicit import locators, never semantic IDs. Media adoption is
+deliberately excluded: use the existing candidate/publication domain service.
+"""
+
+import asyncio
+from contextlib import asynccontextmanager, closing
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+import sqlite3
+from typing import Any, Literal
+from uuid import uuid4
+
+import portalocker
+
+from novelvideo.models import CharacterIdentity, NovelScene
+from novelvideo.sqlite_store import SQLiteStore
+from novelvideo.utils.derived_scenes import compose_derived_scene_name
+
+from .models import AssetRef
+from .store import ObjectStore, RevisionConflict
+
+
+_LOCKS: dict[str, asyncio.Lock] = {}
+_CHARACTER_FIELDS = {'age_group', 'appearance_details', 'face_prompt', 'body_type'}
+_IDENTITY_FIELDS = {'age_group', 'appearance_details', 'face_prompt'}
+_SCENE_FIELDS = {'time_of_day', 'variant_prompt', 'description', 'notes'}
+
+
+class AssetAdapter:
+    """An adapter, not an independent writable asset library.
+
+    Adapter writes use a process lock. Existing routes do not share this lock;
+    callers must serialize legacy asset edits with adapter writes. Source and
+    snapshot writes use separate databases (no distributed transaction).
+    """
+
+    def __init__(self, source: SQLiteStore, objects: ObjectStore, actor_id: str = 'asset-adapter'):
+        if objects.db_path.parent.parent.resolve() != Path(source.state_dir).resolve():
+            raise ValueError('Source and snapshots must belong to the same project')
+        self.source, self.objects, self.actor_id = source, objects, actor_id
+        self._lock = _LOCKS.setdefault(str(objects.db_path.resolve()), asyncio.Lock())
+        with objects.transaction() as conn:
+            conn.execute('''CREATE TABLE IF NOT EXISTS asset_sources (
+                object_id TEXT PRIMARY KEY REFERENCES objects(id), kind TEXT NOT NULL,
+                source_name TEXT NOT NULL, parent_id TEXT NOT NULL,
+                UNIQUE(kind, source_name, parent_id))''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS asset_variant_requests (
+                request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
+                source_name TEXT NOT NULL, result TEXT)''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS asset_publication_intents (
+                object_id TEXT PRIMARY KEY, expected_revision INTEGER NOT NULL,
+                previous TEXT NOT NULL, requested TEXT NOT NULL)''')
+
+    async def _assert_fresh(self, base: dict[str, Any]) -> None:
+        if base['kind'] != 'character':
+            return
+        cached = self.source.get_character(base['source_name'])
+        # update_character persists the whole cached model. Check every stored
+        # column, including media metadata outside this adapter's edit whitelist.
+        # The domain list_characters projection currently omits is_main, so it
+        # cannot establish full cache freshness. This connection is read-only.
+        with closing(sqlite3.connect(Path(self.source.db_path).resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+            conn.row_factory = sqlite3.Row
+            fresh = conn.execute('SELECT * FROM characters WHERE name=?', (base['source_name'],)).fetchone()
+        stale = cached is None or fresh is None
+        if not stale:
+            for column in fresh.keys():
+                if column in {'created_at', 'updated_at'}:
+                    continue  # Maintained by SQL, not written from the cache.
+                field = 'aliases' if column == 'aliases_json' else column
+                if not hasattr(cached, field):
+                    stale = True  # Unknown future columns fail closed.
+                    break
+                stored = json.loads(fresh[column]) if column == 'aliases_json' else fresh[column]
+                if getattr(cached, field) != stored:
+                    stale = True
+                    break
+        if stale:
+            raise RuntimeError('Character source cache is stale; reload source before editing')
+
+    @asynccontextmanager
+    async def _write_lock(self):
+        async with self._lock:
+            with self.objects.db_path.with_suffix('.assets.lock').open('a') as handle:
+                while True:
+                    try:
+                        portalocker.lock(handle, portalocker.LOCK_EX | portalocker.LOCK_NB)
+                        break
+                    except portalocker.exceptions.AlreadyLocked:
+                        await asyncio.sleep(0.02)
+                try:
+                    yield
+                finally:
+                    portalocker.unlock(handle)
+
+    def _mapping(self, object_id: str) -> dict[str, Any]:
+        with self.objects.transaction() as conn:
+            row = conn.execute('SELECT * FROM asset_sources WHERE object_id=?', (object_id,)).fetchone()
+        if row is None:
+            raise KeyError(object_id)
+        return dict(row)
+
+    async def _source_record(self, mapping: dict[str, Any]):
+        if mapping['kind'] == 'scene':
+            record = await self.source.get_scene_exact(mapping['source_name'])
+        elif not mapping['parent_id']:
+            record = self.source.get_character(mapping['source_name'])
+        else:
+            parent = self._mapping(mapping['parent_id'])
+            char = self.source.get_character(parent['source_name'])
+            record = next((item for item in char.identities if item.identity_id == mapping['source_name']), None) if char else None
+        if record is None:
+            raise KeyError(mapping['source_name'])
+        return record
+
+    async def _register(self, kind: str, source_name: str, parent_id: str = '') -> AssetRef:
+        mapping = dict(kind=kind, source_name=source_name, parent_id=parent_id)
+        record = await self._source_record(mapping)
+        if kind == 'character' and not parent_id:
+            source_name = record.name
+        if kind == 'scene':
+            expected = self._mapping(parent_id)['source_name'] if parent_id else ''
+            if record.base_scene_id != expected or (parent_id and not record.variant_id):
+                raise ValueError('Scene must be a state of this same base location')
+        with self.objects.transaction() as conn:
+            found = conn.execute('SELECT object_id FROM asset_sources WHERE kind=? AND source_name=? AND parent_id=?',
+                                 (kind, source_name, parent_id)).fetchone()
+        if found:
+            obj = self.objects.read(found['object_id'])
+        else:
+            with self.objects.transaction() as conn:
+                object_id = uuid4().hex
+                conn.execute('INSERT INTO objects (id,kind,current_revision) VALUES (?,?,1)', (object_id, kind))
+                conn.execute('INSERT INTO object_versions VALUES (?,1,?,?,?)',
+                             (object_id, record.model_dump_json(), self.actor_id, datetime.now(timezone.utc).isoformat()))
+                obj = dict(id=object_id, revision=1)
+                conn.execute('INSERT INTO asset_sources VALUES (?, ?, ?, ?)', (obj['id'], kind, source_name, parent_id))
+                conn.execute('UPDATE objects SET base_asset_id=?, variant_id=? WHERE id=?',
+                             (parent_id or obj['id'], obj['id'] if parent_id else None, obj['id']))
+        return AssetRef(base_asset_id=parent_id or obj['id'], variant_id=obj['id'] if parent_id else None, revision=obj['revision'])
+
+    async def register_base(self, kind: Literal['character', 'scene'], source_name: str) -> AssetRef:
+        if kind not in {'character', 'scene'}:
+            raise ValueError('Unsupported asset kind')
+        async with self._write_lock():
+            return await self._register(kind, source_name)
+
+    async def register_variant(self, base_id: str, source_name: str) -> AssetRef:
+        async with self._write_lock():
+            base = self._base(base_id)
+            return await self._register(base['kind'], source_name, base_id)
+
+    def _base(self, base_id: str) -> dict[str, Any]:
+        base = self._mapping(base_id)
+        if base['parent_id']:
+            raise ValueError('Expected base asset')
+        return base
+
+    async def resolve(self, ref: AssetRef) -> dict[str, Any]:
+        self._base(ref.base_asset_id)
+        mapping = self._mapping(ref.variant_id or ref.base_asset_id)
+        if ref.variant_id and mapping['parent_id'] != ref.base_asset_id:
+            raise ValueError('Variant belongs to another base asset')
+        obj = self.objects.read(ref.variant_id or ref.base_asset_id, ref.revision)
+        if obj is None:
+            raise KeyError(ref)
+        return obj
+
+    async def list_variants(self, base_id: str) -> list[AssetRef]:
+        self._base(base_id)
+        with self.objects.transaction() as conn:
+            rows = conn.execute('''SELECT s.object_id, o.current_revision FROM asset_sources s
+                JOIN objects o ON o.id=s.object_id WHERE parent_id=? ORDER BY s.object_id''', (base_id,)).fetchall()
+        return [AssetRef(base_asset_id=base_id, variant_id=r['object_id'], revision=r['current_revision']) for r in rows]
+
+    @staticmethod
+    def _validate_fields(kind: str, variant: bool, payload: dict[str, Any]) -> None:
+        fields = _SCENE_FIELDS if kind == 'scene' else (_IDENTITY_FIELDS if variant else _CHARACTER_FIELDS)
+        if kind == 'scene' and not variant:
+            fields = fields | {'environment_prompt'}
+        if payload.keys() - fields:
+            raise ValueError('Only editable metadata is accepted; relationships and media require domain operations')
+        if any(not isinstance(value, str) for value in payload.values()):
+            raise ValueError('Asset metadata values must be strings')
+
+    async def create_variant(self, base_id: str, name: str, delta: dict[str, Any], request_id: str) -> AssetRef:
+        if not name.strip() or not request_id.strip():
+            raise ValueError('name and request_id are required')
+        async with self._write_lock():
+            base = self._base(base_id)
+            await self._assert_fresh(base)
+            source = await self._source_record(base)
+            self._validate_fields(base['kind'], True, delta)
+            fingerprint = json.dumps([base_id, name, delta], sort_keys=True, ensure_ascii=False)
+            proposed_locator = uuid4().hex if base['kind'] == 'character' else compose_derived_scene_name(source.name, name)
+            existing_scene = await self.source.get_scene_exact(proposed_locator) if base['kind'] == 'scene' else None
+            with self.objects.transaction() as conn:
+                row = conn.execute('SELECT * FROM asset_variant_requests WHERE request_id=?', (request_id,)).fetchone()
+                if row and row['fingerprint'] != fingerprint:
+                    raise ValueError('request_id already used with different input')
+                if row and row['result']:
+                    return AssetRef.model_validate_json(row['result'])
+                locator = row['source_name'] if row else proposed_locator
+                if not row:
+                    if existing_scene is not None:
+                        raise ValueError('Scene name already exists; explicitly register it instead')
+                    conn.execute('INSERT INTO asset_variant_requests VALUES (?, ?, ?, NULL)', (request_id, fingerprint, locator))
+            if base['kind'] == 'character':
+                if not any(i.identity_id == locator for i in source.identities):
+                    data = {'age_group': source.age_group, **delta}
+                    await self.source.add_character_identity(source.name, CharacterIdentity(
+                        identity_id=locator, character_name=source.name, identity_name=name, **data))
+                    await self._assert_fresh(base)
+            elif await self.source.get_scene_exact(locator) is None:
+                await self.source.add_scene_if_absent(NovelScene(
+                    name=locator, base_scene_id=source.name, variant_id=name, scene_type=source.scene_type, **delta))
+            ref = await self._register(base['kind'], locator, base_id)
+            with self.objects.transaction() as conn:
+                conn.execute('UPDATE asset_variant_requests SET result=? WHERE request_id=?', (ref.model_dump_json(), request_id))
+            return ref
+
+    async def publish_revision(self, base_id: str, variant_id: str | None, expected_revision: int, payload: dict[str, Any]) -> AssetRef:
+        async with self._write_lock():
+            base = self._base(base_id)
+            await self._assert_fresh(base)
+            ref = AssetRef(base_asset_id=base_id, variant_id=variant_id, revision=expected_revision)
+            await self.resolve(ref)
+            object_id = variant_id or base_id
+            with self.objects.transaction() as conn:
+                if conn.execute('SELECT 1 FROM asset_publication_intents WHERE object_id=?', (object_id,)).fetchone():
+                    raise RuntimeError('Interrupted publication requires source/snapshot reconciliation')
+            current = self.objects.read(object_id)
+            if current['revision'] != expected_revision:
+                raise RevisionConflict(object_id, expected_revision, current['revision'])
+            self._validate_fields(base['kind'], variant_id is not None, payload)
+            mapping = self._mapping(object_id)
+            record = await self._source_record(mapping)
+            if base['kind'] == 'scene' and record.base_scene_id != (base['source_name'] if variant_id else ''):
+                raise ValueError('Scene source relationship changed')
+            record.__class__.model_validate({**record.model_dump(), **payload})
+            previous = {key: getattr(record, key) for key in payload}
+            with self.objects.transaction() as conn:
+                conn.execute('INSERT INTO asset_publication_intents VALUES (?,?,?,?)',
+                             (object_id, expected_revision, json.dumps(previous), json.dumps(payload)))
+            async def write(values):
+                if base['kind'] == 'scene':
+                    await self.source.update_scene(mapping['source_name'], **values)
+                elif variant_id:
+                    await self.source.update_character_identity(base['source_name'], mapping['source_name'], **values)
+                else:
+                    await self.source.update_character(base['source_name'], **values)
+                # Identity methods currently swallow a failed SQL update after
+                # mutating their cache. Verify persisted state for both forward
+                # writes and compensation before snapshots/intents can advance.
+                await self._assert_fresh(base)
+            try:
+                await write(payload)
+                record = await self._source_record(mapping)
+                obj = self.objects.update(object_id, expected_revision, record.model_dump(mode='json'), self.actor_id)
+            except BaseException:
+                await asyncio.shield(write(previous))
+                with self.objects.transaction() as conn:
+                    conn.execute('DELETE FROM asset_publication_intents WHERE object_id=?', (object_id,))
+                raise
+            with self.objects.transaction() as conn:
+                conn.execute('DELETE FROM asset_publication_intents WHERE object_id=?', (object_id,))
+            return ref.model_copy(update={'revision': obj['revision']})
