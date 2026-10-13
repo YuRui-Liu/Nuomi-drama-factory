@@ -59,6 +59,7 @@ class ProjectSummary(BaseModel):
     id: str = ""
     name: str
     display_name: str = ""
+    creation_mode: Optional[str] = None
     owner_type: str = "user"
     owner_id: str = ""
     owner_username: str = ""

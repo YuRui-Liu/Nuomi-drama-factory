@@ -15,6 +15,8 @@ from novelvideo.creation.models import OperationRequest
 from novelvideo.creation.operations import OperationError, OperationService
 from novelvideo.creation.projection import ProjectionService
 from novelvideo.creation.store import ObjectStore
+from novelvideo.creation.project_mode import is_canvas_project, require_canvas_project
+from novelvideo.creation.workspace import EpisodeCreate, EpisodeWorkspace, episode_response, list_episodes
 from novelvideo.project_config import load_project_config_file_from_state_dir
 from novelvideo.project_context import require_project_home_node, resolve_project_context
 
@@ -27,7 +29,7 @@ async def recover_pending_projections(state_root: Path) -> None:
     for db_path in state_root.rglob('creation/objects.sqlite3'):
         state_dir = db_path.parent.parent
         try:
-            if load_project_config_file_from_state_dir(state_dir).get('creation_mode') != 'agent_canvas_v1':
+            if not is_canvas_project(state_dir, config=load_project_config_file_from_state_dir(state_dir)):
                 continue
             with closing(sqlite3.connect(db_path.as_uri() + '?mode=ro', uri=True)) as conn:
                 conn.row_factory = sqlite3.Row
@@ -43,7 +45,7 @@ async def recover_pending_projections(state_root: Path) -> None:
                 if (Path(ctx.state_dir).resolve() != state_dir.resolve()
                         or ctx.project_id != project_id or ctx.requester_user_id != row['actor_id']):
                     raise ValueError('Recovery project scope does not match stored operation')
-                if load_project_config_file_from_state_dir(ctx.state_dir).get('creation_mode') != 'agent_canvas_v1':
+                if not is_canvas_project(ctx.state_dir, config=load_project_config_file_from_state_dir(ctx.state_dir)):
                     continue
                 await asyncio.to_thread(ProjectionService(ObjectStore(ctx.state_dir)).apply, row['id'])
             except Exception:
@@ -61,7 +63,7 @@ def errors():
         raise HTTPException(422, {'code': 'invalid_contract', 'message': '操作字段不符合约定'}) from exc
 
 
-async def service_for(project, user, role):
+async def context_for(project, user, role):
     try:
         ctx = await resolve_project_context(user=user, project_id=project, required_role=role)
     except HTTPException as exc:
@@ -69,11 +71,37 @@ async def service_for(project, user, role):
             raise HTTPException(403, {'code': 'scope_violation', 'message': '无权访问此项目', 'project_id': project}) from exc
         raise
     require_project_home_node(ctx, operation='创作画布访问')
-    if load_project_config_file_from_state_dir(ctx.state_dir).get('creation_mode') != 'agent_canvas_v1':
-        raise OperationError('legacy_project_readonly', '旧项目暂不支持创作画布操作', project_id=ctx.project_id)
+    require_canvas_project(ctx.state_dir, ctx.project_id,
+                           config=load_project_config_file_from_state_dir(ctx.state_dir))
+    return ctx
+
+
+async def service_for(project, user, role):
+    ctx = await context_for(project, user, role)
     actor = ctx.requester_user_id
     return actor, OperationService(ObjectStore(ctx.state_dir), project_id=ctx.project_id,
                                    authorize=lambda candidate, target: candidate == actor and target == ctx.project_id)
+
+
+@router.get('/episodes')
+async def get_episodes(project: str, user: dict = Depends(get_api_user)):
+    with errors():
+        ctx = await context_for(project, user, 'viewer')
+        return {'ok': True, 'data': list_episodes(ctx.state_dir)}
+
+
+@router.post('/episodes')
+async def create_episode(project: str, body: dict, user: dict = Depends(get_api_user)):
+    with errors():
+        ctx = await context_for(project, user, 'editor')
+        request = EpisodeCreate.model_validate(body)
+        if not request.title.strip():
+            raise OperationError('invalid_contract', '分集标题不能为空')
+        objects = ObjectStore(ctx.state_dir)
+        result = EpisodeWorkspace(objects, project_id=ctx.project_id).create(ctx.requester_user_id, request)
+        if result.status == 'running':
+            result = await asyncio.to_thread(ProjectionService(objects).apply, result.operation_id)
+        return {'ok': True, 'data': episode_response(result)}
 
 
 @router.post('/operations')

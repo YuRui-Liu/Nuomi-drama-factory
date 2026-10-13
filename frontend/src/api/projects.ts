@@ -13,6 +13,7 @@ export interface SupertaleProjectSummary {
   id: string;
   name: string;
   display_name?: string;
+  creation_mode?: string | null;
   created_at?: string;
   updated_at?: string;
   episode_count?: number;

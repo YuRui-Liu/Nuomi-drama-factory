@@ -48,6 +48,8 @@ from novelvideo.api.schemas import (
     ProjectUpdate,
 )
 from novelvideo.config import ensure_project_dirs_at_paths
+from novelvideo.creation.project_mode import CREATION_MODE
+from novelvideo.creation.workspace import list_episodes as list_creation_episodes
 from novelvideo.knowledge_pipeline import (
     COGNEE_LEGACY,
     KNOWLEDGE_PIPELINE_STATUS_KEY,
@@ -173,11 +175,16 @@ async def _summary_for_record(
     paths._runtime_dir_override = Path(record.runtime_dir)
     config = load_project_config_file_from_state_dir(record.state_dir)
     status = record.status or "active"
-    episode_count, beat_count = _project_counts(record.owner_username, record.name, status)
+    if config.get('creation_mode') == CREATION_MODE:
+        episode_count = len(list_creation_episodes(record.state_dir)) if status != 'deleted' else None
+        beat_count = None
+    else:
+        episode_count, beat_count = _project_counts(record.owner_username, record.name, status)
     return ProjectSummary(
         id=record.id,
         name=record.name,
         display_name=config.get("display_name") or record.name,
+        creation_mode=config.get('creation_mode'),
         owner_type=record.owner_type,
         owner_id=record.owner_id,
         owner_username=record.owner_username,
@@ -418,13 +425,25 @@ async def list_projects(user: dict = Depends(get_api_user)):
     roles = {
         record.id: await access.effective_project_role(record, principals) for record in records
     }
+    configs = {
+        record.id: load_project_config_file_from_state_dir(record.state_dir)
+        for record in records if is_record_home_node(record)
+    }
+    counts = {
+        record.id: (len(list_creation_episodes(record.state_dir))
+                    if configs[record.id].get('creation_mode') == CREATION_MODE
+                    else _project_counts(record.owner_username, record.name, record.status)[0])
+        for record in records if record.id in configs and record.status != 'deleted'
+    }
     return {
         "ok": True,
         "data": [
             {
                 "id": record.id,
                 "name": record.name,
-                "display_name": (load_project_config_file_from_state_dir(record.state_dir).get("display_name") or record.name) if is_record_home_node(record) else record.name,
+                "display_name": configs.get(record.id, {}).get('display_name') or record.name,
+                "creation_mode": configs.get(record.id, {}).get('creation_mode'),
+                "episode_count": counts.get(record.id),
                 "owner_username": record.owner_username,
                 "owner_type": record.owner_type,
                 "owner_id": record.owner_id,
@@ -502,6 +521,7 @@ async def create_project(
             config={
                 "user": user["username"],
                 "display_name": body.display_name.strip(),
+                "creation_mode": CREATION_MODE,
                 "knowledge_pipeline": KNOWLEDGE_PIPELINE_STRUCTURED,
                 KNOWLEDGE_PIPELINE_STATUS_KEY: STATUS_STRUCTURED_PENDING,
             },
@@ -523,6 +543,7 @@ async def create_project(
             "project_id": record.id,
             "name": body.name,
             "display_name": body.display_name.strip() or body.name,
+            "creation_mode": CREATION_MODE,
             "knowledge_pipeline": KNOWLEDGE_PIPELINE_STRUCTURED,
             "knowledge_pipeline_status": STATUS_STRUCTURED_PENDING,
         },
@@ -538,6 +559,7 @@ async def get_project(project: str, user: dict = Depends(get_api_user)):
         ctx.state_dir,
         username=ctx.owner_username,
         project=ctx.project_name,
+        ensure_uuid=False,
     )
     record = await get_project_registry().get_project(ctx.project_id)
     pipeline_state = knowledge_pipeline_state_from_state_dir(ctx.state_dir)

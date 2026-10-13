@@ -582,12 +582,13 @@ def load_project_config_from_state_dir(
     *,
     username: str | None = None,
     project: str | None = None,
+    ensure_uuid: bool = True,
 ) -> dict:
     """Load effective project configuration from a registry state_dir only."""
 
     config = load_project_config_file_from_state_dir(state_dir)
     project_uuid = str(config.get("project_uuid", "") or "").strip()
-    if config and not project_uuid:
+    if ensure_uuid and config and not project_uuid:
         project_uuid = ensure_project_uuid_in_state_dir(state_dir)
         config["project_uuid"] = project_uuid
 

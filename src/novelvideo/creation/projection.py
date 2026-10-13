@@ -62,16 +62,21 @@ class ProjectionService:
 
         def build(existing):
             try:
-                if existing is None or existing.get('project_id') != patch['scope']['project_id']:
-                    raise ProjectionConflict('Canvas is missing or changed project')
-                payload = self._merge(existing, patch)
+                if 'canvas_create' in patch:
+                    if existing is not None:
+                        raise ProjectionConflict('Canvas identity already exists')
+                    payload = deepcopy(patch['canvas_create'])
+                else:
+                    if existing is None or existing.get('project_id') != patch['scope']['project_id']:
+                        raise ProjectionConflict('Canvas is missing or changed project')
+                    payload = self._merge(existing, patch)
             except ProjectionConflict as exc:
                 # Finalize a rejected attempt while its observed canvas state
                 # is still locked. A concurrent retry cannot apply between the
                 # failed comparison and durable conflict acknowledgement.
                 self._conflict(operation_id, patch, str(exc))
                 raise
-            revision = payload['revision'] = existing['revision'] + 1
+            revision = payload['revision'] = existing['revision'] + 1 if existing is not None else 1
             payload.update(updated_at=utc_now_iso(), save_source='creation_projection')
             if not isinstance(payload.get('metadata'), dict):
                 payload['metadata'] = {}
@@ -97,7 +102,8 @@ class ProjectionService:
         if terminal_result is not None:
             return terminal_result
         revision = (saved.response_cache or saved.payload)['revision']
-        result = OperationResult(operation_id=operation_id, status='applied', canvas_revision=revision)
+        result = OperationResult.model_validate_json(row['result']).model_copy(
+            update={'status': 'applied', 'canvas_revision': revision})
         # Never hold the semantic write transaction while acquiring a canvas lock.
         # Until acknowledgement, the atomic receipt prevents every other worker
         # from entering build/conflict, even after unrelated canvas edits.
@@ -196,6 +202,7 @@ class ProjectionService:
             state = conn.execute('SELECT state, result FROM operations WHERE id=?', (operation_id,)).fetchone()
             if state['state'] != 'pending_projection':
                 return OperationResult.model_validate_json(state['result'])
+            result.object_refs = OperationResult.model_validate_json(state['result']).object_refs
             conn.execute('CREATE TABLE IF NOT EXISTS projection_candidates ('
                          'id TEXT PRIMARY KEY, operation_id TEXT NOT NULL UNIQUE, patch TEXT NOT NULL, reason TEXT NOT NULL)')
             conn.execute('INSERT INTO projection_candidates VALUES (?, ?, ?, ?)',
