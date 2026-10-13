@@ -55,6 +55,10 @@ class CanvasStoreError(RuntimeError):
     """Base class for canvas storage errors."""
 
 
+class CanvasSemanticRestoreRequired(CanvasStoreError, ValueError):
+    """Managed episode references can only be restored with semantic undo."""
+
+
 class CanvasCorruptError(CanvasStoreError):
     def __init__(self, message: str):
         super().__init__(message)
@@ -585,7 +589,7 @@ def check_dangerous_empty_overwrite(
     # buggy / refactored / malicious client cannot wipe user data by
     # mislabeling its request.
     if old_nodes > 0 and new_nodes == 0 and not (
-        save_source in {"manual_clear", "projection_remove"} and allow_empty_overwrite
+        save_source in {"manual_clear", "projection_remove", "creation_projection"} and allow_empty_overwrite
     ):
         raise DangerousEmptyCanvasOverwrite(
             old_nodes=old_nodes,
@@ -685,6 +689,18 @@ def save_canvas(
         if enforce_revision:
             _check_revision(existing, base_revision)
         payload = build_payload(existing)
+        # Projection receipts are atomic evidence, not client-editable metadata.
+        # Preserve them through ordinary autosaves, even clients with old metadata.
+        receipt_key = 'creation_projection_receipts'
+        if save_source != 'creation_projection':
+            metadata = payload.get('metadata')
+            previous_receipts = ((existing or {}).get('metadata') or {}).get(receipt_key)
+            if previous_receipts is not None:
+                if not isinstance(metadata, dict):
+                    metadata = payload['metadata'] = {}
+                metadata[receipt_key] = previous_receipts
+            elif isinstance(metadata, dict):
+                metadata.pop(receipt_key, None)
         # Strip reserved (`__`-prefixed) metadata keys before persisting.
         # Clients must not be able to shadow / forge system fields by
         # injecting metadata like ``__save_log`` or ``__system``.
@@ -739,6 +755,16 @@ def restore_canvas_version(
     base_revision: int | None,
     build_payload: Callable[[dict | None, dict], dict],
 ) -> CanvasRestoreResult:
+    # A whole-canvas snapshot must not restore an obsolete semantic asset binding.
+    # This read-only check does not initialize creation storage for legacy projects.
+    semantic_db = project_dir / 'creation' / 'objects.sqlite3'
+    if semantic_db.is_file():
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(semantic_db.as_uri() + '?mode=ro', uri=True)) as conn:
+            managed = conn.execute('SELECT 1 FROM episode_canvases WHERE canvas_id=?', (canvas_id,)).fetchone()
+        if managed:
+            raise CanvasSemanticRestoreRequired('集画布请使用局部撤销，不能恢复整页历史')
     with canvas_write_lock(project_dir, canvas_id):
         path = canvas_path(project_dir, canvas_id)
         existing = load_canvas_json(path)

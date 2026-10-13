@@ -60,9 +60,11 @@ def test_api_episode_isolation_and_foreign_scope(tmp_path, monkeypatch):
             'expected_revisions': {canvas: 2}, 'payload': {'node_id': 'n', 'asset_ref': {
                 'base_asset_id': base['id'], 'variant_id': variant['id'] if use_variant else None, 'revision': 1}}}
     for data in [body(0, 'one'), body(1, 'two'), body(1, 'two-rebind', True), body(2, 'three', True)]:
+        if data['request_id'] == 'two-rebind':
+            data['expected_revisions'][episodes[1][1]] = 3
         response = client.post('/projects/p/creation/operations', json=data)
         assert response.status_code == 200, response.text
-        assert response.json()['data']['status'] == 'running'
+        assert response.json()['data']['status'] == 'applied'
     uses = client.get(f"/projects/p/creation/assets/{base['id']}/uses").json()['data']
     by_episode = {value['episode_id']: value['asset_ref'] for value in uses}
     assert by_episode[episodes[0][0]]['variant_id'] is None

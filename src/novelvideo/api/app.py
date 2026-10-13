@@ -351,6 +351,11 @@ def create_app() -> FastAPI:
             ensure_bootstrap()
             await get_port("lifecycle").on_startup(register_as_worker=True)
 
+            from novelvideo.api.routes.creation import recover_pending_projections
+            from novelvideo.config import STATE_DIR
+
+            await recover_pending_projections(Path(STATE_DIR))
+
             from novelvideo.sqlite_pragmas import litestream_enabled
 
             if litestream_enabled():

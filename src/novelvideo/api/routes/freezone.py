@@ -8430,6 +8430,8 @@ def _stamp_canvas_mainline_context_project_id(payload: dict, project_id: str) ->
 
 
 def _raise_canvas_store_http(exc: Exception) -> None:
+    if isinstance(exc, canvas_store.CanvasSemanticRestoreRequired):
+        raise HTTPException(409, {'code': 'scoped_undo_required', 'message': str(exc)}) from exc
     if isinstance(exc, canvas_store.CanvasCorruptError):
         raise HTTPException(500, str(exc)) from exc
     if isinstance(exc, canvas_store.CanvasBaseRevisionRequired):

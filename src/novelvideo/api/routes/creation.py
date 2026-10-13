@@ -1,6 +1,11 @@
 """Project-authorized creation operations; legacy projects remain untouched."""
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
+import asyncio
+import json
+import logging
+from pathlib import Path
+import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
@@ -8,11 +13,41 @@ from pydantic import ValidationError
 from novelvideo.api.auth import get_api_user
 from novelvideo.creation.models import OperationRequest
 from novelvideo.creation.operations import OperationError, OperationService
+from novelvideo.creation.projection import ProjectionService
 from novelvideo.creation.store import ObjectStore
 from novelvideo.project_config import load_project_config_file_from_state_dir
 from novelvideo.project_context import require_project_home_node, resolve_project_context
 
 router = APIRouter(prefix='/projects/{project}/creation', tags=['creation'])
+logger = logging.getLogger(__name__)
+
+
+async def recover_pending_projections(state_root: Path) -> None:
+    """Recover existing new-mode stores only, rechecking server-side access."""
+    for db_path in state_root.rglob('creation/objects.sqlite3'):
+        state_dir = db_path.parent.parent
+        try:
+            if load_project_config_file_from_state_dir(state_dir).get('creation_mode') != 'agent_canvas_v1':
+                continue
+            with closing(sqlite3.connect(db_path.as_uri() + '?mode=ro', uri=True)) as conn:
+                conn.row_factory = sqlite3.Row
+                pending = conn.execute("SELECT id, actor_id, payload FROM operations WHERE state='pending_projection' ORDER BY rowid").fetchall()
+        except Exception:
+            logger.exception('Cannot inspect creation recovery store %s', db_path)
+            continue
+        for row in pending:
+            try:
+                project_id = json.loads(row['payload'])['scope']['project_id']
+                ctx = await resolve_project_context(user={'id': row['actor_id']}, project_id=project_id, required_role='editor')
+                require_project_home_node(ctx, operation='创作画布恢复')
+                if (Path(ctx.state_dir).resolve() != state_dir.resolve()
+                        or ctx.project_id != project_id or ctx.requester_user_id != row['actor_id']):
+                    raise ValueError('Recovery project scope does not match stored operation')
+                if load_project_config_file_from_state_dir(ctx.state_dir).get('creation_mode') != 'agent_canvas_v1':
+                    continue
+                await asyncio.to_thread(ProjectionService(ObjectStore(ctx.state_dir)).apply, row['id'])
+            except Exception:
+                logger.exception('Creation projection recovery failed for operation %s in %s', row['id'], db_path)
 
 
 @contextmanager
@@ -46,6 +81,8 @@ async def apply_operation(project: str, body: dict, user: dict = Depends(get_api
     with errors():
         actor, service = await service_for(project, user, 'editor')
         result = service.apply(actor, OperationRequest.model_validate(body))
+        if result.status == 'running':
+            result = await asyncio.to_thread(ProjectionService(service.objects).apply, result.operation_id)
         return {'ok': True, 'data': result.model_dump()}
 
 
