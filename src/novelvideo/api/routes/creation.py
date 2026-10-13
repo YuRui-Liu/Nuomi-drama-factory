@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from novelvideo.api.auth import get_api_user
 from novelvideo.creation.models import OperationRequest
+from novelvideo.creation.canvas_workspaces import CanvasCreate, CanvasWorkspace, canvas_response, list_canvases
 from novelvideo.creation.operations import OperationError, OperationService
 from novelvideo.creation.projection import ProjectionService
 from novelvideo.creation.store import ObjectStore
@@ -88,6 +89,27 @@ async def get_episodes(project: str, user: dict = Depends(get_api_user)):
     with errors():
         ctx = await context_for(project, user, 'viewer')
         return {'ok': True, 'data': list_episodes(ctx.state_dir)}
+
+
+@router.get('/canvases')
+async def get_canvases(project: str, user: dict = Depends(get_api_user)):
+    with errors():
+        ctx = await context_for(project, user, 'viewer')
+        return {'ok': True, 'data': list_canvases(ctx.state_dir)}
+
+
+@router.post('/canvases')
+async def create_canvas_workspace(project: str, body: dict, user: dict = Depends(get_api_user)):
+    with errors():
+        ctx = await context_for(project, user, 'editor')
+        request = CanvasCreate.model_validate(body)
+        if not request.title.strip():
+            raise OperationError('invalid_contract', '画布标题不能为空')
+        objects = ObjectStore(ctx.state_dir)
+        result = CanvasWorkspace(objects, project_id=ctx.project_id).create(ctx.requester_user_id, request)
+        if result.status == 'running':
+            result = await asyncio.to_thread(ProjectionService(objects).apply, result.operation_id)
+        return {'ok': True, 'data': canvas_response(result)}
 
 
 @router.post('/episodes')

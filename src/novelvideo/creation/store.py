@@ -34,6 +34,10 @@ _SCHEMA = (
         target_id TEXT NOT NULL REFERENCES objects(id), kind TEXT NOT NULL, payload TEXT NOT NULL)''',
     '''CREATE TABLE IF NOT EXISTS episode_canvases (
         episode_id TEXT PRIMARY KEY, canvas_id TEXT NOT NULL UNIQUE)''',
+    '''CREATE TABLE IF NOT EXISTS canvas_workspaces (
+        canvas_id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('concept','episode','free')),
+        episode_id TEXT UNIQUE, title TEXT NOT NULL, operation_id TEXT NOT NULL, created_at TEXT NOT NULL)''',
+    "CREATE UNIQUE INDEX IF NOT EXISTS single_concept_canvas ON canvas_workspaces(kind) WHERE kind='concept'",
     '''CREATE TABLE IF NOT EXISTS operations (
         id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, request_hash TEXT NOT NULL,
         state TEXT NOT NULL, payload TEXT NOT NULL, result TEXT, actor_id TEXT NOT NULL)''',
@@ -53,6 +57,18 @@ class ObjectStore:
         with self.transaction() as conn:
             for statement in _SCHEMA:
                 conn.execute(statement)
+            # Explicit initialization is the only backfill boundary. Require a
+            # semantic creation operation; arbitrary legacy maps are not registered.
+            conn.execute("""INSERT OR IGNORE INTO canvas_workspaces
+                SELECT e.canvas_id, 'episode', e.episode_id, json_extract(v.payload,'$.title'),
+                       o.id, v.created_at
+                FROM episode_canvases e JOIN objects obj ON obj.id=e.episode_id AND obj.kind='episode'
+                JOIN object_versions v ON v.object_id=obj.id AND v.revision=obj.current_revision
+                JOIN operations o ON o.id=json_extract(v.payload,'$.operation_id')
+                WHERE json_extract(o.payload,'$.kind')='episode.create'
+                  AND json_extract(o.payload,'$.scope.episode_id')=e.episode_id
+                  AND json_extract(o.payload,'$.scope.canvas_id')=e.canvas_id
+                  AND json_extract(v.payload,'$.title') IS NOT NULL""")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)

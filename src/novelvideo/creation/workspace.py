@@ -75,6 +75,8 @@ class EpisodeWorkspace:
             conn.execute('INSERT INTO object_versions VALUES (?, 1, ?, ?, ?)',
                          (episode_id, json.dumps(payload, ensure_ascii=False), actor, datetime.now(timezone.utc).isoformat()))
             conn.execute('INSERT INTO episode_canvases VALUES (?, ?)', (episode_id, canvas_id))
+            conn.execute('INSERT INTO canvas_workspaces VALUES (?, ?, ?, ?, ?, ?)',
+                         (canvas_id, 'episode', episode_id, request.title, operation_id, datetime.now(timezone.utc).isoformat()))
             conn.execute('INSERT INTO operations VALUES (?, ?, ?, ?, ?, ?, ?)',
                 (operation_id, request.request_id, request_hash, 'pending_projection',
                  json.dumps({**intent, 'scope': scope}, ensure_ascii=False), result.model_dump_json(), actor))

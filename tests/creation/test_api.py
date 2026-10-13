@@ -41,6 +41,7 @@ def test_api_episode_isolation_and_foreign_scope(tmp_path, monkeypatch):
         episodes.append((episode, canvas))
         with store.transaction() as conn:
             conn.execute('INSERT INTO episode_canvases VALUES (?, ?)', (episode, canvas))
+            conn.execute("INSERT INTO canvas_workspaces VALUES (?, 'episode', ?, '集', 'fixture', 'fixture')", (canvas, episode))
         create_canvas(tmp_path, canvas, project_id='p', name='集', actor_id='alice')
         patch_graph(tmp_path, canvas, base_revision=1, request_id='seed', operations=[{'op': 'add_node', 'node': {'id': 'n', 'type': 'imageNode', 'data': {}}}])
     async def resolve(**kwargs):

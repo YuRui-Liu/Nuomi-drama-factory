@@ -56,7 +56,7 @@ class CanvasStoreError(RuntimeError):
 
 
 class CanvasSemanticRestoreRequired(CanvasStoreError, ValueError):
-    """Managed episode references can only be restored with semantic undo."""
+    """Managed creation references can only be restored with semantic undo."""
 
 
 class CanvasCorruptError(CanvasStoreError):
@@ -762,9 +762,11 @@ def restore_canvas_version(
         import sqlite3
         from contextlib import closing
         with closing(sqlite3.connect(semantic_db.as_uri() + '?mode=ro', uri=True)) as conn:
-            managed = conn.execute('SELECT 1 FROM episode_canvases WHERE canvas_id=?', (canvas_id,)).fetchone()
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            managed = any(conn.execute(f'SELECT 1 FROM {table} WHERE canvas_id=?', (canvas_id,)).fetchone()
+                          for table in ('canvas_workspaces', 'episode_canvases') if table in tables)
         if managed:
-            raise CanvasSemanticRestoreRequired('集画布请使用局部撤销，不能恢复整页历史')
+            raise CanvasSemanticRestoreRequired('创作画布请使用局部撤销，不能恢复整页历史')
     with canvas_write_lock(project_dir, canvas_id):
         path = canvas_path(project_dir, canvas_id)
         existing = load_canvas_json(path)

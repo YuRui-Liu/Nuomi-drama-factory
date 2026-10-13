@@ -100,8 +100,11 @@ class OperationService:
         except (ValueError, TypeError) as exc:
             raise OperationError('invalid_contract', '操作字段必须是有限 JSON 值') from exc
         with self.objects.transaction() as conn:
-            mapping = conn.execute('SELECT canvas_id FROM episode_canvases WHERE episode_id=?', (scope.episode_id,)).fetchone()
-            _scope(mapping is not None and mapping['canvas_id'] == scope.canvas_id, episode_id=scope.episode_id, canvas_id=scope.canvas_id)
+            mapping = conn.execute('SELECT kind, episode_id FROM canvas_workspaces WHERE canvas_id=?', (scope.canvas_id,)).fetchone()
+            _scope(mapping is not None and mapping['episode_id'] == scope.episode_id
+                   and ((mapping['kind'] == 'episode' and scope.episode_id is not None)
+                        or (mapping['kind'] in {'concept', 'free'} and scope.episode_id is None)),
+                   episode_id=scope.episode_id, canvas_id=scope.canvas_id)
             # Replays precede mutable node/revision checks, but never permission
             # checks. Deleting a node must not invalidate an acknowledged retry.
             previous = conn.execute('SELECT * FROM operations WHERE request_id=?', (request.request_id,)).fetchone()
@@ -176,7 +179,12 @@ class OperationService:
             _scope(obj is not None, object_id=payload['object_id'])
             kind = obj['kind']
             if kind in {'story_fragment', 'storyboard'}:
-                _scope(obj['payload'].get('episode_id') == request.scope.episode_id, object_id=obj['id'])
+                owner = obj['payload'].get('canvas_id')
+                if owner is None and obj['payload'].get('episode_id') is not None:
+                    mapping = conn.execute('SELECT canvas_id FROM canvas_workspaces WHERE episode_id=?',
+                                           (obj['payload']['episode_id'],)).fetchone()
+                    owner = mapping['canvas_id'] if mapping else None
+                _scope(owner == request.scope.canvas_id and obj['payload'].get('episode_id') == request.scope.episode_id, object_id=obj['id'])
                 _contract(type(request.expected_revisions.get(obj['id'])) is int, '必须提供对象版本')
         if kind not in {'story_fragment', 'storyboard'}:
             raise OperationError('capability_unavailable', '此类对象须使用专用领域服务', kind=kind)
@@ -187,7 +195,7 @@ class OperationService:
     def _write_object(self, conn, actor, request):
         if request.kind == 'object.create':
             object_id, revision = uuid4().hex, 1
-            payload = {**request.payload['data'], 'episode_id': request.scope.episode_id}
+            payload = {**request.payload['data'], 'episode_id': request.scope.episode_id, 'canvas_id': request.scope.canvas_id}
             conn.execute('INSERT INTO objects (id, kind, current_revision) VALUES (?, ?, ?)',
                          (object_id, request.payload['kind'], revision))
         else:
@@ -215,21 +223,38 @@ class OperationService:
         _scope(base is not None and base['kind'] in {'character', 'scene'} and target is not None,
                base_asset_id=ref.base_asset_id)
         _scope(not base['variant_id'] and (not ref.variant_id or target['base_asset_id'] == ref.base_asset_id), base_asset_id=ref.base_asset_id)
-        episode = ObjectStore._read(conn, scope.episode_id, None)
-        _scope(episode is not None and episode['kind'] == 'episode', episode_id=scope.episode_id)
+        source_id = scope.episode_id
+        if source_id is not None:
+            episode = ObjectStore._read(conn, source_id, None)
+            _scope(episode is not None and episode['kind'] == 'episode', episode_id=scope.episode_id)
+        else:
+            source_id = self._project_object(conn)
         relation_id = fingerprint(['asset_binding', scope.episode_id, scope.canvas_id, node_id])
         previous = conn.execute('SELECT * FROM relations WHERE id=?', (relation_id,)).fetchone()
         value = {**scope.model_dump(exclude={'node_ids'}), 'node_id': node_id,
                  'asset_ref': ref.model_dump(), 'operation_id': operation_id}
         serialized = json.dumps(value, ensure_ascii=False)
         conn.execute('INSERT INTO relations VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET target_id=excluded.target_id, payload=excluded.payload',
-                     (relation_id, scope.episode_id, target['id'], 'asset_binding', serialized))
+                     (relation_id, source_id, target['id'], 'asset_binding', serialized))
         # Keep exact persisted JSON, including ownership, as the compensation
         # CAS token. Never restore/delete a relation now owned by a later op.
         change = {'before': dict(previous) if previous else None,
-                  'after': {'id': relation_id, 'source_id': scope.episode_id,
+                  'after': {'id': relation_id, 'source_id': source_id,
                             'target_id': target['id'], 'kind': 'asset_binding', 'payload': serialized}}
         return ([{'op': 'update_node', 'node_id': node_id, 'data': {'assetRef': ref.model_dump()}}], [change])
+
+    def _project_object(self, conn):
+        """Stable binding owner, allocated under the caller's serialized transaction."""
+        rows = conn.execute("SELECT o.id, v.payload FROM objects o JOIN object_versions v "
+            "ON v.object_id=o.id AND v.revision=o.current_revision WHERE o.kind='project'")
+        for row in rows:
+            if json.loads(row['payload']).get('project_id') == self.project_id:
+                return row['id']
+        object_id = uuid4().hex
+        conn.execute("INSERT INTO objects (id, kind, current_revision) VALUES (?, 'project', 1)", (object_id,))
+        conn.execute('INSERT INTO object_versions VALUES (?, 1, ?, ?, ?)',
+            (object_id, json.dumps({'project_id': self.project_id}), 'system', datetime.now(timezone.utc).isoformat()))
+        return object_id
 
     def _graph_patch(self, request, canvas):
         _contract(set(request.payload) == {'operations'})

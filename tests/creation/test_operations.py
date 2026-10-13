@@ -12,6 +12,7 @@ def setup_service(tmp_path):
     episode = store.create('episode', {}, 'alice')
     with store.transaction() as conn:
         conn.execute('INSERT INTO episode_canvases VALUES (?, ?)', (episode['id'], 'canvas-1'))
+        conn.execute("INSERT INTO canvas_workspaces VALUES ('canvas-1', 'episode', ?, '集', 'fixture', 'fixture')", (episode['id'],))
     create_canvas(tmp_path, 'canvas-1', project_id='p', name='集', actor_id='alice')
     patch_graph(tmp_path, 'canvas-1', base_revision=1, request_id='seed', operations=[
         {'op': 'add_node', 'node': {'id': 'n', 'type': 'imageNode', 'data': {}, 'position': {'x': 0, 'y': 0}}}])
@@ -111,7 +112,7 @@ def test_semantic_object_versions_and_forbidden_outputs(tmp_path):
     store, service, episode = setup_service(tmp_path)
     created = service.apply('alice', request(episode, kind='object.create', payload={'kind': 'story_fragment', 'data': {'text': '开场'}}))
     object_id = created.object_refs[0]['id']
-    assert store.read(object_id)['payload'] == {'text': '开场', 'episode_id': episode}
+    assert store.read(object_id)['payload'] == {'text': '开场', 'episode_id': episode, 'canvas_id': 'canvas-1'}
     update = request(episode, request_id='edit', kind='object.update', expected_revisions={'canvas-1': 2, object_id: 1},
                      payload={'object_id': object_id, 'data': {'text': '结束'}})
     result = service.apply('alice', update)

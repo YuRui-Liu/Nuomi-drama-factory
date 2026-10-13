@@ -24,7 +24,7 @@ class AssetRef(StrictModel):
 
 class Scope(StrictModel):
     project_id: NonEmptyString
-    episode_id: NonEmptyString
+    episode_id: NonEmptyString | None = None
     canvas_id: NonEmptyString
     node_ids: list[str] = Field(default_factory=list)
 
