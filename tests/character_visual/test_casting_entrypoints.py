@@ -7,6 +7,26 @@ import pytest
 from tests.character_visual.test_casting_adoption import adoption_env as adoption_env
 
 
+def _production_resolution(env):
+    from novelvideo.api.deps import ProjectResolution
+    from novelvideo.project_context import ProjectContext
+
+    ctx = ProjectContext(
+        project_id=env.ctx.project_id, project_name=env.ctx.project_name,
+        owner_type="user", owner_id="owner-id", owner_username=env.ctx.owner_username,
+        requester_user_id=env.ctx.requester_user_id, requester_username="owner",
+        requester_principals=(("user", env.ctx.requester_user_id),),
+        effective_role=env.ctx.effective_role, home_node_id="local", is_home_node=True,
+        output_dir=env.ctx.output_dir, state_dir=env.ctx.state_dir,
+        runtime_dir=env.ctx.state_dir / "runtime",
+    )
+    return ProjectResolution(
+        ctx=ctx, username=ctx.owner_username, project_name=ctx.project_name,
+        project_dir=ctx.output_dir, output_dir=str(ctx.output_dir),
+        state_dir=str(ctx.state_dir), runtime_dir=str(ctx.runtime_dir),
+    )
+
+
 def test_media_resolution_recovers_before_missing_canonical_check(tmp_path, monkeypatch):
     from novelvideo.api.routes import files
 
@@ -75,7 +95,7 @@ async def test_generic_workflow_import_cannot_bypass_casting(adoption_env, ident
     )
 
     env = await adoption_env(identity_id)
-    resolved = SimpleNamespace(project_dir=env.ctx.output_dir, state_dir=env.ctx.state_dir)
+    resolved = _production_resolution(env)
 
     async def scope(*args, **kwargs):
         return resolved
@@ -229,7 +249,7 @@ async def test_other_slot_cannot_mutate_protected_casting_paths(
     workflow_before = workflow_path.read_bytes()
 
     async def scope(*args, **kwargs):
-        return SimpleNamespace(project_dir=env.ctx.output_dir, state_dir=env.ctx.state_dir)
+        return _production_resolution(env)
 
     monkeypatch.setattr(production_assets, "resolve_project_scope", scope)
     with pytest.raises(HTTPException) as exc:
