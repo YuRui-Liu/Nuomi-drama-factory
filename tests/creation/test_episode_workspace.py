@@ -20,7 +20,7 @@ def workspace(tmp_path, monkeypatch):
     calls = []
     async def resolve(**kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(project_id='p', requester_user_id='alice', state_dir=tmp_path, is_home_node=True)
+        return SimpleNamespace(project_id='p', requester_user_id='alice', state_dir=tmp_path, output_dir=tmp_path, is_home_node=True)
     monkeypatch.setattr(creation, 'resolve_project_context', resolve)
     app = FastAPI()
     app.include_router(creation.router)

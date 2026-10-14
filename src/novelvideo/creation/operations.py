@@ -71,9 +71,10 @@ def _layout(value):
 
 
 class OperationService:
-    def __init__(self, objects: ObjectStore, *, project_id: str, authorize):
+    def __init__(self, objects: ObjectStore, *, project_id: str, authorize, output_dir=None):
         self.objects, self.project_id, self.authorize = objects, project_id, authorize
         self.state_dir = objects.db_path.parent.parent
+        self.output_dir = output_dir or self.state_dir
 
     def _authorized(self, actor, project_id):
         _scope(project_id == self.project_id and self.authorize(actor, project_id), project_id=project_id)
@@ -99,6 +100,35 @@ class OperationService:
             request_hash = fingerprint(request.model_dump(mode='json'))
         except (ValueError, TypeError) as exc:
             raise OperationError('invalid_contract', '操作字段必须是有限 JSON 值') from exc
+        prepared = None
+        if request.kind == 'asset.bind':
+            from .asset_reference import AssetReferences, AssetReferenceError, readonly
+            # Replay before archive I/O: an acknowledged operation remains
+            # idempotent even if media storage is temporarily unavailable.
+            with readonly(self.objects.db_path) as conn:
+                previous = conn.execute('SELECT * FROM operations WHERE request_id=?', (request.request_id,)).fetchone()
+                if previous:
+                    if previous['request_hash'] != request_hash or previous['actor_id'] != actor:
+                        raise OperationError('idempotency_conflict', '请求编号已用于不同操作')
+                    return OperationResult.model_validate_json(previous['result'])
+            payload = request.payload
+            _contract(set(payload) in ({'node_id', 'asset_ref', 'media'}, {'node_id', 'asset_ref', 'media', 'create'}))
+            if 'create' in payload:
+                _contract(isinstance(payload['create'], dict) and set(payload['create']) <= {'type', *LAYOUT_FIELDS})
+                _layout(payload['create'])
+                node_type = payload['create'].get('type')
+            else:
+                canvas = read_canvas(self.state_dir, scope.canvas_id)
+                _scope(canvas is not None and canvas.get('project_id') == self.project_id)
+                node = next((n for n in canvas['nodes'] if n['id'] == payload['node_id']), None)
+                _scope(node is not None)
+                node_type = node['type']
+            try:
+                prepared = AssetReferences(self.state_dir, self.output_dir, self.project_id).materialize(
+                    payload['asset_ref'], payload['media'], node_type)
+            except AssetReferenceError as exc:
+                raise OperationError('scope_violation' if exc.code == 'asset_reference_unknown' else exc.code, str(exc)) from exc
+            prepared['node_type'] = node_type
         with self.objects.transaction() as conn:
             mapping = conn.execute('SELECT kind, episode_id FROM canvas_workspaces WHERE canvas_id=?', (scope.canvas_id,)).fetchone()
             _scope(mapping is not None and mapping['episode_id'] == scope.episode_id
@@ -121,14 +151,16 @@ class OperationService:
             if request.proposal_id:
                 raise OperationError('approval_stale', '确认授权尚未验证', proposal_id=request.proposal_id)
             _contract(len(scope.node_ids) == len(set(scope.node_ids)))
-            if request.kind != 'graph.patch':
+            if request.kind != 'graph.patch' and not (request.kind == 'asset.bind' and 'create' in request.payload):
                 _scope(set(scope.node_ids) <= nodes.keys(), canvas_id=scope.canvas_id)
             operation_id = uuid4().hex
             relation_changes = []
             if request.kind == 'graph.patch':
                 operations = self._graph_patch(request, canvas)
             elif request.kind == 'asset.bind':
-                operations, relation_changes = self._asset_bind(conn, request, nodes, operation_id)
+                operations, relation_changes = self._asset_bind(conn, request, nodes, operation_id, prepared)
+                if 'create' in request.payload:
+                    _contract(validate_graph([*canvas['nodes'], operations[0]['node']], canvas['edges'])['valid'], '新素材节点布局无效')
             elif request.kind in {'object.create', 'object.update'}:
                 operations = None
                 self._validate_object(conn, request)
@@ -161,6 +193,8 @@ class OperationService:
                                          'fields': sorted(op.get('data', {})) + sorted(set(op) & LAYOUT_FIELDS),
                                          'op': op['op']} for op in operations]}
             result = OperationResult(operation_id=operation_id, status='running', canvas_revision=expected)
+            if prepared is not None:
+                patch['asset_archives'] = {'root': str(self.output_dir), 'blobs': prepared['blobs']}
             conn.execute('INSERT INTO operations VALUES (?, ?, ?, ?, ?, ?, ?)',
                          (operation_id, request.request_id, request_hash, 'pending_projection', request.model_dump_json(), result.model_dump_json(), actor))
             conn.execute('INSERT INTO projection_outbox VALUES (?, ?, ?, NULL)',
@@ -208,21 +242,22 @@ class OperationService:
                      (object_id, revision, json.dumps(payload, ensure_ascii=False), actor, datetime.now(timezone.utc).isoformat()))
         return {'id': object_id, 'revision': revision}
 
-    def _asset_bind(self, conn, request, nodes, operation_id):
+    def _asset_bind(self, conn, request, nodes, operation_id, prepared):
+        from .asset_reference import AssetReferences
+        from .asset_sync import fingerprint as asset_fingerprint
         payload, scope = request.payload, request.scope
-        _contract(set(payload) == {'node_id', 'asset_ref'})
         node_id = payload['node_id']
         _contract(isinstance(node_id, str))
-        _scope(node_id in nodes and node_id in scope.node_ids, node_id=node_id)
+        creating = 'create' in payload
+        _scope(scope.node_ids == [node_id] and (node_id not in nodes if creating else node_id in nodes), node_id=node_id)
+        if not creating:
+            _contract(nodes[node_id]['type'] == prepared['node_type'], '节点类型已变化')
         try:
             ref = AssetRef.model_validate(payload['asset_ref'])
         except ValidationError as exc:
             raise OperationError('invalid_contract', '资产引用字段无效') from exc
-        base = ObjectStore._read(conn, ref.base_asset_id, 1)
-        target = ObjectStore._read(conn, ref.variant_id or ref.base_asset_id, ref.revision)
-        _scope(base is not None and base['kind'] in {'character', 'scene'} and target is not None,
-               base_asset_id=ref.base_asset_id)
-        _scope(not base['variant_id'] and (not ref.variant_id or target['base_asset_id'] == ref.base_asset_id), base_asset_id=ref.base_asset_id)
+        target, mapping = AssetReferences.fixed(conn, ref)
+        _contract(asset_fingerprint({'asset_ref': ref.model_dump(), 'object': target, 'mapping': mapping}) == prepared['proof'], '固定资产证据已变化')
         source_id = scope.episode_id
         if source_id is not None:
             episode = ObjectStore._read(conn, source_id, None)
@@ -232,7 +267,7 @@ class OperationService:
         relation_id = fingerprint(['asset_binding', scope.episode_id, scope.canvas_id, node_id])
         previous = conn.execute('SELECT * FROM relations WHERE id=?', (relation_id,)).fetchone()
         value = {**scope.model_dump(exclude={'node_ids'}), 'node_id': node_id,
-                 'asset_ref': ref.model_dump(), 'operation_id': operation_id}
+                 'asset_ref': ref.model_dump(), 'media': payload['media'], 'operation_id': operation_id}
         serialized = json.dumps(value, ensure_ascii=False)
         conn.execute('INSERT INTO relations VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET target_id=excluded.target_id, payload=excluded.payload',
                      (relation_id, source_id, target['id'], 'asset_binding', serialized))
@@ -241,7 +276,13 @@ class OperationService:
         change = {'before': dict(previous) if previous else None,
                   'after': {'id': relation_id, 'source_id': source_id,
                             'target_id': target['id'], 'kind': 'asset_binding', 'payload': serialized}}
-        return ([{'op': 'update_node', 'node_id': node_id, 'data': {'assetRef': ref.model_dump()}}], [change])
+        if creating:
+            node = {'id': node_id, **payload['create'], 'data': {**prepared['data'], 'aspectRatio': '1:1'}}
+            validate_graph([node], [])
+            operation = {'op': 'add_node', 'node': node}
+        else:
+            operation = {'op': 'update_node', 'node_id': node_id, 'data': prepared['data']}
+        return ([operation], [change])
 
     def _project_object(self, conn):
         """Stable binding owner, allocated under the caller's serialized transaction."""

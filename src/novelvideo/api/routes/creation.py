@@ -16,6 +16,8 @@ from novelvideo.creation.canvas_workspaces import CanvasCreate, CanvasWorkspace,
 from novelvideo.creation.operations import OperationError, OperationService
 from novelvideo.creation.projection import ProjectionService
 from novelvideo.creation.store import ObjectStore
+from novelvideo.creation.asset_reference import AssetReferences, AssetReferenceError, readonly, table
+from novelvideo.creation.asset_sync import SourceSyncPending
 from novelvideo.creation.project_mode import is_canvas_project, require_canvas_project
 from novelvideo.creation.workspace import EpisodeCreate, EpisodeWorkspace, episode_response, list_episodes
 from novelvideo.project_config import load_project_config_file_from_state_dir
@@ -60,6 +62,10 @@ def errors():
     except OperationError as exc:
         status = 403 if exc.code == 'scope_violation' else 503 if exc.code == 'capability_unavailable' else 422 if exc.code == 'invalid_contract' else 409
         raise HTTPException(status, exc.as_dict()) from exc
+    except AssetReferenceError as exc:
+        raise HTTPException(409, {'code': exc.code, 'message': str(exc)}) from exc
+    except SourceSyncPending as exc:
+        raise HTTPException(409, {'code': 'asset_media_pending', 'message': str(exc)}) from exc
     except (ValidationError, ValueError, TypeError, KeyError) as exc:
         raise HTTPException(422, {'code': 'invalid_contract', 'message': '操作字段不符合约定'}) from exc
 
@@ -81,7 +87,48 @@ async def service_for(project, user, role):
     ctx = await context_for(project, user, role)
     actor = ctx.requester_user_id
     return actor, OperationService(ObjectStore(ctx.state_dir), project_id=ctx.project_id,
+                                   output_dir=ctx.output_dir,
                                    authorize=lambda candidate, target: candidate == actor and target == ctx.project_id)
+
+
+@router.get('/assets')
+async def browse_assets(project: str, user: dict = Depends(get_api_user)):
+    with errors():
+        ctx = await context_for(project, user, 'viewer')
+        service = AssetReferences(ctx.state_dir, ctx.output_dir, ctx.project_id)
+        return {'ok': True, 'data': await asyncio.to_thread(service.catalog)}
+
+
+@router.post('/assets/register')
+async def register_asset(project: str, body: dict, user: dict = Depends(get_api_user)):
+    with errors():
+        ctx = await context_for(project, user, 'editor')
+        if set(body) != {'selection', 'proof'}:
+            raise OperationError('invalid_contract', '必须提供资产选择及浏览凭据')
+        ref = await AssetReferences(ctx.state_dir, ctx.output_dir, ctx.project_id).register(
+            body['selection'], body['proof'], actor=ctx.requester_user_id)
+        return {'ok': True, 'data': ref.model_dump()}
+
+
+@router.get('/assets/{base_id}/versions/{revision}')
+async def asset_version(project: str, base_id: str, revision: int, variant_id: str | None = None,
+                        user: dict = Depends(get_api_user)):
+    with errors():
+        ctx = await context_for(project, user, 'viewer')
+        return {'ok': True, 'data': AssetReferences(ctx.state_dir, ctx.output_dir, ctx.project_id).resolve(
+            {'base_asset_id': base_id, 'variant_id': variant_id, 'revision': revision})}
+
+
+@router.get('/assets/{base_id}/versions/{revision}/media')
+async def resolve_asset_media(project: str, base_id: str, revision: int, slot_id: str, role: str,
+                              node_type: str, variant_id: str | None = None, user: dict = Depends(get_api_user)):
+    with errors():
+        ctx = await context_for(project, user, 'viewer')
+        service = AssetReferences(ctx.state_dir, ctx.output_dir, ctx.project_id)
+        result = await asyncio.to_thread(service.materialize,
+            {'base_asset_id': base_id, 'variant_id': variant_id, 'revision': revision},
+            {'slot_id': slot_id, 'role': role}, node_type)
+        return {'ok': True, 'data': result['data']}
 
 
 @router.get('/episodes')
@@ -130,7 +177,7 @@ async def create_episode(project: str, body: dict, user: dict = Depends(get_api_
 async def apply_operation(project: str, body: dict, user: dict = Depends(get_api_user)):
     with errors():
         actor, service = await service_for(project, user, 'editor')
-        result = service.apply(actor, OperationRequest.model_validate(body))
+        result = await asyncio.to_thread(service.apply, actor, OperationRequest.model_validate(body))
         if result.status == 'running':
             result = await asyncio.to_thread(ProjectionService(service.objects).apply, result.operation_id)
         return {'ok': True, 'data': result.model_dump()}
@@ -139,12 +186,20 @@ async def apply_operation(project: str, body: dict, user: dict = Depends(get_api
 @router.get('/operations/{operation_id}')
 async def get_operation(project: str, operation_id: str, user: dict = Depends(get_api_user)):
     with errors():
-        actor, service = await service_for(project, user, 'viewer')
-        return {'ok': True, 'data': service.get(actor, operation_id).model_dump()}
+        ctx = await context_for(project, user, 'viewer')
+        path = Path(ctx.state_dir) / 'creation' / 'objects.sqlite3'
+        row = None
+        if path.is_file():
+            with readonly(path) as conn:
+                if table(conn, 'operations'):
+                    row = conn.execute('SELECT result FROM operations WHERE id=?', (operation_id,)).fetchone()
+        if row is None:
+            raise OperationError('scope_violation', '操作不存在')
+        return {'ok': True, 'data': json.loads(row['result'])}
 
 
 @router.get('/assets/{base_id}/uses')
 async def asset_uses(project: str, base_id: str, user: dict = Depends(get_api_user)):
     with errors():
-        actor, service = await service_for(project, user, 'viewer')
-        return {'ok': True, 'data': service.asset_uses(actor, base_id)}
+        ctx = await context_for(project, user, 'viewer')
+        return {'ok': True, 'data': AssetReferences(ctx.state_dir, ctx.output_dir, ctx.project_id).uses(base_id)}

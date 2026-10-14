@@ -10,7 +10,7 @@ def test_legacy_does_not_create_store_and_scope_auth(tmp_path, monkeypatch):
     calls = []
     async def resolve(**kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(project_id='p', requester_user_id='alice', state_dir=tmp_path, is_home_node=True)
+        return SimpleNamespace(project_id='p', requester_user_id='alice', state_dir=tmp_path, output_dir=tmp_path, is_home_node=True)
     monkeypatch.setattr(creation, 'resolve_project_context', resolve)
     app = FastAPI()
     app.include_router(creation.router)
@@ -30,10 +30,9 @@ def test_api_episode_isolation_and_foreign_scope(tmp_path, monkeypatch):
     from novelvideo.freezone.orchestration.projection import create_canvas, patch_graph
     from fastapi import HTTPException
     store = ObjectStore(tmp_path)
-    base = store.create('character', {}, 'alice')
-    variant = store.create('character', {}, 'alice')
-    with store.transaction() as conn:
-        conn.execute('UPDATE objects SET base_asset_id=?, variant_id=? WHERE id=?', (base['id'], variant['id'], variant['id']))
+    from .test_operations import registered_asset
+    variant = registered_asset(store, variant=True)
+    base = store.read(variant['ref']['base_asset_id'], 1)
     episodes = []
     for index in range(3):
         episode = store.create('episode', {}, 'alice')['id']
@@ -43,11 +42,11 @@ def test_api_episode_isolation_and_foreign_scope(tmp_path, monkeypatch):
             conn.execute('INSERT INTO episode_canvases VALUES (?, ?)', (episode, canvas))
             conn.execute("INSERT INTO canvas_workspaces VALUES (?, 'episode', ?, '集', 'fixture', 'fixture')", (canvas, episode))
         create_canvas(tmp_path, canvas, project_id='p', name='集', actor_id='alice')
-        patch_graph(tmp_path, canvas, base_revision=1, request_id='seed', operations=[{'op': 'add_node', 'node': {'id': 'n', 'type': 'imageNode', 'data': {}}}])
+        patch_graph(tmp_path, canvas, base_revision=1, request_id='seed', operations=[{'op': 'add_node', 'node': {'id': 'n', 'type': 'uploadNode', 'data': {}}}])
     async def resolve(**kwargs):
         if kwargs['project_id'] != 'p':
             raise HTTPException(403, 'denied')
-        return SimpleNamespace(project_id='p', requester_user_id='alice', state_dir=tmp_path, is_home_node=True)
+        return SimpleNamespace(project_id='p', requester_user_id='alice', state_dir=tmp_path, output_dir=tmp_path, is_home_node=True)
     monkeypatch.setattr(creation, 'resolve_project_context', resolve)
     monkeypatch.setattr(creation, 'load_project_config_file_from_state_dir', lambda _: {'creation_mode': 'agent_canvas_v1'})
     app = FastAPI()
@@ -58,7 +57,8 @@ def test_api_episode_isolation_and_foreign_scope(tmp_path, monkeypatch):
         episode, canvas = episodes[index]
         return {'request_id': request_id, 'kind': 'asset.bind',
             'scope': {'project_id': 'p', 'episode_id': episode, 'canvas_id': canvas, 'node_ids': ['n']},
-            'expected_revisions': {canvas: 2}, 'payload': {'node_id': 'n', 'asset_ref': {
+            'expected_revisions': {canvas: 2}, 'payload': {'node_id': 'n', 'media': variant['media'] if use_variant else {
+                'slot_id': base['payload']['_media'][0]['slot_id'], 'role': 'portrait'}, 'asset_ref': {
                 'base_asset_id': base['id'], 'variant_id': variant['id'] if use_variant else None, 'revision': 1}}}
     for data in [body(0, 'one'), body(1, 'two'), body(1, 'two-rebind', True), body(2, 'three', True)]:
         if data['request_id'] == 'two-rebind':

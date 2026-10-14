@@ -1,4 +1,7 @@
 import json
+import asyncio
+from pathlib import Path
+from uuid import uuid4
 import pytest
 
 from novelvideo.creation.models import OperationRequest
@@ -6,7 +9,46 @@ from novelvideo.creation.store import ObjectStore
 from novelvideo.freezone.orchestration.projection import create_canvas, patch_graph
 
 
-def setup_service(tmp_path):
+def registered_asset(store, *, variant=False):
+    from novelvideo.sqlite_store import SQLiteStore
+    from novelvideo.models import NovelCharacter, CharacterIdentity
+    from novelvideo.creation.asset_adapter import AssetAdapter
+    root = store.db_path.parent.parent
+    name = '角色-' + uuid4().hex
+    async def register():
+        source = SQLiteStore('test', output_dir=str(root), state_dir=str(root))
+        try:
+            await source.initialize()
+            await source.add_character(NovelCharacter(name=name))
+            path = root / 'assets' / 'characters' / name / 'portrait.png'
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b'image')
+            adapter = AssetAdapter(source, store, 'alice')
+            base = await adapter.register_base('character', name)
+            ref = base
+            if variant:
+                identity = CharacterIdentity(identity_id='coat', identity_name='coat', character_name=name)
+                await source.add_character_identity(name, identity)
+                path = path.parent / 'identities' / 'coat' / 'portrait.png'
+                from novelvideo.utils.path_resolver import canonical_identity_portrait_path
+                path = canonical_identity_portrait_path(root, name, 'coat')
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'variant')
+                ref = await adapter.register_variant(base.base_asset_id, 'coat')
+            obj = store.read(ref.variant_id or ref.base_asset_id, ref.revision)
+            obj['ref'] = ref.model_dump()
+            obj['media'] = {'slot_id': obj['payload']['_media'][0]['slot_id'], 'role': 'portrait'}
+            return obj
+        finally:
+            await source.close()
+    return asyncio.run(register())
+
+
+def bind_payload(asset):
+    return {'node_id': 'n', 'asset_ref': asset['ref'], 'media': asset['media']}
+
+
+def setup_service(tmp_path, node_type='imageNode'):
     from novelvideo.creation.operations import OperationService
     store = ObjectStore(tmp_path)
     episode = store.create('episode', {}, 'alice')
@@ -15,7 +57,7 @@ def setup_service(tmp_path):
         conn.execute("INSERT INTO canvas_workspaces VALUES ('canvas-1', 'episode', ?, '集', 'fixture', 'fixture')", (episode['id'],))
     create_canvas(tmp_path, 'canvas-1', project_id='p', name='集', actor_id='alice')
     patch_graph(tmp_path, 'canvas-1', base_revision=1, request_id='seed', operations=[
-        {'op': 'add_node', 'node': {'id': 'n', 'type': 'imageNode', 'data': {}, 'position': {'x': 0, 'y': 0}}}])
+        {'op': 'add_node', 'node': {'id': 'n', 'type': node_type, 'data': {}, 'position': {'x': 0, 'y': 0}}}])
     service = OperationService(store, project_id='p', authorize=lambda actor, project: actor == 'alice' and project == 'p')
     return store, service, episode['id']
 
@@ -78,30 +120,29 @@ def test_invalid_operations_are_atomic(tmp_path, changes, code):
 
 
 def test_bind_is_episode_local_fixed_revision_and_retry_safe(tmp_path):
-    store, service, episode = setup_service(tmp_path)
-    base = store.create('character', {'name': '角色'}, 'alice')
-    variant = store.create('character', {'name': '冬装'}, 'alice')
-    with store.transaction() as conn:
-        conn.execute('UPDATE objects SET base_asset_id=?, variant_id=? WHERE id=?', (base['id'], variant['id'], variant['id']))
-    ref = {'base_asset_id': base['id'], 'variant_id': variant['id'], 'revision': 1}
-    req = request(episode, kind='asset.bind', payload={'node_id': 'n', 'asset_ref': ref})
+    store, service, episode = setup_service(tmp_path, 'uploadNode')
+    variant = registered_asset(store, variant=True)
+    base = store.read(variant['ref']['base_asset_id'])
+    base_revision = base['revision']
+    ref = variant['ref']
+    req = request(episode, kind='asset.bind', payload=bind_payload(variant))
     result = service.apply('alice', req)
     store.update(variant['id'], 1, {'name': '春装'}, 'alice')
     assert service.apply('alice', req) == result
     assert service.asset_uses('alice', base['id'])[0]['asset_ref']['revision'] == 1
-    assert store.read(base['id'])['revision'] == 1
+    assert store.read(base['id'])['revision'] == base_revision
     with store.transaction() as conn:
         assert conn.execute('SELECT count(*) FROM relations').fetchone()[0] == 1
 
 
 def test_bind_rejects_foreign_assets_and_rollback_on_revision_conflict(tmp_path):
     from novelvideo.creation.operations import OperationError
-    store, service, episode = setup_service(tmp_path)
-    base = store.create('scene', {}, 'alice')
+    store, service, episode = setup_service(tmp_path, 'uploadNode')
+    base = registered_asset(store)
     for asset_id, revisions, code in [('foreign', {'canvas-1': 2}, 'scope_violation'), (base['id'], {'canvas-1': 1}, 'revision_conflict')]:
         with pytest.raises(OperationError) as exc:
             service.apply('alice', request(episode, kind='asset.bind', expected_revisions=revisions,
-                payload={'node_id': 'n', 'asset_ref': {'base_asset_id': asset_id, 'revision': 1}}))
+                payload={**bind_payload(base), 'asset_ref': {'base_asset_id': asset_id, 'revision': 1}}))
         assert exc.value.code == code
     with store.transaction() as conn:
         assert conn.execute('SELECT count(*) FROM relations').fetchone()[0] == 0
@@ -126,12 +167,12 @@ def test_semantic_object_versions_and_forbidden_outputs(tmp_path):
 
 
 def test_pending_bind_compensation_uses_operation_owned_relation_cas(tmp_path):
-    store, service, episode = setup_service(tmp_path)
-    first_asset = store.create('character', {}, 'alice')
-    second_asset = store.create('character', {}, 'alice')
+    store, service, episode = setup_service(tmp_path, 'uploadNode')
+    first_asset = registered_asset(store)
+    second_asset = registered_asset(store)
     def bind(asset, request_id):
         return service.apply('alice', request(episode, request_id=request_id, kind='asset.bind',
-            payload={'node_id': 'n', 'asset_ref': {'base_asset_id': asset['id'], 'revision': 1}}))
+            payload=bind_payload(asset)))
     first = bind(first_asset, 'first')
     second = bind(second_asset, 'second')
     with store.transaction() as conn:

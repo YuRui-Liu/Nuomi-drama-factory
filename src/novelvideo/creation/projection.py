@@ -62,6 +62,14 @@ class ProjectionService:
 
         def build(existing):
             try:
+                if patch.get('asset_archives'):
+                    from .asset_reference import verify_blob, AssetReferenceError
+                    evidence = patch['asset_archives']
+                    try:
+                        for blob in evidence['blobs']:
+                            verify_blob(evidence['root'], blob)
+                    except AssetReferenceError as exc:
+                        raise ProjectionConflict(str(exc)) from exc
                 if 'canvas_create' in patch:
                     if existing is not None:
                         raise ProjectionConflict('Canvas identity already exists')
@@ -96,7 +104,8 @@ class ProjectionService:
             saved = save_canvas(self.state_dir, row['canvas_id'], base_revision=None,
                 enforce_revision=False, build_payload=build, skip_if=receipt,
                 client_save_id='creation-' + operation_id, request_hash=patch_hash,
-                save_source='creation_projection', allow_empty_overwrite=True)
+                save_source='creation_projection', allow_empty_overwrite=True,
+                trusted_creation_projection=True)
         except ProjectionConflict as exc:
             return self._conflict(operation_id, patch, str(exc))
         if terminal_result is not None:

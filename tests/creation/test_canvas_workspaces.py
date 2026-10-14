@@ -103,14 +103,15 @@ def test_free_asset_bindings_share_project_owner_not_relation(workspace):
     client, path, _ = workspace
     canvases = [create(client, 'a'), create(client, 'b'), create(client, 'concept', 'concept')]
     store = ObjectStore(path)
-    asset = store.create('character', {'name': 'shared'}, 'alice')
+    from .test_operations import registered_asset, bind_payload
+    asset = registered_asset(store)
     for index, canvas in enumerate(canvases):
         cid = canvas['canvas_id']
         body = {'request_id': f'node-{index}', 'kind': 'graph.patch', 'scope': {'project_id': 'p', 'canvas_id': cid, 'node_ids': ['n']},
-            'expected_revisions': {cid: 1}, 'payload': {'operations': [{'op': 'add_node', 'node': {'id': 'n', 'type': 'imageNode', 'data': {}}}]}}
+            'expected_revisions': {cid: 1}, 'payload': {'operations': [{'op': 'add_node', 'node': {'id': 'n', 'type': 'uploadNode', 'data': {}}}]}}
         assert client.post('/projects/p/creation/operations', json=body).status_code == 200
         body.update(request_id=f'bind-{index}', kind='asset.bind', expected_revisions={cid: 2},
-                    payload={'node_id': 'n', 'asset_ref': {'base_asset_id': asset['id'], 'revision': 1}})
+                    payload=bind_payload(asset))
         response = client.post('/projects/p/creation/operations', json=body)
         assert response.status_code == 200, response.text
         assert read_canvas(path, cid)['nodes'][0]['data']['assetRef']['base_asset_id'] == asset['id']

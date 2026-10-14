@@ -4,7 +4,7 @@ import pytest
 
 from novelvideo.freezone.canvas_store import read_canvas
 from novelvideo.freezone.orchestration.projection import patch_graph
-from .test_operations import setup_service, request
+from .test_operations import setup_service, request, registered_asset, bind_payload
 
 
 def projector(store):
@@ -68,10 +68,10 @@ def test_stale_input_is_durable_candidate_without_overwrite(tmp_path):
 
 @pytest.mark.parametrize('reverse', [False, True])
 def test_two_failed_pending_bindings_never_restore_failed_predecessor(tmp_path, reverse):
-    store, service, episode = setup_service(tmp_path)
-    asset = store.create('character', {}, 'alice')
+    store, service, episode = setup_service(tmp_path, 'uploadNode')
+    asset = registered_asset(store)
     pending = [service.apply('alice', request(episode, request_id=str(index), kind='asset.bind',
-        payload={'node_id': 'n', 'asset_ref': {'base_asset_id': asset['id'], 'revision': 1}})) for index in range(2)]
+        payload=bind_payload(asset))) for index in range(2)]
     move(tmp_path, data={'prompt': 'changed'})
     for operation in reversed(pending) if reverse else pending:
         assert projector(store).apply(operation.operation_id).status == 'conflict'
@@ -243,10 +243,10 @@ def test_null_style_can_be_updated_and_retried(tmp_path):
 
 def test_crash_after_idempotency_log_before_semantic_ack(tmp_path, monkeypatch):
     from contextlib import contextmanager
-    store, service, episode = setup_service(tmp_path)
-    asset = store.create('character', {}, 'alice')
+    store, service, episode = setup_service(tmp_path, 'uploadNode')
+    asset = registered_asset(store)
     pending = service.apply('alice', request(episode, kind='asset.bind',
-        payload={'node_id': 'n', 'asset_ref': {'base_asset_id': asset['id'], 'revision': 1}}))
+        payload=bind_payload(asset)))
     original = store.transaction
     @contextmanager
     def fail():
@@ -265,9 +265,9 @@ def test_crash_after_idempotency_log_before_semantic_ack(tmp_path, monkeypatch):
 
 
 def test_earlier_conflict_does_not_undo_later_successful_binding(tmp_path):
-    store, service, episode = setup_service(tmp_path)
-    asset = store.create('character', {}, 'alice')
-    payload = {'node_id': 'n', 'asset_ref': {'base_asset_id': asset['id'], 'revision': 1}}
+    store, service, episode = setup_service(tmp_path, 'uploadNode')
+    asset = registered_asset(store)
+    payload = bind_payload(asset)
     old = service.apply('alice', request(episode, kind='asset.bind', payload=payload))
     move(tmp_path, data={'prompt': 'new input'})
     new = service.apply('alice', request(episode, request_id='new', kind='asset.bind',
@@ -281,12 +281,12 @@ def test_earlier_conflict_does_not_undo_later_successful_binding(tmp_path):
 def test_stale_inflight_retry_cannot_reopen_terminal_conflict(tmp_path, monkeypatch, kind):
     from novelvideo.creation import projection
     from novelvideo.creation.store import ObjectStore
-    store, service, episode = setup_service(tmp_path)
+    store, service, episode = setup_service(tmp_path, 'uploadNode' if kind == 'asset.bind' else 'imageNode')
     move(tmp_path, data={'prompt': 'original'})
     changes = {'kind': kind, 'expected_revisions': {'canvas-1': 3}}
     if kind == 'asset.bind':
-        asset = store.create('character', {}, 'alice')
-        changes['payload'] = {'node_id': 'n', 'asset_ref': {'base_asset_id': asset['id'], 'revision': 1}}
+        asset = registered_asset(store)
+        changes['payload'] = bind_payload(asset)
     pending = service.apply('alice', request(episode, **changes))
     original_save = projection.save_canvas
     intervening = {}

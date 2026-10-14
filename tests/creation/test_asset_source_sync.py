@@ -249,6 +249,12 @@ async def test_pending_source_allows_fixed_asset_bind_but_not_current_assertion(
     from novelvideo.freezone.orchestration.projection import create_canvas, patch_graph
     from novelvideo.production_workflow.coordination import asset_project_lock
     source, adapter, base, child, scene = registered
+    from novelvideo.utils.path_resolver import canonical_identity_portrait_path
+    path = canonical_identity_portrait_path(Path(source.project_dir), 'Lin', 'original')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'fixed portrait')
+    # Explicitly enrich this fixture before creating the pending source write.
+    child = await adapter.refresh_source(base.base_asset_id, child.variant_id, expected_revision=child.revision)
     async with asset_project_lock(source.state_dir):
         await SourceSync(source, adapter.objects).prepare('character')
     episode = adapter.objects.create('episode', {}, 'actor')
@@ -257,15 +263,16 @@ async def test_pending_source_allows_fixed_asset_bind_but_not_current_assertion(
         conn.execute("INSERT INTO canvas_workspaces VALUES ('canvas','episode',?,'test','fixture','fixture')", (episode['id'],))
     create_canvas(Path(source.state_dir), 'canvas', project_id='p', name='test', actor_id='actor')
     patch_graph(Path(source.state_dir), 'canvas', base_revision=1, request_id='seed', operations=[
-        {'op': 'add_node', 'node': {'id': 'n', 'type': 'imageNode', 'data': {}, 'position': {'x': 0, 'y': 0}}}])
+        {'op': 'add_node', 'node': {'id': 'n', 'type': 'uploadNode', 'data': {}, 'position': {'x': 0, 'y': 0}}}])
     service = OperationService(adapter.objects, project_id='p', authorize=lambda *args: True)
     request = OperationRequest(request_id='bind', kind='asset.bind',
         scope=dict(project_id='p', episode_id=episode['id'], canvas_id='canvas', node_ids=['n']),
-        expected_revisions={'canvas': 2}, payload={'node_id': 'n', 'asset_ref': child.model_dump()})
+        expected_revisions={'canvas': 2}, payload={'node_id': 'n', 'asset_ref': child.model_dump(),
+            'media': {'slot_id': 'character:Lin:identity:original:portrait', 'role': 'portrait'}})
     assert service.apply('actor', request).status == 'running'
     with pytest.raises(SourceSyncPending):
         service.apply('actor', request.model_copy(update={'request_id': 'bind-current',
-            'expected_revisions': {'canvas': 2, child.variant_id: 1}}))
+            'expected_revisions': {'canvas': 2, child.variant_id: child.revision}}))
 
 
 async def test_registered_missing_source_reports_pending_on_registration(registered):

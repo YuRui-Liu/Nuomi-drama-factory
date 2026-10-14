@@ -59,6 +59,10 @@ class CanvasSemanticRestoreRequired(CanvasStoreError, ValueError):
     """Managed creation references can only be restored with semantic undo."""
 
 
+class CanvasAssetBindingReadonly(CanvasStoreError, ValueError):
+    """Only a trusted creation projection may replace fixed asset evidence."""
+
+
 class CanvasCorruptError(CanvasStoreError):
     def __init__(self, message: str):
         super().__init__(message)
@@ -651,6 +655,7 @@ def save_canvas(
     request_hash: str | None = None,
     save_source: str = "autosave",
     allow_empty_overwrite: bool = False,
+    trusted_creation_projection: bool = False,
 ) -> CanvasSaveResult:
     with canvas_write_lock(project_dir, canvas_id):
         path = canvas_path(project_dir, canvas_id)
@@ -689,10 +694,13 @@ def save_canvas(
         if enforce_revision:
             _check_revision(existing, base_revision)
         payload = build_payload(existing)
+        if not trusted_creation_projection:
+            from novelvideo.creation.asset_reference import protect_bindings
+            protect_bindings(existing, payload)
         # Projection receipts are atomic evidence, not client-editable metadata.
         # Preserve them through ordinary autosaves, even clients with old metadata.
         receipt_key = 'creation_projection_receipts'
-        if save_source != 'creation_projection':
+        if not trusted_creation_projection:
             metadata = payload.get('metadata')
             previous_receipts = ((existing or {}).get('metadata') or {}).get(receipt_key)
             if previous_receipts is not None:

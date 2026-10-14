@@ -5,7 +5,10 @@ deliberately excluded: use the existing candidate/publication domain service.
 """
 
 from contextlib import asynccontextmanager, closing
+from copy import deepcopy
 from datetime import datetime, timezone
+import asyncio
+from functools import partial
 import json
 from pathlib import Path
 import sqlite3
@@ -26,6 +29,34 @@ from .asset_media import MEDIA_KEY, snapshot, compatible_before
 _CHARACTER_FIELDS = {'age_group', 'appearance_details', 'face_prompt', 'body_type'}
 _IDENTITY_FIELDS = {'age_group', 'appearance_details', 'face_prompt'}
 _SCENE_FIELDS = {'time_of_day', 'variant_prompt', 'description', 'notes'}
+
+
+async def registration_io(function, *args, **kwargs):
+    """Drain synchronous I/O before the owning Task may release its lock.
+
+    Shield only an executor Future, never a coroutine that acquires the
+    Task-owned project lock. Repeated cancellation cannot abandon archive writes.
+    """
+    future = asyncio.get_running_loop().run_in_executor(None, partial(function, *args, **kwargs))
+    cancellation = None
+    while True:
+        try:
+            result = await asyncio.shield(future)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+            if not future.done():
+                continue
+            if not future.cancelled():
+                future.exception()  # consume a worker failure after cancellation
+            raise cancellation
+        except BaseException:
+            if cancellation is not None:
+                raise cancellation
+            raise
+        else:
+            if cancellation is not None:
+                raise cancellation
+            return result
 
 
 class AssetAdapter:
@@ -218,7 +249,8 @@ class AssetAdapter:
             expected = self._mapping(parent_id)['source_name'] if parent_id else ''
             if record.base_scene_id != expected or (parent_id and not record.variant_id):
                 raise ValueError('Scene must be a state of this same base location')
-        trusted = snapshot(self.source, dict(kind=kind, source_name=source_name, parent_id=parent_id), record)
+        trusted = await registration_io(snapshot, self.source,
+            dict(kind=kind, source_name=source_name, parent_id=parent_id), deepcopy(record))
         with self.objects.transaction() as conn:
             found = conn.execute('SELECT object_id FROM asset_sources WHERE kind=? AND source_name=? AND parent_id=?',
                                  (kind, source_name, parent_id)).fetchone()
