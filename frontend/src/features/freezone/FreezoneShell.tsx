@@ -2,6 +2,7 @@
 // Copyright (c) 2026 ClaymoreLab
 import { resolveExternalCanvasConflict } from './canvasSyncRuntime';
 import { DirectionReferenceEntry } from '@/features/direction-references/DirectionReferenceEntry';
+import { AgentConfigurationEntry } from '@/features/agent-configuration/AgentConfigurationEntry';
 import { SharedAssetSaveDialog, isSharedAssetTarget } from './commit/SharedAssetSaveDialog';
 import { readSharedPublication, clearFinishedPublication, type PublicationScope } from './commit/sharedAssetPublication';
 import { useAuthStore } from '@/stores/auth-store';
@@ -903,7 +904,7 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
           {managedWorkspace && <OperationDraftBackup project={projectId} canvasId={canvasId} />}
           <CanvasRunPanel project={projectId} canvas={canvasId} enabled={sync.hydratedCanvasId === canvasId && sync.status !== 'conflict' && sync.status !== 'error'} />
           {/* 调试面板暂时隐藏，恢复时去掉 `false &&` 即可 */}
-          {managedWorkspace && <div className="absolute right-3 top-3 z-20"><DirectionReferenceEntry project={projectId} canvasId={canvasId} selectedNodes /></div>}
+          {managedWorkspace && <div className="absolute right-3 top-20 z-20 flex flex-wrap justify-end gap-2"><DirectionReferenceEntry project={projectId} canvasId={canvasId} selectedNodes /><AgentConfigurationEntry project={projectId} canvasId={canvasId}/></div>}
           {false && import.meta.env.DEV && (
             <CanvasDebugPanel
               project={projectId}
@@ -946,6 +947,7 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
         {showChatDock && (
           <FreezoneChatDock
             open={chatOpen}
+            agentConfiguration={managedWorkspace ? <AgentConfigurationEntry project={projectId} canvasId={canvasId} compact/> : undefined}
             onOpenChange={setChatOpen}
             title={t("freezone.chat.title")}
             description={t("freezone.chat.description")}
@@ -1037,6 +1039,7 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
 function FreezoneChatDock({
   open,
   onOpenChange,
+  agentConfiguration,
   title,
   description,
   toggleLabel,
@@ -1045,6 +1048,7 @@ function FreezoneChatDock({
   onOpenChange: (open: boolean) => void;
   title: string;
   description: string;
+  agentConfiguration?: React.ReactNode;
   toggleLabel: string;
 }) {
   const isDesktop = useMediaQuery("(min-width: 1024px)");
@@ -1104,6 +1108,7 @@ function FreezoneChatDock({
     );
   }
 
+        {agentConfiguration && <div className="shrink-0 border-b border-white/10 px-3 py-2">{agentConfiguration}</div>}
   return (
     <>
       {!open && (

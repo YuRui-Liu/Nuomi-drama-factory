@@ -325,3 +325,39 @@ async def test_old_snapshot_without_provenance_is_not_invented_on_read_or_patch(
     preview=service.personal_patch_preview(ref,{'methods':'只改方法'})
     newer=await service.save(command('patch',{'ref':ref,'changes':{'methods':'只改方法'},'proof':preview['proof']},'patch-old'))
     assert 'source' not in service.library.version('agent',newer)['configuration']['studio_refs'][0]
+
+
+def test_studio_catalog_reads_versions_without_initializing(service,ctx):
+    assert service.studio_resources()==[]
+    assert not ctx.state_dir.exists()
+    from novelvideo.creative_studios.store import StudioStore
+    path=ctx.state_dir/'creative-studios.db'
+    studio=StudioStore(path)
+    studio.save('director','one','方法',{'method':'文本','api_key':'hidden'},0)
+    studio.save('director','one','方法新版',{'method':'新文本'},1)
+    studio.save('intro','unsupported','仅素材',{'video_path':'private'},0)
+    before=path.read_bytes()
+    resources=service.studio_resources()
+    assert len(resources)==3
+    assert {r['revision'] for r in resources if r['id']=='one'}=={1,2}
+    assert next(r for r in resources if r['id']=='unsupported')['portable'] is False
+    assert 'hidden' not in str(resources) and 'private' not in str(resources)
+    assert path.read_bytes()==before
+
+
+@pytest.mark.parametrize('notes',['','   ','x'*12001,{'unsupported':'value'}])
+def test_studio_catalog_portability_matches_selected_preview(service,ctx,notes):
+    from novelvideo.creative_studios.store import StudioStore
+    path=ctx.state_dir/'creative-studios.db'
+    StudioStore(path).save('character','portable','人物资料',
+                          {'description':'有效人物说明','notes':notes},0)
+    before=path.read_bytes()
+    resource=service.studio_resources()[0]
+    assert resource['portable'] is True
+    assert resource['excluded_fields']==['notes']
+    preview=service.preview(configuration(studio_refs=[
+        {key:resource[key] for key in ('kind','id','revision')}]))
+    frozen=preview['configuration']['studio_refs'][0]
+    assert frozen['configuration']=={'description':'有效人物说明'}
+    assert frozen['excluded_fields']==resource['excluded_fields']
+    assert path.read_bytes()==before

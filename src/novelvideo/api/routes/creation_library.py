@@ -33,6 +33,13 @@ async def reusable_capabilities(project: str,user: dict=Depends(get_api_user)):
         return {'ok':True,'data':AgentProfiles.capabilities()}
 
 
+@router.get('/reusable/studio-resources')
+async def reusable_studio_resources(project: str,user: dict=Depends(get_api_user)):
+    with errors():
+        service=await reusable_service(project,user,'agent')
+        return {'ok':True,'data':await asyncio.to_thread(service.studio_resources)}
+
+
 @router.get('/reusable/{kind}/personal')
 async def personal_catalog(project: str,kind: LibraryKind,user: dict=Depends(get_api_user)):
     with errors():
