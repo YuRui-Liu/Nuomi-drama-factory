@@ -6,10 +6,8 @@ import { Library, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ExtensionStyleDrawer } from "@/features/canvas/extension-styles/ExtensionStyleDrawer";
 import { getExtensionStyle } from "@/features/canvas/extension-styles/catalog";
-import { DirectionReferenceEntry,useManagedDirectionProject } from '@/features/direction-references/DirectionReferenceEntry';
-import { currentFreezoneCanvasScope } from '@/features/freezone/canvasSyncRuntime';
-import { getDirectionBindings } from '@/api/directions';
-import { useAuthStore } from '@/stores/auth-store';
+import { DirectionReferenceEntry } from '@/features/direction-references/DirectionReferenceEntry';
+import { fixedStyleVersionLabel, useFixedNodeStyle } from '@/features/direction-references/useFixedNodeStyle';
 
 export interface ExtensionStyleChipProps {
   readonly value: string | null | undefined;
@@ -19,13 +17,7 @@ export interface ExtensionStyleChipProps {
 }
 
 export function ExtensionStyleChip({ value, onChange, onOpenChange,ownerNodeId }: ExtensionStyleChipProps) {
-  const scope=ownerNodeId?currentFreezoneCanvasScope():null;
-  const managed=useManagedDirectionProject(scope?.project);
-  const username=useAuthStore(s=>s.username);
-  const fixedKey=`${username}:${scope?.project}:${scope?.canvasId}:${ownerNodeId}`;
-  const [fixed,setFixed]=useState<{key:string;id?:string;title?:string;version?:string}|null>(null);
-  useEffect(()=>{let live=true;const load=()=>{if(managed&&scope&&ownerNodeId)void getDirectionBindings(scope.project,{level:'node',canvas_id:scope.canvasId,node_id:ownerNodeId}).then(value=>{const effect=value.effective.style;if(live)setFixed({key:fixedKey,id:typeof effect.configuration?.style_id==='string'?effect.configuration.style_id:undefined,title:effect.title,version:effect.version});}).catch(()=>{});};load();window.addEventListener('direction-config-changed',load);return()=>{live=false;window.removeEventListener('direction-config-changed',load);};},[fixedKey,managed]);
-  const fixedStyle=fixed?.key===fixedKey?fixed:null;
+  const {scope,managed,fixed:fixedStyle}=useFixedNodeStyle(ownerNodeId);
   const [open, setOpen] = useState(false);
   const style = typeof value === "string" ? getExtensionStyle(value) : undefined;
   const onOpenChangeRef = useRef(onOpenChange);
@@ -49,7 +41,7 @@ export function ExtensionStyleChip({ value, onChange, onOpenChange,ownerNodeId }
 
   return (
     <>
-      {ownerNodeId&&!scope?<span>画布同步中…</span>:managed&&scope ? <><Button type="button" variant="outline" size="sm" onClick={()=>handleOpenChange(true)}>风格库</Button><DirectionReferenceEntry project={scope.project} canvasId={scope.canvasId} nodeIds={ownerNodeId?[ownerNodeId]:[]} kind="style" label={fixedStyle?.title?`${fixedStyle.title} · v${fixedStyle.version}`:'固定风格配置（含自定义）'}/></> : scope&&managed===null ? <span>风格加载中…</span> : style ? (
+      {ownerNodeId&&!scope?<span>画布同步中…</span>:managed&&scope ? <><Button type="button" variant="outline" size="sm" onClick={()=>handleOpenChange(true)}>风格库</Button><span title={fixedStyle?.title?`当前风格：${fixedStyle.title} · v${fixedStyle.version}`:'风格配置（含自定义）'}><DirectionReferenceEntry project={scope.project} canvasId={scope.canvasId} nodeIds={ownerNodeId?[ownerNodeId]:[]} kind="style" label={fixedStyle?.title?`当前风格：${fixedStyle.title} · ${fixedStyleVersionLabel(fixedStyle.version)}`:'风格配置（含自定义）'}/></span></> : scope&&managed===null ? <span>风格加载中…</span> : style ? (
         <div className="inline-flex items-center rounded-md border border-border bg-muted/50 text-xs text-foreground">
           <button
             type="button"

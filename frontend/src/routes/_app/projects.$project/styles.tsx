@@ -49,7 +49,7 @@ import type { Style } from "@/types/style";
 import { extensionStylePreviewUrl, stylePreviewUrl } from "@/lib/style-preview-url";
 import { CreditCostInline } from "@/components/credit-cost-inline";
 import { useGenerationCreditCost } from "@/lib/queries/generation-credit-cost";
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/stores/auth-store';
 import { getDirectionBindings } from '@/api/directions';
 import { DirectionReferenceEntry,useManagedDirectionProject } from '@/features/direction-references/DirectionReferenceEntry';
@@ -1084,8 +1084,21 @@ function StylesPage() {
   const user=useAuthStore(s=>s.username);
   const managedMode=useManagedDirectionProject(project);
   const managed=managedMode!==false;
+  const directionQueryClient=useQueryClient();
   const direction=useQuery({queryKey:['direction-project',user,project],enabled:managedMode===true&&!!user,queryFn:()=>getDirectionBindings(project,{level:'project'})});
-  useEffect(()=>{const refresh=(event:Event)=>{const detail=(event as CustomEvent).detail;if(detail?.project===project&&detail?.user===user)void direction.refetch();};window.addEventListener('direction-config-changed',refresh);return()=>window.removeEventListener('direction-config-changed',refresh);},[project,user,direction.refetch]);
+  useEffect(()=>{
+    let live=true,latest=0;
+    const refresh=(event:Event)=>{
+      const detail=(event as CustomEvent).detail;
+      if(detail?.project!==project||detail?.user!==user)return;
+      const request=++latest;
+      // Initial queries otherwise deduplicate refetch and can return pre-save data.
+      void directionQueryClient.cancelQueries({queryKey:['direction-project',user,project],exact:true})
+        .then(()=>{if(live&&request===latest)void direction.refetch();});
+    };
+    window.addEventListener('direction-config-changed',refresh);
+    return()=>{live=false;window.removeEventListener('direction-config-changed',refresh);};
+  },[project,user,direction.refetch,directionQueryClient]);
   const fixedStyle=direction.data?.effective.style;
 
   const styles = stylesRes?.data ?? [];

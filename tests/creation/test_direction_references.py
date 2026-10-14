@@ -59,6 +59,59 @@ def test_preview_and_empty_scope_do_not_create_store(service, context):
     assert not context.state_dir.exists()
 
 
+async def test_image_templates_are_trusted_fixed_and_reject_changed_preview(service, context, monkeypatch):
+    from novelvideo.freezone import image_style_templates as route_helpers
+    original = dict(route_helpers.FREEZONE_IMAGE_STYLE_TEMPLATES[0])
+    key = 'image-template:' + original['id']
+    entry = next((e for e in service.catalog('style') if e['id'] == key), None)
+    assert entry is not None
+    assert entry['configuration']['projections']['image'] == original['style_prompt']
+    assert entry['metadata']['author'] == original['author']
+    assert entry['metadata']['category'] == original['category']
+    assert not context.state_dir.exists()
+    body = request(service, {'level':'project'}, entry)
+    result = await service.apply(body)
+    frozen = service.snapshot(result['snapshot_ref']['snapshot_id'])
+    monkeypatch.setattr(route_helpers, 'FREEZONE_IMAGE_STYLE_TEMPLATES', [{**original, 'style_prompt':'changed'}])
+    with pytest.raises(ValueError, match='目录'):
+        await service.apply(request(service, {'level':'project'}, entry, request_id='stale'))
+    assert service.inspect({'level':'project'})['local']['style']['revision'] == 1
+    monkeypatch.setattr(route_helpers, 'FREEZONE_IMAGE_STYLE_TEMPLATES', [])
+    assert service.snapshot(result['snapshot_ref']['snapshot_id']) == frozen
+    assert await service.apply(body) == result
+
+
+@pytest.mark.parametrize('field', ['style_prompt', 'category', 'author'])
+async def test_template_evidence_covers_all_trusted_content_before_any_write(service, context, monkeypatch, field):
+    from novelvideo.freezone import image_style_templates
+    from novelvideo.director_plan.models import StyleSnapshot
+    item = dict(image_style_templates.FREEZONE_IMAGE_STYLE_TEMPLATES[0])
+    entry = next(e for e in service.catalog('style') if e['id'] == 'image-template:' + item['id'])
+    StyleSnapshot.model_validate(entry['configuration'])
+    body = request(service, {'level':'project'}, entry)
+    monkeypatch.setattr(image_style_templates, 'FREEZONE_IMAGE_STYLE_TEMPLATES', [{**item, field:'new evidence'}])
+    changed = next(e for e in service.catalog('style') if e['id'] == entry['id'])
+    assert changed['proof'] != entry['proof']
+    assert changed['version'] != entry['version']
+    with pytest.raises(ValueError, match='目录'):
+        await service.apply(body)
+    # The existing project writer lock is allowed; no business data is created.
+    assert not service.db.exists()
+    assert all(p.name == '.production_workflow.lock' and p.stat().st_size == 0
+               for p in context.state_dir.rglob('*') if p.is_file())
+
+
+def test_template_namespace_cannot_be_shadowed_by_project_custom_style(service, context):
+    from novelvideo.freezone.image_style_templates import FREEZONE_IMAGE_STYLE_TEMPLATES
+    item = FREEZONE_IMAGE_STYLE_TEMPLATES[0]
+    context.state_dir.mkdir()
+    (context.state_dir/'project_config.json').write_text(json.dumps({'custom_styles':{
+        'image-template:' + item['id']:{'label':'forged', 'style_tag':'injected'}}}))
+    entries = [e for e in service.catalog('style') if e['id'] == 'image-template:' + item['id']]
+    assert len(entries) == 1
+    assert entries[0]['configuration']['projections']['image'] == item['style_prompt']
+
+
 async def test_four_levels_unset_disable_and_fixed_history(service, canvas, monkeypatch):
     scopes = [{'level':'project'}, {'level':'canvas','canvas_id':canvas},
               {'level':'group','canvas_id':canvas,'group_id':'group'},

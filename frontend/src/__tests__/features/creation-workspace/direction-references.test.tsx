@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act,fireEvent, render, screen, waitFor,within } from '@testing-library/react';
+import { act,fireEvent, render, renderHook, screen, waitFor,within } from '@testing-library/react';
 import { createDirectionOperation, readDirectionIntent } from '@/features/direction-references/directionOperation';
 import { DirectionReferencePanel } from '@/features/direction-references/DirectionReferencePanel';
 import * as api from '@/api/directions';
@@ -8,6 +8,9 @@ import { getFreezoneCanvas } from '@/api/canvas';
 import { captureFreezoneCanvasRuntime,currentFreezoneCanvasScope } from '@/features/freezone/canvasSyncRuntime';
 import { DirectionReferenceEntry } from '@/features/direction-references/DirectionReferenceEntry';
 import { ExtensionStyleDrawer } from '@/features/canvas/extension-styles/ExtensionStyleDrawer';
+import { StylePickerPopover } from '@/features/canvas/nodes/StylePickerPopover';
+import { ExtensionStyleChip } from '@/features/canvas/extension-styles/ExtensionStyleChip';
+import { fixedStyleVersionLabel, useFixedNodeStyle } from '@/features/direction-references/useFixedNodeStyle';
 import { useAuthStore } from '@/stores/auth-store';
 import { getSupertaleProject } from '@/api/projects';
 const navigation=vi.hoisted(()=>({state:{location:{pathname:'/projects/p',search:{}}}}));
@@ -15,6 +18,7 @@ vi.mock('@tanstack/react-router',()=>({useRouter:()=>navigation,useRouterState:(
 vi.mock('@/api/projects',async importOriginal=>({...await importOriginal<object>(),getSupertaleProject:vi.fn()}));
 vi.mock('@/api/directions', () => ({listDirectionCatalog:vi.fn(),getDirectionBindings:vi.fn(),applyDirectionBindings:vi.fn(),getDirectionRequest:vi.fn()}));
 vi.mock('@/api/creation', () => ({listCreationCanvases:vi.fn()}));
+vi.mock('@/features/canvas/hooks/useFreezoneStyleTemplates',()=>({useFreezoneStyleTemplates:()=>({templates:[{id:'watercolor',label:'模板水彩',category:'插画',author:'作者',style_prompt:'trusted watercolor'}],isLoading:false})}));
 vi.mock('@/api/canvas', () => ({getFreezoneCanvas:vi.fn()}));
 vi.mock('@/features/freezone/canvasSyncRuntime', () => ({captureFreezoneCanvasRuntime:vi.fn(()=>null),currentFreezoneCanvasScope:vi.fn(()=>null)}));
 const owner={user:'alice',project:'p'};
@@ -23,6 +27,84 @@ const inspect=(scope:api.DirectionScope):api.DirectionState=>({scope,proof:'scop
 const body:api.DirectionRequest={request_id:'one',kind:'style',action:'apply',scope:{level:'project'},expected_revision:0,scope_proof:'scope',selection:{id:'custom',version:'1',proof:'catalog'}};
 const applied:api.DirectionResult={request_id:'one',operation_id:'op',status:'applied',kind:'style',snapshot_ref:null,bindings:[],effective:[]};
 describe('fixed direction operations',()=>{
+ it('ignores an older fixed-style read arriving after a newer configuration event',async()=>{
+  vi.mocked(currentFreezoneCanvasScope).mockReturnValue({project:'p',canvasId:'c'} as never);
+  vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue({isCurrent:()=>true} as never);
+  const pending:Array<(value:api.DirectionState)=>void>=[];
+  vi.mocked(api.getDirectionBindings).mockImplementation(()=>new Promise(resolve=>pending.push(resolve)));
+  const hook=renderHook(()=>useFixedNodeStyle('a'));
+  await waitFor(()=>expect(pending).toHaveLength(1));
+  act(()=>window.dispatchEvent(new CustomEvent('direction-config-changed',{detail:{user:'alice',project:'p'}})));
+  await waitFor(()=>expect(pending).toHaveLength(2));
+  const state=inspect({level:'node',canvas_id:'c',node_id:'a'});
+  const version=(title:string)=>({...state,effective:{...state.effective,style:{...state.effective.style,title}}});
+  await act(async()=>pending[1](version('新风格B')));
+  expect(hook.result.current.fixed?.title).toBe('新风格B');
+  await act(async()=>pending[0](version('旧风格A')));
+  expect(hook.result.current.fixed?.title).toBe('新风格B');
+ });
+ it('keeps ordinary versions exact and abbreviates only long fixed versions',()=>{
+  expect(fixedStyleVersionLabel('1')).toBe('v1');
+  expect(fixedStyleVersionLabel('ecf24b430ac88de0')).toBe('vecf24b…');
+ });
+ it('labels the real fixed configuration entry distinctly and keeps the complete version in its tooltip',async()=>{
+  vi.mocked(currentFreezoneCanvasScope).mockReturnValue({project:'p',canvasId:'c'} as never);
+  const state=inspect({level:'node',canvas_id:'c',node_id:'a'});
+  state.effective.style={state:'enabled',origin_scope:state.scope,snapshot_ref:null,configuration:{style_id:'image-template:watercolor'},title:'欧式故事书水彩',version:'ecf24b430ac88de0'};
+  vi.mocked(api.getDirectionBindings).mockResolvedValue(state);
+  render(<ExtensionStyleChip ownerNodeId="a" value="obsolete" onChange={vi.fn()}/>);
+  const button=await screen.findByRole('button',{name:'当前风格：欧式故事书水彩 · vecf24b…'});
+  expect(button.closest('[title]')).toHaveAttribute('title','当前风格：欧式故事书水彩 · vecf24b430ac88de0');
+ });
+ it('managed template picker previews categories and applies only the namespaced fixed selection',async()=>{
+  vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue({flush:vi.fn().mockResolvedValue(true),isCurrent:()=>true} as never);
+  vi.mocked(currentFreezoneCanvasScope).mockReturnValue({project:'p',canvasId:'c'} as never);
+  vi.mocked(api.listDirectionCatalog).mockResolvedValue([{...entry,id:'image-template:watercolor',title:'模板水彩'}]);
+  const change=vi.fn();
+  render(<StylePickerPopover ownerNodeId="a" selectedId="legacy" onSelect={change} onClose={vi.fn()}/>);
+  const templateButton=await screen.findByRole('button',{name:'模板水彩'});
+  await act(async()=>{}); // Settle the entry's mount/navigation effect before user input.
+  fireEvent.click(templateButton);
+  await waitFor(()=>expect(screen.getByLabelText('固定风格')).toHaveValue('image-template:watercolor'));
+  expect(change).not.toHaveBeenCalled();expect(api.applyDirectionBindings).not.toHaveBeenCalled();
+  await waitFor(()=>expect(screen.getByRole('button',{name:'应用固定风格'})).not.toBeDisabled());
+  fireEvent.click(screen.getByRole('button',{name:'应用固定风格'}));
+  await waitFor(()=>expect(api.applyDirectionBindings).toHaveBeenCalled());
+  expect(vi.mocked(api.applyDirectionBindings).mock.calls[0][1]).toMatchObject({selection:{id:'image-template:watercolor'},targets:[{scope:{node_id:'a'}}]});
+ });
+ it('legacy template picker preserves direct selection',async()=>{
+  vi.mocked(currentFreezoneCanvasScope).mockReturnValue({project:'p',canvasId:'c'} as never);
+  vi.mocked(getSupertaleProject).mockResolvedValue({} as never);
+  const change=vi.fn();render(<StylePickerPopover ownerNodeId="a" selectedId={null} onSelect={change} onClose={vi.fn()}/>);
+  fireEvent.click(await screen.findByRole('button',{name:'模板水彩'}));
+  expect(change).toHaveBeenCalledWith('watercolor');expect(api.applyDirectionBindings).not.toHaveBeenCalled();
+ });
+ it.each([['取消本级，继承上级','unset'],['禁用本级风格','disable']])('template picker %s is an explicit scoped operation',async(label,action)=>{
+  vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue({flush:vi.fn().mockResolvedValue(true),isCurrent:()=>true} as never);
+  vi.mocked(currentFreezoneCanvasScope).mockReturnValue({project:'p',canvasId:'c'} as never);
+  const change=vi.fn();render(<StylePickerPopover ownerNodeId="a" selectedId="legacy" onSelect={change} onClose={vi.fn()}/>);
+  fireEvent.click(await screen.findByRole('button',{name:'继承与禁用设置'}));
+  await waitFor(()=>expect(screen.getByRole('button',{name:label})).not.toBeDisabled());
+  fireEvent.click(screen.getByRole('button',{name:label}));
+  await waitFor(()=>expect(api.applyDirectionBindings).toHaveBeenCalled());
+  expect(vi.mocked(api.applyDirectionBindings).mock.calls[0][1]).toMatchObject({action,targets:[{scope:{node_id:'a'}}]});
+  expect(change).not.toHaveBeenCalled();
+ });
+ it('template picker blocks old writes while mode is unknown and closes selection across accounts',async()=>{
+  vi.mocked(currentFreezoneCanvasScope).mockReturnValue({project:'p',canvasId:'c'} as never);
+  let resolve!:(value:never)=>void;
+  vi.mocked(getSupertaleProject).mockImplementation(()=>new Promise(r=>{resolve=r;}));
+  const change=vi.fn();render(<StylePickerPopover ownerNodeId="a" selectedId="legacy" onSelect={change} onClose={vi.fn()}/>);
+  expect(screen.queryByRole('button',{name:'模板水彩'})).toBeNull();
+  expect(screen.queryByRole('button',{name:'清除'})).toBeNull();
+  vi.mocked(getSupertaleProject).mockResolvedValue({creation_mode:'agent_canvas_v1'} as never);
+  await act(async()=>resolve({creation_mode:'agent_canvas_v1'} as never));
+  fireEvent.click(await screen.findByRole('button',{name:'模板水彩'}));
+  await screen.findByRole('dialog');
+  act(()=>useAuthStore.setState({username:'bob'}));
+  await waitFor(()=>expect(screen.queryByRole('dialog')).toBeNull());
+  expect(change).not.toHaveBeenCalled();expect(api.applyDirectionBindings).not.toHaveBeenCalled();
+ });
  beforeEach(()=>{vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue(null);vi.mocked(currentFreezoneCanvasScope).mockReturnValue(null);useAuthStore.setState({username:'alice'});vi.mocked(getSupertaleProject).mockResolvedValue({creation_mode:'agent_canvas_v1'} as never);navigation.state.location={pathname:'/projects/p',search:{}};});
  beforeEach(()=>{vi.clearAllMocks();localStorage.clear();vi.mocked(api.listDirectionCatalog).mockResolvedValue([entry]);vi.mocked(api.getDirectionBindings).mockImplementation(async(_,scope)=>inspect(scope));vi.mocked(listCreationCanvases).mockResolvedValue([{canvas_id:'c',title:'第一集',status:'applied',kind:'free',episode_id:null}]);vi.mocked(getFreezoneCanvas).mockResolvedValue({nodes:[{id:'a',type:'imageGenNode',data:{displayName:'小林'}},{id:'b',type:'imageGenNode',data:{displayName:'小雨'}},{id:'g',type:'groupNode',data:{label:'开场'}}]} as never);vi.mocked(api.applyDirectionBindings).mockResolvedValue(applied);vi.mocked(api.getDirectionRequest).mockResolvedValue({request_id:'one',status:'unknown'});});
  it('persists before write and restores the exact request after unknown result',async()=>{

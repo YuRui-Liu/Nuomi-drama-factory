@@ -177,6 +177,7 @@ import { orderedReferenceUrlsWithOwnFirst } from '@/features/canvas/nodes/refere
 import { useReferenceMentionSync } from '@/features/canvas/nodes/useReferenceMentionSync';
 import { composeImagePrompt } from '@/features/canvas/extension-styles/composePrompt';
 import { ExtensionStyleChip } from '@/features/canvas/extension-styles/ExtensionStyleChip';
+import { fixedStyleVersionLabel, useFixedNodeStyle } from '@/features/direction-references/useFixedNodeStyle';
 
 type ImageGenNodeProps = NodeProps & {
   id: string;
@@ -1742,6 +1743,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
           />
           <div className="flex shrink-0 items-center gap-2 pl-3 pr-10 pt-3">
             <StyleChip
+              ownerNodeId={id}
               selectedId={styleTemplateId}
               selectedLabel={selectedStyle?.label ?? null}
               onChange={(nextId) => updateNodeData(id, { styleTemplateId: nextId })}
@@ -2178,13 +2180,15 @@ function AspectSizeChip({ aspectRatio, size, quality, showQuality, onChange }: A
 }
 
 interface StyleChipProps {
+  ownerNodeId?: string;
   selectedId: string | null;
   selectedLabel: string | null;
   onChange: (nextId: string | null) => void;
   onOpenChange?: (open: boolean) => void;
 }
 
-function StyleChip({ selectedId, selectedLabel, onChange, onOpenChange }: StyleChipProps) {
+function StyleChip({ selectedId, selectedLabel, onChange, onOpenChange, ownerNodeId }: StyleChipProps) {
+  const {scope,managed,fixed}=useFixedNodeStyle(ownerNodeId);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const [isOpen, setIsOpen] = useState(false);
@@ -2200,6 +2204,9 @@ function StyleChip({ selectedId, selectedLabel, onChange, onOpenChange }: StyleC
   useEffect(() => {
     if (!isOpen) return;
     const onPointerDown = (event: MouseEvent) => {
+      // The shared scope dialog is portalled outside this popover. Keep its
+      // owning picker mounted while users compare or submit the fixed config.
+      if (managed && event.target instanceof Element && event.target.closest('[role="dialog"]')) return;
       if (
         triggerRef.current?.contains(event.target as Node) ||
         popoverRef.current?.contains(event.target as Node)
@@ -2210,10 +2217,12 @@ function StyleChip({ selectedId, selectedLabel, onChange, onOpenChange }: StyleC
     };
     document.addEventListener('mousedown', onPointerDown, true);
     return () => document.removeEventListener('mousedown', onPointerDown, true);
-  }, [isOpen]);
+  }, [isOpen, managed]);
 
-  const isActive = Boolean(selectedId);
-  const label = isActive ? selectedLabel ?? '风格' : '风格';
+  const isActive = managed ? Boolean(fixed?.id) : Boolean(selectedId);
+  const label = ownerNodeId && (!scope || managed === null) ? '风格加载中…' : managed
+    ? fixed?.title ? `图像模板：${fixed.title} · ${fixedStyleVersionLabel(fixed.version)}` : fixed?.state === 'disabled' ? '图像模板：风格已禁用' : '图像风格模板'
+    : isActive ? selectedLabel ?? '风格' : '风格';
 
   return (
     <div className="relative">
@@ -2224,7 +2233,7 @@ function StyleChip({ selectedId, selectedLabel, onChange, onOpenChange }: StyleC
           event.stopPropagation();
           setIsOpen((prev) => !prev);
         }}
-        title={isActive ? selectedLabel ?? undefined : '风格'}
+        title={managed && fixed?.title ? `浏览图像风格模板；当前风格：${fixed.title} · v${fixed.version}` : label}
         className={`${NODE_TEXT_CONTROL_TRIGGER_CLASS} max-w-[160px]`}
       >
         <Palette className={`${NODE_TEXT_CONTROL_ICON_CLASS} shrink-0`} />
@@ -2237,9 +2246,10 @@ function StyleChip({ selectedId, selectedLabel, onChange, onOpenChange }: StyleC
           onClick={(event) => event.stopPropagation()}
         >
           <StylePickerPopover
+            ownerNodeId={ownerNodeId}
             selectedId={selectedId}
             onSelect={(nextId) => {
-              onChange(nextId);
+              if (!ownerNodeId || managed === false) onChange(nextId);
               setIsOpen(false);
             }}
             onClose={() => setIsOpen(false)}

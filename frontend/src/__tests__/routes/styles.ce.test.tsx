@@ -3,7 +3,7 @@
 import type { ComponentType } from "react";
 import type { Style } from "@/types/style";
 
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import i18next from "i18next";
@@ -213,6 +213,23 @@ describe("styles page CE generation credit gating", () => {
     expect(screen.queryByText('Project default')).not.toBeInTheDocument();
     expect(await screen.findByRole('button',{name:'应用固定风格…'})).toBeInTheDocument();
     expect(updateProjectMock).not.toHaveBeenCalled();
+  });
+
+  it('reloads fixed project configuration after a save event even while its first read is pending',async()=>{
+    vi.mocked(getSupertaleProject).mockResolvedValue({creation_mode:'agent_canvas_v1'} as never);
+    const pending:Array<(value:never)=>void>=[];
+    vi.mocked(getDirectionBindings).mockImplementation(()=>new Promise(resolve=>pending.push(resolve)));
+    const Component=Route.options.component as ComponentType;
+    render(<QueryClientProvider client={new QueryClient()}><I18nextProvider i18n={i18n}><Component/></I18nextProvider></QueryClientProvider>);
+    await waitFor(()=>expect(pending).toHaveLength(1));
+    const project=vi.mocked(getDirectionBindings).mock.calls[0][0];
+    act(()=>window.dispatchEvent(new CustomEvent('direction-config-changed',{detail:{user:'alice',project}})));
+    await waitFor(()=>expect(pending).toHaveLength(2));
+    await act(async()=>pending[1]({effective:{style:{state:'enabled',title:'新风格B',version:'2',configuration:{style_id:'new'}}}} as never));
+    await screen.findByText(/项目固定风格：新风格B · v2/);
+    await act(async()=>pending[0]({effective:{style:{state:'enabled',title:'旧风格A',version:'1',configuration:{style_id:'old'}}}} as never));
+    expect(screen.getByText(/项目固定风格：新风格B · v2/)).toBeInTheDocument();
+    expect(screen.queryByText(/项目固定风格：旧风格A/)).toBeNull();
   });
 
   it('preserves the old project default action outside managed mode',async()=>{

@@ -6,18 +6,23 @@ import { Check, X } from 'lucide-react';
 import type { FreezoneStyleTemplate } from '@/api/ops';
 import { useFreezoneStyleTemplates } from '@/features/canvas/hooks/useFreezoneStyleTemplates';
 import { NODE_FLOATING_PANEL_SURFACE_CLASS } from '@/features/canvas/ui/nodeControlStyles';
+import { DirectionReferenceEntry } from '@/features/direction-references/DirectionReferenceEntry';
+import { useFixedNodeStyle } from '@/features/direction-references/useFixedNodeStyle';
 
 interface StylePickerPopoverProps {
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onClose: () => void;
+  ownerNodeId?: string;
 }
 
 export function StylePickerPopover({
   selectedId,
   onSelect,
   onClose,
+  ownerNodeId,
 }: StylePickerPopoverProps) {
+  const {scope,managed,fixed} = useFixedNodeStyle(ownerNodeId);
   const { templates, isLoading } = useFreezoneStyleTemplates();
 
   // Stable groups: backend `category` first (insertion order), un-categorized
@@ -46,9 +51,9 @@ export function StylePickerPopover({
       onClick={(event) => event.stopPropagation()}
     >
       <div className="flex h-11 shrink-0 items-center justify-between px-4">
-        <span className="text-sm font-medium text-text-dark">风格</span>
+        <span className="text-sm font-medium text-text-dark">图像风格模板</span>
         <div className="flex items-center gap-1">
-          {selectedId && (
+          {selectedId && (!ownerNodeId || managed === false) && (
             <button
               type="button"
               onClick={() => onSelect(null)}
@@ -69,6 +74,8 @@ export function StylePickerPopover({
       </div>
 
       <div className="ui-scrollbar nowheel flex-1 overflow-y-auto px-4 pb-3 pt-1">
+        {ownerNodeId && (!scope || managed === null) ? <span>风格加载中…</span> : managed && scope ?
+          <DirectionReferenceEntry project={scope.project} canvasId={scope.canvasId} nodeIds={[ownerNodeId!]} kind="style" label="继承与禁用设置"/> : null}
         {isLoading && templates.length === 0 && (
           <div className="flex h-20 items-center justify-center text-[11px] text-text-muted">
             加载中…
@@ -86,7 +93,11 @@ export function StylePickerPopover({
             </div>
             <div className="flex flex-col gap-0.5">
               {group.items.map((item) => {
-                const isActive = item.id === selectedId;
+                const isActive = managed ? fixed?.id === `image-template:${item.id}` : item.id === selectedId;
+                if (ownerNodeId && (!scope || managed === null)) return <span key={item.id} title={item.style_prompt}>{item.label}</span>;
+                if (managed && scope) return <div key={item.id} title={item.style_prompt} className={isActive?'rounded bg-muted p-1':'py-0.5'}>
+                  <DirectionReferenceEntry project={scope.project} canvasId={scope.canvasId} nodeIds={[ownerNodeId!]} kind="style" selectedId={`image-template:${item.id}`} label={item.label}/>
+                </div>;
                 return (
                   <button
                     key={item.id}

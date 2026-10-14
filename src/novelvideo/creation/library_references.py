@@ -170,10 +170,26 @@ class DirectionReferences:
                     return deepcopy(custom) if isinstance(custom, dict) else {}
 
             for item in ScopedStyles.list_all_styles():
+                if item['id'].startswith('image-template:'):
+                    continue  # Reserved namespace cannot be shadowed by custom styles.
                 frozen = ScopedStyles.resolve_style_snapshot(item['id']).model_dump(mode='json')
                 entries.append({'id':item['id'], 'version':frozen['style_version'],
                     'title':item.get('label') or item.get('name') or item['id'], 'available':True,
                     'configuration':frozen, 'metadata':{'library_type':item['type']}})
+            from novelvideo.freezone.image_style_templates import FREEZONE_IMAGE_STYLE_TEMPLATES
+            for item in FREEZONE_IMAGE_STYLE_TEMPLATES:
+                content_hash = digest(item)
+                style_id = 'image-template:' + item['id']
+                version = content_hash[:16]
+                entries.append({'id':style_id, 'version':version, 'title':item['label'],
+                    'available':True, 'configuration':{
+                        'snapshot_id':'style-snapshot-' + content_hash[:24],
+                        'style_id':style_id, 'style_version':version,
+                        'catalog_hash':content_hash, 'style_hash':content_hash,
+                        'projections':{'director':'', 'image':item['style_prompt'],
+                                       'video':'', 'panel_tag':item['label']}},
+                    'metadata':{'library_type':'image_template', 'template_id':item['id'],
+                                'author':item.get('author'), 'category':item.get('category')}})
         else:
             from novelvideo.freezone.video_director.techniques import list_techniques, project_technique
             for card in list_techniques():
