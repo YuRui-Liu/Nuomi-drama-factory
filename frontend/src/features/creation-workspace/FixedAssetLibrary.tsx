@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { listCreationAssets, listCreationCanvases } from '@/api/creation';
 import { useCanvasStore } from '@/stores/canvasStore';
+import { useAssetDropStore } from '@/stores/assetDropStore';
+import { useAuthStore } from '@/stores/auth-store';
 import { applyFixedAsset, FIXED_ASSET_DRAG_MIME, fixedAssetNodeType, assetMediaLabel } from './fixedAssets';
 import type { CreationAsset, AssetMediaChoice } from './contracts';
 
-export function FixedAssetLibrary({ project, canvasId, kind, sourceName, targetNodeId, onChoose, onApplied, query = '' }: {
+export function FixedAssetLibrary({ project, canvasId, kind, sourceName, targetNodeId, onChoose, onApplied, onSaveFromNode, query = '' }: {
   project: string; canvasId?: string; kind?: 'character' | 'scene'; targetNodeId?: string;
   sourceName?: string;
   query?: string;
   onApplied?: () => void;
+  onSaveFromNode?:(nodeId:string,entry:CreationAsset)=>void;
   onChoose?: (entry: CreationAsset, media: AssetMediaChoice) => Promise<void>;
 }) {
   const [assets, setAssets] = useState<CreationAsset[]>([]);
@@ -23,6 +26,16 @@ export function FixedAssetLibrary({ project, canvasId, kind, sourceName, targetN
   const generation = useRef(0);
   const [choices, setChoices] = useState<Record<string, number>>({});
   const selected = useCanvasStore(s => s.nodes.find(node => node.id === s.selectedNodeId));
+  const pending=useAssetDropStore(s=>s.pendingReplace);
+  useEffect(()=>{
+    if(!pending?.sharedTarget||!onSaveFromNode)return;
+    const {scope}=pending;
+    const node=useCanvasStore.getState().nodes.find(n=>n.id===pending.nodeId);
+    if(scope?.project===project&&scope.canvas===canvasId&&scope.user===useAuthStore.getState().username&&scope.isCurrent()&&JSON.stringify(node?.data)===scope.data) {
+      onSaveFromNode(pending.nodeId,pending.sharedTarget);
+    } else setError('拖拽来源或画布已变化，请重新拖入');
+    useAssetDropStore.getState().clearPendingReplace();
+  },[pending,onSaveFromNode,project,canvasId]);
   useEffect(() => {
     const token = ++generation.current;
     const controller = new AbortController();
@@ -62,7 +75,10 @@ export function FixedAssetLibrary({ project, canvasId, kind, sourceName, targetN
       const key = JSON.stringify(entry.selection);
       const media = entry.media[choices[key] ?? 0];
       const canReplace = selected && ['uploadNode', 'threeDWorldNode'].includes(selected.type ?? '') && selected.type === (media && fixedAssetNodeType(media));
-      return <div key={key} className="space-y-2 rounded-lg border border-white/10 bg-white/[0.03] p-3"
+      return <div key={key} data-asset-id={onSaveFromNode?`shared:${key}`:undefined}
+        data-shared-asset={onSaveFromNode?JSON.stringify(entry):undefined}
+        data-asset-media-type={entry.kind==='scene'?'image,model':'image'}
+        className="space-y-2 rounded-lg border border-white/10 bg-white/[0.03] p-3"
         draggable={Boolean(media && canvasId && !busy && !onChoose)} onDragStart={event => {
           if (!media || !canvasId || onChoose) { event.preventDefault(); return; }
           event.dataTransfer.setData(FIXED_ASSET_DRAG_MIME, JSON.stringify({ project, entry, media }));

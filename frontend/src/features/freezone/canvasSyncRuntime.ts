@@ -83,7 +83,13 @@ export function captureFreezoneCanvasRuntime(project: string, canvasId: string) 
   const runtime = currentRuntime;
   if (!runtime || runtime.project !== project || runtime.canvasId !== canvasId || !runtime.operation) return null;
   return { isCurrent: () => currentRuntime === runtime,
+    flush: () => currentRuntime === runtime && runtime.flush ? runtime.flush() : Promise.resolve(false),
     run: (request: AssetBindRequest) => currentRuntime === runtime ? runtime.operation!.run(request) : Promise.resolve<ExternalOperationOutcome>({ status: 'detached' }) };
+}
+
+export function currentFreezoneCanvasScope() {
+  return currentRuntime ? {project:currentRuntime.project,canvasId:currentRuntime.canvasId,
+    isCurrent: (() => { const captured=currentRuntime; return () => currentRuntime===captured; })()} : null;
 }
 
 export function applyRemoteFreezoneCanvas(

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { useEffect, useState } from "react";
+import { isSharedAssetTarget } from './SharedAssetSaveDialog';
 import { createPortal } from "react-dom";
 import { AlertTriangle, Loader2, X } from "lucide-react";
 
@@ -196,6 +197,7 @@ export function modelSlotKindsForNodeData(
 }
 
 interface CommitDialogProps {
+  excludeSharedAssets?:boolean;
   project: string;
   /** Source media URL (must be /static/<u>/<p>/...). 图像/视频/音频/3GS。 */
   sourceUrl: string;
@@ -223,6 +225,7 @@ interface CommitDialogProps {
 }
 
 export function CommitDialog({
+  excludeSharedAssets=false,
   project,
   sourceUrl,
   previewUrl,
@@ -426,6 +429,7 @@ export function CommitDialog({
   const targetKindOptions = Object.entries(KIND_LABELS)
     .filter(([k]) => {
       const optionKind = k as PushTargetKind;
+      if(excludeSharedAssets&&isSharedAssetTarget({kind:optionKind}))return false;
       if (!isUserSelectableCommitKind(optionKind)) return false;
       return mediaType === "model" ? modelSlotKinds.includes(optionKind) : true;
     });
@@ -550,6 +554,7 @@ export function CommitDialog({
     try {
       const target = buildTarget(kind, episode, beat, character, identityId, sceneId, propId);
       if (!target) throw new Error("目标不完整");
+      if(excludeSharedAssets&&isSharedAssetTarget(target))throw new Error('角色和场景请使用保存共享资产入口');
       if (mediaType === "model" && isDirectorWorldSourceSlotTarget(target) && !modelSlotKinds.includes(target.kind)) {
         throw new Error("无来源没有可提交的 3D 世界素材；请切换到具体世界来源后再提交到主线槽位。");
       }

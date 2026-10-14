@@ -2466,10 +2466,10 @@ export const NodeActionToolbar = memo(
                     nodeId: node.id,
                   });
                 }}
-                title="把当前节点的内容写回主流程资产"
+                title="保存当前节点的内容到项目资产库"
               >
                 <Send className="h-3.5 w-3.5" />
-                提交
+                保存资产
               </UiChipButton>
             )}
           </UiPanel>

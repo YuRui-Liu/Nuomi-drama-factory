@@ -166,6 +166,7 @@ const BEAT_SCOPED_LIBRARY_ASSET_KINDS = new Set(["video", "audio"]);
 type PanelTab = "library" | "canvases";
 
 interface AssetLibraryPanelProps {
+  onSharedSave?:(nodeId:string,entry?:import('@/features/creation-workspace/contracts').CreationAsset,role?:string)=>void;
   project: string;
   managedWorkspace?: boolean;
   metadata: Record<string, unknown> | null;
@@ -486,6 +487,7 @@ function DefaultCanvasBeatPanel({
 export function AssetLibraryPanel({
   project,
   managedWorkspace = false,
+  onSharedSave,
   metadata,
   collapsed: collapsedProp,
   onCollapsedChange,
@@ -652,6 +654,10 @@ export function AssetLibraryPanel({
       const replace = useAssetDropStore.getState().pendingReplace;
       if (!replace || replace.assetId !== asset.id) return;
       const target = assetToPushTarget(asset.source);
+      if(managedWorkspace&&target&&(target.kind.startsWith('scene_')||['portrait','identity','identity_portrait','identity_costume'].includes(target.kind))) {
+        onReplaced?.(null,'请在素材库的角色或场景卡片上选择保存目标');
+        clearPendingReplace();return;
+      }
       if (!target) {
         const src = asset.source as Record<string, unknown>;
         console.warn("[freezone] 无法推断替换目标", asset.label, asset.source);
@@ -701,7 +707,7 @@ export function AssetLibraryPanel({
           clearPendingReplace();
         });
     },
-    [clearPendingReplace, onReplaced, project],
+    [clearPendingReplace, onReplaced, project,managedWorkspace],
   );
 
   const replaceContextValue = useMemo<AssetReplaceContextValue>(
@@ -839,7 +845,7 @@ export function AssetLibraryPanel({
               </div>
 
               {/* ─ 列表内容 ── */}
-              {managedWorkspace && (tab === 'characters' || tab === 'scenes') ? <FixedAssetLibrary project={project} canvasId={currentCanvasId} query={query} onApplied={() => setCollapsed(true)} kind={tab === 'characters' ? 'character' : 'scene'} /> : !organizationHasUsableData ? null : error ? (
+              {managedWorkspace && (tab === 'characters' || tab === 'scenes') ? <FixedAssetLibrary project={project} canvasId={currentCanvasId} query={query} onSaveFromNode={onSharedSave} onApplied={() => setCollapsed(true)} kind={tab === 'characters' ? 'character' : 'scene'} /> : !organizationHasUsableData ? null : error ? (
                 <div className="mx-3 mt-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-400">
                   项目素材加载失败：{error}
                 </div>

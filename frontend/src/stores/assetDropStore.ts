@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { create } from 'zustand';
+import type { CreationAsset } from '@/features/creation-workspace/contracts';
 import {
   CANVAS_NODE_TYPES,
   type CanvasNode,
@@ -89,7 +90,7 @@ export function deriveNodeDropInfo(node: CanvasNode): {
     case CANVAS_NODE_TYPES.exportImage:
     case CANVAS_NODE_TYPES.storyboardGen:
     case CANVAS_NODE_TYPES.pano360Viewer: {
-      const imageUrl = str('imageUrl') ?? str('previewImageUrl');
+      const imageUrl = str('imageUrl') ?? (node.type===CANVAS_NODE_TYPES.pano360Viewer?str('panoUrl'):null) ?? str('previewImageUrl');
       return { mediaType: 'image', sourceUrl: imageUrl, thumbUrl: imageUrl, label, directorControlBundle };
     }
     default:
@@ -98,6 +99,7 @@ export function deriveNodeDropInfo(node: CanvasNode): {
 }
 
 export interface ActiveNodeDrag {
+  scope?: {user:string;project:string;canvas:string;isCurrent:()=>boolean;data:string};
   /** 被拖拽的画布节点 id。 */
   nodeId: string;
   /** 节点的媒体类型,用于和侧栏资产做同类型匹配。 */
@@ -113,6 +115,8 @@ export interface ActiveNodeDrag {
 
 /** Canvas 把节点拖到侧栏某条资产上松手后,发给侧栏的替换请求。 */
 export interface PendingAssetReplace {
+  scope?: ActiveNodeDrag['scope'];
+  sharedTarget?: CreationAsset;
   assetId: string;
   nodeId: string;
   sourceUrl: string;
@@ -127,11 +131,12 @@ interface AssetDropState {
   activeDrag: ActiveNodeDrag | null;
   /** 当前悬停且类型匹配的资产 id;用于侧栏画虚线框。 */
   hoverAssetId: string | null;
+  hoverSharedTarget:CreationAsset|null;
   /** 松手后产生的替换请求;侧栏消费后置空。 */
   pendingReplace: PendingAssetReplace | null;
 
   beginDrag: (drag: ActiveNodeDrag) => void;
-  setHoverAsset: (assetId: string | null) => void;
+  setHoverAsset: (assetId: string | null, sharedTarget?:CreationAsset) => void;
   /** 结束拖拽。若 commit=true 且当前悬停有效,则生成一个 pendingReplace。 */
   endDrag: (commit: boolean) => void;
   clearPendingReplace: () => void;
@@ -142,13 +147,14 @@ let replaceToken = 0;
 export const useAssetDropStore = create<AssetDropState>((set, get) => ({
   activeDrag: null,
   hoverAssetId: null,
+  hoverSharedTarget:null,
   pendingReplace: null,
 
-  beginDrag: (drag) => set({ activeDrag: drag, hoverAssetId: null }),
+  beginDrag: (drag) => set({ activeDrag: drag, hoverAssetId: null,hoverSharedTarget:null }),
 
-  setHoverAsset: (assetId) => {
+  setHoverAsset: (assetId,sharedTarget) => {
     if (get().hoverAssetId === assetId) return;
-    set({ hoverAssetId: assetId });
+    set({ hoverAssetId: assetId,hoverSharedTarget:sharedTarget?structuredClone(sharedTarget):null });
   },
 
   endDrag: (commit) => {
@@ -158,6 +164,8 @@ export const useAssetDropStore = create<AssetDropState>((set, get) => ({
       set({
         pendingReplace: {
           assetId: hoverAssetId,
+          scope:activeDrag.scope,
+          sharedTarget:get().hoverSharedTarget??undefined,
           nodeId: activeDrag.nodeId,
           sourceUrl: activeDrag.sourceUrl,
           label: activeDrag.label,

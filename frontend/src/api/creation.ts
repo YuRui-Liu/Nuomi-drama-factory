@@ -4,6 +4,24 @@ import type { AssetSelection, CreationAsset, FixedAssetRef, FixedAssetVersion, F
 import type { CreationCanvas, CreationResult, CreateWorkspaceInput } from '@/features/creation-workspace/contracts';
 
 const root = (project: string) => `projects/${encodeURIComponent(project)}/creation`;
+export type SharedAssetRole = 'portrait' | 'identity' | 'identity_portrait' | 'identity_costume' | 'scene_master' | 'scene_reverse_master' | 'scene_360' | 'scene_director_pano_360' | 'scene_3gs_custom_scene' | 'scene_3gs_master_ply' | 'scene_3gs_reverse_ply' | 'scene_3gs_pano_ply' | 'scene_3gs_active_ply' | 'scene_spatial_layout';
+export interface SharedAssetSource {
+  canvas_id:string; node_id:string; type:string; data:Record<string,unknown>; proof:string;
+  files:Record<string,{path:string;sha256:string;size:number}>;
+}
+export interface SharedAssetRequest {
+  request_id:string; mode:'new_base'|'new_variant'|'existing_version'; kind:'character'|'scene';
+  source:{canvas_id:string;node_id:string;proof:string}; role:SharedAssetRole;
+  name?:string; selection?:AssetSelection; proof?:string; expected_ref?:FixedAssetRef;
+  metadata?:Record<string,string>; scene_bundle?:boolean;
+}
+export interface SharedAssetResult {
+  request_id:string; status:'applied'|'pending'|'reconciliation_required'; phase?:string;
+  asset_ref?:FixedAssetRef; media?:{slot_id:string;role:string}[]; media_selection?:{slot_id:string;role:string};
+}
+export const inspectSharedAssetSource = (project:string,canvas:string,node:string) => apiCall<SharedAssetSource>(`${root(project)}/asset-publications/source`,{searchParams:{canvas_id:canvas,node_id:node}});
+export const publishSharedAsset = (project:string,request:SharedAssetRequest) => apiCall<SharedAssetResult>(`${root(project)}/asset-publications`,{method:'POST',json:request});
+export const getSharedPublication = (project:string,requestId:string) => apiCall<SharedAssetResult>(`${root(project)}/asset-publications/${encodeURIComponent(requestId)}`);
 export const listCreationAssets = (project: string, signal?: AbortSignal) => apiCall<CreationAsset[]>(`${root(project)}/assets`, { signal });
 export const registerCreationAsset = (project: string, body: { selection: AssetSelection; proof: string }) => apiCall<FixedAssetRef>(`${root(project)}/assets/register`, { method: 'POST', json: body });
 export const getFixedAssetVersion = (project: string, ref: FixedAssetRef) => apiCall<FixedAssetVersion>(`${root(project)}/assets/${encodeURIComponent(ref.base_asset_id)}/versions/${ref.revision}`, { searchParams: ref.variant_id ? { variant_id: ref.variant_id } : {} });

@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { resolveExternalCanvasConflict } from './canvasSyncRuntime';
+import { SharedAssetSaveDialog, isSharedAssetTarget } from './commit/SharedAssetSaveDialog';
+import { readSharedPublication, clearFinishedPublication, type PublicationScope } from './commit/sharedAssetPublication';
+import { useAuthStore } from '@/stores/auth-store';
+import type { CreationAsset } from '@/features/creation-workspace/contracts';
 import { readPendingCanvasOperation, readCanvasOperationBackup } from './externalCanvasOperation';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -394,6 +398,18 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
   const queryClient = useQueryClient();
   const projectId = project.id;
   const [pushState, setPushState] = useState<PushPrompt | null>(null);
+  const username=useAuthStore(state=>state.username);
+  const [sharedSave,setSharedSave]=useState<{scope:PublicationScope;target?:CreationAsset;role?:string;kind?:'character'|'scene'}|null>(null);
+  const openSharedSave=useCallback((node:string,target?:CreationAsset,role?:string)=>{
+    if(!username){setToast('用户信息尚未准备好，请稍后重试');return;}
+    const scope={user:username,project:projectId,canvas:canvasId,node};
+    try {
+      const prior=readSharedPublication(scope);
+      if(prior&&!['applied','failed'].includes(prior.phase)){setSharedSave({scope:prior.scope});return;}
+      if(prior)clearFinishedPublication(prior.scope);
+      setSharedSave({scope,target,role,kind:target?.kind??(role?.startsWith('scene_')?'scene':undefined)});
+    } catch(error){setToast(String(error));}
+  },[username,projectId,canvasId]);
   const [comparePair, setComparePair] = useState<
     | {
         left: { url: string; label: string };
@@ -448,6 +464,14 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
   }, [projectId, queryClient]);
   const sync = useCanvasSync(projectId, canvasId);
   useWorkspaceSelection(projectId, canvasId, sync.hydratedCanvasId === canvasId, managedWorkspace);
+  useEffect(()=>{
+    setSharedSave(null);
+    if(!managedWorkspace||!username||sync.hydratedCanvasId!==canvasId)return;
+    try {
+      const pending=readSharedPublication({user:username,project:projectId,canvas:canvasId});
+      if(pending&&pending.phase!=='applied')setSharedSave({scope:pending.scope});
+    } catch(error){setToast(String(error));}
+  },[projectId,canvasId,username,managedWorkspace,sync.hydratedCanvasId]);
   useEffect(() => {
     onWorkspaceState?.({ canvasId, hydrated: sync.hydratedCanvasId === canvasId, status: sync.status });
   }, [canvasId, sync.hydratedCanvasId, sync.status, onWorkspaceState]);
@@ -668,6 +692,10 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
         coerceSlotTarget(data.capabilityDefaultPushTarget) ??
         assetToPushTarget(sourceMeta) ??
         undefined;
+      if(managedWorkspace&&(isSharedAssetTarget(defaultTarget)||!defaultTarget&&['image','model'].includes(info.mediaType))) {
+        if(!auto)openSharedSave(nodeId,undefined,defaultTarget?.kind);
+        return; // Generated character/scene output remains a candidate.
+      }
       if (!auto) {
         void (async () => {
           try {
@@ -775,7 +803,7 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
         }
       })();
     });
-  }, [projectId, sync]);
+  }, [projectId, sync, managedWorkspace, openSharedSave]);
 
   useEffect(() => {
     const unsubscribeSync = canvasEventBus.subscribe(
@@ -888,6 +916,7 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
             />
           )}
           <AssetLibraryPanel
+            onSharedSave={openSharedSave}
             managedWorkspace={managedWorkspace}
             project={projectId}
             metadata={sync.metadata}
@@ -923,11 +952,16 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
         )}
       </div>
       <NodeReplaceDragPreview />
+      {managedWorkspace&&sharedSave&&sharedSave.scope.project===projectId&&sharedSave.scope.canvas===canvasId&&sharedSave.scope.user===username&&<SharedAssetSaveDialog
+        key={`${username}:${projectId}:${canvasId}:${sharedSave.scope.node}`}
+        scope={sharedSave.scope} initialTarget={sharedSave.target} defaultRole={sharedSave.role} defaultKind={sharedSave.kind}
+        onClose={()=>setSharedSave(null)} onSuccess={()=>{setAssetLibraryReloadToken(token=>token+1);setToast('已保存共享资产；画布引用保持原版本');}}/>}
       {pushState && (
         <Suspense
           fallback={<div role="status" aria-live="polite" className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 text-sm">正在加载提交窗口…</div>}
         >
           <LazyCommitDialog
+            excludeSharedAssets={managedWorkspace}
             project={projectId}
             sourceUrl={pushState.sourceUrl}
             previewUrl={pushState.previewUrl ?? undefined}

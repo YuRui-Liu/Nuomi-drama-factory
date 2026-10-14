@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { useCallback } from 'react';
+import { currentFreezoneCanvasScope } from '@/features/freezone/canvasSyncRuntime';
+import { useAuthStore } from '@/stores/auth-store';
+import type { CreationAsset } from '@/features/creation-workspace/contracts';
 import { Replace } from 'lucide-react';
 import { Position } from '@xyflow/react';
 
@@ -31,7 +34,10 @@ export function AssetCommitHandle({ node }: { node: CanvasNode }) {
       event.preventDefault();
       event.stopPropagation();
 
+      const runtime=currentFreezoneCanvasScope();
+      const user=useAuthStore.getState().username;
       useAssetDropStore.getState().beginDrag({
+        ...(runtime&&user?{scope:{user,project:runtime.project,canvas:runtime.canvasId,isCurrent:runtime.isCurrent,data:JSON.stringify(node.data)}}:{}),
         nodeId: node.id,
         mediaType: dropInfo.mediaType,
         sourceUrl,
@@ -49,18 +55,22 @@ export function AssetCommitHandle({ node }: { node: CanvasNode }) {
         const drag = useAssetDropStore.getState().activeDrag;
         const elements = document.elementsFromPoint(e.clientX, e.clientY);
         let hoverId: string | null = null;
+        let sharedTarget:CreationAsset|undefined;
         for (const el of elements) {
           const card = (el as Element).closest?.(
             '[data-asset-id]',
           ) as HTMLElement | null;
           if (!card) continue;
           const assetType = card.dataset.assetMediaType;
-          if (drag && assetType && assetType === drag.mediaType) {
+          if (drag && assetType && assetType.split(',').includes(drag.mediaType)) {
             hoverId = card.dataset.assetId ?? null;
+            if(card.dataset.sharedAsset) {
+              try {sharedTarget=JSON.parse(card.dataset.sharedAsset) as CreationAsset;}catch {hoverId=null;}
+            }
           }
           break;
         }
-        useAssetDropStore.getState().setHoverAsset(hoverId);
+        useAssetDropStore.getState().setHoverAsset(hoverId,sharedTarget);
       };
 
       const onUp = () => {
