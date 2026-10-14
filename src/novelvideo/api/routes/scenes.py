@@ -413,6 +413,65 @@ def _clear_scene_currents(ctx,scene,roles):
         workflow.clear_current(slot_id=prefix+role)
 
 
+async def _write_scene_viewer(ctx, project_dir, store, name, kind, body):
+    from novelvideo.creation.asset_sync import SourceSyncPending
+    try:
+        return await _write_scene_viewer_locked(ctx, project_dir, store, name, kind, body)
+    except SourceSyncPending as exc:
+        raise HTTPException(409, {'code': 'asset_media_pending', 'message': str(exc)}) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+async def _write_scene_viewer_locked(ctx, project_dir, store, name, kind, body):
+    """Resolve and mutate under the same Task-owned lock as every scene publisher."""
+    from novelvideo.production_workflow.coordination import asset_project_lock
+    from novelvideo.creation.asset_rename import assert_asset_locators_writable, assert_no_pending_rename
+    state_dir = Path(ctx.state_dir) if ctx is not None else project_dir / '_state'
+    async with asset_project_lock(state_dir):
+        if (state_dir / 'data.db').is_file():
+            assert_no_pending_rename(store, kind='scene', names={name})
+            assert_asset_locators_writable(store, 'scene', [name])
+        scene = await _require_scene(store, name)
+        if scene is None:
+            return {'ok': False, 'error': f"Scene '{name}' not found"}
+        path = stage_manifest.manifest_path(project_dir, scene.name)
+        scene_mutation_path(project_dir, scene.name, path)
+        scene_mutation_path(project_dir, scene.name, path.with_suffix('.json.lock'))
+        snapshot = body.get('snapshot')
+        source_id = str(body.get('source_id' if kind == 'source' else 'active_source_id') or '').strip()
+        if kind in {'world', 'source'}:
+            if not isinstance(snapshot, dict):
+                return {'ok': False, 'error': 'snapshot is required'}
+            if not source_id and kind == 'world':
+                world = snapshot.get('world')
+                source_id = str(world.get('activeSourceId') or '').strip() if isinstance(world, dict) else ''
+            if not source_id:
+                return {'ok': False, 'error': ('source_id' if kind == 'source' else 'active_source_id') + ' is required'}
+        if kind == 'correction' and build_pano_viewer_manifest(ctx=ctx, project_dir=project_dir, scene_name=scene.name, mode='scene') is None:
+            return {'ok': False, 'error': '当前场景没有 360 全景资产'}
+        async with _publish_scene_media(ctx, project_dir, scene):
+            if kind == 'correction':
+                stage_manifest.set_pano_correction(project_dir, scene.name, body)
+                manifest = build_pano_viewer_manifest(ctx=ctx, project_dir=project_dir, scene_name=scene.name, mode='scene')
+                if manifest is None:
+                    raise RuntimeError('Scene panorama disappeared during correction publication')
+                result = {'ok': True, 'data': manifest.model_dump(exclude_none=True)}
+            elif kind == 'clear':
+                saved = stage_manifest.clear_scene_director_world(project_dir, scene.name, active_source_id=source_id or None)
+                result = {'ok': True, 'data': saved}
+            else:
+                source = body.get('source' if kind == 'source' else 'active_source')
+                source = source if isinstance(source, dict) else None
+                if kind == 'source':
+                    saved = stage_manifest.save_scene_director_world_source(project_dir, scene.name, source_id=source_id, snapshot=snapshot, source=source)
+                else:
+                    saved = stage_manifest.save_scene_director_world(project_dir, scene.name, active_source_id=source_id, snapshot=snapshot, active_source=source)
+                manifest = build_director_stage_manifest(ctx=ctx, project_dir=project_dir, scene_name=scene.name, mode='scene')
+                result = {'ok': True, 'data': {**saved, 'manifest': manifest.model_dump(exclude_none=True) if manifest is not None else None}}
+        return result
+
+
 async def _derived_scene_names_for(store: SQLiteStore, scene_name: str) -> list[str]:
     scenes = await store.list_scenes()
     return sorted(
@@ -627,26 +686,11 @@ async def update_scene_pano_correction(
     correction: PanoViewerCorrection,
     user: dict = Depends(get_api_user),
 ):
+    body = correction.model_dump()
     ctx, _username, _project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user, required_role="editor")
     )
-    scene = await _require_scene(store, name)
-    if scene is None:
-        return {"ok": False, "error": f"Scene '{name}' not found"}
-    stage_manifest.set_pano_correction(
-        project_dir,
-        scene.name,
-        correction.model_dump(),
-    )
-    manifest = build_pano_viewer_manifest(
-        ctx=ctx,
-        project_dir=project_dir,
-        scene_name=scene.name,
-        mode="scene",
-    )
-    if manifest is None:
-        return {"ok": False, "error": "当前场景没有 360 全景资产"}
-    return {"ok": True, "data": manifest.model_dump(exclude_none=True)}
+    return await _write_scene_viewer(ctx, project_dir, store, name, 'correction', body)
 
 
 @router.get("/projects/{project}/scenes/{name}/director-stage/manifest")
@@ -679,42 +723,11 @@ async def save_scene_director_world(
     body: dict[str, Any],
     user: dict = Depends(get_api_user),
 ):
+    body = deepcopy(body)
     ctx, _username, _project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user, required_role="editor")
     )
-    scene = await _require_scene(store, name)
-    if scene is None:
-        return {"ok": False, "error": f"Scene '{name}' not found"}
-    snapshot = body.get("snapshot")
-    if not isinstance(snapshot, dict):
-        return {"ok": False, "error": "snapshot is required"}
-    source_id = str(body.get("active_source_id") or "").strip()
-    try:
-        active_source = body.get("active_source")
-        saved = stage_manifest.save_scene_director_world(
-            project_dir,
-            scene.name,
-            active_source_id=source_id,
-            snapshot=snapshot,
-            active_source=active_source if isinstance(active_source, dict) else None,
-        )
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
-    manifest = build_director_stage_manifest(
-        ctx=ctx,
-        project_dir=project_dir,
-        scene_name=scene.name,
-        mode="scene",
-    )
-    return {
-        "ok": True,
-        "data": {
-            **saved,
-            "manifest": (
-                manifest.model_dump(exclude_none=True) if manifest is not None else None
-            ),
-        },
-    }
+    return await _write_scene_viewer(ctx, project_dir, store, name, 'world', body)
 
 
 @router.post("/projects/{project}/scenes/{name}/director-stage/world/source")
@@ -724,42 +737,11 @@ async def save_scene_director_world_source(
     body: dict[str, Any],
     user: dict = Depends(get_api_user),
 ):
+    body = deepcopy(body)
     ctx, _username, _project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user, required_role="editor")
     )
-    scene = await _require_scene(store, name)
-    if scene is None:
-        return {"ok": False, "error": f"Scene '{name}' not found"}
-    snapshot = body.get("snapshot")
-    if not isinstance(snapshot, dict):
-        return {"ok": False, "error": "snapshot is required"}
-    source_id = str(body.get("source_id") or "").strip()
-    try:
-        source = body.get("source")
-        saved = stage_manifest.save_scene_director_world_source(
-            project_dir,
-            scene.name,
-            source_id=source_id,
-            snapshot=snapshot,
-            source=source if isinstance(source, dict) else None,
-        )
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
-    manifest = build_director_stage_manifest(
-        ctx=ctx,
-        project_dir=project_dir,
-        scene_name=scene.name,
-        mode="scene",
-    )
-    return {
-        "ok": True,
-        "data": {
-            **saved,
-            "manifest": (
-                manifest.model_dump(exclude_none=True) if manifest is not None else None
-            ),
-        },
-    }
+    return await _write_scene_viewer(ctx, project_dir, store, name, 'source', body)
 
 
 @router.post("/projects/{project}/scenes/{name}/director-stage/world/clear")
@@ -769,19 +751,11 @@ async def clear_scene_director_world(
     body: dict[str, Any] | None = None,
     user: dict = Depends(get_api_user),
 ):
-    _ctx, _username, _project_name, project_dir, _output_dir, store = (
+    body = deepcopy(body or {})
+    ctx, _username, _project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user, required_role="editor")
     )
-    scene = await _require_scene(store, name)
-    if scene is None:
-        return {"ok": False, "error": f"Scene '{name}' not found"}
-    body = body or {}
-    saved = stage_manifest.clear_scene_director_world(
-        project_dir,
-        scene.name,
-        active_source_id=str(body.get("active_source_id") or "").strip() or None,
-    )
-    return {"ok": True, "data": saved}
+    return await _write_scene_viewer(ctx, project_dir, store, name, 'clear', body)
 
 
 @router.post("/projects/{project}/scenes")

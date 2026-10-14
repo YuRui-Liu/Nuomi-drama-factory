@@ -47,6 +47,9 @@ import json
 import os
 import stat
 import tempfile
+import threading
+from contextlib import contextmanager
+from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -56,6 +59,36 @@ import portalocker
 from .paths import safe_name
 
 SCHEMA_VERSION = "stage_manifest_v1"
+_manifest_lock_state = threading.local()
+
+
+@contextmanager
+def _manifest_write_lock(project_dir: Path, scene_id: str, version: str):
+    """Synchronous RMW may re-enter update_manifest on this thread, never await."""
+    path = manifest_path(project_dir, scene_id, version)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(f"{path.suffix}.lock")
+    if lock_path.is_symlink():
+        raise ValueError('Manifest lock must not be a symbolic link')
+    key = str(lock_path.resolve())
+    held = getattr(_manifest_lock_state, 'held', set())
+    if key in held:
+        yield
+        return
+    with portalocker.Lock(str(lock_path), mode="a+", timeout=60):
+        _manifest_lock_state.held = held | {key}
+        try:
+            yield
+        finally:
+            _manifest_lock_state.held = held
+
+
+def _world_write(method):
+    @wraps(method)
+    def write(project_dir, scene_id, **kwargs):
+        with _manifest_write_lock(project_dir, scene_id, kwargs.get('version', 'v1')):
+            return method(project_dir, scene_id, **kwargs)
+    return write
 
 
 def _prefer_sog_sidecar(path: Path) -> Path | None:
@@ -149,10 +182,7 @@ def update_manifest(
     **fields: Any,
 ) -> Path:
     """Merge fields into existing manifest (or create new). Atomic."""
-    path = manifest_path(project_dir, scene_id, version)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_suffix(f"{path.suffix}.lock")
-    with portalocker.Lock(str(lock_path), mode="a+", timeout=60):
+    with _manifest_write_lock(project_dir, scene_id, version):
         existing = load_manifest(project_dir, scene_id, version) or {}
         for field in clear_fields or ():
             existing[field] = None
@@ -417,6 +447,7 @@ def get_scene_director_world(
     }
 
 
+@_world_write
 def save_scene_director_world(
     project_dir: Path,
     scene_id: str,
@@ -461,6 +492,7 @@ def save_scene_director_world(
     }
 
 
+@_world_write
 def save_scene_director_world_source(
     project_dir: Path,
     scene_id: str,
@@ -507,6 +539,7 @@ def save_scene_director_world_source(
     }
 
 
+@_world_write
 def clear_scene_director_world(
     project_dir: Path,
     scene_id: str,
