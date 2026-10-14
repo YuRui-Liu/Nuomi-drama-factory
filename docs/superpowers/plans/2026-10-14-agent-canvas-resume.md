@@ -123,7 +123,7 @@ A2b 分两批串行交付：**A2b-1** 可信媒体内容快照、可恢复发布
 
 2c 保留现有 CommitDialog，明确新基础资产／变体／新版本的保存目标，已有目标携带用户选择时的版本凭据，持锁后 CAS 校验，冲突不自动采用 latest。补齐新发现的 scene director world/source/clear 及 pano correction 四个真实 writer 的 publication 保护；完整布景媒体与 manifest 改为一次服务端发布，替代客户端循环多次写入。新模式移除生成后 auto:true 隐式共享回填，明确保存与采用。道具、泛媒体不伪装成 character/scene 的 AssetRef；完整地图见执行报告。
 
-2c 串行交付：**2c1（当前）**先将四个现存 viewer writer 的完整读改写纳入可信场景 publication；**2c2**实现具有持久请求 receipt 的共享发布服务，覆盖新基础／变体／已有版本、选择时凭据及媒体与完整 manifest 一次发布；**2c3**接入现有保存界面并清理新模式隐式回填。每批独立双审；2c1 不代表完整共享发布已完成。
+2c 串行交付：**2c1 已双审提交 `2e93a34`**，四个现存 viewer writer 的完整读改写纳入可信场景 publication，165 passed、规格独立32 passed；**2c2（当前）**实现具有持久请求 receipt 的共享发布服务，覆盖新基础／变体／已有版本、选择时凭据及媒体与完整 manifest 一次发布；**2c3**接入现有保存界面并清理新模式隐式回填。每批独立双审；2c1 不代表完整共享发布已完成。另固定资产按钮自动空位放置小修已双审提交 `ffc45d9`。
 
 ## 任务 8A：Agent 与模板、可扩展对象定义
 
