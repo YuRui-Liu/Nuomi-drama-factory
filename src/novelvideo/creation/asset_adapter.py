@@ -4,7 +4,6 @@ Source names are explicit import locators, never semantic IDs. Media adoption is
 deliberately excluded: use the existing candidate/publication domain service.
 """
 
-import asyncio
 from contextlib import asynccontextmanager, closing
 from datetime import datetime, timezone
 import json
@@ -13,9 +12,8 @@ import sqlite3
 from typing import Any, Literal
 from uuid import uuid4
 
-import portalocker
-
 from novelvideo.models import CharacterIdentity, NovelScene
+from novelvideo.production_workflow.coordination import asset_project_lock
 from novelvideo.sqlite_store import SQLiteStore
 from novelvideo.utils.derived_scenes import compose_derived_scene_name
 
@@ -23,7 +21,6 @@ from .models import AssetRef
 from .store import ObjectStore, RevisionConflict
 
 
-_LOCKS: dict[str, asyncio.Lock] = {}
 _CHARACTER_FIELDS = {'age_group', 'appearance_details', 'face_prompt', 'body_type'}
 _IDENTITY_FIELDS = {'age_group', 'appearance_details', 'face_prompt'}
 _SCENE_FIELDS = {'time_of_day', 'variant_prompt', 'description', 'notes'}
@@ -32,16 +29,16 @@ _SCENE_FIELDS = {'time_of_day', 'variant_prompt', 'description', 'notes'}
 class AssetAdapter:
     """An adapter, not an independent writable asset library.
 
-    Adapter writes use a process lock. Existing routes do not share this lock;
-    callers must serialize legacy asset edits with adapter writes. Source and
-    snapshot writes use separate databases (no distributed transaction).
+    Adapter and synchronous workflow publications share a project process lock.
+    Legacy SQLite/route edits still require integration with asset_project_lock;
+    this adapter alone cannot serialize those writes. Source and snapshot writes
+    use separate databases, with durable publication evidence for recovery.
     """
 
     def __init__(self, source: SQLiteStore, objects: ObjectStore, actor_id: str = 'asset-adapter'):
         if objects.db_path.parent.parent.resolve() != Path(source.state_dir).resolve():
             raise ValueError('Source and snapshots must belong to the same project')
         self.source, self.objects, self.actor_id = source, objects, actor_id
-        self._lock = _LOCKS.setdefault(str(objects.db_path.resolve()), asyncio.Lock())
         with objects.transaction() as conn:
             conn.execute('''CREATE TABLE IF NOT EXISTS asset_sources (
                 object_id TEXT PRIMARY KEY REFERENCES objects(id), kind TEXT NOT NULL,
@@ -53,6 +50,11 @@ class AssetAdapter:
             conn.execute('''CREATE TABLE IF NOT EXISTS asset_publication_intents (
                 object_id TEXT PRIMARY KEY, expected_revision INTEGER NOT NULL,
                 previous TEXT NOT NULL, requested TEXT NOT NULL)''')
+            # Keep the four-column legacy intent contract. Old intents without
+            # complete evidence fail closed rather than guessing a baseline.
+            conn.execute('''CREATE TABLE IF NOT EXISTS asset_publication_evidence (
+                object_id TEXT PRIMARY KEY, source_before TEXT NOT NULL,
+                source_requested TEXT NOT NULL)''')
 
     async def _assert_fresh(self, base: dict[str, Any]) -> None:
         if base['kind'] != 'character':
@@ -83,18 +85,79 @@ class AssetAdapter:
 
     @asynccontextmanager
     async def _write_lock(self):
-        async with self._lock:
-            with self.objects.db_path.with_suffix('.assets.lock').open('a') as handle:
-                while True:
-                    try:
-                        portalocker.lock(handle, portalocker.LOCK_EX | portalocker.LOCK_NB)
-                        break
-                    except portalocker.exceptions.AlreadyLocked:
-                        await asyncio.sleep(0.02)
-                try:
-                    yield
-                finally:
-                    portalocker.unlock(handle)
+        async with asset_project_lock(self.source.state_dir):
+            yield
+
+    @staticmethod
+    def _source_fingerprint(payload: dict[str, Any]) -> str:
+        # SQL owns this timestamp; metadata writes can update it independently
+        # of the semantic record. Every other source field is compared.
+        normalized = {k: v for k, v in payload.items() if k != 'updated_at'}
+        for key, value in normalized.items():
+            if key == 'voice_facts_json':
+                # add_character expands the validated defaults of legacy '{}'.
+                from novelvideo.character_voice_facts import VoiceFacts
+                normalized[key] = VoiceFacts.model_validate_json(value or '{}').model_dump(mode='json')
+            elif key.endswith('_json') and isinstance(value, str):
+                normalized[key] = json.loads(value)
+        return json.dumps(normalized, sort_keys=True, ensure_ascii=False)
+
+    async def reconcile_publication(self, base_id: str, variant_id: str | None = None) -> AssetRef:
+        """Explicitly finish a proven write or abandon a proven unstarted write.
+
+        Never rewrite source data. Unknown/legacy evidence, unrelated source
+        changes and competing semantic revisions retain the intent and fail.
+        A single synchronous CAS transaction advances history and clears the
+        journal; source reads happen before entering that transaction.
+        """
+        async with self._write_lock():
+            base = self._base(base_id)
+            object_id = variant_id or base_id
+            mapping = self._mapping(object_id)
+            if variant_id and mapping['parent_id'] != base_id:
+                raise ValueError('Variant belongs to another base asset')
+            with self.objects.transaction() as conn:
+                row = conn.execute('SELECT * FROM asset_publication_intents WHERE object_id=?', (object_id,)).fetchone()
+                evidence = conn.execute('SELECT * FROM asset_publication_evidence WHERE object_id=?', (object_id,)).fetchone()
+            if row is None:
+                current = self.objects.read(object_id)
+                return AssetRef(base_asset_id=base_id, variant_id=variant_id, revision=current['revision'])
+            if evidence is None:
+                raise RuntimeError('Legacy publication lacks complete source evidence; manual reconciliation required')
+            await self._assert_fresh(base)
+            actual = (await self._source_record(mapping)).model_dump(mode='json')
+            before, requested = json.loads(evidence['source_before']), json.loads(evidence['source_requested'])
+            fingerprint = self._source_fingerprint
+            actual_fingerprint = fingerprint(actual)
+            requested_matches = actual_fingerprint == fingerprint(requested)
+            if actual_fingerprint == fingerprint(before):
+                changed = False
+            elif requested_matches:
+                changed = True
+            else:
+                raise RuntimeError('Publication source drift requires manual reconciliation')
+            expected = row['expected_revision']
+            with self.objects.transaction() as conn:
+                live = conn.execute('SELECT * FROM asset_publication_intents WHERE object_id=?', (object_id,)).fetchone()
+                proof = conn.execute('SELECT * FROM asset_publication_evidence WHERE object_id=?', (object_id,)).fetchone()
+                if live is None or dict(live) != dict(row) or proof is None or dict(proof) != dict(evidence):
+                    raise RuntimeError('Publication intent changed during reconciliation')
+                current = conn.execute('''SELECT o.current_revision, v.payload FROM objects o
+                    JOIN object_versions v ON v.object_id=o.id AND v.revision=o.current_revision
+                    WHERE o.id=?''', (object_id,)).fetchone()
+                revision = current['current_revision']
+                if revision == expected:
+                    if changed:
+                        revision += 1
+                        conn.execute('INSERT INTO object_versions VALUES (?,?,?,?,?)',
+                                     (object_id, revision, json.dumps(actual), self.actor_id, datetime.now(timezone.utc).isoformat()))
+                        conn.execute('UPDATE objects SET current_revision=? WHERE id=? AND current_revision=?',
+                                     (revision, object_id, expected))
+                elif not (requested_matches and revision == expected + 1 and fingerprint(json.loads(current['payload'])) == actual_fingerprint):
+                    raise RevisionConflict(object_id, expected, revision)
+                conn.execute('DELETE FROM asset_publication_intents WHERE object_id=?', (object_id,))
+                conn.execute('DELETE FROM asset_publication_evidence WHERE object_id=?', (object_id,))
+            return AssetRef(base_asset_id=base_id, variant_id=variant_id, revision=revision)
 
     def _mapping(self, object_id: str) -> dict[str, Any]:
         with self.objects.transaction() as conn:
@@ -240,11 +303,13 @@ class AssetAdapter:
             record = await self._source_record(mapping)
             if base['kind'] == 'scene' and record.base_scene_id != (base['source_name'] if variant_id else ''):
                 raise ValueError('Scene source relationship changed')
-            record.__class__.model_validate({**record.model_dump(), **payload})
+            requested_record = record.__class__.model_validate({**record.model_dump(), **payload})
             previous = {key: getattr(record, key) for key in payload}
             with self.objects.transaction() as conn:
                 conn.execute('INSERT INTO asset_publication_intents VALUES (?,?,?,?)',
                              (object_id, expected_revision, json.dumps(previous), json.dumps(payload)))
+                conn.execute('INSERT INTO asset_publication_evidence VALUES (?,?,?)',
+                             (object_id, record.model_dump_json(), requested_record.model_dump_json()))
             async def write(values):
                 if base['kind'] == 'scene':
                     await self.source.update_scene(mapping['source_name'], **values)
@@ -261,10 +326,16 @@ class AssetAdapter:
                 record = await self._source_record(mapping)
                 obj = self.objects.update(object_id, expected_revision, record.model_dump(mode='json'), self.actor_id)
             except BaseException:
-                await asyncio.shield(write(previous))
+                # Keep compensation in the owning Task. shield(coroutine)
+                # creates a child Task which cannot reenter the project lock.
+                # A second cancellation leaves durable evidence for explicit
+                # recovery, rather than spawning an unowned background write.
+                await write(previous)
                 with self.objects.transaction() as conn:
                     conn.execute('DELETE FROM asset_publication_intents WHERE object_id=?', (object_id,))
+                    conn.execute('DELETE FROM asset_publication_evidence WHERE object_id=?', (object_id,))
                 raise
             with self.objects.transaction() as conn:
                 conn.execute('DELETE FROM asset_publication_intents WHERE object_id=?', (object_id,))
+                conn.execute('DELETE FROM asset_publication_evidence WHERE object_id=?', (object_id,))
             return ref.model_copy(update={'revision': obj['revision']})

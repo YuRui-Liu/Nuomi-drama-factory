@@ -44,6 +44,11 @@ _PROJECT_LOCK_STATE = threading.local()
 @contextmanager
 def production_workflow_project_lock(state_dir: str | Path):
     """Reentrant thread lock and cross-platform process lock for one project."""
+    from .coordination import synchronous_lock_is_owned
+
+    if synchronous_lock_is_owned(state_dir):
+        yield
+        return
     directory = Path(state_dir).resolve()
     key = os.path.normcase(str(directory))
     with _PROJECT_LOCKS_GUARD:

@@ -87,6 +87,13 @@ assert other_canvas_object['revision'] == original_revision
 
 文件：原任务 7 文件，新增 `creation/library_references.py` 和测试。AssetAdapter 源写锁、重命名映射、interrupted publication 的显式对账并入本任务。
 
+执行细分（产品范围不变，按 7A → 7B 顺序，各自双审）：
+
+- **7A 资产源一致性：** 统一 Adapter 与保留资产编辑／采用入口的异步写入保护；角色及 identity、场景改名时同步 source locator 而保持语义 ID；明确恢复中断 publication；将真实已采用 workflow slot/version 与模型记录一同快照，保留历史引用。重点修改 Adapter、SQLiteStore 精确元数据方法、casting adoption、production adoption 和场景目录改名边界。现有线程锁不可直接跨 await 使用。
+- **7B 引用 API 与界面：** 在 7A 契约上接入基础／变体选择器、引用详情和风格／手法的项目／画布／组／节点作用域；复用现有完整资产中心，选择与应用分开，失败保留原值，不自动重生成。
+
+7A 内部再分两次完整交付：**A1** 共享写锁、Adapter 接入与中断 publication 对账；**A2** 源元数据／重命名、采用事务与可信媒体快照接入。每次双审提交，A1 不能宣称尚未接入的所有源写入口已受保护。
+
 - [ ] 先测试基础／变体选择不写入、明确应用只改目标、创建变体不采用、引用失败不改原值、跨集及自由画布隔离。
 - [ ] 复用完整现有资产中心编辑器，用户明确选择新基础／已有变体／新版本的发布目标。资产中心写入与适配层共享源状态检查，真实媒体采用刷新可信语义快照，不允许客户端任意媒体路径。
 - [ ] 库引用记录对象、版本、scope（project/canvas/group/node）、覆盖／解除；显示生效来源，冲突显式提示，变更不自动重生成。
