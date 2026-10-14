@@ -148,7 +148,7 @@ def scene_media_layouts(root, name):
     """Resolve the existing scene layouts; a manifest cannot name other assets."""
     import json
     from novelvideo.director_world import stage_manifest
-    from novelvideo.utils.path_resolver import canonical_scene_master_path, canonical_scene_reverse_master_path
+    from novelvideo.utils.path_resolver import canonical_scene_master_path, canonical_scene_reverse_master_path, canonical_scene_360_path
     root = Path(root)
     directory = controlled_path(root, stage_manifest.stage_dir(root, name))
     manifest_path = controlled_path(root, stage_manifest.manifest_path(root, name))
@@ -162,6 +162,7 @@ def scene_media_layouts(root, name):
             if not path.is_relative_to(directory):
                 raise ValueError('Scene manifest path escapes its scene directory')
     paths = {'master':canonical_scene_master_path(root,name),
+             'panorama_360':canonical_scene_360_path(root,name),
              'reverse_master':canonical_scene_reverse_master_path(root,name),
              'spatial_layout':root/'assets/scenes'/name/'spatial_layout.png'}
     relations = {}
