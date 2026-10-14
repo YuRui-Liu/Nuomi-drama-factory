@@ -71,6 +71,7 @@ export function useUpdateProject(project: string) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 type SummaryPayload = {
+  creation_mode?: string | null;
   display_name?: string;
   id?: string;
   project_id?: string;
@@ -95,6 +96,7 @@ function toSummary(p: SummaryPayload): ProjectSummary {
   }
   return {
     id,
+    creationMode: p.creation_mode ?? undefined,
     name: p.name,
     displayName: p.display_name?.trim() || p.name,
     status: p.status,

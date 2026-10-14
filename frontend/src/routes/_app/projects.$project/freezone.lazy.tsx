@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { createLazyFileRoute, useRouterState } from "@tanstack/react-router";
-import { ReactFlowProvider } from "@xyflow/react";
+import { createLazyFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 
 import type { SupertaleProjectSummary } from "@/api/projects";
@@ -10,29 +9,14 @@ import {
   subscribeOpenGlobalErrorDialog,
   type GlobalErrorDialogDetail,
 } from "@/features/app/errorDialogEvents";
-import { FreezoneShell } from "@/features/freezone/FreezoneShell";
-import { canvasIdForFreezoneEntry } from "@/features/freezone/projections";
+import { CreationWorkspace } from "@/features/creation-workspace/CreationWorkspace";
 import { useAllProjectSummaries } from "@/lib/queries/projects";
-import { readLastCanvas, writeUrl } from "@/lib/url-params";
-import { useAuthStore } from "@/stores/auth-store";
 
 function FreezoneProjectRoute() {
   const { project } = Route.useParams();
-  const username = useAuthStore((state) => state.username);
   const { data: projects, isLoading } = useAllProjectSummaries();
   const [globalError, setGlobalError] = useState<GlobalErrorDialogDetail | null>(null);
 
-  // Read `?canvas` from the router's location so it stays consistent with an
-  // in-flight navigation (tanstack throttles history onto a microtask, so
-  // window.location — and any raw readUrl() — lags a queued canvas switch).
-  // This subscription also re-renders the route when the canvas param changes,
-  // replacing the old raw popstate listener.
-  const canvasParam = useRouterState({
-    select: (s) => {
-      const canvas = (s.location.search as { canvas?: unknown }).canvas;
-      return typeof canvas === "string" && canvas.length > 0 ? canvas : null;
-    },
-  });
 
   useEffect(() => subscribeOpenGlobalErrorDialog(setGlobalError), []);
 
@@ -44,6 +28,7 @@ function FreezoneProjectRoute() {
         display_name: item.name,
         updated_at: item.updatedAt,
         episode_count: item.episodeCount,
+        creation_mode: item.creationMode,
       })),
     [projects],
   );
@@ -71,27 +56,20 @@ function FreezoneProjectRoute() {
           <div className="mb-6 text-sm text-text-muted">
             当前账号下找不到项目 <code className="rounded bg-bg-dark px-1 py-0.5">{project}</code>。
           </div>
-          <button
-            type="button"
-            onClick={() => writeUrl({ project: null, canvas: null })}
+          <a
+            href="/"
             className="rounded-lg bg-accent/90 px-4 py-2 text-sm text-white transition hover:bg-accent"
           >
             返回项目
-          </button>
+          </a>
         </div>
       </div>
     );
   }
 
-  const canvasId = canvasIdForFreezoneEntry({
-    explicitCanvasId: canvasParam ?? readLastCanvas(matchedProject.id),
-    username,
-  });
-
   return (
-    <ReactFlowProvider>
       <div className="-m-6 h-[calc(100%+3rem)] w-[calc(100%+3rem)] bg-bg-dark">
-        <FreezoneShell project={matchedProject} canvasId={canvasId} />
+        <CreationWorkspace key={matchedProject.id} project={matchedProject} />
         <GlobalErrorDialog
           isOpen={Boolean(globalError)}
           title={globalError?.title ?? ""}
@@ -101,7 +79,6 @@ function FreezoneProjectRoute() {
           onClose={() => setGlobalError(null)}
         />
       </div>
-    </ReactFlowProvider>
   );
 }
 

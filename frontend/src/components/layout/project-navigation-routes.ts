@@ -17,16 +17,14 @@ export const PROJECT_SECTION_ROUTES = {
 export type ProjectSection = keyof typeof PROJECT_SECTION_ROUTES;
 
 export const PROJECT_NAV_ITEMS = [
-  { labelKey: "nav.ingest", to: PROJECT_SECTION_ROUTES.ingest },
-  { labelKey: "nav.scriptCreation", to: PROJECT_SECTION_ROUTES.creation },
-  { labelKey: "nav.assets", to: PROJECT_SECTION_ROUTES.characters },
-  { labelKey: "nav.episodes", to: PROJECT_SECTION_ROUTES.episodes },
   { labelKey: "nav.freezone", to: PROJECT_SECTION_ROUTES.freezone },
-  { labelKey: "nav.studios", to: PROJECT_SECTION_ROUTES.studios },
+  { labelKey: "nav.assets", to: PROJECT_SECTION_ROUTES.characters },
   { labelKey: "nav.styles", to: PROJECT_SECTION_ROUTES.styles },
+];
+
+export const PROJECT_MANAGEMENT_ITEMS = [
   { labelKey: "nav.tasks", to: PROJECT_SECTION_ROUTES.tasks },
   { labelKey: "nav.costs", to: PROJECT_SECTION_ROUTES.costs },
-  { labelKey: "nav.aiAssistant", to: PROJECT_SECTION_ROUTES.assistant },
 ] as const;
 
 export function projectSectionFromPath(pathname: string): ProjectSection | null {

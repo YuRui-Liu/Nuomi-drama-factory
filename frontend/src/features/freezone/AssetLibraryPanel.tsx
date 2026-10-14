@@ -166,6 +166,7 @@ type PanelTab = "library" | "canvases";
 
 interface AssetLibraryPanelProps {
   project: string;
+  managedWorkspace?: boolean;
   metadata: Record<string, unknown> | null;
   collapsed?: boolean;
   onCollapsedChange?: (next: boolean) => void;
@@ -483,6 +484,7 @@ function DefaultCanvasBeatPanel({
 
 export function AssetLibraryPanel({
   project,
+  managedWorkspace = false,
   metadata,
   collapsed: collapsedProp,
   onCollapsedChange,
@@ -505,7 +507,7 @@ export function AssetLibraryPanel({
     { id: "props", label: "道具" },
   ];
 
-  const [panelTab, setPanelTab] = useState<PanelTab>("canvases");
+  const [panelTab, setPanelTab] = useState<PanelTab>(managedWorkspace ? "library" : "canvases");
   const [tab, setTab] = useState<AssetTab>("beat");
   const [query, setQuery] = useState("");
   const [selectedFolderId, setSelectedFolderId] = useState<string | null | undefined>(undefined);
@@ -720,6 +722,7 @@ export function AssetLibraryPanel({
     <AssetReplaceContext.Provider value={replaceContextValue}>
       <aside
         className="pointer-events-none absolute inset-y-0 left-0 z-30 overflow-visible"
+        style={managedWorkspace ? { left: 280 } : undefined}
       >
         {/* 折叠/展开胶囊 — 停在卡片右侧的画布上 */}
         <div
@@ -769,7 +772,7 @@ export function AssetLibraryPanel({
         >
           {/* ─ 分段 Tab 栏 ── */}
           <div className="flex rounded-full border border-white/10 mx-3 mt-4 mb-1.5 p-0.5 gap-0.5">
-            <button
+            {!managedWorkspace && <button
               type="button"
               onClick={() => setPanelTab("canvases")}
               className={`flex-1 py-1.5 text-xs font-medium transition-colors rounded-full ${
@@ -779,7 +782,7 @@ export function AssetLibraryPanel({
               }`}
             >
               项目画布
-            </button>
+            </button>}
             <button
               type="button"
               onClick={() => setPanelTab("library")}
@@ -789,11 +792,11 @@ export function AssetLibraryPanel({
                   : "text-white/40 hover:text-white/65"
               }`}
             >
-              主线资产
+              {managedWorkspace ? "素材库" : "主线资产"}
             </button>
           </div>
 
-          {panelTab === "library" ? (
+          {managedWorkspace || panelTab === "library" ? (
             <>
               <AssetFolderTree project={project} selectedFolderId={selectedFolderId} selectedPurpose={selectedPurpose} onFolderChange={setSelectedFolderId} onPurposeChange={setSelectedPurpose} />
               {organizationQuery.isLoading ? (

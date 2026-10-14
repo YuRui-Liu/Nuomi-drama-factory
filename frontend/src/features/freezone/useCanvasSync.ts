@@ -1097,7 +1097,7 @@ export function useCanvasSync(
           const draftViewport = isViewport(draftDecision.draft.viewport)
             ? draftDecision.draft.viewport
             : readStoredViewport(project, canvasId) ??
-              (isViewport(remote.viewport) ? remote.viewport : null);
+              (isViewport(remote.viewport) ? remote.viewport : { x: 0, y: 0, zoom: 1 });
           if (draftViewport) {
             lastSavedViewportRef.current = draftViewport;
             setViewportState(draftViewport);
@@ -1160,7 +1160,7 @@ export function useCanvasSync(
         // rAF ensures it applies after nodes first render.
         const savedViewport =
           readStoredViewport(project, canvasId) ??
-          (isViewport(remote.viewport) ? remote.viewport : null);
+          (isViewport(remote.viewport) ? remote.viewport : { x: 0, y: 0, zoom: 1 });
         if (savedViewport) {
           lastSavedViewportRef.current = savedViewport;
           setViewportState(savedViewport);
@@ -1349,6 +1349,13 @@ export function useCanvasSync(
   }, [project, canvasId, status]);
 
   const flush = async (): Promise<boolean> => {
+    // A workspace switch unmounts the 300ms viewport writer. Persist the
+    // current camera before that timer can be cancelled, including clean
+    // canvases that take the fast path below. Never capture a previous
+    // canvas's viewport while the next canvas is hydrating.
+    if (hydratedRef.current && !switchingRef.current) {
+      writeStoredViewport(project, canvasId, useCanvasStore.getState().currentViewport);
+    }
     if (hydratedRef.current && !switchingRef.current && statusRef.current === "ready" &&
         !sessionRef.current?.isSaving() && debounceTimerRef.current == null &&
         (currentDraftSignature() === lastPersistedDraftSignatureRef.current ||

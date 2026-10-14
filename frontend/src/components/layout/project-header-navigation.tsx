@@ -17,9 +17,10 @@ import {
 import {
   PROJECT_SECTION_ROUTES,
   PROJECT_NAV_ITEMS,
+  PROJECT_MANAGEMENT_ITEMS,
   projectSectionFromPath,
 } from "@/components/layout/project-navigation-routes";
-import { normalizeLastEpisodeLocation, useEpisodeWorkbenchStore } from "@/stores/episode-workbench-store";
+import { useEpisodeWorkbenchStore } from "@/stores/episode-workbench-store";
 import { isRememberedSection, useProjectNavStore } from "@/stores/project-nav-store";
 import { useAllProjectSummaries } from "@/lib/queries/projects";
 import { getProjectCover } from "@/lib/project-cover";
@@ -136,6 +137,7 @@ export function ProjectSwitcher({ current }: { current: string }) {
 
 export function ProjectHeaderNavigation({ project }: { project: string }) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const location = useRouterState({
     select: (state) => ({
       pathname: state.location.pathname,
@@ -144,9 +146,6 @@ export function ProjectHeaderNavigation({ project }: { project: string }) {
     }),
   });
   const { pathname } = location;
-  const rememberedEpisodeLocation = useEpisodeWorkbenchStore(
-    (state) => state.lastEpisodeLocationByProject[project],
-  );
   const setLastEpisodeLocation = useEpisodeWorkbenchStore((state) => state.setLastEpisodeLocation);
   const clearLastEpisodeLocation = useEpisodeWorkbenchStore((state) => state.clearLastEpisodeLocation);
   const rememberSection = useProjectNavStore((state) => state.rememberSection);
@@ -188,15 +187,11 @@ export function ProjectHeaderNavigation({ project }: { project: string }) {
       {PROJECT_NAV_ITEMS.map((item) => {
         const sectionPath = item.to.replace("$project", encodeURIComponent(project));
         const active = pathname === sectionPath || pathname.startsWith(`${sectionPath}/`);
-        const target =
-          item.to === PROJECT_SECTION_ROUTES.episodes && rememberedEpisodeLocation
-            ? normalizeLastEpisodeLocation(project, rememberedEpisodeLocation) ?? item.to
-            : item.to;
 
         return (
           <Link
             key={item.labelKey}
-            to={target}
+            to={item.to}
             params={{ project }}
             aria-current={active ? "page" : undefined}
             className={cn(
@@ -211,6 +206,14 @@ export function ProjectHeaderNavigation({ project }: { project: string }) {
           </Link>
         );
       })}
+      <DropdownMenu>
+        <DropdownMenuTrigger className="inline-flex items-center gap-1 px-3 text-xs text-muted-foreground hover:text-foreground">
+          项目管理<ChevronDown className="size-3" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {PROJECT_MANAGEMENT_ITEMS.map(item => <DropdownMenuItem key={item.labelKey} onClick={() => navigate({ to: item.to, params: { project } })}>{t(item.labelKey)}</DropdownMenuItem>)}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </nav>
   );
 }

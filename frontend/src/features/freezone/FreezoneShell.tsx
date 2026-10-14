@@ -105,9 +105,16 @@ const LazyMaskEditor = lazy(() =>
 
 export { hasLegacyPresetCanvasMetadata } from "@/features/freezone/projections";
 
+export interface WorkspaceCanvasState {
+  canvasId: string;
+  hydrated: boolean;
+  status: CanvasSyncStatus;
+}
 interface FreezoneShellProps {
   project: SupertaleProjectSummary;
   canvasId: string;
+  managedWorkspace?: boolean;
+  onWorkspaceState?: (state: WorkspaceCanvasState) => void;
 }
 
 const FREEZONE_CHAT_WIDTH = "clamp(500px, 34vw, 540px)";
@@ -363,7 +370,24 @@ const canvasKey = (projectId: string, canvasId: string) => `${projectId}::${canv
 /** 上一次真正画出来的画布；跨挂载保留，用来判断重进时能否直接复用 store 里的内容。 */
 let lastRenderedCanvasKey: string | null = null;
 
-export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
+const workspaceSelections = new Map<string, { nodeIds: string[]; edgeIds: string[]; selectedNodeId: string | null }>();
+export function useWorkspaceSelection(project: string, canvasId: string, hydrated: boolean, enabled: boolean) {
+  useEffect(() => {
+    if (!enabled || !hydrated) return;
+    const key = canvasKey(project, canvasId);
+    const remembered = workspaceSelections.get(key);
+    useCanvasStore.setState(state => ({
+      nodes: state.nodes.map(node => ({ ...node, selected: remembered?.nodeIds.includes(node.id) ?? false })),
+      edges: state.edges.map(edge => ({ ...edge, selected: remembered?.edgeIds.includes(edge.id) ?? false })),
+      selectedNodeId: remembered?.selectedNodeId && state.nodes.some(node => node.id === remembered.selectedNodeId) ? remembered.selectedNodeId : null,
+    }));
+    return useCanvasStore.subscribe(state => {
+      workspaceSelections.set(key, { nodeIds: state.nodes.filter(node => node.selected).map(node => node.id), edgeIds: state.edges.filter(edge => edge.selected).map(edge => edge.id), selectedNodeId: state.selectedNodeId });
+    });
+  }, [project, canvasId, hydrated, enabled]);
+}
+
+export function FreezoneShell({ project, canvasId, managedWorkspace = false, onWorkspaceState }: FreezoneShellProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const projectId = project.id;
@@ -421,6 +445,10 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
     }
   }, [projectId, queryClient]);
   const sync = useCanvasSync(projectId, canvasId);
+  useWorkspaceSelection(projectId, canvasId, sync.hydratedCanvasId === canvasId, managedWorkspace);
+  useEffect(() => {
+    onWorkspaceState?.({ canvasId, hydrated: sync.hydratedCanvasId === canvasId, status: sync.status });
+  }, [canvasId, sync.hydratedCanvasId, sync.status, onWorkspaceState]);
 
   const handleBlankPaneClick = useCallback(() => {
     setAssetPanelCollapsed(true);
@@ -445,11 +473,12 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
   }, [projectId]);
 
   useEffect(() => {
+    if (managedWorkspace) return;
     rememberLastCanvas(projectId, canvasId);
     if (canvasId !== "default" && currentCanvasParam() !== canvasId) {
       writeUrl({ canvas: canvasId }, { replace: true, notify: false });
     }
-  }, [canvasId, projectId]);
+  }, [canvasId, projectId, managedWorkspace]);
 
   useEffect(() => {
     if (sync.status === "ready" && sync.hydratedCanvasId === canvasId) {
@@ -830,7 +859,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
               error={sync.error}
               canvasId={canvasId}
               onRefresh={sync.retry}
-              onSaveCopy={async () => {
+              onSaveCopy={managedWorkspace ? undefined : async () => {
                 const copyCanvasId = await sync.saveCopy();
                 setAssetLibraryReloadToken((token) => token + 1);
                 writeUrl({ canvas: copyCanvasId });
@@ -855,13 +884,14 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             />
           )}
           <AssetLibraryPanel
+            managedWorkspace={managedWorkspace}
             project={projectId}
             metadata={sync.metadata}
             collapsed={assetPanelCollapsed}
             onCollapsedChange={setAssetPanelCollapsed}
             currentCanvasId={canvasId}
             reloadToken={assetLibraryReloadToken}
-            onRestoreMainlineDefault={async () => {
+            onRestoreMainlineDefault={managedWorkspace ? undefined : async () => {
               try {
                 await sync.restoreMainlineDefault();
                 setToast("已按当前主流程事实同步主线视图");
@@ -1416,7 +1446,7 @@ function CanvasConflictOverlay({
   error: string | null;
   canvasId: string;
   onRefresh: () => void;
-  onSaveCopy: () => Promise<void>;
+  onSaveCopy?: () => Promise<void>;
   readConflictSnapshot: () => ConflictSnapshot | null;
 }) {
   const { t } = useTranslation();
@@ -1450,7 +1480,7 @@ function CanvasConflictOverlay({
       <div className="px-4 py-3 rounded-lg bg-surface border border-amber-400/50 text-sm text-amber-100 max-w-md flex flex-col gap-3">
         <div className="font-medium">画布保存冲突</div>
         <div className="text-text-muted">
-          {error ?? "画布已被其他窗口或用户修改。刷新会丢弃当前本地未保存修改，另存为副本会保留当前画布。"}
+          {error ?? (onSaveCopy ? "画布已被其他窗口或用户修改。刷新会丢弃当前本地未保存修改，另存为副本会保留当前画布。" : "画布已被其他窗口或用户修改。请先下载本地修改备份；刷新将重新加载远端画布。")}
         </div>
         {snapshot && (
           <div className="text-[11px] text-text-muted/80">
@@ -1465,7 +1495,7 @@ function CanvasConflictOverlay({
           >
             刷新
           </button>
-          <button
+          {onSaveCopy && <button
             type="button"
             disabled={savingCopy || !snapshot}
             onClick={() => {
@@ -1481,7 +1511,7 @@ function CanvasConflictOverlay({
             title={snapshot ? undefined : t("freezone.canvases.noConflictSnapshot")}
           >
             {savingCopy ? "保存中..." : "另存为副本"}
-          </button>
+          </button>}
           {snapshot && (
             <button
               type="button"

@@ -12,28 +12,14 @@ import {
 describe("project navigation routes", () => {
   it("exposes the approved direct navigation order without changing routes", () => {
     expect(PROJECT_NAV_ITEMS.map((item) => item.labelKey)).toEqual([
-      "nav.ingest",
-      "nav.scriptCreation",
-      "nav.assets",
-      "nav.episodes",
       "nav.freezone",
-      "nav.studios",
+      "nav.assets",
       "nav.styles",
-      "nav.tasks",
-      "nav.costs",
-      "nav.aiAssistant",
     ]);
     expect(PROJECT_NAV_ITEMS.map((item) => item.to)).toEqual([
-      "/projects/$project/ingest",
-      "/projects/$project/creation",
-      "/projects/$project/characters",
-      "/projects/$project/episodes",
       "/projects/$project/freezone",
-      "/projects/$project/studios",
+      "/projects/$project/characters",
       "/projects/$project/styles",
-      "/projects/$project/tasks",
-      "/projects/$project/costs",
-      "/projects/$project/assistant",
     ]);
     expect(projectSectionFromPath("/projects/demo/ingest")).toBe("ingest");
     expect(projectSectionFromPath("/projects/demo/creation")).toBe("creation");

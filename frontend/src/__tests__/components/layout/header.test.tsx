@@ -172,7 +172,7 @@ vi.mock("@/components/ui/tooltip", () => ({
 
 vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenu: ({ children }: React.PropsWithChildren) => <>{children}</>,
-  DropdownMenuTrigger: ({ children }: React.PropsWithChildren) => <>{children}</>,
+  DropdownMenuTrigger: ({ children, ...props }: React.ComponentProps<"button">) => <button type="button" {...props}>{children}</button>,
   DropdownMenuContent: ({ children }: React.PropsWithChildren) => <>{children}</>,
   DropdownMenuGroup: ({ children }: React.PropsWithChildren) => <>{children}</>,
   DropdownMenuLabel: ({ children }: React.PropsWithChildren) => <div>{children}</div>,
@@ -239,22 +239,23 @@ describe("Header runtime gating", () => {
     expect(screen.getByRole("button", { name: "团队成员管理" })).toBeInTheDocument();
   });
 
-  it("shows the project assistant route to team members", () => {
+  it("keeps team members on the same canvas-first navigation", () => {
     runtimeState.isTeam = true;
     renderHeader({ project: "team-project" });
-    expect(screen.getByRole("link", { name: "Nuomi assistant" })).toHaveAttribute("href", "/projects/team-project/assistant");
+    expect(screen.getByRole("link", { name: "Creation canvas" })).toHaveAttribute("href", "/projects/team-project/freezone");
+    expect(screen.queryByRole("link", { name: "Nuomi assistant" })).not.toBeInTheDocument();
   });
 
   it("shows the NuomiDrama brand and direct project navigation", () => {
-    renderHeader({ project: "demo" });
+    renderHeader({ project: "demo", pathname: "/projects/demo/freezone" });
 
     expect(screen.getByLabelText("NuomiDrama")).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Project navigation" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Script import" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Creation canvas" })).toHaveAttribute(
       "aria-current",
       "page",
     );
-    expect(screen.getAllByRole("link", { name: /Script import|Asset center|Episode production|Creation canvas|Visual styles|Task center|Nuomi assistant/ })).toHaveLength(7);
+    expect(screen.getAllByRole("link", { name: /Script import|Asset center|Episode production|Creation canvas|Visual styles|Task center|Nuomi assistant/ })).toHaveLength(3);
     expect(screen.queryByRole("navigation", { name: "旧模式切换" })).not.toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "旧制作菜单" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "虾集" })).not.toBeInTheDocument();
@@ -342,13 +343,13 @@ describe("Header runtime gating", () => {
   it("resolves every direct navigation link for the current project", () => {
     renderHeader({ project: "demo" });
 
-    expect(screen.getByRole("link", { name: "Script import" })).toHaveAttribute("href", "/projects/demo/ingest");
+    expect(screen.queryByRole("link", { name: "Script import" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Asset center" })).toHaveAttribute("href", "/projects/demo/characters");
-    expect(screen.getByRole("link", { name: "Episode production" })).toHaveAttribute("href", "/projects/demo/episodes");
+    expect(screen.queryByRole("link", { name: "Episode production" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Creation canvas" })).toHaveAttribute("href", "/projects/demo/freezone");
     expect(screen.getByRole("link", { name: "Visual styles" })).toHaveAttribute("href", "/projects/demo/styles");
-    expect(screen.getByRole("link", { name: "Task center" })).toHaveAttribute("href", "/projects/demo/tasks");
-    expect(screen.getByRole("link", { name: "Nuomi assistant" })).toHaveAttribute("href", "/projects/demo/assistant");
+    expect(screen.getByRole("button", { name: "项目管理" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Nuomi assistant" })).not.toBeInTheDocument();
   });
 
   it("keeps the current section when switching projects", () => {
@@ -361,15 +362,12 @@ describe("Header runtime gating", () => {
     });
   });
 
-  it("restores the remembered episode deep link", () => {
+  it("does not return legacy episode navigation from remembered history", () => {
     episodeStoreState.lastEpisodeLocationByProject.demo =
       "/projects/demo/episodes/12?group=ng-02#video";
     renderHeader({ project: "demo" });
 
-    expect(screen.getByRole("link", { name: "Episode production" })).toHaveAttribute(
-      "href",
-      "/projects/demo/episodes/12?group=ng-02#video",
-    );
+    expect(screen.queryByRole("link", { name: "Episode production" })).not.toBeInTheDocument();
   });
 
   it("updates the remembered episode location when only query and hash change", () => {
