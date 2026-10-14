@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,30 @@ class AdoptVersionRequest(BaseModel):
     confirm_qc_unavailable: bool = False
 
 
+@asynccontextmanager
+async def _publish_media(resolved, slot_id, operation, payload, user):
+    """One semantic boundary around each complete native publication."""
+    from novelvideo.creation.asset_media_publication import media_publication
+    from novelvideo.creation.asset_sync import SourceSyncPending, fingerprint
+    from novelvideo.sqlite_store import SQLiteStore
+
+    actor = str(getattr(resolved.ctx, 'requester_user_id', None) or user.get('id') or user.get('username') or 'system')
+    source = SQLiteStore(resolved.ctx.owner_project_label, output_dir=str(resolved.project_dir), state_dir=str(resolved.state_dir))
+    request_key = fingerprint({'operation': operation, 'slot_id': slot_id, 'payload': payload, 'actor': actor})
+    if operation == 'adopt':
+        # Keep the already-shipped intent identity for interrupted adopt retries.
+        request_key = fingerprint({'slot_id': slot_id, **payload, 'actor': actor})
+    try:
+        async with media_publication(source, [slot_id], request_key, actor):
+            yield
+    except SourceSyncPending as exc:
+        raise HTTPException(409, {'code': 'asset_media_pending', 'message': str(exc)}) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    finally:
+        await source.close()
+
+
 def _assert_casting_slot_mutation_allowed(resolved, slot_id: str) -> None:
     from novelvideo.character_visual.casting_recovery import assert_legacy_portrait_mutation_allowed
 
@@ -73,6 +98,7 @@ def _safe_project_asset(project_dir: Path, asset_path: str) -> str:
     candidate = (root / relative).resolve()
     if not candidate.is_relative_to(root):
         raise HTTPException(status_code=400, detail="asset_path escapes project root")
+    _assert_not_history_path(root, candidate)
     if not candidate.is_file():
         raise HTTPException(status_code=404, detail="asset file not found")
     return candidate.relative_to(root).as_posix()
@@ -86,7 +112,15 @@ def _safe_project_target(project_dir: Path, asset_path: str) -> Path:
     target = (root / relative).resolve()
     if not target.is_relative_to(root):
         raise HTTPException(status_code=400, detail="canonical_path escapes project root")
+    _assert_not_history_path(root, target)
     return target
+
+
+def _assert_not_history_path(root: Path, path: Path) -> None:
+    # Every semantic revision may retain these bytes indefinitely. Workflow
+    # reference counts cannot authorize mutation of this reserved namespace.
+    if path.is_relative_to((root / 'assets/.creation-media').resolve()):
+        raise HTTPException(status_code=409, detail='Creation media history is read-only')
 
 
 def _version_file_references(
@@ -233,6 +267,11 @@ async def materialize_legacy_asset(
     user: dict = Depends(get_api_user),
 ):
     resolved = await resolve_project_scope(project, user, required_role="editor")
+    async with _publish_media(resolved, slot_id, 'legacy-import', body.model_dump(), user):
+        return _materialize_legacy_asset(resolved, slot_id, body)
+
+
+def _materialize_legacy_asset(resolved, slot_id, body):
     safe_path = _safe_project_asset(resolved.project_dir, body.asset_path)
     with production_workflow_project_lock(resolved.state_dir):
         store = _store(resolved)
@@ -259,7 +298,15 @@ async def register_production_asset_candidate(
     user: dict = Depends(get_api_user),
 ):
     resolved = await resolve_project_scope(project, user, required_role="editor")
+    async with _publish_media(resolved, slot_id, 'candidate', body.model_dump(), user):
+        return _register_production_asset_candidate(resolved, slot_id, body, user)
+
+
+def _register_production_asset_candidate(resolved, slot_id, body, user):
     safe_path = _safe_project_asset(resolved.project_dir, body.asset_path)
+    canonical = (body.generation_metadata or {}).get('canonical_path')
+    if isinstance(canonical, str) and canonical.strip():
+        _safe_project_target(resolved.project_dir, canonical)
     with production_workflow_project_lock(resolved.state_dir):
         store = _store(resolved)
         try:
@@ -300,21 +347,8 @@ async def adopt_production_asset_version(
     user: dict = Depends(get_api_user),
 ):
     resolved = await resolve_project_scope(project, user, required_role="editor")
-    from novelvideo.creation.asset_media_publication import media_publication
-    from novelvideo.creation.asset_sync import SourceSyncPending, fingerprint
-    from novelvideo.sqlite_store import SQLiteStore
-    actor = str(getattr(resolved.ctx, 'requester_user_id', None) or user.get('id') or user.get('username') or 'system')
-    source = SQLiteStore(resolved.ctx.owner_project_label, output_dir=str(resolved.project_dir), state_dir=str(resolved.state_dir))
-    request_key = fingerprint({'slot_id': slot_id, 'version_id': version_id, 'body': body.model_dump(), 'actor': actor})
-    try:
-        async with media_publication(source, [slot_id], request_key, actor):
-            return await _adopt_production_asset_version(resolved, slot_id, version_id, body, user)
-    except SourceSyncPending as exc:
-        raise HTTPException(409, {'code': 'asset_media_pending', 'message': str(exc)}) from exc
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    finally:
-        await source.close()
+    async with _publish_media(resolved, slot_id, 'adopt', {'version_id': version_id, 'body': body.model_dump()}, user):
+        return await _adopt_production_asset_version(resolved, slot_id, version_id, body, user)
 
 
 async def _adopt_production_asset_version(resolved, slot_id, version_id, body, user):
@@ -342,9 +376,9 @@ async def _adopt_production_asset_version(resolved, slot_id, version_id, body, u
                 raise ValueError("asset version not found")
             _assert_casting_slot_mutation_allowed(resolved, slot_id)
             metadata = selected_before.generation_metadata or {}
+            safe_source = _safe_project_asset(resolved.project_dir, selected_before.asset_path)
             canonical_path = metadata.get("canonical_path")
             if isinstance(canonical_path, str) and canonical_path.strip():
-                safe_source = _safe_project_asset(resolved.project_dir, selected_before.asset_path)
                 source = resolved.project_dir / safe_source
                 target = _safe_project_target(resolved.project_dir, canonical_path)
                 _assert_casting_path_mutation_allowed(resolved, target)
@@ -404,6 +438,11 @@ async def delete_production_asset_version(
     user: dict = Depends(get_api_user),
 ):
     resolved = await resolve_project_scope(project, user, required_role="editor")
+    async with _publish_media(resolved, slot_id, 'delete', {'version_id': version_id}, user):
+        return _delete_production_asset_version(resolved, slot_id, version_id)
+
+
+def _delete_production_asset_version(resolved, slot_id, version_id):
     with production_workflow_project_lock(resolved.state_dir):
         store = _store(resolved)
         workflow_snapshot = store.capture_file_snapshot()
