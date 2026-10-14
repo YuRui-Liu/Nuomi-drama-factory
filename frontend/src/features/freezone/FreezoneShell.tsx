@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { resolveExternalCanvasConflict } from './canvasSyncRuntime';
+import { DirectionReferenceEntry } from '@/features/direction-references/DirectionReferenceEntry';
 import { SharedAssetSaveDialog, isSharedAssetTarget } from './commit/SharedAssetSaveDialog';
 import { readSharedPublication, clearFinishedPublication, type PublicationScope } from './commit/sharedAssetPublication';
 import { useAuthStore } from '@/stores/auth-store';
@@ -902,6 +903,7 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
           {managedWorkspace && <OperationDraftBackup project={projectId} canvasId={canvasId} />}
           <CanvasRunPanel project={projectId} canvas={canvasId} enabled={sync.hydratedCanvasId === canvasId && sync.status !== 'conflict' && sync.status !== 'error'} />
           {/* 调试面板暂时隐藏，恢复时去掉 `false &&` 即可 */}
+          {managedWorkspace && <div className="absolute right-3 top-3 z-20"><DirectionReferenceEntry project={projectId} canvasId={canvasId} selectedNodes /></div>}
           {false && import.meta.env.DEV && (
             <CanvasDebugPanel
               project={projectId}

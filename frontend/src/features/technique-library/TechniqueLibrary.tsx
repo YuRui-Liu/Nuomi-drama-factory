@@ -10,8 +10,10 @@ import { TechniqueDetail } from './TechniqueDetail';
 import { useTechniqueLibrary } from './useTechniqueLibrary';
 import { CaseBrowser } from './CaseBrowser';
 import { useCases } from './presentation';
+import { DirectionReferenceEntry } from '@/features/direction-references/DirectionReferenceEntry';
+import { currentFreezoneCanvasScope } from '@/features/freezone/canvasSyncRuntime';
 
-export function TechniqueLibrary({ context, label, className }: { context?: TechniqueContext; label?: string; className?: string }) {
+export function TechniqueLibrary({ context, label, className,project }: { context?: TechniqueContext; label?: string; className?: string;project?:string }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -28,14 +30,15 @@ export function TechniqueLibrary({ context, label, className }: { context?: Tech
           <DialogTitle className="flex items-center gap-2 text-lg"><BookOpen size={19} className="text-cyan-300" />{t('techniqueLibrary.title', { defaultValue: '手法库' })}</DialogTitle>
           <DialogDescription className="mt-2 text-xs text-slate-400">{t(context ? 'techniqueLibrary.selectDescription' : 'techniqueLibrary.browseDescription', { defaultValue: context ? '为当前分段选择创作方向，保留你的故事与人物。' : '从表演到运镜，找到下一场戏的表达方式。收藏可跨项目使用。' })}</DialogDescription>
         </header>
-        {open && <LibraryBody key={username ?? '__local__'} username={username} context={context} searchRef={search} onClose={() => setOpen(false)} />}
+        {open && <LibraryBody key={`${username}:${project}`} username={username} project={project} context={context} searchRef={search} onClose={() => setOpen(false)} />}
       </DialogContent>
     </Dialog>
   </span>;
 }
 
-function LibraryBody({ username, context, searchRef, onClose }: {
+function LibraryBody({ username, context, searchRef, onClose,project }: {
   username: string | null; context?: TechniqueContext;
+  project?:string;
   searchRef: React.RefObject<HTMLInputElement | null>; onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -110,7 +113,7 @@ function LibraryBody({ username, context, searchRef, onClose }: {
       </div>
     </div>
     <aside className={`${mobileDetail ? 'flex' : 'hidden lg:flex'} min-h-0 min-w-0 flex-1 flex-col border-white/10 bg-black/10 lg:w-[330px] lg:flex-none lg:border-l`}>
-      {selected ? <TechniqueDetail card={selected} context={context} catalogAvailable={!!catalog.data && !catalog.isError} onCase={(id) => { setCaseId(id); setEntry('cases'); }} onBack={() => setMobileDetail(false)} onApply={() => {
+      {selected ? <TechniqueDetail card={selected} context={context} scopeApplication={project&&!context?<DirectionReferenceEntry project={project} canvasId={currentFreezoneCanvasScope()?.project===project?currentFreezoneCanvasScope()?.canvasId:undefined} kind="technique" selectedId={selected.id} label="配置固定手法"/>:undefined} catalogAvailable={!!catalog.data && !catalog.isError} onCase={(id) => { setCaseId(id); setEntry('cases'); }} onBack={() => setMobileDetail(false)} onApply={() => {
         if (context && catalog.data && !catalog.isError && !incompatibility(selected, context)) { context.onSelect({ id: selected.id, version: selected.version }); onClose(); }
       }} /> : <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center text-sm leading-relaxed text-slate-500"><BookOpen size={30} /><p>{tr('selectDetail', '选择一张卡片，查看动作节拍与镜头细节')}</p></div>}
     </aside>

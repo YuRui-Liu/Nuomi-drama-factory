@@ -9,10 +9,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import i18next from "i18next";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { getSupertaleProject } from '@/api/projects';
+import { getDirectionBindings } from '@/api/directions';
+import { useAuthStore } from '@/stores/auth-store';
 
 const runtimeState = vi.hoisted(() => ({ isCeRuntime: true }));
 const toastErrorMock = vi.hoisted(() => vi.fn());
 const mutation = vi.hoisted(() => () => ({ mutateAsync: vi.fn(), isPending: false }));
+const updateProjectMock=vi.hoisted(()=>vi.fn());
+const navigation=vi.hoisted(()=>({state:{location:{pathname:'/projects/demo/styles',search:{}}}}));
+vi.mock('@/api/projects',async importOriginal=>({...await importOriginal<object>(),getSupertaleProject:vi.fn()}));
+vi.mock('@/api/directions',()=>({getDirectionBindings:vi.fn()}));
 const styleMutationMocks = vi.hoisted(() => ({
   create: vi.fn(),
   remove: vi.fn(),
@@ -55,6 +62,8 @@ vi.mock("sonner", () => ({
 }));
 
 vi.mock("@tanstack/react-router", () => ({
+  useRouter:()=>navigation,
+  useRouterState:({select}:{select:(state:typeof navigation.state)=>unknown})=>select(navigation.state),
   createFileRoute: () => (options: { component: ComponentType }) => ({
     options,
     useParams: () => ({ project: "demo" }),
@@ -90,7 +99,7 @@ vi.mock("@/lib/queries/styles", () => ({
 
 vi.mock("@/lib/queries/projects", () => ({
   useProject: () => ({ data: { ok: true, data: { visual_style: "ink" } } }),
-  useUpdateProject: mutation,
+  useUpdateProject: () => ({...mutation(),mutateAsync:updateProjectMock}),
 }));
 
 import { Route } from "@/routes/_app/projects.$project/styles";
@@ -164,6 +173,9 @@ function classNameContains(container: HTMLElement, token: string) {
 
 describe("styles page CE generation credit gating", () => {
   beforeEach(() => {
+    useAuthStore.setState({username:'alice'});
+    vi.mocked(getSupertaleProject).mockResolvedValue({creation_mode:undefined} as never);
+    vi.mocked(getDirectionBindings).mockReset();updateProjectMock.mockReset();
     runtimeState.isCeRuntime = true;
     toastErrorMock.mockClear();
     for (const mock of Object.values(styleMutationMocks)) mock.mockReset();
@@ -190,6 +202,27 @@ describe("styles page CE generation credit gating", () => {
     styleQueryState.error = null;
     styleQueryState.refetch.mockReset();
     styleQueryState.refetch.mockResolvedValue({ isError: false });
+  });
+
+  it('uses the fixed project style name/version instead of legacy visual_style in managed mode',async()=>{
+    vi.mocked(getSupertaleProject).mockResolvedValue({creation_mode:'agent_canvas_v1'} as never);
+    vi.mocked(getDirectionBindings).mockResolvedValue({effective:{style:{state:'enabled',title:'历史水墨',version:'4',configuration:{style_id:'retired-custom'}}}} as never);
+    const Component=Route.options.component as ComponentType;
+    render(<QueryClientProvider client={new QueryClient()}><I18nextProvider i18n={i18n}><Component/></I18nextProvider></QueryClientProvider>);
+    await screen.findByText(/项目固定风格：历史水墨 · v4/);
+    expect(screen.queryByText('Project default')).not.toBeInTheDocument();
+    expect(await screen.findByRole('button',{name:'应用固定风格…'})).toBeInTheDocument();
+    expect(updateProjectMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves the old project default action outside managed mode',async()=>{
+    styleQueryState.list=[{id:'other',name:'Other',label:'Other style',type:'preset'} as Style];
+    styleQueryState.detail={...styleQueryState.detail!,id:'other',name:'Other',label:'Other style'};
+    const Component=Route.options.component as ComponentType;
+    render(<QueryClientProvider client={new QueryClient()}><I18nextProvider i18n={i18n}><Component/></I18nextProvider></QueryClientProvider>);
+    fireEvent.click(await screen.findByRole('button',{name:'Apply to project'}));
+    await waitFor(()=>expect(updateProjectMock).toHaveBeenCalledWith({visual_style:'other'}));
+    expect(getDirectionBindings).not.toHaveBeenCalled();
   });
 
   it("keeps both panes in loading state until the style list settles", () => {

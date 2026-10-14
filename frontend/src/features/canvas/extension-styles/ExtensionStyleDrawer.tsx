@@ -45,6 +45,7 @@ export interface ExtensionStyleDrawerProps {
   readonly value: string | null | undefined;
   readonly onChange: (value: string | null) => void;
   readonly onOpenChange: (open: boolean) => void;
+  readonly renderApplication?: (id: string) => React.ReactNode;
 }
 
 function PreviewFallback({ label }: { readonly label: string }) {
@@ -123,11 +124,13 @@ function StyleDetails({
   applied,
   onApply,
   detailId,
+  application,
 }: {
   readonly style: ExtensionStyle;
   readonly applied: boolean;
   readonly onApply: () => void;
   readonly detailId: string;
+  readonly application?: React.ReactNode;
 }) {
   const [previewFailed, setPreviewFailed] = useState(false);
 
@@ -184,9 +187,9 @@ function StyleDetails({
         来源经离线审核：{style.source.repository}。应用后不会改写输入框中的原提示词。
       </p>
       <div className="sticky bottom-0 bg-popover pt-2">
-        <Button type="button" className="w-full" disabled={applied} onClick={onApply}>
+        {application ?? <Button type="button" className="w-full" disabled={applied} onClick={onApply}>
           {applied ? "已应用" : "应用风格"}
-        </Button>
+        </Button>}
       </div>
     </section>
   );
@@ -197,6 +200,7 @@ export function ExtensionStyleDrawer({
   value,
   onChange,
   onOpenChange,
+  renderApplication,
 }: ExtensionStyleDrawerProps) {
   const appliedStyle = typeof value === "string" ? getExtensionStyle(value) : undefined;
   const [query, setQuery] = useState("");
@@ -341,6 +345,7 @@ export function ExtensionStyleDrawer({
                     style={pendingStyle}
                     applied={appliedStyle?.id === pendingStyle.id}
                     onApply={() => onChange(pendingStyle.id)}
+                    application={renderApplication?.(pendingStyle.id)}
                   />
                 ) : (
                   <p className="p-6 text-sm text-muted-foreground">选择一个可见风格查看详情</p>
@@ -367,7 +372,7 @@ export function ExtensionStyleDrawer({
               >
                 查看详情
               </Button>
-              <Button
+              {renderApplication ? renderApplication(pendingStyle.id) : <Button
                 type="button"
                 size="sm"
                 aria-label={appliedStyle?.id === pendingStyle.id ? "移动端已应用" : "立即应用风格"}
@@ -375,7 +380,7 @@ export function ExtensionStyleDrawer({
                 onClick={() => onChange(pendingStyle.id)}
               >
                 {appliedStyle?.id === pendingStyle.id ? "已应用" : "应用风格"}
-              </Button>
+              </Button>}
             </div>
           ) : null}
         </div>
@@ -405,6 +410,7 @@ export function ExtensionStyleDrawer({
                 style={pendingStyle}
                 applied={appliedStyle?.id === pendingStyle.id}
                 onApply={() => onChange(pendingStyle.id)}
+                application={renderApplication?.(pendingStyle.id)}
               />
             </div>
           </div>

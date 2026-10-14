@@ -270,7 +270,7 @@ export function Header() {
 
         {/* Actions */}
         <div className="col-start-3 row-start-1 flex min-w-0 items-center justify-end gap-1 max-lg:col-start-2">
-          <TechniqueLibrary />
+          <TechniqueLibrary project={params.project} />
           {teamAdmin && <Button variant="ghost" size="icon-sm" aria-label="团队成员管理" onClick={() => setTeamUsersOpen(true)}><Users className="size-[17px]" /></Button>}
           {canConfigure && <div ref={settingsAnchorRef} className="relative">
             <Button

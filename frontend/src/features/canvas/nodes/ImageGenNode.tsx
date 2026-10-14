@@ -1748,6 +1748,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
               onOpenChange={setStylePickerOpen}
             />
             <ExtensionStyleChip
+              ownerNodeId={id}
               value={extensionStyleId}
               onChange={(nextId) => updateNodeData(id, { extensionStyleId: nextId })}
               onOpenChange={setExtensionStyleDrawerOpen}

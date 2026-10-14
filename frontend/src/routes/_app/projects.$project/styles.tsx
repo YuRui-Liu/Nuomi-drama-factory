@@ -49,6 +49,10 @@ import type { Style } from "@/types/style";
 import { extensionStylePreviewUrl, stylePreviewUrl } from "@/lib/style-preview-url";
 import { CreditCostInline } from "@/components/credit-cost-inline";
 import { useGenerationCreditCost } from "@/lib/queries/generation-credit-cost";
+import { useQuery } from '@tanstack/react-query';
+import { useAuthStore } from '@/stores/auth-store';
+import { getDirectionBindings } from '@/api/directions';
+import { DirectionReferenceEntry,useManagedDirectionProject } from '@/features/direction-references/DirectionReferenceEntry';
 
 // ─── style constants (aligned with characters page) ─────────────────────────
 
@@ -379,11 +383,13 @@ function StyleDetailPanel({
   project,
   isProjectDefault,
   onClearSelection,
+  managed = false,
 }: {
   style: Style;
   project: string;
   isProjectDefault: boolean;
   onClearSelection: () => void;
+  managed?: boolean;
 }) {
   const { t } = useTranslation();
   const createStyle = useCreateStyle();
@@ -678,7 +684,7 @@ function StyleDetailPanel({
           )}
           {t("styles.save")}
         </Button>
-        <Button
+        {managed ? <DirectionReferenceEntry project={project} kind="style" selectedId={style.id} label="应用固定风格…"/> : <Button
           variant="outline"
           size="sm"
           onClick={handleApplyToProject}
@@ -691,7 +697,7 @@ function StyleDetailPanel({
             <Check className="size-3" />
           )}
           {isProjectDefault ? t("styles.alreadyDefault") : t("styles.applyToProject")}
-        </Button>
+        </Button>}
         {!preset && (
           <Button
             variant="ghost"
@@ -1075,8 +1081,15 @@ function StylesPage() {
   } = useStyles(project);
   const { data: projectRes } = useProject(project);
 
+  const user=useAuthStore(s=>s.username);
+  const managedMode=useManagedDirectionProject(project);
+  const managed=managedMode!==false;
+  const direction=useQuery({queryKey:['direction-project',user,project],enabled:managedMode===true&&!!user,queryFn:()=>getDirectionBindings(project,{level:'project'})});
+  useEffect(()=>{const refresh=(event:Event)=>{const detail=(event as CustomEvent).detail;if(detail?.project===project&&detail?.user===user)void direction.refetch();};window.addEventListener('direction-config-changed',refresh);return()=>window.removeEventListener('direction-config-changed',refresh);},[project,user,direction.refetch]);
+  const fixedStyle=direction.data?.effective.style;
+
   const styles = stylesRes?.data ?? [];
-  const projectVisualStyle = projectRes?.data?.visual_style;
+  const projectVisualStyle = managed ? fixedStyle?.configuration?.style_id : projectRes?.data?.visual_style;
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -1116,6 +1129,7 @@ function StylesPage() {
         refreshing={isRefetching}
       />
 
+      {managed&&<div className="border-b border-border px-4 py-2 text-sm">项目固定风格：{direction.isError?'读取失败，请重试':fixedStyle?.title??(fixedStyle?.state==='disabled'?'已明确禁用':'尚未配置')}{fixedStyle?.version&&` · v${fixedStyle.version}`}（只影响后续配置，不改变已有产物）</div>}
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* LEFT: list */}
         <div className="flex max-h-[45vh] w-full shrink-0 flex-col overflow-hidden border-b border-border/30 lg:max-h-none lg:w-[360px] lg:border-b-0 lg:border-r lg:border-border/30">
@@ -1163,6 +1177,7 @@ function StylesPage() {
               style={selectedStyle}
               project={project}
               isProjectDefault={isProjectDefault}
+              managed={managed}
               onClearSelection={() => setSelectedId(null)}
             />
           ) : detailFetching ? (

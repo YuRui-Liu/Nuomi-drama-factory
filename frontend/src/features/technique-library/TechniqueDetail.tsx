@@ -5,9 +5,10 @@ import { durationLabel, incompatibility, type TechniqueContext } from './present
 import { TechniqueSketch } from './TechniqueSketch';
 import { RelatedCases } from './RelatedCases';
 
-export function TechniqueDetail({ card, context, catalogAvailable, onApply, onBack, onCase }: {
+export function TechniqueDetail({ card, context, catalogAvailable, onApply, onBack, onCase,scopeApplication }: {
   card: TechniqueCard; context?: TechniqueContext; catalogAvailable: boolean; onApply: () => void; onBack: () => void;
   onCase?: (id: string) => void;
+  scopeApplication?: React.ReactNode;
 }) {
   const { t } = useTranslation();
   const tr = (key: string, fallback: string) => t(`techniqueLibrary.${key}`, { defaultValue: fallback });
@@ -32,6 +33,7 @@ export function TechniqueDetail({ card, context, catalogAvailable, onApply, onBa
       </div>
       {!!card.sources?.length && <div className="mt-4 text-xs"><h4 className="mb-2 text-slate-400">{tr('sources', '参考来源')}</h4>{card.sources.map((source, index) => <div key={`${source.url}-${index}`} className="mb-3 break-words">{/^https?:\/\//i.test(source.url) ? <a href={source.url} target="_blank" rel="noopener noreferrer" className="block text-cyan-300 underline-offset-4 hover:underline">{source.credit} ↗</a> : <p>{source.credit}</p>}{source.basis && <p className="mt-1 whitespace-pre-line leading-5 text-slate-400">{source.basis}</p>}</div>)}</div>}
     </div>
+    {!context&&scopeApplication&&<div className="border-t border-white/10 p-4">{scopeApplication}</div>}
     {context && <div className="border-t border-white/10 p-4">
       {issue && <p className="mb-3 text-xs text-amber-200">{issue === 'capabilitiesUnavailable' ? tr(issue, '模型能力暂不可用，无法选择') : issue === 'modeUnavailable' ? tr(issue, '当前模型不支持此输入模式') : directorErrorText(issue, t)}</p>}
       <button type="button" disabled={!!issue} className="w-full rounded-lg bg-cyan-300 px-4 py-3 text-sm font-medium text-slate-950 hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-35" onClick={onApply}>{tr('apply', '应用到当前分段')}</button>
