@@ -192,7 +192,9 @@ def validate_definition(value):
     for key, rule in value['fields'].items():
         require(re.fullmatch(r'[a-z][a-z0-9_]{0,63}',key) and key not in _PROTECTED
                 and not key.endswith(('_path','_url','_id')), '属性不可占用专业字段或定位字段')
-        exact(rule, {'type'}, {'required','enum'})
+        exact(rule, {'type'}, {'required','enum','title'})
+        if 'title' in rule:
+            text(rule['title'],200)
         require(rule['type'] in {'string','integer','number','boolean'}, '仅支持简单属性类型')
         require(type(rule.get('required',False)) is bool, 'required必须为布尔值')
         if 'enum' in rule:
@@ -219,6 +221,37 @@ def validate_data(data, definition):
 
 
 class Ontology(ProjectDomain):
+    def object_catalog(self):
+        """Trusted picker metadata, never instance text or professional media."""
+        with self.read() as conn:
+            if conn is None or not table(conn,'ontology_instances'):
+                return []
+            result=[]
+            for row in conn.execute('SELECT object_id FROM ontology_instances WHERE project_id=? ORDER BY rowid',
+                                    (self.ctx.project_id,)):
+                obj=self._object(conn,row['object_id'])
+                payload=obj['payload']
+                definition=self.definition(payload['definition_name'],payload['schema_revision'],conn)
+                result.append({'object_id':obj['id'],'revision':obj['revision'],'kind':obj['kind'],
+                               'definition_name':payload['definition_name'],'schema_revision':payload['schema_revision'],
+                               'scope':payload['scope'],'title':definition['definition']['title']})
+            return result
+
+    def relation_catalog(self):
+        with self.read() as conn:
+            if conn is None or not table(conn,'ontology_relations'):
+                return []
+            result=[]
+            for row in conn.execute('''SELECT o.*,r.source_id,r.target_id FROM ontology_relations o
+                    JOIN relations r ON r.id=o.relation_id WHERE o.project_id=? ORDER BY o.rowid''',
+                    (self.ctx.project_id,)):
+                definition=self.definition(row['definition_name'],row['schema_revision'],conn)
+                result.append({'relation_id':row['relation_id'],'source_id':row['source_id'],
+                    'target_id':row['target_id'],'definition_name':row['definition_name'],
+                    'schema_revision':row['schema_revision'],'scope':json.loads(row['scope']),
+                    'title':definition['definition']['title']})
+            return result
+
     def catalog(self):
         with self.read() as conn:
             if conn is None or not table(conn,'ontology_definitions'):

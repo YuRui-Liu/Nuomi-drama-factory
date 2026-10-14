@@ -39,6 +39,41 @@ def test_read_only_empty(service, ctx):
     assert not ctx.state_dir.exists()
 
 
+async def test_readonly_instance_catalog_has_fixed_scope_and_no_instance_content(service,ctx):
+    assert service.object_catalog()==[] and service.relation_catalog()==[]
+    assert not ctx.state_dir.exists()
+    await activate(service)
+    first=await service.apply(command('object.create',{'definition':'clue','schema_revision':1,
+        'scope':{'level':'project'},'data':{'text':'private story'}},'first'))
+    second=await service.apply(command('object.create',{'definition':'clue','schema_revision':1,
+        'scope':{'level':'project'},'data':{'text':'another'}},'second'))
+    await activate(service,'connects',category='relation',source_kind='custom:clue',target_kind='custom:clue')
+    relation=await service.apply(command('relation.create',{'definition':'connects','schema_revision':1,
+        'scope':{'level':'project'},'source_id':first['object_id'],'target_id':second['object_id'],
+        'data':{'text':'private relation'}},'related'))
+    before=service.db.read_bytes()
+    objects=service.object_catalog();relations=service.relation_catalog()
+    assert {r['object_id'] for r in objects}=={first['object_id'],second['object_id']}
+    assert all(r['schema_revision']==1 and r['scope']=={'level':'project'} and r['title']=='线索' for r in objects)
+    assert relations[0]['relation_id']==relation['relation_id']
+    assert relations[0]['source_id']==first['object_id']
+    assert 'private' not in str(objects)+str(relations)
+    assert service.db.read_bytes()==before
+
+
+async def test_readable_attribute_title_preserves_fixed_definition_and_validation(service):
+    await activate(service,fields={'text':{'type':'string','required':True,'title':'线索内容'}})
+    created=await service.apply(command('object.create',{'definition':'clue','schema_revision':1,
+        'scope':{'level':'project'},'data':{'text':'红信封'}},'readable'))
+    assert service.object(created['object_id'])['definition']['fields']['text']['title']=='线索内容'
+    with pytest.raises(OperationError):
+        await service.apply(command('object.create',{'definition':'clue','schema_revision':1,
+            'scope':{'level':'project'},'data':{'text':123}},'wrong-type'))
+    with pytest.raises(OperationError):
+        await service.apply(command('definition.draft',{'expected_revision':1,
+            'definition':definition(fields={'image_url':{'type':'string','title':'图像'}})},'protected'))
+
+
 async def test_only_confirmed_schema_writes_and_history_is_fixed(service):
     draft = await service.apply(command('definition.draft', {'definition':definition(), 'expected_revision':0}))
     body=command('object.create', {'definition':'clue','schema_revision':1,'scope':{'level':'project'},'data':{'text':'red'}})
@@ -167,6 +202,8 @@ async def test_real_api_viewer_editor_and_readonly(ctx,monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=app),base_url='http://test') as client:
         base='/projects/p/creation'
         assert (await client.get(base+'/ontology')).json()['data']==[]
+        assert (await client.get(base+'/ontology/objects')).json()['data']==[]
+        assert (await client.get(base+'/ontology/relations')).json()['data']==[]
         assert (await client.get(base+'/constraints/effective')).json()['data']['effective']=={}
         assert not ctx.state_dir.exists()
         body=command('definition.draft',{'definition':definition(),'expected_revision':0},'api-draft')
@@ -191,9 +228,32 @@ async def test_real_context_guard_rejects_legacy_and_unauthorized_without_files(
     monkeypatch.setattr(creation,'resolve_project_context',resolve)
     monkeypatch.setattr(creation,'require_project_home_node',lambda *_args,**_kwargs:None)
     for call in (lambda:creation_library.ontology_catalog('p',{}),
+                 lambda:creation_library.ontology_objects('p',{}),
+                 lambda:creation_library.ontology_relations('p',{}),
                  lambda:creation_library.ontology_operation('p',command('definition.draft',{'definition':definition(),'expected_revision':0}),{})):
         with pytest.raises(HTTPException) as error:await call()
         assert error.value.status_code==(403 if denied else 409)
+    assert not ctx.state_dir.exists()
+
+
+@pytest.mark.parametrize('denied',[False,True])
+async def test_picker_http_guards_precede_storage(ctx,monkeypatch,denied):
+    from novelvideo.api.routes import creation,creation_library
+    from novelvideo.api.auth import get_api_user
+    from fastapi import FastAPI,HTTPException
+    from httpx import ASGITransport,AsyncClient
+    async def resolve(**kwargs):
+        if denied:
+            raise HTTPException(403,'denied')
+        return ctx
+    monkeypatch.setattr(creation,'resolve_project_context',resolve)
+    monkeypatch.setattr(creation,'require_project_home_node',lambda *_args,**_kwargs:None)
+    app=FastAPI();app.include_router(creation_library.router)
+    app.dependency_overrides[get_api_user]=lambda:{'id':'user'}
+    async with AsyncClient(transport=ASGITransport(app=app),base_url='http://test') as client:
+        for path in ('objects','relations'):
+            response=await client.get('/projects/p/creation/ontology/'+path)
+            assert response.status_code==(403 if denied else 409)
     assert not ctx.state_dir.exists()
 
 

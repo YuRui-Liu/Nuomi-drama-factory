@@ -175,6 +175,20 @@ async def ontology_object(project: str, object_id: str, revision: int | None = N
         return {'ok':True,'data':await asyncio.to_thread(Ontology(ctx).object,object_id,revision)}
 
 
+@router.get('/ontology/objects')
+async def ontology_objects(project: str, user: dict = Depends(get_api_user)):
+    with errors():
+        ctx = await context_for(project,user,'viewer')
+        return {'ok':True,'data':await asyncio.to_thread(Ontology(ctx).object_catalog)}
+
+
+@router.get('/ontology/relations')
+async def ontology_relations(project: str, user: dict = Depends(get_api_user)):
+    with errors():
+        ctx = await context_for(project,user,'viewer')
+        return {'ok':True,'data':await asyncio.to_thread(Ontology(ctx).relation_catalog)}
+
+
 @router.get('/ontology/relations/{relation_id}')
 async def ontology_relation(project: str, relation_id: str, user: dict = Depends(get_api_user)):
     with errors():
