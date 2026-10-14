@@ -2,6 +2,7 @@ import pytest
 import sqlite3
 
 from novelvideo.creation.asset_adapter import AssetAdapter
+from novelvideo.creation.asset_sync import SourceSyncPending
 from novelvideo.creation.models import AssetRef
 from novelvideo.creation.store import ObjectStore, RevisionConflict
 from novelvideo.models import NovelCharacter, NovelScene, CharacterIdentity
@@ -86,8 +87,9 @@ async def test_reject_source_relationship_drift_before_publish(assets):
     base = await adapter.register_base('scene', 'Hall')
     variant = await adapter.create_variant(base.base_asset_id, 'night', {}, 'drift')
     locator = (await adapter.resolve(variant))['payload']['name']
-    await source.update_scene(locator, base_scene_id='different-location')
-    with pytest.raises(ValueError):
+    with pytest.raises(SourceSyncPending):
+        await source.update_scene(locator, base_scene_id='different-location')
+    with pytest.raises(SourceSyncPending):
         await adapter.publish_revision(base.base_asset_id, variant.variant_id, 1, {'time_of_day': 'night'})
 
 
@@ -220,7 +222,9 @@ async def test_identity_publish_does_not_snapshot_failed_source_write(assets, mo
     monkeypatch.setattr(source, '_update_character_field', failed_write)
     with pytest.raises(RuntimeError, match='stale'):
         await adapter.publish_revision(base.base_asset_id, variant.variant_id, 1, {'appearance_details': 'coat'})
-    assert adapter.objects.read(variant.variant_id)['revision'] == 1
+    with pytest.raises(SourceSyncPending):
+        adapter.objects.read(variant.variant_id)
+    assert adapter.objects.read(variant.variant_id, 1)['revision'] == 1
     assert (await source.get_character_from_graph('Lin')).identities[0].appearance_details == ''
 
 
@@ -242,4 +246,6 @@ async def test_failed_identity_compensation_retains_intent(assets, monkeypatch):
         await adapter.publish_revision(base.base_asset_id, variant.variant_id, 1, {'appearance_details': 'coat'})
     with adapter.objects.transaction() as conn:
         assert conn.execute('SELECT 1 FROM asset_publication_intents WHERE object_id=?', (variant.variant_id,)).fetchone()
-    assert adapter.objects.read(variant.variant_id)['revision'] == 1
+    with pytest.raises(SourceSyncPending):
+        adapter.objects.read(variant.variant_id)
+    assert adapter.objects.read(variant.variant_id, 1)['revision'] == 1

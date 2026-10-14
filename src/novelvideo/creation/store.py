@@ -92,6 +92,9 @@ class ObjectStore:
 
     @staticmethod
     def _read(conn: sqlite3.Connection, object_id: str, revision: int | None) -> dict[str, Any] | None:
+        if revision is None:
+            from .asset_sync import assert_current_available
+            assert_current_available(conn, object_id)
         row = conn.execute(
             '''SELECT o.id, o.kind, o.base_asset_id, o.variant_id,
                       v.revision, v.payload, v.actor_id, v.created_at
@@ -108,6 +111,8 @@ class ObjectStore:
     def read(self, object_id: str, revision: int | None = None) -> dict[str, Any] | None:
         conn = self._connect()
         try:
+            # Pending checks and the selected version share a read snapshot.
+            conn.execute('BEGIN')
             return self._read(conn, object_id, revision)
         finally:
             conn.close()

@@ -218,7 +218,7 @@ class OperationService:
             ref = AssetRef.model_validate(payload['asset_ref'])
         except ValidationError as exc:
             raise OperationError('invalid_contract', '资产引用字段无效') from exc
-        base = ObjectStore._read(conn, ref.base_asset_id, None)
+        base = ObjectStore._read(conn, ref.base_asset_id, 1)
         target = ObjectStore._read(conn, ref.variant_id or ref.base_asset_id, ref.revision)
         _scope(base is not None and base['kind'] in {'character', 'scene'} and target is not None,
                base_asset_id=ref.base_asset_id)

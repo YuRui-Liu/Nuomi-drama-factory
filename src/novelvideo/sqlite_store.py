@@ -529,34 +529,69 @@ def _source_asset_write(method=None, *, snapshot_inputs=False):
     Reload the source cache at the outer store mutation boundary, so a cached
     whole-character upsert cannot discard another writer's unrelated fields.
     Nested mutations belong to the actual Task, never an inherited ContextVar.
-    This is source consistency only; semantic publication remains explicit.
+    Registered sources journal their write before SQL and synchronize history
+    afterwards; legacy projects never initialize semantic state here.
     """
     if method is None:
         return functools.partial(_source_asset_write, snapshot_inputs=snapshot_inputs)
+    signature = inspect.signature(method)
 
     @functools.wraps(method)
     async def wrapper(self, *args, **kwargs):
         from novelvideo.production_workflow.coordination import asset_project_lock
+        from novelvideo.creation.asset_sync import SourceSync, SourceSyncPending
 
-        if snapshot_inputs:
+        state_dir = getattr(self, "state_dir", Path(self.db_path).parent)
+        frozen_inputs = snapshot_inputs or (Path(state_dir) / 'creation' / 'objects.sqlite3').is_file()
+        if frozen_inputs:
             # Catalogue publication promises to freeze caller-owned models
             # before its first await, including waiting for the project lock.
             args, kwargs = copy.deepcopy((args, kwargs))
-        state_dir = getattr(self, "state_dir", Path(self.db_path).parent)
         async with asset_project_lock(state_dir):
             task = asyncio.current_task()
             if getattr(self, "_asset_write_task", None) is task:
                 return await method(self, *args, **kwargs)
             self._asset_write_task = task
             characters = "character" in method.__name__ or "identity" in method.__name__
+            sync, token = None, None
+            source_completed = False
             try:
                 if characters:
                     await self._reload_source_character_cache()
+                sync = SourceSync.existing(self)
+                if sync:
+                    if not frozen_inputs:
+                        # Registration may have happened while waiting for the
+                        # project lock. Freeze before selecting journal targets.
+                        args, kwargs = copy.deepcopy((args, kwargs))
+                    arguments = signature.bind(self, *args, **kwargs).arguments
+                    names = None
+                    if not method.__name__.startswith('delete_all_'):
+                        names = set()
+                        for key in ('characters', 'scenes'):
+                            if key in arguments:
+                                names.update(item.name for item in arguments[key])
+                        for key in ('character', 'scene'):
+                            if key in arguments:
+                                names.add(arguments[key].name)
+                        for key in ('name', 'character_name', 'old_name', 'new_name'):
+                            if key in arguments:
+                                names.add(arguments[key])
+                        if characters:
+                            names.update(char.name for name in tuple(names)
+                                         if (char := self.get_character(name)) is not None)
+                    token = await sync.prepare('character' if characters else 'scene', names)
                 result = await method(self, *args, **kwargs)
+                source_completed = True
                 if characters:
                     await self._reload_source_character_cache()
+                if sync:
+                    try:
+                        await sync.finish(token)
+                    except Exception as exc:
+                        raise SourceSyncPending('Source write may already be committed; pending source reconciliation') from exc
                 return result
-            except BaseException:
+            except BaseException as source_error:
                 # Stay in the owning Task until rollback and cache repair have
                 # completed. Repeated cancellation must not release the lock
                 # with queued SQL work or spawn a shielded orphan writer.
@@ -573,7 +608,15 @@ def _source_asset_write(method=None, *, snapshot_inputs=False):
                         if characters:
                             self._characters.clear()
                             self._alias_index.clear()
+                        if sync and token and source_completed:
+                            if isinstance(source_error, (SourceSyncPending, asyncio.CancelledError)):
+                                raise source_error
+                            raise SourceSyncPending('Source write may already be committed; pending source reconciliation') from source_error
                         raise
+                if sync and token and not source_completed:
+                    await sync.failed_write(token)
+                if sync and token and source_completed and not isinstance(source_error, (SourceSyncPending, asyncio.CancelledError)):
+                    raise SourceSyncPending('Source write may already be committed; pending source reconciliation') from source_error
                 raise
             finally:
                 self._asset_write_task = None

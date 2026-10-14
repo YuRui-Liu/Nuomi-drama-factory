@@ -19,6 +19,7 @@ from novelvideo.utils.derived_scenes import compose_derived_scene_name
 
 from .models import AssetRef
 from .store import ObjectStore, RevisionConflict
+from .asset_sync import SourceSync, fingerprint, publication_source_write, assert_current_available
 
 
 _CHARACTER_FIELDS = {'age_group', 'appearance_details', 'face_prompt', 'body_type'}
@@ -29,10 +30,9 @@ _SCENE_FIELDS = {'time_of_day', 'variant_prompt', 'description', 'notes'}
 class AssetAdapter:
     """An adapter, not an independent writable asset library.
 
-    Adapter and synchronous workflow publications share a project process lock.
-    Legacy SQLite/route edits still require integration with asset_project_lock;
-    this adapter alone cannot serialize those writes. Source and snapshot writes
-    use separate databases, with durable publication evidence for recovery.
+    Adapter, source metadata writes and workflow publications share a project
+    process lock. Source and snapshot writes use separate databases, with
+    durable publication and source synchronization evidence for recovery.
     """
 
     def __init__(self, source: SQLiteStore, objects: ObjectStore, actor_id: str = 'asset-adapter'):
@@ -92,15 +92,32 @@ class AssetAdapter:
     def _source_fingerprint(payload: dict[str, Any]) -> str:
         # SQL owns this timestamp; metadata writes can update it independently
         # of the semantic record. Every other source field is compared.
-        normalized = {k: v for k, v in payload.items() if k != 'updated_at'}
-        for key, value in normalized.items():
-            if key == 'voice_facts_json':
-                # add_character expands the validated defaults of legacy '{}'.
-                from novelvideo.character_voice_facts import VoiceFacts
-                normalized[key] = VoiceFacts.model_validate_json(value or '{}').model_dump(mode='json')
-            elif key.endswith('_json') and isinstance(value, str):
-                normalized[key] = json.loads(value)
-        return json.dumps(normalized, sort_keys=True, ensure_ascii=False)
+        return fingerprint(payload)
+
+    async def reconcile_source(self) -> list[AssetRef]:
+        """Replay complete source evidence; unknown or conflicting proof stays pending."""
+        async with self._write_lock():
+            results = await SourceSync(self.source, self.objects, self.actor_id).reconcile()
+            return [AssetRef(base_asset_id=m['parent_id'] or m['object_id'],
+                             variant_id=m['object_id'] if m['parent_id'] else None,
+                             revision=revision) for m, revision in results]
+
+    async def refresh_source(self, base_id: str, variant_id: str | None = None, *,
+                             expected_revision: int, acknowledge_pending: bool = False) -> AssetRef:
+        """Confirm trusted SQL at a CAS revision, retaining superseded pending proof.
+
+        acknowledge_pending explicitly accepts the current SQL state after an
+        ambiguous interruption. It cannot repair missing/renamed locators or
+        consume publication intents; those require their own reconciliation.
+        """
+        async with self._write_lock():
+            self._base(base_id)
+            mapping = self._mapping(variant_id or base_id)
+            if variant_id and mapping['parent_id'] != base_id:
+                raise ValueError('Variant belongs to another base asset')
+            revision = await SourceSync(self.source, self.objects, self.actor_id).refresh(
+                variant_id or base_id, expected_revision, acknowledge_pending)
+            return AssetRef(base_asset_id=base_id, variant_id=variant_id, revision=revision)
 
     async def reconcile_publication(self, base_id: str, variant_id: str | None = None) -> AssetRef:
         """Explicitly finish a proven write or abandon a proven unstarted write.
@@ -170,16 +187,23 @@ class AssetAdapter:
         if mapping['kind'] == 'scene':
             record = await self.source.get_scene_exact(mapping['source_name'])
         elif not mapping['parent_id']:
-            record = self.source.get_character(mapping['source_name'])
+            record = await self.source.get_character_from_graph(mapping['source_name'])
         else:
             parent = self._mapping(mapping['parent_id'])
-            char = self.source.get_character(parent['source_name'])
+            char = await self.source.get_character_from_graph(parent['source_name'])
             record = next((item for item in char.identities if item.identity_id == mapping['source_name']), None) if char else None
         if record is None:
             raise KeyError(mapping['source_name'])
         return record
 
     async def _register(self, kind: str, source_name: str, parent_id: str = '') -> AssetRef:
+        with self.objects.transaction() as conn:
+            if parent_id:
+                assert_current_available(conn, parent_id)
+            existing = conn.execute('SELECT object_id FROM asset_sources WHERE kind=? AND source_name=? AND parent_id=?',
+                                    (kind, source_name, parent_id)).fetchone()
+            if existing:
+                assert_current_available(conn, existing['object_id'])
         mapping = dict(kind=kind, source_name=source_name, parent_id=parent_id)
         record = await self._source_record(mapping)
         if kind == 'character' and not parent_id:
@@ -235,8 +259,11 @@ class AssetAdapter:
     async def list_variants(self, base_id: str) -> list[AssetRef]:
         self._base(base_id)
         with self.objects.transaction() as conn:
+            assert_current_available(conn, base_id)
             rows = conn.execute('''SELECT s.object_id, o.current_revision FROM asset_sources s
                 JOIN objects o ON o.id=s.object_id WHERE parent_id=? ORDER BY s.object_id''', (base_id,)).fetchall()
+            for row in rows:
+                assert_current_available(conn, row['object_id'])
         return [AssetRef(base_asset_id=base_id, variant_id=r['object_id'], revision=r['current_revision']) for r in rows]
 
     @staticmethod
@@ -254,6 +281,7 @@ class AssetAdapter:
             raise ValueError('name and request_id are required')
         async with self._write_lock():
             base = self._base(base_id)
+            self.objects.read(base_id)
             await self._assert_fresh(base)
             source = await self._source_record(base)
             self._validate_fields(base['kind'], True, delta)
@@ -265,7 +293,9 @@ class AssetAdapter:
                 if row and row['fingerprint'] != fingerprint:
                     raise ValueError('request_id already used with different input')
                 if row and row['result']:
-                    return AssetRef.model_validate_json(row['result'])
+                    saved = AssetRef.model_validate_json(row['result'])
+                    assert_current_available(conn, saved.variant_id or saved.base_asset_id)
+                    return saved
                 locator = row['source_name'] if row else proposed_locator
                 if not row:
                     if existing_scene is not None:
@@ -288,6 +318,7 @@ class AssetAdapter:
     async def publish_revision(self, base_id: str, variant_id: str | None, expected_revision: int, payload: dict[str, Any]) -> AssetRef:
         async with self._write_lock():
             base = self._base(base_id)
+            self.objects.read(base_id)
             await self._assert_fresh(base)
             ref = AssetRef(base_asset_id=base_id, variant_id=variant_id, revision=expected_revision)
             await self.resolve(ref)
@@ -311,12 +342,13 @@ class AssetAdapter:
                 conn.execute('INSERT INTO asset_publication_evidence VALUES (?,?,?)',
                              (object_id, record.model_dump_json(), requested_record.model_dump_json()))
             async def write(values):
-                if base['kind'] == 'scene':
-                    await self.source.update_scene(mapping['source_name'], **values)
-                elif variant_id:
-                    await self.source.update_character_identity(base['source_name'], mapping['source_name'], **values)
-                else:
-                    await self.source.update_character(base['source_name'], **values)
+                with publication_source_write(self.source.state_dir, object_id):
+                    if base['kind'] == 'scene':
+                        await self.source.update_scene(mapping['source_name'], **values)
+                    elif variant_id:
+                        await self.source.update_character_identity(base['source_name'], mapping['source_name'], **values)
+                    else:
+                        await self.source.update_character(base['source_name'], **values)
                 # Identity methods currently swallow a failed SQL update after
                 # mutating their cache. Verify persisted state for both forward
                 # writes and compensation before snapshots/intents can advance.

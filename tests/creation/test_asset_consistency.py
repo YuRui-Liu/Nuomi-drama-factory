@@ -1,9 +1,11 @@
 import asyncio
 import json
+import sqlite3
 
 import pytest
 
 from novelvideo.creation.asset_adapter import AssetAdapter
+from novelvideo.creation.asset_sync import SourceSyncPending
 from novelvideo.creation.store import ObjectStore, RevisionConflict
 from novelvideo.models import NovelCharacter
 from novelvideo.sqlite_store import SQLiteStore
@@ -30,11 +32,20 @@ def intent(adapter, base):
                      (base.base_asset_id, json.dumps(before), json.dumps({**before, 'age_group': 'child'})))
 
 
+async def interrupted_source_commit(source, *, age_group, reference_audio_path=None):
+    """Simulate a process dying after source commit, before adapter continuation."""
+    with sqlite3.connect(source.db_path) as conn:
+        conn.execute('UPDATE characters SET age_group=? WHERE name=?', (age_group, 'Lin'))
+        if reference_audio_path is not None:
+            conn.execute('UPDATE characters SET reference_audio_path=? WHERE name=?', (reference_audio_path, 'Lin'))
+    await source._reload_source_character_cache()
+
+
 @pytest.mark.parametrize('source_age,revision', [('youth', 1), ('child', 2)])
 async def test_reconcile_interrupted_publication_after_restart(registered, source_age, revision):
     source, adapter, base = registered
     intent(adapter, base)
-    await source.update_character('Lin', age_group=source_age)
+    await interrupted_source_commit(source, age_group=source_age)
     restarted = AssetAdapter(source, ObjectStore(source.state_dir))
     result = await restarted.reconcile_publication(base.base_asset_id)
     assert result.revision == revision
@@ -48,7 +59,7 @@ async def test_reconcile_interrupted_publication_after_restart(registered, sourc
 async def test_reconciliation_rejects_ambiguous_source_drift(registered):
     source, adapter, base = registered
     intent(adapter, base)
-    await source.update_character('Lin', age_group='elder')
+    await interrupted_source_commit(source, age_group='elder')
     with pytest.raises(RuntimeError, match='drift'):
         await adapter.reconcile_publication(base.base_asset_id)
     assert source.get_character('Lin').age_group == 'elder'
@@ -61,10 +72,12 @@ async def test_reconciliation_does_not_overwrite_advanced_snapshot(registered):
     intent(adapter, base)
     payload = (await adapter.resolve(base))['payload']
     adapter.objects.update(base.base_asset_id, 1, {**payload, 'age_group': 'elder'}, 'other')
-    await source.update_character('Lin', age_group='child')
+    await interrupted_source_commit(source, age_group='child')
     with pytest.raises(RevisionConflict):
         await adapter.reconcile_publication(base.base_asset_id)
-    assert adapter.objects.read(base.base_asset_id)['payload']['age_group'] == 'elder'
+    with pytest.raises(SourceSyncPending):
+        adapter.objects.read(base.base_asset_id)
+    assert adapter.objects.read(base.base_asset_id, 2)['payload']['age_group'] == 'elder'
 
 
 async def test_task_lock_child_cannot_inherit_ownership(tmp_path):
@@ -100,16 +113,18 @@ async def test_legacy_partial_intent_requires_manual_reconciliation(registered):
     intent(adapter, base)
     with adapter.objects.transaction() as conn:
         conn.execute('DELETE FROM asset_publication_evidence')
-    await source.update_character('Lin', age_group='child')
+    await interrupted_source_commit(source, age_group='child')
     with pytest.raises(RuntimeError, match='complete source evidence'):
         await adapter.reconcile_publication(base.base_asset_id)
-    assert adapter.objects.read(base.base_asset_id)['revision'] == 1
+    with pytest.raises(SourceSyncPending):
+        adapter.objects.read(base.base_asset_id)
+    assert adapter.objects.read(base.base_asset_id, 1)['revision'] == 1
 
 
 async def test_reconciliation_rejects_drift_outside_requested_fields(registered):
     source, adapter, base = registered
     intent(adapter, base)
-    await source.update_character('Lin', age_group='child', reference_audio_path='later.wav')
+    await interrupted_source_commit(source, age_group='child', reference_audio_path='later.wav')
     with pytest.raises(RuntimeError, match='drift'):
         await adapter.reconcile_publication(base.base_asset_id)
     assert source.get_character('Lin').reference_audio_path == 'later.wav'
@@ -118,7 +133,7 @@ async def test_reconciliation_rejects_drift_outside_requested_fields(registered)
 async def test_reconciliation_recognizes_committed_snapshot_before_journal_cleanup(registered):
     source, adapter, base = registered
     intent(adapter, base)
-    await source.update_character('Lin', age_group='child')
+    await interrupted_source_commit(source, age_group='child')
     adapter.objects.update(base.base_asset_id, 1, source.get_character('Lin').model_dump(mode='json'), 'asset-adapter')
     assert (await adapter.reconcile_publication(base.base_asset_id)).revision == 2
     assert adapter.objects.read(base.base_asset_id)['revision'] == 2
@@ -228,7 +243,7 @@ async def test_compensation_stays_in_lock_owning_task(registered, monkeypatch):
 async def test_reconciliation_after_fresh_source_reopen(registered):
     source, adapter, base = registered
     intent(adapter, base)
-    await source.update_character('Lin', age_group='child')
+    await interrupted_source_commit(source, age_group='child')
     reopened = SQLiteStore('test', output_dir=source.project_dir, state_dir=source.state_dir)
     await reopened.initialize()
     await reopened.load_graph_state()
@@ -244,7 +259,7 @@ async def test_reconciliation_after_fresh_source_reopen(registered):
 async def test_reconcile_uses_journal_cas_after_source_read(registered, monkeypatch):
     source, adapter, base = registered
     intent(adapter, base)
-    await source.update_character('Lin', age_group='child')
+    await interrupted_source_commit(source, age_group='child')
     read = adapter._source_record
     async def altered(mapping):
         record = await read(mapping)
@@ -254,7 +269,9 @@ async def test_reconcile_uses_journal_cas_after_source_read(registered, monkeypa
     monkeypatch.setattr(adapter, '_source_record', altered)
     with pytest.raises(RuntimeError, match='intent changed'):
         await adapter.reconcile_publication(base.base_asset_id)
-    assert adapter.objects.read(base.base_asset_id)['revision'] == 1
+    with pytest.raises(SourceSyncPending):
+        adapter.objects.read(base.base_asset_id)
+    assert adapter.objects.read(base.base_asset_id, 1)['revision'] == 1
 
 
 async def test_cancelled_publication_compensates_and_releases_project_lock(registered, monkeypatch):
@@ -338,7 +355,8 @@ async def test_variant_recovery_preserves_base_and_pinned_history(registered, mo
     assert recovered.revision == 2
     assert (await adapter.resolve(recovered))['payload'][field] == value
     assert (await adapter.resolve(variant))['payload'] == original
-    assert adapter.objects.read(base.base_asset_id)['revision'] == 1
+    assert adapter.objects.read(base.base_asset_id)['revision'] == (3 if kind == 'character' else 1)
+    assert adapter.objects.read(base.base_asset_id, 1)['revision'] == 1
 
 
 async def test_reconcile_source_read_does_not_hold_snapshot_transaction(registered, monkeypatch):
