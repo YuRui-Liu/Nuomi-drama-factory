@@ -91,7 +91,7 @@ assert other_canvas_object['revision'] == original_revision
 
 ## 任务 7：资产及风格／手法引用
 
-**状态：进行中。7A1、A2a-1、A2a-2、A2a-3 已双审提交，分别为 `4317952`、`0784b2c`、`7b8bf35`、`99b111a`。A2b-1 已提交 `4290cf6`；A2b-2 的 production-assets、角色、场景直接入口、画布资产发布、场景 worker 发布组已提交 `3edd058`、`af82152`、`94e55fb`、`d49160b`、`0e0c258`。casting 入口测试上下文夹具独立修复为 `0e1aeca`。7B-1 固定引用 API 与原子节点投影已双审提交 `7b2e8a9`；7B-2a 前端保存协调正在实现，完整资产界面与库作用域尚未完成。**
+**状态：进行中。7A1、A2a-1、A2a-2、A2a-3 已双审提交，分别为 `4317952`、`0784b2c`、`7b8bf35`、`99b111a`。A2b-1 已提交 `4290cf6`；A2b-2 的 production-assets、角色、场景直接入口、画布资产发布、场景 worker 发布组已提交 `3edd058`、`af82152`、`94e55fb`、`d49160b`、`0e0c258`。casting 入口测试上下文夹具独立修复为 `0e1aeca`。7B-1 固定引用 API 与原子节点投影已双审提交 `7b2e8a9`；7B-2a 前端保存协调已双审提交 `3d1d97e`，7B-2b 固定引用界面正在实现。共享资产显式保存及新发现的 viewer writer 缺口由 7B-2c 补齐，库作用域尚未完成。**
 
 文件：原任务 7 文件，新增 `creation/library_references.py` 和测试。AssetAdapter 源写锁、重命名映射、interrupted publication 的显式对账并入本任务。
 
@@ -117,7 +117,9 @@ A2b 分两批串行交付：**A2b-1** 可信媒体内容快照、可恢复发布
 2. **完整资产中心与画布衔接。** 复用基础／变体编辑器及现有节点，拖放与按钮采用同一领域操作；固定引用绕开读取最新 manifest 的旧 hydration。显示名称／变体，详情展示版本、来源、更新与受影响范围；显式选择更新目标。操作到 applied 才显示成功，失败保留原节点，跨画布迟到响应不得改当前画布。保存共享资产明确基础／变体／新版本。验证两集与自由画布隔离、失败无半节点、旧引用在真实预览及生成输入中保持固定。
 3. **风格／手法作用域。** 新增 `library_references.py` 与 API／界面，复用可信 style snapshot 与 technique catalog 投影，保存固定版本和内容摘要。实现 project → canvas → group → node 的覆盖／解除和生效来源，校验目标存在及归属；冲突与不适用项可见，不静默叠加。配置更新不启动生成，接入 Agent 上下文和真实执行分别由任务 8B／10完成。针对性后端／前端测试并对照现有样式检查 1440×900、1280×720。
 
-7B-2 先完成保存协调，再接完整界面，每批分别双审。保存协调提供实际工作空间实例隔离、排空已发 PUT 后暂停新 PUT（包括 beforeunload）、操作期间保留本地草稿、baseline/local/remote 三方合并与冲突提示。持久化待决操作请求身份，网络未知不盲目回滚，重新打开后按同一请求恢复；合并保留服务端 receipt、本地独立编辑、bookmarks/shotMetadata 与可用历史。随后资产按钮／拖放共用该能力，固定媒体绕开 latest hydration，资产中心返回显式 workspace；无明确目标不向默认画布写入。这一细分不缩减完整资产界面验收要求。
+7B-2 先完成保存协调（2a），再接固定引用完整界面（2b），最后补齐共享资产显式保存（2c），每批分别双审。保存协调提供实际工作空间实例隔离、排空已发 PUT 后暂停新 PUT（包括 beforeunload）、操作期间保留本地草稿、baseline/local/remote 三方合并与冲突提示。持久化待决操作请求身份，网络未知不盲目回滚，重新打开后按同一请求恢复；合并保留服务端 receipt、本地独立编辑、bookmarks/shotMetadata 与可用历史。随后资产按钮／拖放共用该能力，固定媒体绕开 latest hydration，资产中心返回显式 workspace；无明确目标不向默认画布写入。这一细分不缩减完整资产界面验收要求。
+
+2c 保留现有 CommitDialog，明确新基础资产／变体／新版本的保存目标，已有目标携带用户选择时的版本凭据，持锁后 CAS 校验，冲突不自动采用 latest。补齐新发现的 scene director world/source/clear 及 pano correction 四个真实 writer 的 publication 保护；完整布景媒体与 manifest 改为一次服务端发布，替代客户端循环多次写入。新模式移除生成后 auto:true 隐式共享回填，明确保存与采用。道具、泛媒体不伪装成 character/scene 的 AssetRef；完整地图见执行报告。
 
 ## 任务 8A：Agent 与模板、可扩展对象定义
 
