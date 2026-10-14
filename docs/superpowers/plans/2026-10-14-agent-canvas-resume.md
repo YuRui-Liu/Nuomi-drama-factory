@@ -49,6 +49,8 @@ CREATE UNIQUE INDEX one_concept_canvas ON canvas_workspaces(kind) WHERE kind='co
 
 ## 任务 5A：收尾已完成的新项目与集画布实现
 
+**状态：已双审完成，提交 `7cdcc25`。下列清单保留原验收要求。**
+
 文件：`creation/{workspace,project_mode,projection}.py`、`api/routes/{creation,projects}.py`、`project_config.py`、`api/schemas.py` 的 creation_mode 字段、`frontend/src/api/projects.ts`、`tests/creation/test_episode_workspace.py`。
 
 - [ ] 对原任务 5 完成规格与质量审查；自由画布属于 5B，不将新增范围误判成 5A 失败。
@@ -56,6 +58,8 @@ CREATE UNIQUE INDEX one_concept_canvas ON canvas_workspaces(kind) WHERE kind='co
 - [ ] 仅暂存本任务文件和脏文件中归属明确的 hunk，提交创建集画布能力。
 
 ## 任务 5B：构思与自由画布的领域作用域
+
+**状态：已双审完成，提交 `505ea23`。**
 
 文件：新增 `creation/canvas_workspaces.py`、`tests/creation/test_canvas_workspaces.py`；修改 `creation/{models,store,workspace,operations}.py`、`api/routes/creation.py`、`freezone/canvas_store.py` 的语义恢复保护。
 
@@ -75,6 +79,8 @@ assert other_canvas_object['revision'] == original_revision
 
 ## 任务 6：统一前端工作空间
 
+**状态：已双审完成，提交 `6c55105`；隔离环境真实交互及两种视口验证见执行报告。**
+
 文件：新增 `frontend/src/features/creation-workspace/{contracts,CreationWorkspace,CanvasWorkspaceSwitcher}.tsx`（contracts 使用 .ts）、`frontend/src/api/creation.ts`、`frontend/src/lib/queries/creation.ts`；修改 freezone lazy route、FreezoneShell、project-navigation-routes、project-header-navigation、project summary 类型与映射。
 
 - [ ] MSW 测试构思／两集／自由画布、新建、未知 workspace、legacy unsupported、加载失败及保存失败不能离开。
@@ -84,6 +90,8 @@ assert other_canvas_object['revision'] == original_revision
 - [ ] `pnpm exec vitest run src/__tests__/features/creation-workspace`、`pnpm exec tsc --noEmit --project tsconfig.app.json`，截图 1440×900／1280×720，双审提交。
 
 ## 任务 7：资产及风格／手法引用
+
+**状态：进行中。7A1、A2a-1、A2a-2、A2a-3 已双审提交，分别为 `4317952`、`0784b2c`、`7b8bf35`、`99b111a`。真实素材发布和 7B 界面尚未完成。**
 
 文件：原任务 7 文件，新增 `creation/library_references.py` 和测试。AssetAdapter 源写锁、重命名映射、interrupted publication 的显式对账并入本任务。
 
@@ -95,6 +103,8 @@ assert other_canvas_object['revision'] == original_revision
 7A 内部再分两次完整交付：**A1** 共享写锁、Adapter 接入与中断 publication 对账；**A2** 源元数据／重命名、采用事务与可信媒体快照接入。每次双审提交，A1 不能宣称尚未接入的所有源写入口已受保护。
 
 A2 按实际写入边界依次交付：**A2a-1** 源元数据普通／批量写锁、可信 SQL 重载、错误传播及取消清理；**A2a-2** durable mutation journal、语义版本同步、显式 refresh、Adapter 嵌套去重，未完成同步阻止读取当前版本但保留固定历史引用；**A2a-3** 改名时稳定 source locator、目录迁移与 episode identity cascade 的恢复；**A2b** 真实媒体采用事务与可信 workflow 快照。各批独立双审，不能以其中一个基础批次代替完整资产接入。
+
+A2b 分两批串行交付：**A2b-1** 可信媒体内容快照、可恢复发布边界及 casting／production-assets 显式采用；**A2b-2** 画布采用、首个 provisional current、上传、历史恢复等其余保留入口。入口地图见 `reports/2026-10-14-asset-media-entrypoints.md`。固定版本引用必须保留原媒体字节，不能仅记录会被覆盖的 canonical 路径；读取不触发迁移。
 
 - [ ] 先测试基础／变体选择不写入、明确应用只改目标、创建变体不采用、引用失败不改原值、跨集及自由画布隔离。
 - [ ] 复用完整现有资产中心编辑器，用户明确选择新基础／已有变体／新版本的发布目标。资产中心写入与适配层共享源状态检查，真实媒体采用刷新可信语义快照，不允许客户端任意媒体路径。
