@@ -324,6 +324,27 @@ class AssetReferences:
             if resolved['object']['kind'] != 'scene' or media['role'] not in {'ply', 'custom_scene', 'pano_ply', 'pano_depth_ply', 'master_ply', 'reverse_ply', 'pano', 'panorama_360'}:
                 fail('asset_media_type', '此素材不是场景模型')
             manifest = payload.get('_scene_manifest', {})
+            if manifest.get('bundle_sources') and media['role'] == manifest.get('bundle_primary_role'):
+                sources = []
+                for source in manifest['bundle_sources']:
+                    sources.append({key: deepcopy(value) for key,value in source.items() if key != 'media'} | {
+                        field:url({'current_blob':blob}) for field,blob in source['media'].items()})
+                active = next((source for source in sources if source['id'] == manifest.get('active_source_id')), None)
+                if active is None:
+                    fail('asset_media_unavailable', '固定场景的当前来源不存在')
+                scenes = deepcopy(manifest.get('scenes_by_source_id') or {})
+                fixed_manifest = deepcopy(manifest)
+                fixed_manifest.update(sources=deepcopy(sources), active_source=deepcopy(active))
+                # Never expose mutable canonical paths inside the fixed bundle.
+                fixed_manifest.pop('bundle_sources', None)
+                for field in SCENE_MANIFEST_PATHS:
+                    fixed_manifest.pop(field, None)
+                data.update(plyUrl=active.get('ply_url'), panoUrl=active.get('pano_url'),
+                            previewImageUrl=active.get('pano_url'), sources=sources,
+                            activeSourceId=active['id'], scenesBySourceId=scenes, layersBySourceId={},
+                            scene=deepcopy(scenes.get(active['id'])), assetSceneManifest=fixed_manifest,
+                            assetRef=resolved['asset_ref'], assetMediaSelection=media)
+                return {'data':data, 'blobs':blobs, 'proof':fingerprint(resolved), 'resolved':resolved}
             fixed_manifest = {k: v for k, v in manifest.items() if k not in SCENE_MANIFEST_PATHS}
             for item in items:
                 field = item.get('manifest_field')
@@ -355,6 +376,8 @@ class AssetReferences:
             preview = next((item for item in items if self.role(item) == 'master'), None)
             panorama = media['role'] in {'pano', 'panorama_360'}
             scenes, selected_scene = self._scene_layouts(payload, items, sources, media['role'])
+            if 'sources' in fixed_manifest:
+                fixed_manifest['sources'] = deepcopy(sources)
             fixed_manifest.update(scenes_by_source_id=scenes, active_source_id=media['role'], scene=selected_scene,
                                   active_source=deepcopy(next(source for source in sources if source['id'] == media['role'])))
             data.update(plyUrl=None if panorama else url(chosen), panoUrl=url(chosen) if panorama else pano_url,

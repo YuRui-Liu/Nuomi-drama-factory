@@ -11230,7 +11230,9 @@ async def freezone_push(project: str, body: PushRequest, user: dict = Depends(ge
         raise HTTPException(404, f"source file not found: {source_path}")
     validate_source_for_slot(source_path, body.target)
 
-    from novelvideo.creation.asset_canvas_publication import canvas_asset_publication, backup_target
+    from novelvideo.creation.asset_canvas_publication import (
+        canvas_asset_publication, copy_canvas_publication, update_canvas_publication_source,
+    )
     from novelvideo.creation.asset_sync import SourceSyncPending
     try:
         async with canvas_asset_publication(ctx, project_dir, body.target, source_path) as publication:
@@ -11244,49 +11246,15 @@ async def freezone_push(project: str, body: PushRequest, user: dict = Depends(ge
                 and source_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
                 and target.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
             )
-            from novelvideo.production_workflow import production_workflow_project_lock
-            from novelvideo.character_visual.casting_recovery import (
-                assert_legacy_portrait_mutation_allowed, update_identity_portrait_reference,
-                assert_casting_path_mutation_allowed,
-            )
-
-            with production_workflow_project_lock(ctx.state_dir):
-                try:
-                    assert_casting_path_mutation_allowed(project_dir, ctx.state_dir, target)
-                except ValueError as exc:
-                    raise HTTPException(409, str(exc)) from None
-                if body.target.kind == "identity_portrait":
-                    try:
-                        assert_legacy_portrait_mutation_allowed(
-                            project_dir, ctx.state_dir, body.target.character, body.target.identity_id,
-                        )
-                    except ValueError as exc:
-                        raise HTTPException(409, str(exc)) from None
-                target.parent.mkdir(parents=True, exist_ok=True)
-                backup = None if same_file else backup_target(project_dir, target)
-                if same_file:
-                    image_adaptation = {"adapted": False, "same_file": True}
-                elif should_match_existing_size:
-                    image_adaptation = _copy_image_matching_existing_target(publication.source, target)
-                else:
-                    image_adaptation = {"adapted": False}
-                    shutil.copy2(publication.source, target)
-                sync_slot_after_write(project_dir, body.target, target)
-                if body.target.kind == "identity_portrait":
-                    update_identity_portrait_reference(
-                        project_dir, ctx.state_dir, body.target.character, body.target.identity_id, str(target),
-                    )
+            backup, image_adaptation = await copy_canvas_publication(ctx, project_dir, publication,
+                adapt=_copy_image_matching_existing_target if should_match_existing_size else None)
             if body.target.kind == "selected_background":
                 await _persist_freezone_selected_background_scene_ref(
                     ctx=ctx,
                     episode=body.target.episode,
                     beat=body.target.beat,
                 )
-            if body.target.kind in {"identity", "identity_costume"}:
-                updates = {"costume_image": str(target)} if body.target.kind == "identity_costume" else {}
-                await publication.store.update_character_identity(body.target.character, body.target.identity_id, **updates)
-            if body.target.kind == "scene_spatial_layout":
-                await publication.store.update_scene(body.target.scene_id, spatial_layout_image=target.relative_to(project_dir).as_posix())
+            await update_canvas_publication_source(publication, project_dir)
     except SourceSyncPending as exc:
         raise HTTPException(409, {"code": "asset_media_pending", "message": str(exc)}) from exc
     except ValueError as exc:

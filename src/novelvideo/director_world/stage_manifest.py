@@ -187,6 +187,9 @@ def update_manifest(
         for field in clear_fields or ():
             existing[field] = None
         existing.update({k: v for k, v in fields.items() if v is not None})
+        if existing.get('pruned_media_fields'):
+            existing['pruned_media_fields'] = [key for key in existing['pruned_media_fields']
+                                             if not fields.get(key)]
         # save_manifest deliberately does not acquire this lock: callers that
         # perform a read-modify-write already hold it, and nested OS locks are
         # not reliably re-entrant across platforms.
@@ -242,6 +245,8 @@ def resolve_ply_path(
         return None
     base = stage_dir(project_dir, scene_id, version)
     name = mani.get(field)
+    if not name and field in mani.get('pruned_media_fields', []):
+        return None
     if not name and field == "ply_path":
         # `ply_path` is the default entry used by the 3GS viewer. Older scene
         # packs may have a concrete pano/master/reverse PLY on disk while the

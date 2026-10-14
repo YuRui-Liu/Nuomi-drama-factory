@@ -45,15 +45,71 @@ class CanvasPublication:
     store: object = None
 
 
+async def copy_canvas_publication(ctx, root, publication, *, adapt=None):
+    """Execute an already validated target, inside the caller's publication.
+
+    Keep synchronous workflow/casting guards on the owning Task's thread.
+    The callback is only the legacy frame image-size adaptation.
+    """
+    from novelvideo.production_workflow import production_workflow_project_lock
+    from novelvideo.character_visual.casting_recovery import (
+        assert_casting_path_mutation_allowed, assert_legacy_portrait_mutation_allowed,
+        update_identity_portrait_reference,
+    )
+    from novelvideo.freezone.slots import sync_slot_after_write
+    from .asset_adapter import registration_io
+    from novelvideo.production_workflow.coordination import synchronous_lock_is_owned
+    if not synchronous_lock_is_owned(ctx.state_dir):
+        raise RuntimeError('Canvas media copy requires the owning Task project lock')
+    target, slot = publication.target, publication.slot
+    with production_workflow_project_lock(ctx.state_dir):
+        writable_path(root, target)
+        writable_path(root, target.parent/'_history')
+        assert_casting_path_mutation_allowed(root, ctx.state_dir, target)
+        if slot.kind == 'identity_portrait':
+            assert_legacy_portrait_mutation_allowed(root, ctx.state_dir, slot.character, slot.identity_id)
+    def copy_files():
+        writable_path(root, target)
+        writable_path(root, target.parent/'_history')
+        same_file = publication.original_source == target
+        target.parent.mkdir(parents=True, exist_ok=True)
+        backup = None if same_file else backup_target(root, target)
+        if same_file:
+            adaptation = {'adapted': False, 'same_file': True}
+        elif adapt:
+            adaptation = adapt(publication.source, target)
+        else:
+            shutil.copy2(publication.source, target)
+            adaptation = {'adapted': False}
+        return backup, adaptation
+    backup, adaptation = await registration_io(copy_files)
+    with production_workflow_project_lock(ctx.state_dir):
+        sync_slot_after_write(root, slot, target)
+        if slot.kind == 'identity_portrait':
+            update_identity_portrait_reference(root, ctx.state_dir, slot.character, slot.identity_id, str(target))
+    return backup, adaptation
+
+
+async def update_canvas_publication_source(publication, root):
+    """Source SQL remains in the same outer Task-owned media publication."""
+    slot, target = publication.slot, publication.target
+    if slot.kind in {'identity', 'identity_costume'}:
+        changes = {'costume_image': str(target)} if slot.kind == 'identity_costume' else {}
+        await publication.store.update_character_identity(slot.character, slot.identity_id, **changes)
+    if slot.kind == 'scene_spatial_layout':
+        await publication.store.update_scene(slot.scene_id, spatial_layout_image=target.relative_to(root).as_posix())
+
+
 @asynccontextmanager
-async def canvas_asset_publication(ctx,root,slot,source_path):
+async def canvas_asset_publication(ctx,root,slot,source_path, *, publish=True):
     from novelvideo.sqlite_store import SQLiteStore
     from novelvideo.utils.path_resolver import canonical_identity_path, canonical_identity_costume_path, canonical_identity_portrait_path
     from novelvideo.director_world import stage_manifest
+    from .asset_adapter import registration_io
     root=Path(root);slot=deepcopy(slot)
     requested_locator=getattr(slot,'character',None) or getattr(slot,'scene_id',None)
     source_path=controlled_path(root,source_path)
-    source_proof=capture_blob(root,source_path,archive=False)
+    source_proof=await registration_io(capture_blob,root,source_path,archive=False)
     store=None
     character=scene=None
     try:
@@ -90,7 +146,7 @@ async def canvas_asset_publication(ctx,root,slot,source_path):
             else:
                 target=target.with_suffix(suffix)
         target=writable_path(root,target)
-        target_proof=capture_blob(root,target,archive=False) if target.is_file() else None
+        target_proof=await registration_io(capture_blob,root,target,archive=False) if target.is_file() else None
 
         def boundary(*,publish,expected=None):
             if character is not None:
@@ -116,9 +172,9 @@ async def canvas_asset_publication(ctx,root,slot,source_path):
                     raise ValueError('Asset alias changed before publication')
             writable_path(root,target)
             writable_path(root,target.parent/'_history')
-            if capture_blob(root,source_path,archive=False)!=source_proof:
+            if await registration_io(capture_blob,root,source_path,archive=False)!=source_proof:
                 raise ValueError('Canvas source changed before publication')
-            current=capture_blob(root,target,archive=False) if target.is_file() else None
+            current=await registration_io(capture_blob,root,target,archive=False) if target.is_file() else None
             if current!=target_proof:raise ValueError('Canvas target changed before publication')
             if scene is not None:
                 scene_mutation_path(root,scene.name,target)
@@ -128,15 +184,15 @@ async def canvas_asset_publication(ctx,root,slot,source_path):
 
         async with boundary(publish=False) as frozen:
             await validate()
-        async with boundary(publish=True,expected=frozen):
+        async with boundary(publish=publish,expected=frozen):
             await validate()
             # The synchronous copy uses an isolated, verified source, including
             # when the caller selected an immutable creation archive as input.
             with tempfile.TemporaryDirectory(prefix='canvas-push-') as directory:
                 staged=Path(directory)/('source'+source_path.suffix)
-                shutil.copy2(source_path,staged)
+                await registration_io(shutil.copy2,source_path,staged)
                 from .asset_media import _digest
-                if _digest(staged)!=(source_proof['sha256'],source_proof['size']):
+                if await registration_io(_digest,staged)!=(source_proof['sha256'],source_proof['size']):
                     raise ValueError('Canvas source changed during staging')
                 yield CanvasPublication(staged,source_path,target,slot,store)
     finally:

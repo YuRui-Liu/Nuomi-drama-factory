@@ -41,14 +41,15 @@ async def character_media_publication(project_dir, state_dir, name, identity_id=
                 assert_asset_locators_writable(source, 'character', [name])
             if not publish or expected is not None or input_fingerprint is not None:
                 from .asset_media import snapshot
+                from .asset_adapter import registration_io
                 characters = await source.list_characters()
                 character = next((c for c in characters if c.name == name), None)
                 if input_fingerprint is not None and input_fingerprint != fingerprint(character.model_dump(mode='json') if character else None):
                     raise ValueError('Character generation input changed before preflight; reload and retry')
-                frozen = {'base': snapshot(source, {'kind':'character', 'parent_id':''}, character, archive=False)} if character else {}
+                frozen = {'base': await registration_io(snapshot, source, {'kind':'character', 'parent_id':''}, character, archive=False)} if character else {}
                 identity = next((i for i in character.identities if i.identity_id == identity_id), None) if character else None
                 if identity:
-                    frozen['identity'] = snapshot(source, {'kind':'character', 'parent_id':'base'}, identity, archive=False)
+                    frozen['identity'] = await registration_io(snapshot, source, {'kind':'character', 'parent_id':'base'}, identity, archive=False)
                 from novelvideo.character_visual import CharacterVisualWorkspaceStore
                 visual_path = CharacterVisualWorkspaceStore(project_dir, state_dir=state_dir).path
                 # Read evidence without the visual getter's recovery side effects.
@@ -96,6 +97,7 @@ async def scene_media_publication(project_dir, state_dir, scene, *, actor='scene
     from novelvideo.utils.safe_paths import validate_path_segment
     from .asset_rename import assert_asset_locators_writable, assert_no_pending_rename
     from .asset_media import snapshot, scene_media_layouts
+    from .asset_adapter import registration_io
     name = scene.name
     validate_path_segment(name,label='scene name')
     source_before = fingerprint(scene.model_dump(mode='json'))
@@ -117,9 +119,9 @@ async def scene_media_publication(project_dir, state_dir, scene, *, actor='scene
             parent = await source.get_scene(current.base_scene_id) if current.base_scene_id else None
             if base_before is not None and base_before != fingerprint(parent.model_dump(mode='json') if parent else None):
                 raise ValueError('Base scene input changed before publication; reload and retry')
-            frozen = {'scene':fingerprint(snapshot(source,{'kind':'scene','parent_id':current.base_scene_id or ''},current,archive=False))}
+            frozen = {'scene':fingerprint(await registration_io(snapshot,source,{'kind':'scene','parent_id':current.base_scene_id or ''},current,archive=False))}
             if parent:
-                frozen['base'] = fingerprint(snapshot(source,{'kind':'scene','parent_id':''},parent,archive=False))
+                frozen['base'] = fingerprint(await registration_io(snapshot,source,{'kind':'scene','parent_id':''},parent,archive=False))
             from novelvideo.script_creation.asset_context import load_asset_authoring_context
             context = load_asset_authoring_context(Path(state_dir)/'data.db','scene',name)
             if parent:
@@ -146,6 +148,8 @@ class MediaPublication:
     def __init__(self, sync, actor='media-publication'):
         self.sync, self.objects, self.actor = sync, sync.objects, actor
         with self.objects.transaction() as conn:
+            conn.execute('''CREATE TABLE IF NOT EXISTS asset_media_receipts (
+                request_key TEXT PRIMARY KEY, result TEXT)''')
             conn.execute('''CREATE TABLE IF NOT EXISTS asset_media_publications (
                 object_id TEXT PRIMARY KEY REFERENCES objects(id), token TEXT NOT NULL,
                 request_key TEXT NOT NULL, expected_revision INTEGER NOT NULL,
@@ -204,6 +208,7 @@ class MediaPublication:
 
     def apply(self, entries, actual, *, abandon=False):
         with self.objects.transaction() as conn:
+            completed = {}
             for object_id, entry in entries.items():
                 live = conn.execute('SELECT * FROM asset_media_publications WHERE object_id=?', (object_id,)).fetchone()
                 mapping = conn.execute('SELECT * FROM asset_sources WHERE object_id=?', (object_id,)).fetchone()
@@ -222,7 +227,15 @@ class MediaPublication:
                     conn.execute('INSERT INTO object_versions VALUES (?,?,?,?,?)',
                         (object_id, revision + 1, json.dumps(actual[object_id]), entry['actor_id'], datetime.now(timezone.utc).isoformat()))
                     conn.execute('UPDATE objects SET current_revision=? WHERE id=?', (revision + 1, object_id))
+                    revision += 1
+                completed.setdefault(entry['request_key'], {})[object_id] = revision
                 conn.execute('DELETE FROM asset_media_publications WHERE object_id=? AND token=?', (object_id, entry['token']))
+            if not abandon:
+                # Only explicitly reserved durable callers retain receipts.
+                # The final revisions and journal deletion commit atomically.
+                for key, revisions in completed.items():
+                    conn.execute('UPDATE asset_media_receipts SET result=? WHERE request_key=? AND result IS NULL',
+                                 (json.dumps(revisions), key))
 
     async def finish(self, token):
         entries = self.entries(token)

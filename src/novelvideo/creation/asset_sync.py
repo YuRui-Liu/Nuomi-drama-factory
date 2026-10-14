@@ -146,7 +146,8 @@ class SourceSync:
                 char = characters.get(parent['source_name'])
                 record = next((i for i in char.identities if i.identity_id == mapping['source_name']), None) if char else None
             from .asset_media import snapshot
-            records[mapping['object_id']] = snapshot(self.source, mapping, record, archive=archive) if record else None
+            from .asset_adapter import registration_io
+            records[mapping['object_id']] = await registration_io(snapshot, self.source, mapping, record, archive=archive) if record else None
         return records
 
     async def prepare(self, kind, names=None):

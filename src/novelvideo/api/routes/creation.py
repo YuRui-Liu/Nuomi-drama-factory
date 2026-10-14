@@ -99,6 +99,30 @@ async def browse_assets(project: str, user: dict = Depends(get_api_user)):
         return {'ok': True, 'data': await asyncio.to_thread(service.catalog)}
 
 
+@router.get('/asset-publications/source')
+async def inspect_publication_source(project: str, canvas_id: str, node_id: str, user: dict = Depends(get_api_user)):
+    from novelvideo.creation.asset_publication import SharedAssetPublication
+    with errors():
+        ctx = await context_for(project, user, 'viewer')
+        return {'ok': True, 'data': await asyncio.to_thread(SharedAssetPublication(ctx).inspect_source, canvas_id, node_id)}
+
+
+@router.post('/asset-publications')
+async def publish_shared_asset(project: str, body: dict, user: dict = Depends(get_api_user)):
+    from novelvideo.creation.asset_publication import SharedAssetPublication
+    with errors():
+        ctx = await context_for(project, user, 'editor')
+        return {'ok': True, 'data': await SharedAssetPublication(ctx).publish(body)}
+
+
+@router.get('/asset-publications/{request_id}')
+async def shared_asset_publication_status(project: str, request_id: str, user: dict = Depends(get_api_user)):
+    from novelvideo.creation.asset_publication import SharedAssetPublication
+    with errors():
+        ctx = await context_for(project, user, 'viewer')
+        return {'ok': True, 'data': await asyncio.to_thread(SharedAssetPublication(ctx).status, request_id)}
+
+
 @router.post('/assets/register')
 async def register_asset(project: str, body: dict, user: dict = Depends(get_api_user)):
     with errors():
