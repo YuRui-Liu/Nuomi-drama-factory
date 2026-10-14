@@ -127,6 +127,8 @@ async def test_workflow_alias_reads_and_writes_retained_slot(project):
     workflow = ProductionWorkflowStore(path)
     slot, original = workflow.materialize_legacy_current(slot_id='character:Lin_old:portrait',
         asset_kind='character_portrait', asset_path=str(media))
+    # Workflow was seeded after registration; capture that explicit media change.
+    await adapter.refresh_source(base.base_asset_id, expected_revision=1)
     await source.rename_character('Lin_old', 'Lin_new')
     workflow = ProductionWorkflowStore(path)
     assert workflow.get_slot('character:Lin_new:portrait')[0].current_version_id == original.version_id
@@ -324,6 +326,7 @@ async def test_two_renames_keep_one_slot_and_real_current_consumer(project):
     workflow = ProductionWorkflowStore(path)
     _, original = workflow.materialize_legacy_current(slot_id='character:Lin_old:portrait',
         asset_kind='character_portrait', asset_path=str(media.relative_to(root)))
+    await adapter.refresh_source(base.base_asset_id, expected_revision=1)
     await source.rename_character('Lin_old', 'Lin_middle')
     await source.rename_character('Lin_middle', 'Lin_final')
     workflow = ProductionWorkflowStore(path)
@@ -353,7 +356,9 @@ async def test_unrelated_source_and_workflow_edits_survive_recovery(project, mon
     other = await adapter.register_base('character', 'Other')
     path = Path(source.state_dir) / 'production_workflow.json'
     workflow = ProductionWorkflowStore(path)
+    (Path(source.project_dir) / 'old.png').write_bytes(b'old')
     workflow.materialize_legacy_current(slot_id='character:Lin_old:portrait', asset_kind='character_portrait', asset_path='old.png')
+    await adapter.refresh_source(base.base_asset_id, expected_revision=1)
     def crash(phase):
         if phase == 'sql_committed':
             raise RuntimeError('interrupted')
@@ -363,6 +368,7 @@ async def test_unrelated_source_and_workflow_edits_survive_recovery(project, mon
     await source.update_character('Other', description='independent edit')
     assert adapter.objects.read(other.base_asset_id)['revision'] == 2
     workflow = ProductionWorkflowStore(path)
+    (Path(source.project_dir) / 'other.png').write_bytes(b'other')
     workflow.materialize_legacy_current(slot_id='character:Other:portrait', asset_kind='character_portrait', asset_path='other.png')
     monkeypatch.setattr(asset_rename, '_checkpoint', lambda phase: None)
     await adapter.reconcile_source()
@@ -380,6 +386,9 @@ async def test_character_rename_repaths_declared_identity_media_and_voice(projec
     voice = root / 'assets/characters/Lin_old/voices/default.wav'
     voice.parent.mkdir(parents=True)
     voice.write_bytes(b'audio')
+    # The fixture installs canonical bytes after registration; explicitly
+    # capture that media revision before the metadata/rename under test.
+    await adapter.refresh_source(base.base_asset_id, child.variant_id, expected_revision=1)
     await source.update_character_identity('Lin_old', 'uuid_123_456', portrait_image=str(portrait),
         reference_images=[str(portrait)], reference_audio_path=str(voice.relative_to(root)))
     old_revision = adapter.objects.read(child.variant_id)['revision']
@@ -432,6 +441,7 @@ async def test_identity_rename_copies_portrait_costume_and_retains_versions(proj
     version = portrait.parent / 'coat_old/versions/immutable.png'
     version.parent.mkdir(parents=True)
     version.write_bytes(b'history')
+    await adapter.refresh_source(base.base_asset_id, child.variant_id, expected_revision=1)
     await source.update_character_identity('Lin_old', 'uuid_123_456',
         portrait_image=str(portrait), costume_image=str(costume))
     await source.update_character_identity('Lin_old', 'uuid_123_456', identity_name='coat_new')
@@ -503,8 +513,10 @@ async def _renamed_locator(project, kind):
         base = await adapter.register_base(kind, old)
     suffix = 'portrait' if kind == 'character' else 'base:master'
     workflow = ProductionWorkflowStore(Path(source.state_dir) / 'production_workflow.json')
+    (Path(source.project_dir) / 'original.png').write_bytes(b'original')
     workflow.materialize_legacy_current(slot_id=f'{kind}:{old}:{suffix}',
         asset_kind='character_portrait' if kind == 'character' else 'scene_base', asset_path='original.png')
+    await adapter.refresh_source(base.base_asset_id, expected_revision=1)
     await getattr(source, f'rename_{kind}')(old, new)
     return old, new, base, suffix, workflow
 

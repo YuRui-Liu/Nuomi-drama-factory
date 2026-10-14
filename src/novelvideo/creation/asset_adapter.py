@@ -19,7 +19,8 @@ from novelvideo.utils.derived_scenes import compose_derived_scene_name
 
 from .models import AssetRef
 from .store import ObjectStore, RevisionConflict
-from .asset_sync import SourceSync, fingerprint, publication_source_write, assert_current_available
+from .asset_sync import SourceSync, SourceSyncPending, fingerprint, publication_source_write, assert_current_available
+from .asset_media import MEDIA_KEY, snapshot, compatible_before
 
 
 _CHARACTER_FIELDS = {'age_group', 'appearance_details', 'face_prompt', 'body_type'}
@@ -144,12 +145,10 @@ class AssetAdapter:
             if evidence is None:
                 raise RuntimeError('Legacy publication lacks complete source evidence; manual reconciliation required')
             await self._assert_fresh(base)
-            actual = (await self._source_record(mapping)).model_dump(mode='json')
+            actual = snapshot(self.source, mapping, await self._source_record(mapping))
             before, requested = json.loads(evidence['source_before']), json.loads(evidence['source_requested'])
-            fingerprint = self._source_fingerprint
-            actual_fingerprint = fingerprint(actual)
-            requested_matches = actual_fingerprint == fingerprint(requested)
-            if actual_fingerprint == fingerprint(before):
+            requested_matches = compatible_before(requested, actual)
+            if compatible_before(before, actual):
                 changed = False
             elif requested_matches:
                 changed = True
@@ -172,7 +171,7 @@ class AssetAdapter:
                                      (object_id, revision, json.dumps(actual), self.actor_id, datetime.now(timezone.utc).isoformat()))
                         conn.execute('UPDATE objects SET current_revision=? WHERE id=? AND current_revision=?',
                                      (revision, object_id, expected))
-                elif not (requested_matches and revision == expected + 1 and fingerprint(json.loads(current['payload'])) == actual_fingerprint):
+                elif not (requested_matches and revision == expected + 1 and compatible_before(json.loads(current['payload']), actual)):
                     raise RevisionConflict(object_id, expected, revision)
                 conn.execute('DELETE FROM asset_publication_intents WHERE object_id=?', (object_id,))
                 conn.execute('DELETE FROM asset_publication_evidence WHERE object_id=?', (object_id,))
@@ -219,17 +218,24 @@ class AssetAdapter:
             expected = self._mapping(parent_id)['source_name'] if parent_id else ''
             if record.base_scene_id != expected or (parent_id and not record.variant_id):
                 raise ValueError('Scene must be a state of this same base location')
+        trusted = snapshot(self.source, dict(kind=kind, source_name=source_name, parent_id=parent_id), record)
         with self.objects.transaction() as conn:
             found = conn.execute('SELECT object_id FROM asset_sources WHERE kind=? AND source_name=? AND parent_id=?',
                                  (kind, source_name, parent_id)).fetchone()
         if found:
             obj = self.objects.read(found['object_id'])
+            if fingerprint(obj['payload']) != fingerprint(trusted):
+                if MEDIA_KEY in obj['payload'] or not compatible_before(obj['payload'], trusted):
+                    raise SourceSyncPending('Registered asset drift requires explicit refresh with expected_revision')
+                # Explicit registration may enrich an unchanged legacy flat
+                # snapshot, but cannot acknowledge source or known-media drift.
+                obj = self.objects.update(obj['id'], obj['revision'], trusted, self.actor_id)
         else:
             with self.objects.transaction() as conn:
                 object_id = uuid4().hex
                 conn.execute('INSERT INTO objects (id,kind,current_revision) VALUES (?,?,1)', (object_id, kind))
                 conn.execute('INSERT INTO object_versions VALUES (?,1,?,?,?)',
-                             (object_id, record.model_dump_json(), self.actor_id, datetime.now(timezone.utc).isoformat()))
+                             (object_id, json.dumps(trusted), self.actor_id, datetime.now(timezone.utc).isoformat()))
                 obj = dict(id=object_id, revision=1)
                 conn.execute('INSERT INTO asset_sources VALUES (?, ?, ?, ?)', (obj['id'], kind, source_name, parent_id))
                 conn.execute('UPDATE objects SET base_asset_id=?, variant_id=? WHERE id=?',
@@ -346,11 +352,13 @@ class AssetAdapter:
                 raise ValueError('Scene source relationship changed')
             requested_record = record.__class__.model_validate({**record.model_dump(), **payload})
             previous = {key: getattr(record, key) for key in payload}
+            trusted_before = snapshot(self.source, mapping, record)
+            trusted_requested = snapshot(self.source, mapping, requested_record)
             with self.objects.transaction() as conn:
                 conn.execute('INSERT INTO asset_publication_intents VALUES (?,?,?,?)',
                              (object_id, expected_revision, json.dumps(previous), json.dumps(payload)))
                 conn.execute('INSERT INTO asset_publication_evidence VALUES (?,?,?)',
-                             (object_id, record.model_dump_json(), requested_record.model_dump_json()))
+                             (object_id, json.dumps(trusted_before), json.dumps(trusted_requested)))
             async def write(values):
                 with publication_source_write(self.source.state_dir, object_id):
                     if base['kind'] == 'scene':
@@ -366,7 +374,7 @@ class AssetAdapter:
             try:
                 await write(payload)
                 record = await self._source_record(mapping)
-                obj = self.objects.update(object_id, expected_revision, record.model_dump(mode='json'), self.actor_id)
+                obj = self.objects.update(object_id, expected_revision, snapshot(self.source, mapping, record), self.actor_id)
             except BaseException:
                 # Keep compensation in the owning Task. shield(coroutine)
                 # creates a child Task which cannot reenter the project lock.

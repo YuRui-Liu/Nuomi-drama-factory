@@ -490,6 +490,7 @@ async def review(project: str, name: str, candidate_id: str, body: ReviewRequest
 @router.post(BASE + '/candidates/{candidate_id}/adopt')
 async def adopt(project: str, name: str, candidate_id: str, body: CastingAdoption,
                 identity_id: str | None = None, user: dict = Depends(get_api_user)):
+    from novelvideo.creation.asset_sync import SourceSyncPending
     async with scope(project, name, user, identity_id, editor=True) as (ctx, sql, character):
         owned_candidate(ctx, name, identity_id, candidate_id)
         if body.candidate_id != candidate_id:
@@ -497,6 +498,8 @@ async def adopt(project: str, name: str, candidate_id: str, body: CastingAdoptio
         try:
             result = await adopt_candidate(ctx=ctx, character_id=name, identity_id=identity_id,
                 command=body, actor=ctx.requester_user_id, sqlite_store=sql)
+        except SourceSyncPending as exc:
+            raise HTTPException(409, {'code': 'asset_media_pending', 'message': str(exc)}) from exc
         except ValueError as exc:
             raise HTTPException(503 if 'service unavailable' in str(exc) else 409, str(exc)) from exc
         return {'ok': True, 'data': result}

@@ -397,7 +397,7 @@ def test_adopting_scene_candidate_clears_matching_stale_reference(
 
     class FakeSQLiteStore:
         def __init__(self, *_args, **_kwargs):
-            pass
+            self.state_dir = _kwargs["state_dir"]
 
         async def initialize(self):
             pass

@@ -56,7 +56,7 @@ def fingerprint(payload):
 
 def assert_current_available(conn, object_id):
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    for table in ('asset_source_sync', 'asset_publication_intents'):
+    for table in ('asset_source_sync', 'asset_publication_intents', 'asset_media_publications'):
         if table in tables and conn.execute(f'SELECT 1 FROM {table} WHERE object_id=?', (object_id,)).fetchone():
             raise SourceSyncPending(f'{object_id}: pending asset source reconciliation')
 
@@ -96,7 +96,7 @@ class SourceSync:
         with self.objects.transaction() as conn:
             return [dict(r) for r in conn.execute('SELECT * FROM asset_sources WHERE (? IS NULL OR kind=?)', (kind, kind))]
 
-    async def records(self, mappings, *, all_mappings=None):
+    async def records(self, mappings, *, all_mappings=None, archive=True):
         """Model projections loaded from SQL, never SQLiteStore's character cache."""
         characters = {c.name: c for c in await self.source.list_characters()} if any(m['kind'] == 'character' for m in mappings) else {}
         all_mappings = all_mappings or {m['object_id']: m for m in self.mappings()}
@@ -113,7 +113,8 @@ class SourceSync:
                 parent = all_mappings[mapping['parent_id']]
                 char = characters.get(parent['source_name'])
                 record = next((i for i in char.identities if i.identity_id == mapping['source_name']), None) if char else None
-            records[mapping['object_id']] = record.model_dump(mode='json') if record else None
+            from .asset_media import snapshot
+            records[mapping['object_id']] = snapshot(self.source, mapping, record, archive=archive) if record else None
         return records
 
     async def prepare(self, kind, names=None):
@@ -123,7 +124,9 @@ class SourceSync:
             mappings = [m for m in mappings if
                         (by_id[m['parent_id']]['source_name'] if kind == 'character' and m['parent_id'] else m['source_name']) in names]
         target = publication_target(self.source.state_dir)
-        mappings = [m for m in mappings if m['object_id'] != target]
+        from .asset_media_publication import publication_targets
+        media_targets = publication_targets(self.source.state_dir)
+        mappings = [m for m in mappings if m['object_id'] != target and m['object_id'] not in media_targets]
         if not mappings:
             return None
         with self.objects.transaction() as conn:
@@ -141,7 +144,8 @@ class SourceSync:
         # A pre-existing source drift cannot be quietly folded into a new write.
         for mapping in mappings:
             row = self.entries(token)[mapping['object_id']]
-            if before[mapping['object_id']] is None or fingerprint(json.loads(row['snapshot_before'])) != fingerprint(before[mapping['object_id']]):
+            from .asset_media import compatible_before
+            if before[mapping['object_id']] is None or not compatible_before(json.loads(row['snapshot_before']), before[mapping['object_id']]):
                 raise SourceSyncPending('Source drift before write requires explicit refresh confirmation')
         return token
 
@@ -176,7 +180,8 @@ class SourceSync:
                 proof = entry['source_after']
                 if proof is None:
                     before = fingerprint(json.loads(entry['source_before']))
-                    if fingerprint(payload) != before or fingerprint(json.loads(entry['snapshot_before'])) != before:
+                    from .asset_media import compatible_before
+                    if fingerprint(payload) != before or not compatible_before(json.loads(entry['snapshot_before']), payload):
                         raise SourceSyncPending('Missing post-write source evidence; explicit confirmation required')
                 elif fingerprint(payload) != fingerprint(json.loads(proof)):
                     raise SourceSyncPending('Source drift from recorded evidence; explicit confirmation required')
@@ -186,7 +191,11 @@ class SourceSync:
                 current = ObjectStore._read(conn, object_id, current_revision)
                 if current['payload'] != json.loads(entry['snapshot_before']):
                     raise SourceSyncPending('Snapshot evidence changed')
-                if fingerprint(current['payload']) != fingerprint(payload):
+                from .asset_media import compatible_before
+                changed = fingerprint(current['payload']) != fingerprint(payload)
+                if proof is None and compatible_before(current['payload'], payload):
+                    changed = False  # Abandoning an unchanged failure is not an upgrade.
+                if changed:
                     current_revision += 1
                     conn.execute('INSERT INTO object_versions VALUES (?,?,?,?,?)',
                                  (object_id, current_revision, json.dumps(payload), entry['actor_id'], datetime.now(timezone.utc).isoformat()))
@@ -240,6 +249,9 @@ class SourceSync:
         if actual is None:
             raise SourceSyncPending('Source locator or relationship is missing; cannot confirm refresh')
         with self.objects.transaction() as conn:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE name='asset_media_publications'").fetchone() and conn.execute(
+                    'SELECT 1 FROM asset_media_publications WHERE object_id=?', (object_id,)).fetchone():
+                raise SourceSyncPending('Media publication requires its own reconciliation')
             revision = conn.execute('SELECT current_revision FROM objects WHERE id=?', (object_id,)).fetchone()[0]
             if revision != expected_revision:
                 raise RevisionConflict(object_id, expected_revision, revision)

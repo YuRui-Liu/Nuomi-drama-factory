@@ -109,7 +109,7 @@ def _archive_old_current(workflow, root, canonical, slot_id, previous_bytes):
         workflow.materialize_legacy_current(slot_id=slot_id, asset_kind='character_portrait', asset_path=old.relative_to(root).as_posix())
 
 
-async def adopt_candidate(*, ctx, character_id, identity_id=None, command, actor, sqlite_store=None):
+async def _adopt_candidate(*, ctx, character_id, identity_id=None, command, actor, sqlite_store=None):
     from . import casting_service, casting_source
     from novelvideo.sqlite_store import SQLiteStore
 
@@ -271,4 +271,36 @@ async def adopt_candidate(*, ctx, character_id, identity_id=None, command, actor
         return result
     finally:
         if own_store:
+            await sql.close()
+
+
+async def adopt_candidate(*, ctx, character_id, identity_id=None, command, actor, sqlite_store=None):
+    from novelvideo.production_workflow.coordination import asset_project_lock
+    from novelvideo.creation.asset_media_publication import media_publication
+    from novelvideo.sqlite_store import SQLiteStore
+
+    command = CastingAdoption.model_validate(command)
+    if getattr(ctx, 'effective_role', None) not in {'editor', 'owner', 'admin'}:
+        raise ValueError('editor permission required for casting adoption')
+    if not actor or actor != getattr(ctx, 'requester_user_id', None):
+        raise ValueError('casting actor must match authenticated requester')
+    sql = sqlite_store or SQLiteStore(f'{ctx.owner_username}/{ctx.project_name}',
+        output_dir=str(ctx.output_dir), state_dir=str(ctx.state_dir))
+    try:
+        if sqlite_store is None:
+            await sql.initialize()
+            await sql.load_graph_state()
+        if Path(sql.db_path).absolute() != Path(ctx.state_dir).absolute() / 'data.db':
+            raise ValueError('casting database scope mismatch')
+        async with asset_project_lock(ctx.state_dir):
+            # Finish/undo the native casting transaction before comparing media
+            # evidence, including an idempotent request returning early below.
+            recovery.recover_casting_adoptions(Path(ctx.output_dir).absolute(), Path(ctx.state_dir).absolute())
+            key, digest = _binding(ctx, character_id, identity_id, command, actor)
+            slot = character_portrait_slot_id(character_id) if identity_id is None else character_identity_portrait_slot_id(character_id, identity_id)
+            async with media_publication(sql, [slot], 'casting:' + key + ':' + digest, actor):
+                return await _adopt_candidate(ctx=ctx, character_id=character_id, identity_id=identity_id,
+                                              command=command, actor=actor, sqlite_store=sql)
+    finally:
+        if sqlite_store is None:
             await sql.close()

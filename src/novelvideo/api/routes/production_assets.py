@@ -300,6 +300,24 @@ async def adopt_production_asset_version(
     user: dict = Depends(get_api_user),
 ):
     resolved = await resolve_project_scope(project, user, required_role="editor")
+    from novelvideo.creation.asset_media_publication import media_publication
+    from novelvideo.creation.asset_sync import SourceSyncPending, fingerprint
+    from novelvideo.sqlite_store import SQLiteStore
+    actor = str(getattr(resolved.ctx, 'requester_user_id', None) or user.get('id') or user.get('username') or 'system')
+    source = SQLiteStore(resolved.ctx.owner_project_label, output_dir=str(resolved.project_dir), state_dir=str(resolved.state_dir))
+    request_key = fingerprint({'slot_id': slot_id, 'version_id': version_id, 'body': body.model_dump(), 'actor': actor})
+    try:
+        async with media_publication(source, [slot_id], request_key, actor):
+            return await _adopt_production_asset_version(resolved, slot_id, version_id, body, user)
+    except SourceSyncPending as exc:
+        raise HTTPException(409, {'code': 'asset_media_pending', 'message': str(exc)}) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    finally:
+        await source.close()
+
+
+async def _adopt_production_asset_version(resolved, slot_id, version_id, body, user):
     staged_canonical: tuple[Path, Path] | None = None
     replaced_canonical = False
     with production_workflow_project_lock(resolved.state_dir):
