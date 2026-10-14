@@ -111,6 +111,12 @@ A2b 分两批串行交付：**A2b-1** 可信媒体内容快照、可恢复发布
 - [ ] 库引用记录对象、版本、scope（project/canvas/group/node）、覆盖／解除；显示生效来源，冲突显式提示，变更不自动重生成。
 - [ ] 原任务 7 测试加 `uv run pytest tests/creation/test_asset_adapter.py tests/creation/test_library_references.py -q`，双审提交。
 
+7B 按依赖继续串行交付，产品范围保持上述要求：
+
+1. **固定引用 API 与原子节点投影。** 新增只读浏览／固定版本解析及显式注册接口，沿用项目鉴权；GET 不创建或迁移源库。扩展 `asset.bind` 支持受限节点的新建与已有节点替换，客户端只能提交 ref、媒体槽／角色与布局，媒体 URL 由服务端从固定档案生成。一次 outbox 包含节点、引用和全部相关媒体字段，恢复沿用保存的 patch。保留 `graph.patch` 禁止伪造媒体字段的限制；逐字段 CAS 保护并发编辑，固定历史版本不要求仍为 current。验证幂等、崩溃恢复、3D 多媒体整体写入、非法角色及归档缺失拒绝。
+2. **完整资产中心与画布衔接。** 复用基础／变体编辑器及现有节点，拖放与按钮采用同一领域操作；固定引用绕开读取最新 manifest 的旧 hydration。显示名称／变体，详情展示版本、来源、更新与受影响范围；显式选择更新目标。操作到 applied 才显示成功，失败保留原节点，跨画布迟到响应不得改当前画布。保存共享资产明确基础／变体／新版本。验证两集与自由画布隔离、失败无半节点、旧引用在真实预览及生成输入中保持固定。
+3. **风格／手法作用域。** 新增 `library_references.py` 与 API／界面，复用可信 style snapshot 与 technique catalog 投影，保存固定版本和内容摘要。实现 project → canvas → group → node 的覆盖／解除和生效来源，校验目标存在及归属；冲突与不适用项可见，不静默叠加。配置更新不启动生成，接入 Agent 上下文和真实执行分别由任务 8B／10完成。针对性后端／前端测试并对照现有样式检查 1440×900、1280×720。
+
 ## 任务 8A：Agent 与模板、可扩展对象定义
 
 文件：新增 `creation/{agent_profiles,creative_templates,ontology,creative_constraints}.py`；API `api/routes/creation_library.py`；前端 `creation-workspace/{AgentProfileEditor,TemplateLibrary,ProjectConstraints}.tsx`；各模块对应 tests/creation 测试。
