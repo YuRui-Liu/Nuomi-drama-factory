@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -52,32 +53,7 @@ def _publish_freezone_splat_result(
     result["media_type"] = "file"
 
 
-def _clear_scene_stale_reference_kind(
-    ctx: ProjectContext,
-    project_dir: Path,
-    scene_name: str,
-    kind: str,
-) -> None:
-    """Clear prompt-stale state after a canonical stage asset is replaced."""
-
-    async def clear() -> None:
-        from novelvideo.sqlite_store import SQLiteStore
-
-        store = SQLiteStore(
-            ctx.owner_project_label,
-            output_dir=str(project_dir),
-            state_dir=str(ctx.state_dir),
-        )
-        await store.initialize()
-        try:
-            await store.clear_scene_stale_reference_kind(scene_name, kind)
-        finally:
-            await store.close()
-
-    asyncio.run(clear())
-
-
-def run_stage_asset(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any] | None:
+def _run_stage_asset_unpublished(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any] | None:
     from novelvideo import stage_asset_tasks
     from novelvideo.api.deps import make_static_url_for_context
 
@@ -114,8 +90,10 @@ def run_stage_asset(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, 
         result = stage_asset_tasks.run_splat_collision(
             project_dir,
             scene_name,
-            Path(ply_param) if ply_param else None,
+            ply_path=Path(ply_param) if ply_param else None,
             progress_callback=update,
+            artifact_dir=Path(params['artifact_dir']) if params.get('artifact_dir') else None,
+            update_manifest=bool(params.get('update_manifest', True)),
         )
     elif step == "upload_scene_package":
         result = stage_asset_tasks.upload_scene_package(
@@ -129,6 +107,8 @@ def run_stage_asset(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, 
             project_dir,
             scene_name,
             pano_path=Path(params["pano_path"]) if params.get("pano_path") else None,
+            artifact_dir=Path(params['artifact_dir']) if params.get('artifact_dir') else None,
+            update_manifest=bool(params.get('update_manifest', True)),
             depth_source=params.get("depth_source", "da2"),
             depth_device=params.get("depth_device", "auto"),
             device=params.get("device", "auto"),
@@ -152,6 +132,8 @@ def run_stage_asset(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, 
             scene_name,
             source_kind=params.get("source_kind", "master"),
             image_path=Path(image_path_param) if image_path_param else None,
+            artifact_dir=Path(params['artifact_dir']) if params.get('artifact_dir') else None,
+            update_manifest=bool(params.get('update_manifest', True)),
             face_name=params.get("face_name", "front"),
             depth_meters=float(params.get("depth_meters", 8.0)),
             device=params.get("device", "auto"),
@@ -199,12 +181,6 @@ def run_stage_asset(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, 
         raise ValueError(f"unknown stage_asset step: {step}")
 
     check_cancel()
-    if step in {"pano_from_master", "pano_from_text"} and bool(
-        params.get("update_manifest", True)
-    ):
-        pano_path_text = result.get("pano_path") if isinstance(result, dict) else ""
-        if pano_path_text and Path(str(pano_path_text)).is_file():
-            _clear_scene_stale_reference_kind(ctx, project_dir, scene_name, "pano")
     if isinstance(result, dict):
         pano_path_text = result.get("pano_path") or result.get("output_path")
         if pano_path_text:
@@ -235,6 +211,56 @@ def run_stage_asset(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, 
                 except ValueError:
                     pass
     return result
+
+
+def run_stage_asset(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any] | None:
+    """Keep worker registration synchronous; only preparation/publication await."""
+    from novelvideo.creation.asset_stage_publication import prepare, publish
+    from novelvideo import stage_asset_tasks
+
+    envelope=deepcopy(envelope)
+    payload=envelope.get('payload') or {}
+    root=Path(ctx.output_dir)
+    if Path(payload.get('project_dir') or root).resolve()!=root.resolve():
+        raise ValueError('Stage project_dir does not match trusted project context')
+    step=str(payload['step'])
+    params=dict(payload.get('params') or {})
+    if step not in {'pano_from_master','pano_from_text','pano_sharp','single_face_sharp','splat_collision','upload_scene_package'}:
+        return _run_stage_asset_unpublished(envelope,ctx)
+
+    def check_cancel():
+        raise_if_envelope_cancel_requested(envelope,task_type='stage_asset',scope=envelope.get('scope'))
+
+    async def async_check_cancel():
+        from novelvideo.task_backend.cancel import (
+            _envelope_cancel_fields, is_cancel_requested, raise_if_local_task_stop_requested, TaskCancelled,
+        )
+        fields=_envelope_cancel_fields(envelope,task_type='stage_asset',scope=envelope.get('scope'))
+        raise_if_local_task_stop_requested(fields['task_id'])
+        remaining_timeout_seconds(envelope,default_seconds=None)
+        if fields['task_id'] and await is_cancel_requested(**fields):raise TaskCancelled()
+
+    check_cancel()
+    plan=asyncio.run(prepare(ctx,str(payload['scene_name']),step,params,async_check_cancel))
+    check_cancel()
+    if step=='upload_scene_package':
+        prepared=stage_asset_tasks.prepare_scene_package(Path(plan.params['src_asset']),plan.frozen_root/'output')
+        result={'prepared_path':str(prepared)}
+    else:
+        generated=deepcopy(envelope)
+        generated['payload'].update(project_dir=str(plan.frozen_root),scene_name=plan.scene.name,params=plan.params)
+        result=_run_stage_asset_unpublished(generated,ctx)
+    check_cancel()
+    if not params.get('update_manifest',True):
+        from novelvideo.api.deps import make_static_url_for_context
+        path=Path(result.get('ply_path') or result.get('pano_path') or result.get('collision_glb_path') or result['prepared_path'])
+        url=make_static_url_for_context(ctx,path.relative_to(root).as_posix())
+        result.update(ok=True,output_url=url,url=url,manifest_updated=False)
+        for key in ('ply_url','splat_url','image_url'):
+            if key in result:result[key]=url
+        result.pop('manifest_patch',None)
+        return result
+    return asyncio.run(publish(ctx,plan,step,result,async_check_cancel))
 
 
 register_project_task_runner("stage_asset", run_stage_asset)
@@ -328,6 +354,7 @@ def run_freezone_image_to_3gs(
 
     check_cancel()
     if isinstance(result, dict):
+        result.pop("manifest_patch", None)
         result["job_id"] = job_id
         result["scene_id"] = scene_id
         result["source_kind"] = source_kind

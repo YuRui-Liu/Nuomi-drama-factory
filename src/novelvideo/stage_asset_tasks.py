@@ -436,6 +436,9 @@ def run_splat_collision(
     scene_id: str,
     ply_path: Path | None = None,
     progress_callback: Callable[[float, str], None] | None = None,
+    *,
+    artifact_dir: Path | None = None,
+    update_manifest: bool = True,
 ) -> dict[str, Any]:
     """Run `splat-transform -K <ply> <out>.voxel.json` to produce a collision GLB.
 
@@ -443,7 +446,7 @@ def run_splat_collision(
     We glob the output dir for `*.collision.glb` afterwards because the exact
     filename is determined by the CLI, not us.
     """
-    out_dir = stage_manifest.stage_dir(project_dir, scene_id)
+    out_dir = Path(artifact_dir) if artifact_dir is not None else stage_manifest.stage_dir(project_dir, scene_id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if ply_path is None:
@@ -601,9 +604,7 @@ def run_splat_collision(
     collision_glb = sorted(glbs, key=lambda p: p.stat().st_mtime, reverse=True)[0]
 
     voxel_name = voxel_out.name if voxel_out.exists() else None
-    stage_manifest.update_manifest(
-        project_dir,
-        scene_id,
+    manifest_patch = dict(
         collision_glb_path=collision_glb.name,
         voxel_json_path=voxel_name,
         splat_transform_args={
@@ -615,6 +616,8 @@ def run_splat_collision(
             "voxel_carve": selected_profile["voxel_carve"],
         },
     )
+    if update_manifest:
+        stage_manifest.update_manifest(project_dir, scene_id, **manifest_patch)
 
     for _, archived in archived_glbs:
         try:
@@ -628,6 +631,7 @@ def run_splat_collision(
             pass
 
     return {
+        "manifest_patch": manifest_patch,
         "ok": True,
         "collision_glb_path": str(collision_glb),
         "voxel_json_path": str(voxel_out) if voxel_out.exists() else None,
@@ -833,53 +837,53 @@ def run_pano_sharp(
         archived_sog = None
 
     report(0.90, f"{dest_sog.name} 已写入 3GS 资产包")
-    if update_manifest:
-        existing_source = (stage_manifest.load_manifest(project_dir, scene_id) or {}).get("source")
-        manifest_source = (
-            existing_source
-            if existing_source in {"uploaded_360", "uploaded_master", "text_to_360"}
-            else "uploaded_360"
-        )
-        stage_manifest.update_manifest(
-            project_dir,
-            scene_id,
-            clear_fields=[
-                "collision_glb_path",
-                "voxel_json_path",
-                "splat_transform_args",
-            ],
-            ply_path=dest_sog.name,
-            pano_ply_path=dest_sog.name,
-            pano_depth_ply_path=(dest_sog.name if geometry_mode == "pano-depth" else None),
-            source=manifest_source,
-            pano_sharp_args={
-                "script": "novelvideo.director_world.pano_sharp",
-                "geometry_mode": geometry_mode,
-                "depth_source": depth_source,
-                "depth_device": depth_device,
-                "device": device,
-                "face_size": face_size,
-                "internal_size": internal_size,
-                "max_gaussians_per_face": max_gaussians_per_face,
-                "pano_depth_width": int(pano_depth_width),
-                "pano_depth_radius_scale": float(pano_depth_radius_scale),
-                "pano_depth_point_scale": float(pano_depth_point_scale),
-                "pano_depth_min_scale": float(pano_depth_min_scale),
-                "pano_depth_max_scale": float(pano_depth_max_scale),
-                "pano_depth_opacity": float(pano_depth_opacity),
-                "global_depth_align": geometry_mode == "sharp",
-                "global_depth_warp_strength": 1.0 if geometry_mode == "sharp" else None,
-                "front_yaw_deg": front_yaw_deg,
-                "sphere_correction_deg": {
-                    "yaw": sphere_yaw_deg,
-                    "pitch": sphere_pitch_deg,
-                    "roll": sphere_roll_deg,
-                },
-                "run_dir": str(run_dir),
+    existing_source = (stage_manifest.load_manifest(project_dir, scene_id) or {}).get("source")
+    manifest_source = (
+        existing_source
+        if existing_source in {"uploaded_360", "uploaded_master", "text_to_360"}
+        else "uploaded_360"
+    )
+    manifest_patch = dict(
+        clear_fields=[
+            "collision_glb_path",
+            "voxel_json_path",
+            "splat_transform_args",
+        ],
+        ply_path=dest_sog.name,
+        pano_ply_path=dest_sog.name,
+        pano_depth_ply_path=dest_sog.name if geometry_mode == "pano-depth" else None,
+        source=manifest_source,
+        pano_sharp_args={
+            "script": "novelvideo.director_world.pano_sharp",
+            "geometry_mode": geometry_mode,
+            "depth_source": depth_source,
+            "depth_device": depth_device,
+            "device": device,
+            "face_size": face_size,
+            "internal_size": internal_size,
+            "max_gaussians_per_face": max_gaussians_per_face,
+            "pano_depth_width": int(pano_depth_width),
+            "pano_depth_radius_scale": float(pano_depth_radius_scale),
+            "pano_depth_point_scale": float(pano_depth_point_scale),
+            "pano_depth_min_scale": float(pano_depth_min_scale),
+            "pano_depth_max_scale": float(pano_depth_max_scale),
+            "pano_depth_opacity": float(pano_depth_opacity),
+            "global_depth_align": geometry_mode == "sharp",
+            "global_depth_warp_strength": 1.0 if geometry_mode == "sharp" else None,
+            "front_yaw_deg": front_yaw_deg,
+            "sphere_correction_deg": {
+                "yaw": sphere_yaw_deg,
+                "pitch": sphere_pitch_deg,
+                "roll": sphere_roll_deg,
             },
-        )
+            "run_dir": str(run_dir),
+        },
+    )
+    if update_manifest:
+        stage_manifest.update_manifest(project_dir, scene_id, **manifest_patch)
 
     return {
+        "manifest_patch": manifest_patch,
         "ok": True,
         "scene_id": scene_id,
         "pano_path": str(pano_path),
@@ -1048,22 +1052,22 @@ def run_single_face_sharp(
         "max_gaussians_per_face": int(max_gaussians_per_face),
         "run_dir": str(run_dir),
     }
+    manifest_patch = dict(
+        clear_fields=[
+            "collision_glb_path",
+            "voxel_json_path",
+            "splat_transform_args",
+        ],
+        ply_path=dest_sog.name,
+        source=manifest_source,
+        single_face_sharp_args=args_payload,
+        **{path_field: dest_sog.name, args_field: args_payload},
+    )
     if update_manifest:
-        stage_manifest.update_manifest(
-            project_dir,
-            scene_id,
-            clear_fields=[
-                "collision_glb_path",
-                "voxel_json_path",
-                "splat_transform_args",
-            ],
-            ply_path=dest_sog.name,
-            source=manifest_source,
-            single_face_sharp_args=args_payload,
-            **{path_field: dest_sog.name, args_field: args_payload},
-        )
+        stage_manifest.update_manifest(project_dir, scene_id, **manifest_patch)
 
     return {
+        "manifest_patch": manifest_patch,
         "ok": True,
         "scene_id": scene_id,
         "image_path": str(image_path),
@@ -1414,40 +1418,46 @@ def run_scene_360(
             0.90,
             "pano_360.png 已写入 3GS 资产包" if update_manifest else "360 全景候选已写入画布输出",
         )
+        # Optional analyzers may be unavailable. Do not persist nonexistent
+        # paths as provenance for a successfully generated panorama.
+        if spatial_contract_path and not Path(spatial_contract_path).is_file():
+            spatial_contract_path = ""
+        if overlap_analysis_path and not Path(overlap_analysis_path).is_file():
+            overlap_analysis_path = ""
+        manifest_patch = dict(
+            clear_fields=[
+                "ply_path",
+                "pano_ply_path",
+                "collision_glb_path",
+                "voxel_json_path",
+                "pano_sharp_args",
+                "single_face_sharp_args",
+                "splat_transform_args",
+            ],
+            pano_path=pano_path.name,
+            source=manifest_source,
+            scene_360_args={
+                "provider": provider,
+                "model": resolved_model,
+                "style": style,
+                "image_size": image_size,
+                "quality": quality,
+                "source": source,
+                "topology": "master_reverse_safe_side_seam" if pano_correction_payload else "",
+                "master_path": master_path,
+                "reverse_master_path": reverse_master_path,
+                "spatial_contract_path": spatial_contract_path,
+                "spatial_contract_model": (
+                    spatial_contract_model if spatial_contract_path else ""
+                ),
+                "overlap_analysis_path": overlap_analysis_path,
+            },
+            pano_correction=pano_correction_payload,
+        )
         if update_manifest:
-            stage_manifest.update_manifest(
-                project_dir,
-                scene_id,
-                clear_fields=[
-                    "ply_path",
-                    "pano_ply_path",
-                    "collision_glb_path",
-                    "voxel_json_path",
-                    "pano_sharp_args",
-                    "single_face_sharp_args",
-                    "splat_transform_args",
-                ],
-                pano_path=pano_path.name,
-                source=manifest_source,
-                scene_360_args={
-                    "provider": provider,
-                    "model": resolved_model,
-                    "style": style,
-                    "image_size": image_size,
-                    "quality": quality,
-                    "source": source,
-                    "topology": "master_reverse_safe_side_seam" if pano_correction_payload else "",
-                    "master_path": master_path,
-                    "reverse_master_path": reverse_master_path,
-                    "spatial_contract_path": spatial_contract_path,
-                    "spatial_contract_model": (
-                        spatial_contract_model if spatial_contract_path else ""
-                    ),
-                    "overlap_analysis_path": overlap_analysis_path,
-                },
-                pano_correction=pano_correction_payload,
-            )
+            stage_manifest.update_manifest(project_dir, scene_id, **manifest_patch)
         result = {
+            "manifest_patch": manifest_patch,
             "ok": True,
             "scene_id": scene_id,
             "pano_path": str(pano_path),

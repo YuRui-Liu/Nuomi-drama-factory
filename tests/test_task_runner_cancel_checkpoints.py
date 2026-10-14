@@ -15,7 +15,28 @@ class _FakeTaskManager:
 
 
 def _ctx(tmp_path: Path):
-    return SimpleNamespace(project_id="proj_cancel", output_dir=tmp_path)
+    return SimpleNamespace(project_id="proj_cancel", output_dir=tmp_path,
+                           state_dir=tmp_path/'state',owner_project_label='test/project',requester_user_id='owner')
+
+
+def _seed_stage(tmp_path, monkeypatch):
+    import asyncio
+    from novelvideo.sqlite_store import SQLiteStore
+    from novelvideo.models import NovelScene
+    from novelvideo.director_world import stage_manifest
+
+    async def seed():
+        store=SQLiteStore('test/project',output_dir=str(tmp_path),state_dir=str(tmp_path/'state'))
+        await store.initialize()
+        await store.add_scene(NovelScene(name='Hall'))
+        await store.close()
+    asyncio.run(seed())
+    directory=stage_manifest.stage_dir(tmp_path,'Hall');directory.mkdir(parents=True,exist_ok=True)
+    (directory/'pano_360.png').write_bytes(b'pano')
+    stage_manifest.update_manifest(tmp_path,'Hall',pano_path='pano_360.png')
+    (tmp_path/'package.sog').write_bytes(b'package')
+    async def not_cancelled(**kwargs):return False
+    monkeypatch.setattr('novelvideo.task_backend.cancel.is_cancel_requested',not_cancelled)
 
 
 def _write_beat_video(project_dir: Path, episode: int, beat_num: int) -> None:
@@ -27,19 +48,22 @@ def _write_beat_video(project_dir: Path, episode: int, beat_num: int) -> None:
 def test_stage_asset_checks_cancel_after_local_runner_returns(tmp_path, monkeypatch):
     from novelvideo.task_backend.runners import stage_asset
 
-    check_count = 0
+    _seed_stage(tmp_path,monkeypatch)
+    generation_finished = False
 
     def fake_check(*_args, **_kwargs):
-        nonlocal check_count
-        check_count += 1
-        if check_count >= 2:
+        if generation_finished:
             raise TaskCancelled()
+
+    def prepare(src, output):
+        nonlocal generation_finished
+        generation_finished=True
+        return src
 
     monkeypatch.setattr(stage_asset, "raise_if_envelope_cancel_requested", fake_check)
     monkeypatch.setattr(stage_asset, "get_task_manager", lambda: _FakeTaskManager())
     monkeypatch.setattr(
-        "novelvideo.stage_asset_tasks.upload_scene_package",
-        lambda *_args, **_kwargs: {"ok": True},
+        "novelvideo.stage_asset_tasks.prepare_scene_package", prepare,
     )
 
     with pytest.raises(TaskCancelled):
@@ -51,7 +75,7 @@ def test_stage_asset_checks_cancel_after_local_runner_returns(tmp_path, monkeypa
                 "payload": {
                     "scene_name": "Hall",
                     "step": "upload_scene_package",
-                    "params": {"src_asset": str(tmp_path / "package.zip")},
+                    "params": {"src_asset": str(tmp_path / "package.sog")},
                     "project_dir": str(tmp_path),
                 },
             },
@@ -106,12 +130,14 @@ def test_stage_asset_caps_local_runner_timeout_to_task_deadline(tmp_path, monkey
     import time
 
     from novelvideo.task_backend.runners import stage_asset
+    _seed_stage(tmp_path,monkeypatch)
 
     captured: dict[str, int] = {}
 
     def fake_run_pano_sharp(*_args, **kwargs):
         captured["timeout_seconds"] = kwargs["timeout_seconds"]
-        return {"ok": True}
+        output=Path(kwargs['artifact_dir'])/'pano_depth.sog';output.parent.mkdir(parents=True);output.write_bytes(b'model')
+        return {"ok": True,"ply_path":str(output),"manifest_patch":{"ply_path":output.name}}
 
     monkeypatch.setattr(stage_asset, "get_task_manager", lambda: _FakeTaskManager())
     monkeypatch.setattr(stage_asset, "raise_if_envelope_cancel_requested", lambda *_args, **_kwargs: None)
@@ -139,9 +165,11 @@ def test_stage_asset_caps_local_runner_timeout_to_task_deadline(tmp_path, monkey
 
 def test_stage_asset_pano_generation_clears_stale_prompt_reference(tmp_path, monkeypatch):
     from novelvideo.task_backend.runners import stage_asset
+    from novelvideo.sqlite_store import SQLiteStore
+    _seed_stage(tmp_path,monkeypatch)
 
     pano = tmp_path / "director_worlds" / "Hall" / "v1" / "pano_360.png"
-    pano.parent.mkdir(parents=True)
+    pano.parent.mkdir(parents=True,exist_ok=True)
     pano.write_bytes(b"pano")
     cleared: list[tuple[str, str]] = []
 
@@ -151,19 +179,19 @@ def test_stage_asset_pano_generation_clears_stale_prompt_reference(tmp_path, mon
         "raise_if_envelope_cancel_requested",
         lambda *_args, **_kwargs: None,
     )
-    monkeypatch.setattr(
-        "novelvideo.stage_asset_tasks.run_scene_360",
-        lambda *_args, **_kwargs: {"pano_path": str(pano)},
-    )
+    def generate(*args,**kwargs):
+        output=Path(kwargs['artifact_dir'])/'pano_360.png';output.parent.mkdir(parents=True);output.write_bytes(b'new pano')
+        return {"pano_path":str(output),"manifest_patch":{"pano_path":output.name}}
+    monkeypatch.setattr('novelvideo.stage_asset_tasks.run_scene_360',generate)
     monkeypatch.setattr(
         "novelvideo.api.deps.make_static_url_for_context",
         lambda _ctx, rel: f"/static/{rel}",
     )
-    monkeypatch.setattr(
-        stage_asset,
-        "_clear_scene_stale_reference_kind",
-        lambda _ctx, _project_dir, name, kind: cleared.append((name, kind)),
-    )
+    original=SQLiteStore.clear_scene_stale_reference_kind
+    async def clear(store,name,kind):
+        cleared.append((name,kind))
+        return await original(store,name,kind)
+    monkeypatch.setattr(SQLiteStore,'clear_scene_stale_reference_kind',clear)
 
     stage_asset.run_stage_asset(
         {
