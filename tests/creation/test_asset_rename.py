@@ -34,6 +34,8 @@ async def test_character_rename_retains_identity_and_fixed_history(project):
     old = Path(source.project_dir) / 'assets/characters/Lin_old/identities/coat_old.png'
     old.parent.mkdir(parents=True)
     old.write_bytes(b'old immutable image')
+    # The now-supported legacy sheet was installed after semantic registration.
+    await adapter.refresh_source(base.base_asset_id, child.variant_id, expected_revision=1)
     await source.rename_character('Lin_old', 'Lin_new')
     char = source.get_character('Lin_new')
     assert char.identities[0].identity_id == 'uuid_123_456'
@@ -46,7 +48,7 @@ async def test_character_rename_retains_identity_and_fixed_history(project):
     assert ep.identity_default_map == {'Lin_new': 'uuid_123_456'}
     assert (await adapter.resolve(base))['payload']['name'] == 'Lin_old'
     assert adapter.objects.read(base.base_asset_id)['payload']['name'] == 'Lin_new'
-    assert adapter.objects.read(child.variant_id)['revision'] == 2
+    assert adapter.objects.read(child.variant_id)['revision'] == 3
 
 
 async def test_identity_rename_uses_stored_name_and_preserves_uuid(project):
@@ -54,6 +56,7 @@ async def test_identity_rename_uses_stored_name_and_preserves_uuid(project):
     old = Path(source.project_dir) / 'assets/characters/Lin_old/identities/coat_old.png'
     old.parent.mkdir(parents=True)
     old.write_bytes(b'image')
+    await adapter.refresh_source(base.base_asset_id, child.variant_id, expected_revision=1)
     await source.update_character_identity('Lin_old', 'uuid_123_456', identity_name='coat_new')
     assert source.get_character('Lin_old').identities[0].identity_id == 'uuid_123_456'
     assert old.exists() and old.with_name('coat_new.png').read_bytes() == b'image'

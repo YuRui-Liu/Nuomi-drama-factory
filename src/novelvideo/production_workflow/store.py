@@ -500,6 +500,19 @@ class ProductionWorkflowStore:
         return slot, versions, event
 
     @_canonical_slot
+    def clear_current(self, *, slot_id: str) -> bool:
+        """Explicitly clear a slot without deleting versions or adoption history."""
+        slot = self._slots.get(slot_id)
+        if slot is None or slot.current_version_id is None:
+            return False
+        current = self._versions.get(slot.current_version_id)
+        if current is not None:
+            self._versions[current.version_id] = current.model_copy(update={'adoption_status': AdoptionStatus.SUPERSEDED})
+        self._slots[slot_id] = slot.model_copy(update={'current_version_id': None})
+        self._save()
+        return True
+
+    @_canonical_slot
     def delete_version(
         self,
         *,

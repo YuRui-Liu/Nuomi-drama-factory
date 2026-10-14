@@ -17,6 +17,60 @@ from .store import ObjectStore, RevisionConflict
 _owner = ContextVar('asset_media_publication_owner', default=None)
 
 
+@asynccontextmanager
+async def character_media_publication(project_dir, state_dir, name, identity_id=None, *, actor='character-media', publish=True, expected=None, input_character=None):
+    """Enter before native synchronous locks, after provider generation finishes."""
+    from novelvideo.sqlite_store import SQLiteStore
+    from novelvideo.utils.safe_paths import validate_path_segment
+    from .asset_media import controlled_path
+    from .asset_rename import assert_asset_locators_writable, assert_no_pending_rename
+
+    # Capture the caller's actual inputs before waiting for another publisher.
+    input_fingerprint = fingerprint(input_character.model_dump(mode='json')) if input_character is not None else None
+    source = None
+    try:
+        async with asset_project_lock(state_dir):
+            validate_path_segment(name, label='character name')
+            controlled_path(project_dir, Path('assets/characters') / name)
+            if not (Path(state_dir) / 'data.db').is_file() and not (Path(state_dir) / 'creation/objects.sqlite3').is_file():
+                yield  # Legacy media-only workspace; never bootstrap SQL/creation.
+                return
+            source = SQLiteStore('character-media', output_dir=str(project_dir), state_dir=str(state_dir))
+            if Path(source.db_path).is_file():
+                assert_no_pending_rename(source, kind='character', names={name})
+                assert_asset_locators_writable(source, 'character', [name])
+            if not publish or expected is not None or input_fingerprint is not None:
+                from .asset_media import snapshot
+                characters = await source.list_characters()
+                character = next((c for c in characters if c.name == name), None)
+                if input_fingerprint is not None and input_fingerprint != fingerprint(character.model_dump(mode='json') if character else None):
+                    raise ValueError('Character generation input changed before preflight; reload and retry')
+                frozen = {'base': snapshot(source, {'kind':'character', 'parent_id':''}, character, archive=False)} if character else {}
+                identity = next((i for i in character.identities if i.identity_id == identity_id), None) if character else None
+                if identity:
+                    frozen['identity'] = snapshot(source, {'kind':'character', 'parent_id':'base'}, identity, archive=False)
+                from novelvideo.character_visual import CharacterVisualWorkspaceStore
+                visual_path = CharacterVisualWorkspaceStore(project_dir, state_dir=state_dir).path
+                # Read evidence without the visual getter's recovery side effects.
+                visual = (json.loads(visual_path.read_text()).get(name) or {}) if visual_path.is_file() else {}
+                frozen['visual'] = {
+                    'visual_bible': visual.get('visual_bible'),
+                    'identity_visual_bible': (visual.get('identity_visual_bibles') or {}).get(identity_id) if identity_id else None,
+                }
+                frozen = {key: fingerprint(value) for key, value in frozen.items()}
+                if expected is not None and frozen != expected:
+                    raise ValueError('Character media/source changed during generation; generated result was not published')
+            if not publish:
+                yield frozen
+                return
+            slot = f'character:{name}:state:{identity_id}' if identity_id else f'character:{name}:portrait'
+            async with media_publication(source, [slot], 'character-media:' + uuid4().hex, actor):
+                yield
+    finally:
+        if source is not None:
+            await source.close()
+
+
 def publication_targets(state_dir):
     owner = _owner.get()
     if owner and owner[:2] == (asyncio.current_task(), Path(state_dir).resolve()):

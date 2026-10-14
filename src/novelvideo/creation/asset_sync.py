@@ -45,6 +45,31 @@ def fingerprint(payload):
     if payload is None:
         return 'null'
     normalized = {k: v for k, v in payload.items() if k != 'updated_at'}
+    if isinstance(normalized.get('_media'), list):
+        # Presentation fields are derived from the retained version/canonical
+        # evidence. Older persisted snapshots and after proofs omit them.
+        media = []
+        for item in normalized['_media']:
+            item = dict(item)
+            actual = item.get('canonical_blob') or item.get('blob')
+            if item.get('current_blob') == actual:
+                item.pop('current_blob', None)
+            presentation = item.get('current_source')
+            # Strip only values exactly derivable from retained evidence;
+            # contradictions and unknown future source facts stay comparable.
+            if isinstance(actual, dict) and isinstance(item.get('blob'), dict):
+                overridden = actual.get('sha256') != item['blob'].get('sha256')
+                expected = {
+                    'kind': 'canonical_override' if overridden else ('workflow' if item.get('workflow_persisted') else 'legacy_canonical'),
+                    'path': actual.get('path'),
+                    'source_attempt_id': None if overridden else item.get('source_attempt_id'),
+                }
+                if presentation == expected:
+                    item.pop('current_source', None)
+            if item.get('canonical_blob') is None:
+                item.pop('canonical_blob', None)
+            media.append(item)
+        normalized['_media'] = media
     for key, value in normalized.items():
         if key == 'voice_facts_json':
             from novelvideo.character_voice_facts import VoiceFacts

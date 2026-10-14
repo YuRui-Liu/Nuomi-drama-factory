@@ -80,6 +80,26 @@ async def test_registration_captures_provisional_not_candidate_and_freezes_same_
     assert media(adapter, base, 1) == [first]
 
 
+async def test_scene_workflow_canonical_layout_keeps_actual_current_bytes(media_project):
+    source, adapter = media_project
+    root = Path(source.project_dir)
+    canonical = root / 'director_worlds/Hall/v1/master.png'
+    canonical.parent.mkdir(parents=True)
+    canonical.write_bytes(b'actual canonical')
+    candidate(source, 'scene:Hall:base:master', content=b'version', provisional=True,
+              kind='scene_base', canonical=canonical.relative_to(root).as_posix())
+    scene = await adapter.register_base('scene', 'Hall')
+    first = media(adapter, scene)[0]
+    assert (root / first['blob']['path']).read_bytes() == b'version'
+    assert first['current_blob'] == first['canonical_blob']
+    assert (root / first['current_blob']['path']).read_bytes() == b'actual canonical'
+    canonical.write_bytes(b'replacement')
+    await adapter.refresh_source(scene.base_asset_id, expected_revision=1)
+    assert (root / media(adapter, scene)[0]['current_blob']['path']).read_bytes() == b'replacement'
+    assert media(adapter, scene, 1) == [first]
+    assert (root / first['current_blob']['path']).read_bytes() == b'actual canonical'
+
+
 async def test_precise_base_variant_and_scene_ownership(media_project):
     source, adapter = media_project
     for slot, kind, version in [('character:Lin:portrait','character_portrait','base'),
@@ -100,10 +120,10 @@ async def test_precise_base_variant_and_scene_ownership(media_project):
 async def test_actual_production_adoption_advances_snapshot_and_replay_does_not(media_project, monkeypatch):
     source, adapter = media_project
     candidate(source, version='before', content=b'old', provisional=True)
-    base = await adapter.register_base('character', 'Lin')
     canonical = Path(source.project_dir) / 'assets/characters/Lin/portrait.png'
     canonical.parent.mkdir(parents=True)
     canonical.write_bytes(b'old')
+    base = await adapter.register_base('character', 'Lin')
     candidate(source, canonical='assets/characters/Lin/portrait.png')
     assert (await adopt_production(source, monkeypatch, 'character:Lin:portrait', 'candidate'))['ok']
     assert adapter.objects.read(base.base_asset_id)['revision'] == 2

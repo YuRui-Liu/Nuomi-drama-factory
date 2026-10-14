@@ -30,12 +30,20 @@ async def _assess(envelope, ctx):
 def run_character_qc(envelope, ctx):
     report = asyncio.run(_assess(envelope, ctx))
     raise_if_envelope_cancel_requested(envelope, task_type="identity_sheet_qc")
+    return asyncio.run(_publish(envelope, ctx, report))
+
+
+async def _publish(envelope, ctx, report):
+    from novelvideo.creation.asset_media_publication import character_media_publication
     payload = envelope["payload"]
-    with production_workflow_project_lock(ctx.state_dir):
-        raise_if_envelope_cancel_requested(envelope, task_type="identity_sheet_qc")
-        return publish_recheck(ctx, target=payload["target"], report=report,
-                               fingerprint=payload["fingerprint"], route=payload["qc_route"],
-                               actor=str(ctx.requester_user_id or "system"))
+    target = payload['target']
+    async with character_media_publication(ctx.output_dir, ctx.state_dir, target['character_name'], target['identity_id'],
+                                           actor=str(ctx.requester_user_id or 'system')):
+        with production_workflow_project_lock(ctx.state_dir):
+            raise_if_envelope_cancel_requested(envelope, task_type="identity_sheet_qc")
+            return publish_recheck(ctx, target=target, report=report,
+                                   fingerprint=payload["fingerprint"], route=payload["qc_route"],
+                                   actor=str(ctx.requester_user_id or "system"))
 
 
 register_project_task_runner("identity_sheet_qc", run_character_qc, text_task_role="identity_sheet_qc")

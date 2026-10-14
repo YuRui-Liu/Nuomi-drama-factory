@@ -122,7 +122,7 @@ def owns_slot(mapping, record, slot_id):
     if mapping['kind'] == 'character':
         if mapping['parent_id']:
             name, identity = record['character_name'], record['identity_id']
-            return slot_id in {f'character:{name}:identity:{identity}:portrait', f'character:{name}:state:{identity}'}
+            return slot_id in {f'character:{name}:identity:{identity}:portrait', f'character:{name}:state:{identity}', f'character:{name}:identity:{identity}:costume'}
         return slot_id == f"character:{record['name']}:portrait"
     if mapping['kind'] == 'scene':
         prefix = (f"scene:{record['base_scene_id']}:state:{record['name']}:" if mapping['parent_id']
@@ -149,27 +149,34 @@ def snapshot(source, mapping, record, *, archive=True):
         currents.append((slot, current, True))
     # Existing canonical media can predate the sidecar. Its read-only legacy
     # view is provisional, never invented as an explicit adoption or candidate.
-    legacy = None
+    legacy = []
     if mapping['kind'] == 'character':
         if mapping['parent_id']:
-            from novelvideo.utils.path_resolver import canonical_identity_portrait_path
-            slot_id = f"character:{payload['character_name']}:identity:{payload['identity_id']}:portrait"
-            path = canonical_identity_portrait_path(
-                Path(source.project_dir), payload['character_name'], payload['identity_name'])
+            from novelvideo.utils.path_resolver import canonical_identity_portrait_path, canonical_identity_path, canonical_identity_costume_path, compute_identity_portrait_path
+            name, identity = payload['character_name'], payload['identity_id']
+            for slot_id, kind, path in (
+                (f'character:{name}:identity:{identity}:portrait', 'character_portrait', canonical_identity_portrait_path),
+                (f'character:{name}:state:{identity}', 'character_state', canonical_identity_path),
+                (f'character:{name}:identity:{identity}:costume', 'character_state', canonical_identity_costume_path),
+            ):
+                value = path(Path(source.project_dir), name, payload['identity_name'])
+                if path is canonical_identity_portrait_path:
+                    value = compute_identity_portrait_path(Path(source.project_dir), name, payload['identity_name']) or value
+                legacy.append((slot_id, kind, value))
         else:
-            slot_id = f"character:{payload['name']}:portrait"
-            path = Path('assets/characters') / payload['name'] / 'portrait.png'
-        legacy = (slot_id, 'character_portrait', path)
+            legacy.append((f"character:{payload['name']}:portrait", 'character_portrait',
+                           Path('assets/characters') / payload['name'] / 'portrait.png'))
     elif mapping['kind'] == 'scene':
         slot_id = (f"scene:{payload['base_scene_id']}:state:{payload['name']}:master" if mapping['parent_id']
                    else f"scene:{payload['name']}:base:master")
-        path = Path('assets/scenes') / payload['name'] / 'master.png'
-        legacy = (slot_id, 'scene_state' if mapping['parent_id'] else 'scene_base', path)
-    if legacy and legacy[0] not in {s.slot_id for s in slots}:
-        path = controlled_path(source.project_dir, legacy[2])
-        if path.exists():
-            slot, current = workflow.read_legacy_current(slot_id=legacy[0], asset_kind=legacy[1],
-                                                         asset_path=path.relative_to(Path(source.project_dir).absolute()).as_posix())
+        legacy.append((slot_id, 'scene_state' if mapping['parent_id'] else 'scene_base',
+                       Path('assets/scenes') / payload['name'] / 'master.png'))
+    layouts = {slot_id: path for slot_id, _, path in legacy}
+    for slot_id, kind, value in legacy:
+        path = controlled_path(source.project_dir, value)
+        if slot_id not in {s.slot_id for s in slots if s.current_version_id} and path.exists():
+            slot, current = workflow.read_legacy_current(slot_id=slot_id, asset_kind=kind,
+                asset_path=path.relative_to(Path(source.project_dir).absolute()).as_posix())
             currents.append((slot, current, False))
     for slot, current, persisted in sorted(currents, key=lambda row: row[0].slot_id):
         metadata = current.generation_metadata or {}
@@ -179,10 +186,19 @@ def snapshot(source, mapping, record, *, archive=True):
                 'workflow_persisted': persisted,
                 'source_path': current.asset_path,
                 'blob': capture_blob(source.project_dir, current.asset_path, archive=archive)}
-        canonical = metadata.get('canonical_path')
+        canonical = (layouts.get(slot.slot_id) or metadata.get('canonical_path')
+                     if mapping['kind'] == 'character'
+                     else metadata.get('canonical_path') or layouts.get(slot.slot_id))
         if canonical:
             path = controlled_path(source.project_dir, canonical)
             item['canonical_blob'] = capture_blob(source.project_dir, path, archive=archive) if path.exists() else None
+        item['current_blob'] = item.get('canonical_blob') or item['blob']
+        overridden = item['current_blob']['sha256'] != item['blob']['sha256']
+        item['current_source'] = {
+            'kind': 'canonical_override' if overridden else ('workflow' if persisted else 'legacy_canonical'),
+            'path': item['current_blob']['path'],
+            'source_attempt_id': None if overridden else current.source_attempt_id,
+        }
         evidence.append(item)
     payload[MEDIA_KEY] = evidence
     return payload

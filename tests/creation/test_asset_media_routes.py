@@ -162,6 +162,7 @@ async def test_real_route_interruption_retains_proof_and_history(route_project, 
 
 async def test_rename_alias_and_delete_canonical_fallback(route_project):
     source = route_project
+    file(source, 'assets/characters/Lin/portrait.png', b'first')
     adapter = AssetAdapter(source, ObjectStore(source.state_dir))
     base = await adapter.register_base('character', 'Lin')
     await candidate(source, 'first')

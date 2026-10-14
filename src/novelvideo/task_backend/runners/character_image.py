@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from novelvideo.creation.asset_media_publication import character_media_publication
+
 import asyncio
 import json
 import mimetypes
@@ -294,6 +296,8 @@ async def _run_character_image(
     identity_name = str(payload.get("identity_name") or "")
     style = str(payload.get("style") or "")
     output_dir = Path(str(payload.get("output_dir") or ctx.output_dir))
+    if output_dir.absolute() != Path(ctx.output_dir).absolute():
+        raise ValueError("character output directory must match project context")
     casting_candidate = None
     if mode == "casting_candidate":
         from novelvideo.character_visual.casting_store import CastingCandidateStore
@@ -337,6 +341,12 @@ async def _run_character_image(
         character = store.get_character(character_name)
         if character is None:
             raise RuntimeError(f"找不到角色: {character_name}")
+        if not identity_id and identity_name:
+            identity = _find_identity(character, '', identity_name)
+            if identity is not None:
+                identity_id = identity.identity_id
+        async with character_media_publication(output_dir, ctx.state_dir, character.name, identity_id or None, publish=False, input_character=character) as frozen_media:
+            pass
         project_config = load_project_config_file(ctx.owner_username, ctx.project_name)
         ethnicity = project_config.get("ethnicity", "Chinese")
         from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
@@ -454,6 +464,7 @@ async def _run_character_image(
                 scope=str(scope or ""),
                 update=update,
                 compiled_prompt=portrait_prompt,
+                expected_inputs=frozen_media,
                 ctx=ctx,
                 source_attempt_id=str(
                     envelope.get("task_id") or envelope.get("job_id") or ""
@@ -490,21 +501,22 @@ async def _run_character_image(
                 update=update,
             )
             output_path = state_generation.output_path
-            workflow_result = _register_character_state_candidate(
-                ctx=ctx,
-                output_dir=output_dir,
-                character_name=character.name,
-                identity_id=identity_id,
-                generation=state_generation,
-                source_attempt_id=str(
-                    envelope.get("task_id") or envelope.get("job_id") or ""
+            async with character_media_publication(output_dir, ctx.state_dir, character.name, identity_id, actor=str(getattr(ctx, "requester_user_id", None) or "system"), expected=frozen_media):
+                workflow_result = _register_character_state_candidate(
+                    ctx=ctx,
+                    output_dir=output_dir,
+                    character_name=character.name,
+                    identity_id=identity_id,
+                    generation=state_generation,
+                    source_attempt_id=str(
+                        envelope.get("task_id") or envelope.get("job_id") or ""
+                    )
+                    or None,
+                    recipe_revision=str(
+                        project_config.get("production_recipe_version") or "1"
+                    ),
+                    resolution=resolution,
                 )
-                or None,
-                recipe_revision=str(
-                    project_config.get("production_recipe_version") or "1"
-                ),
-                resolution=resolution,
-            )
         else:
             raise RuntimeError(f"未知角色图像生成模式: {mode}")
         result = {
@@ -544,6 +556,7 @@ async def _generate_character_portrait(
     compiled_prompt: str | None = None,
     ctx: ProjectContext | None = None,
     source_attempt_id: str | None = None,
+    expected_inputs: dict | None = None,
 ) -> Path:
     if not str(compiled_prompt or "").strip():
         raise _visual_bible_required_error(character.name)
@@ -551,6 +564,8 @@ async def _generate_character_portrait(
         raise RuntimeError("project context is required for portrait publication")
     face_prompt = str(compiled_prompt).strip()
     safe_name = validate_character_name(character.name)
+    async with character_media_publication(output_dir, ctx.state_dir, safe_name, publish=False, input_character=character, expected=expected_inputs) as frozen_media:
+        pass
     char_assets_dir = output_dir / "assets" / "characters" / safe_name
     temp_dir = char_assets_dir / f".tmp_portrait_{_asset_suffix()}"
     temp_dir.mkdir(parents=True, exist_ok=True)
@@ -567,14 +582,15 @@ async def _generate_character_portrait(
             output_path=temp_dir / "reference_01.png",
             aspect_ratio="1:1",
         )
-        return commit_character_portrait_current(
-            state_dir=ctx.state_dir,
-            project_dir=output_dir,
-            character_name=safe_name,
-            image_bytes=generated.read_bytes(),
-            actor=str(getattr(ctx, "requester_username", "") or "system"),
-            source_attempt_id=source_attempt_id,
-        )
+        async with character_media_publication(output_dir, ctx.state_dir, safe_name, actor=str(getattr(ctx, "requester_user_id", None) or "system"), expected=frozen_media):
+            return commit_character_portrait_current(
+                state_dir=ctx.state_dir,
+                project_dir=output_dir,
+                character_name=safe_name,
+                image_bytes=generated.read_bytes(),
+                actor=str(getattr(ctx, "requester_username", "") or "system"),
+                source_attempt_id=source_attempt_id,
+            )
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -606,19 +622,20 @@ async def _generate_identity_portrait(
         assert_legacy_portrait_mutation_allowed, update_identity_portrait_reference,
     )
     state_dir = Path(ctx.state_dir) if ctx is not None else Path(getattr(store, "state_dir", output_dir / "_state"))
-    with production_workflow_project_lock(state_dir):
-        assert_legacy_portrait_mutation_allowed(output_dir, state_dir, character.name, identity.identity_id)
-    visual_bible = CharacterVisualWorkspaceStore(output_dir, state_dir=state_dir).get_confirmed_bible(
-        character.name
-    )
-    if visual_bible is None:
-        raise RuntimeError("请先在角色视觉身份设定中确认 VisualBible")
-    base_prompt = compile_visual_prompt_snapshot(
-        bible=visual_bible,
-        project_style=style,
-        reference_paths=[],
-        portrait_only=True,
-    ).prompt
+    async with character_media_publication(output_dir, state_dir, character.name, identity.identity_id, publish=False, input_character=character) as frozen_media:
+        with production_workflow_project_lock(state_dir):
+            assert_legacy_portrait_mutation_allowed(output_dir, state_dir, character.name, identity.identity_id)
+        visual_bible = CharacterVisualWorkspaceStore(output_dir, state_dir=state_dir).get_confirmed_bible(
+            character.name
+        )
+        if visual_bible is None:
+            raise RuntimeError("请先在角色视觉身份设定中确认 VisualBible")
+        base_prompt = compile_visual_prompt_snapshot(
+            bible=visual_bible,
+            project_style=style,
+            reference_paths=[],
+            portrait_only=True,
+        ).prompt
     variant_parts = [
         base_prompt,
         f"Identity age group: {identity.age_group}" if identity.age_group else "",
@@ -654,15 +671,16 @@ async def _generate_identity_portrait(
             aspect_ratio="1:1",
             reference_paths=parent_references,
         )
-        with production_workflow_project_lock(state_dir):
-            assert_legacy_portrait_mutation_allowed(output_dir, state_dir, character.name, identity.identity_id)
-            from novelvideo.character_visual.casting_recovery import assert_casting_path_mutation_allowed
+        async with character_media_publication(output_dir, state_dir, character.name, identity.identity_id, actor=str(getattr(ctx, "requester_user_id", None) or "system"), expected=frozen_media):
+            with production_workflow_project_lock(state_dir):
+                assert_legacy_portrait_mutation_allowed(output_dir, state_dir, character.name, identity.identity_id)
+                from novelvideo.character_visual.casting_recovery import assert_casting_path_mutation_allowed
 
-            assert_casting_path_mutation_allowed(output_dir, state_dir, portrait_path)
-            _replace_canonical_asset(generated, portrait_path)
-            update_identity_portrait_reference(output_dir, state_dir, character.name, identity.identity_id, str(portrait_path))
-        if hasattr(store, "load_graph_state"):
-            await store.load_graph_state()
+                assert_casting_path_mutation_allowed(output_dir, state_dir, portrait_path)
+                _replace_canonical_asset(generated, portrait_path)
+                update_identity_portrait_reference(output_dir, state_dir, character.name, identity.identity_id, str(portrait_path))
+            if hasattr(store, "load_graph_state"):
+                await store.load_graph_state()
         return portrait_path
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)

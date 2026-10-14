@@ -56,7 +56,7 @@ def _client(
     ):
         assert project == "demo"
         return (
-            SimpleNamespace(project_id="proj-demo"),
+            SimpleNamespace(project_id="proj-demo", state_dir=tmp_path / '_state'),
             "alice",
             "demo",
             tmp_path,
