@@ -18,6 +18,8 @@ import {
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
+import { FixedAssetDetails, useFixedAssetTitle } from '@/features/creation-workspace/FixedAssetDetails';
+import { createEditableAssetCopy } from '@/features/creation-workspace/fixedAssets';
 import { ArrowRight, Loader2, Orbit } from 'lucide-react';
 
 import {
@@ -321,6 +323,7 @@ export function directorSourcesForNode(
   upstreamPanoSources: DirectorWorldSource[],
 ): DirectorWorldSource[] {
   const explicitSources = (data.sources ?? []).filter((source) => source.source_type !== 'mesh');
+  if (data.assetRef) return explicitSources;
   const hasMainlineContext = hasMainlineContexts((data as { mainline_context?: unknown }).mainline_context);
   if (!hasMainlineContext || ((data as { user_spawned?: unknown }).user_spawned === true && !isImportedSceneDirectorWorldBundle(data))) {
     const activeSource =
@@ -595,6 +598,7 @@ function ReferenceImageThumb({
 }
 
 interface OpsPanelProps {
+  fixedAsset?: boolean;
   isGenerating: boolean;
   hasUpstream: boolean;
   errorMessage?: string | null;
@@ -614,6 +618,7 @@ interface OpsPanelProps {
 // 本节点负责把上游图片提交成 3DGS source。这里保留引用、错误和历史信息，
 // 避免把 source 类型下拉误当成导演世界 source 选择器。
 function OpsPanel({
+  fixedAsset,
   isGenerating,
   hasUpstream,
   errorMessage,
@@ -721,7 +726,7 @@ function OpsPanel({
           ) : (
             <ArrowRight className="h-3.5 w-3.5" />
           )}
-          {t('nodeToolbar.generateDirectorWorld')}
+          {fixedAsset ? '创建独立生成副本' : t('nodeToolbar.generateDirectorWorld')}
         </button>
       </div>
     </div>
@@ -792,6 +797,10 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
 
   const handleRestoreHistory = useCallback(
     (record: FreezoneGenerationHistoryRecord) => {
+      if (useCanvasStore.getState().nodes.find(node => node.id === id)?.data.assetRef) {
+        toast.error('请在可编辑副本中恢复生成历史');
+        return;
+      }
       // 3GS results nest the PLY url under various keys — reuse the same
       // extractor the live submit path uses.
       const plyUrl = pickPlyUrlFromResult(record.result);
@@ -806,13 +815,14 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
     [id, updateNodeData],
   );
 
+  const fixedAssetTitle = useFixedAssetTitle(data.assetRef);
   const resolvedTitle = useMemo(
     () => resolveNodeDisplayName(CANVAS_NODE_TYPES.threeDWorld, data),
     [data],
   );
-  const headerTitle = resolvedTitle === '3D 世界'
+  const headerTitle = fixedAssetTitle.title ?? (resolvedTitle === '3D 世界'
     ? t('viewer.threeD.directorWorld')
-    : resolvedTitle;
+    : resolvedTitle);
 
   const upstreamRefs = useMemo<UpstreamRef[]>(() => {
     const sources = [...upstreamNodes];
@@ -898,7 +908,7 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
     setDirectorBusy(true);
     try {
       let manifest: DirectorStageManifest | null = null;
-      if (beatContext) {
+      if (beatContext && !data.assetRef) {
         try {
           manifest = await getBeatDirectorStageManifest(projectId, beatContext.episode, beatContext.beat);
           manifest = mergeDirectorStageManifestSources(
@@ -949,6 +959,10 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
       : inferredImageSourceKind;
 
   const handleSubmit = useCallback(async () => {
+    if (useCanvasStore.getState().nodes.find(node => node.id === id)?.data.assetRef) {
+      toast.error('请先创建「可编辑副本」，在独立候选中生成；固定素材保持不变');
+      return;
+    }
     const projectId = readUrl().project;
     const sourceNode = sourceNodeForGeneration;
     if (!projectId) {
@@ -1018,6 +1032,10 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
         throw new Error('未能在 task.result 中找到 3D 世界地址');
       }
       const currentWorld = useCanvasStore.getState().nodes.find((node) => node.id === id);
+      if (currentWorld?.data.assetRef) {
+        updateNodeData(id, { isGenerating: false, taskKey: null, errorMessage: '节点已绑定固定素材；生成结果保留在历史中，请在独立副本中恢复' });
+        return;
+      }
       const currentSources = (
         (currentWorld?.data as { sources?: DirectorWorldSource[] } | undefined)?.sources ?? []
       );
@@ -1205,6 +1223,7 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
       const previousScenes = data.scenesBySourceId ?? {};
       const sourceTransform = snapshot.world?.sourceTransform;
       const nextDirectorSources = directorSourcesForNode(data, upstreamPanoSources);
+      const fixedSelected = data.assetRef ? nextDirectorSources.find(source => source.id === (nextActiveSourceId ?? data.activeSourceId)) : undefined;
       const nextSources = nextActiveSourceId && sourceTransform
         ? nextDirectorSources.map((source) =>
             source.id === nextActiveSourceId
@@ -1223,6 +1242,7 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
             }
           : {}),
         ...(nextActiveSourceId ? { activeSourceId: nextActiveSourceId } : {}),
+        ...(fixedSelected ? { plyUrl: fixedSelected.ply_url ?? null, panoUrl: fixedSelected.pano_url ?? data.panoUrl ?? null } : {}),
         ...(nextSources ? { sources: nextSources } : {}),
       });
     },
@@ -1297,6 +1317,7 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
         className={NODE_HEADER_FLOATING_POSITION_CLASS}
         icon={<Orbit className="h-4 w-4" />}
         titleText={headerTitle}
+        rightSlot={data.assetRef ? <FixedAssetDetails nodeId={id} assetRef={data.assetRef} media={data.assetMediaSelection} nodeType="threeDWorldNode" /> : undefined}
         editable
         onTitleChange={(nextTitle) => updateNodeData(id, { displayName: nextTitle })}
       />
@@ -1380,6 +1401,7 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
           }}
         >
           <OpsPanel
+            fixedAsset={Boolean(data.assetRef)}
             isGenerating={isGenerating}
             hasUpstream={hasUpstream}
             errorMessage={data.errorMessage}
@@ -1408,7 +1430,7 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
               updateNodeData(id, { sourceNodeId: nodeId, plyKind: nextKind });
             }}
             onSourceKindChange={(next) => updateNodeData(id, { plyKind: next })}
-            onSubmit={handleSubmit}
+            onSubmit={data.assetRef ? () => { createEditableAssetCopy(id); toast.success('已创建独立副本，请在副本中生成'); } : handleSubmit}
             onFocusUpstream={setSelectedNode}
             onDetachUpstream={detachUpstream}
           />

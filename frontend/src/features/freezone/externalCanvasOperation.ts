@@ -13,6 +13,10 @@ export interface PendingCanvasOperation {
   remote?: FreezoneCanvasPayload;
 }
 const key = (project: string, canvas: string) => `canvas-operation:v1:${encodeURIComponent(project)}:${encodeURIComponent(canvas)}`;
+export function readCanvasOperationBackup(project: string, canvas: string): string | null {
+  const backupKey = localStorage.getItem(`${key(project, canvas)}:last-backup`);
+  return backupKey ? localStorage.getItem(backupKey) : null;
+}
 export function readPendingCanvasOperation(project: string, canvas: string): PendingCanvasOperation | null {
   const raw = localStorage.getItem(key(project, canvas));
   if (!raw) return null;
@@ -103,6 +107,38 @@ export function createExternalCanvasOperation(project: string, canvas: string, h
   };
   return {
     capture,
+    async resolveServer(reviewedRevision: number): Promise<ExternalOperationOutcome> {
+      if (!active) return { status: 'detached' };
+      if (busy) return { status: 'busy' };
+      busy = true;
+      try {
+        pending = readPendingCanvasOperation(project, canvas);
+        if (!pending?.remote || !pending.operationId) return { status: 'pending', message: '请先恢复操作并取得服务器结果' };
+        const remote = await getFreezoneCanvas(project, canvas);
+        if (!active) return { status: 'detached' };
+        capture();
+        pending.remote = remote;
+        persist();
+        if (remote.revision !== reviewedRevision) {
+          host.report('conflict', '服务器版本又有变化，请重新比较后确认');
+          return { status: 'conflict', message: '服务器版本又有变化，请重新比较后确认' };
+        }
+        // Preserve both complete documents before discarding any conflicting local value.
+        localStorage.setItem(`${key(project, canvas)}:backup:${pending.request.request_id}`, JSON.stringify(pending));
+        localStorage.setItem(`${key(project, canvas)}:last-backup`, `${key(project, canvas)}:backup:${pending.request.request_id}`);
+        const merged = mergeCanvasOperation(pending.baseline, pending.local, remote, true, true);
+        host.apply(merged.canvas, remote, pending.baseline);
+        localStorage.removeItem(key(project, canvas));
+        pending = null;
+        host.report('applied');
+        host.resume();
+        return { status: 'applied' };
+      } catch (error) {
+        const message = String(error);
+        if (active) host.report('conflict', message);
+        return { status: active ? 'conflict' : 'detached', message };
+      } finally { busy = false; }
+    },
     dispose() { active = false; },
     async run(input?: AssetBindRequest): Promise<ExternalOperationOutcome> {
       if (!active) return { status: 'detached' };

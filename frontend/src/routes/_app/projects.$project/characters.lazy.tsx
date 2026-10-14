@@ -70,6 +70,7 @@ import {
 } from "@/lib/api-errors";
 import { useCharacterImageSelection } from "@/lib/queries/character-image-selection";
 import { useProject } from "@/lib/queries/projects";
+import { AssetWorkspaceTarget } from '@/features/creation-workspace/AssetWorkspaceTarget';
 import { useGenerationCreditCost } from "@/lib/queries/generation-credit-cost";
 import { isCeRuntime } from "@/lib/runtime-config";
 import { useMediaQuery } from "@/hooks/use-media-query";
@@ -3497,6 +3498,7 @@ function CharactersPageContent() {
   return (
     <AssetHeaderActionsSlotProvider>
       <div className="-m-6 flex h-[calc(100%+3rem)] flex-col overflow-x-hidden overflow-y-auto lg:overflow-hidden">
+      <AssetWorkspaceTarget project={project} />
       <CharactersPageHeader
         onRebuild={() => setRebuildDialogOpen(true)}
         rebuildDisabled={buildChars.isPending || buildStarted}

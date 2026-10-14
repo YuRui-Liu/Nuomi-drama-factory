@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
+import { independentAssetCopy } from '@/features/canvas/domain/assetCopy';
 import { create } from 'zustand';
 import {
   type Viewport,
@@ -1699,7 +1700,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       const sourceData = source.data as Record<string, unknown>;
       const nameOverrides: Record<string, unknown> = {};
       if (typeof sourceData.displayName === 'string' && sourceData.displayName) {
-        nameOverrides.displayName = `${sourceData.displayName} - 副本`;
+        nameOverrides.displayName = `${sourceData.displayName}${sourceData.assetRef ? ' · 独立副本' : ' - 副本'}`;
       }
       if (typeof sourceData.label === 'string' && sourceData.label) {
         nameOverrides.label = `${sourceData.label} - 副本`;
@@ -1707,7 +1708,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
       const duplicateData = source.type === CANVAS_NODE_TYPES.videoDirector
         ? cloneVideoDirectorData(source.data as VideoDirectorNodeData)
-        : source.data;
+        : independentAssetCopy(source.data);
       const newNode = canvasNodeFactory.createNode(source.type, position, {
         ...(duplicateData as Partial<CanvasNodeData>),
         ...(nameOverrides as Partial<CanvasNodeData>),

@@ -40,6 +40,7 @@ import {
 import { canvasEventBus } from '@/features/canvas/application/canvasServices';
 import { isVideoFile, VIDEO_FILE_ACCEPT } from '@/features/canvas/application/videoFileTypes';
 import { NodeHeader, NODE_HEADER_FLOATING_POSITION_CLASS } from '@/features/canvas/ui/NodeHeader';
+import { FixedAssetDetails, useFixedAssetTitle } from '@/features/creation-workspace/FixedAssetDetails';
 import { NodeResizeHandle } from '@/features/canvas/ui/NodeResizeHandle';
 import {
   CANVAS_NODE_INPUT_BODY_FRAME_CLASS,
@@ -286,6 +287,7 @@ export const UploadNode = memo(({ id, data, selected, width, height }: UploadNod
   });
   const resizeMinWidth = resizeConstraints.minWidth;
   const resizeMinHeight = resizeConstraints.minHeight;
+  const fixedAssetTitle = useFixedAssetTitle(data.assetRef);
   const resolvedTitle = useMemo(() => {
     const sourceFileName = typeof data.sourceFileName === 'string' ? data.sourceFileName.trim() : '';
     if (
@@ -357,6 +359,10 @@ export const UploadNode = memo(({ id, data, selected, width, height }: UploadNod
 
   const processFile = useCallback(
     async (file: File) => {
+      if (useCanvasStore.getState().nodes.find(node => node.id === id)?.data.assetRef) {
+        toast.error('固定素材不会被覆盖，请先点击「可编辑副本」再上传');
+        return;
+      }
       const projectId = readUrl().project;
       if (!projectId) {
         console.error('[upload-node] no project in URL — cannot upload');
@@ -402,6 +408,11 @@ export const UploadNode = memo(({ id, data, selected, width, height }: UploadNod
         ]);
 
         if (uploadSequenceRef.current !== sequence) {
+          return;
+        }
+        if (useCanvasStore.getState().nodes.find(node => node.id === id)?.data.assetRef) {
+          clearTransientPreview();
+          updateNodeData(id, { isUploading: false, uploadError: '节点已绑定固定资产，上传结果未覆盖该引用' });
           return;
         }
 
@@ -530,6 +541,10 @@ export const UploadNode = memo(({ id, data, selected, width, height }: UploadNod
 
   const handleMediaFile = useCallback(
     async (file: File) => {
+      if (useCanvasStore.getState().nodes.find(node => node.id === id)?.data.assetRef) {
+        toast.error('请在「可编辑副本」中更换媒体，原固定引用保持不变');
+        return;
+      }
       // isVideoFile 兜住 .mxf 等 file.type 为空串的容器，避免落到最后被忽略。
       if (isVideoFile(file)) {
         if (imageOnly) {
@@ -551,7 +566,7 @@ export const UploadNode = memo(({ id, data, selected, width, height }: UploadNod
         await processFile(file);
       }
     },
-    [imageOnly, morphToAudioWithFile, morphToVideoWithFile, processFile]
+    [id, imageOnly, morphToAudioWithFile, morphToVideoWithFile, processFile]
   );
 
   const handleDrop = useCallback(
@@ -645,6 +660,7 @@ export const UploadNode = memo(({ id, data, selected, width, height }: UploadNod
 
   const handleDirectorCaptureCombined = useCallback(
     async (_blob: Blob, meta: ThreeDDirectorCaptureMeta) => {
+      if (useCanvasStore.getState().nodes.find(node => node.id === id)?.data.assetRef) throw new Error('请在可编辑副本中保存新媒体');
       const projectId = readUrl().project;
       if (!meta.captureBundle) {
         throw new Error('导演合成图缺少 combined/env_only/frame_meta');
@@ -809,7 +825,8 @@ export const UploadNode = memo(({ id, data, selected, width, height }: UploadNod
         icon={imageOnly || hasMainlineContext
           ? <ImageIcon className="h-4 w-4" />
           : <Upload className="h-4 w-4" />}
-        titleText={resolvedTitle}
+        titleText={fixedAssetTitle.title ?? resolvedTitle}
+        rightSlot={data.assetRef ? <FixedAssetDetails nodeId={id} assetRef={data.assetRef} media={data.assetMediaSelection} nodeType="uploadNode" /> : undefined}
         editable
         onTitleChange={(nextTitle) => updateNodeData(id, { displayName: nextTitle })}
       />

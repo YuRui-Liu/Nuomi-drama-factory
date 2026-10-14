@@ -1,4 +1,14 @@
 export type WorkspaceKind = 'concept' | 'episode' | 'free';
+export type FixedAssetRef = AssetBindRequest['payload']['asset_ref'];
+export interface AssetSelection { kind: 'character' | 'scene'; source_name: string; parent_source_name: string | null }
+export interface AssetMediaChoice { slot_id: string; role: string; preview_url: string | null; sha256: string; adoption_status: string }
+export interface CreationAsset {
+  kind: 'character' | 'scene'; source_name: string; parent_source_name: string | null;
+  selection: AssetSelection; proof: string; title: string; asset_ref: FixedAssetRef | null;
+  snapshot: Record<string, unknown>; media: AssetMediaChoice[];
+}
+export interface FixedAssetVersion { asset_ref: FixedAssetRef; object: { id: string; revision: number; payload: Record<string, unknown> }; mapping: Record<string, unknown> }
+export interface FixedAssetUse { canvas_id: string; node_id: string; asset_ref: FixedAssetRef; media: { slot_id: string; role: string }; status: 'applied' | 'pending_projection' | 'missing'; episode_id?: string | null }
 export interface AssetBindRequest {
   request_id: string;
   kind: 'asset.bind';

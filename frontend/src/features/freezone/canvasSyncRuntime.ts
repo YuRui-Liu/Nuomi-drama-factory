@@ -68,10 +68,22 @@ export function registerFreezoneCanvasRuntime(
   };
 }
 
+export function resolveExternalCanvasConflict(project: string, canvasId: string, revision: number): Promise<ExternalOperationOutcome> {
+  if (!currentRuntime || currentRuntime.project !== project || currentRuntime.canvasId !== canvasId || !currentRuntime.operation) return Promise.resolve({ status: 'detached' });
+  return currentRuntime.operation.resolveServer(revision);
+}
 export function runExternalCanvasOperation(project: string, canvasId: string, request?: AssetBindRequest): Promise<ExternalOperationOutcome> {
   const runtime = currentRuntime;
   if (!runtime || runtime.project !== project || runtime.canvasId !== canvasId || !runtime.operation) return Promise.resolve({ status: 'detached' });
   return runtime.operation.run(request);
+}
+
+/** Capture an instance before asynchronous registration; A→B→A must not reuse it. */
+export function captureFreezoneCanvasRuntime(project: string, canvasId: string) {
+  const runtime = currentRuntime;
+  if (!runtime || runtime.project !== project || runtime.canvasId !== canvasId || !runtime.operation) return null;
+  return { isCurrent: () => currentRuntime === runtime,
+    run: (request: AssetBindRequest) => currentRuntime === runtime ? runtime.operation!.run(request) : Promise.resolve<ExternalOperationOutcome>({ status: 'detached' }) };
 }
 
 export function applyRemoteFreezoneCanvas(

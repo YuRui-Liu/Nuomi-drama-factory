@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
+import { independentAssetCopy } from './domain/assetCopy';
 import {
   useState,
   useCallback,
@@ -65,6 +66,7 @@ import {
   type CanvasAssetDragPayload,
 } from '@/features/canvas/domain/assetDrag';
 import { hydrateAssetDragPayload } from '@/features/canvas/domain/assetDragHydrate';
+import { applyFixedAsset, fixedAssetDestination, FIXED_ASSET_DRAG_MIME } from '@/features/creation-workspace/fixedAssets';
 import type { CanvasAsset } from '@/features/canvas/domain/canvasAssets';
 import { isImmersiveViewerActive } from '@/features/viewer-kit/useViewerImmersiveBody';
 import { CanvasMinimapBookmarksOverlay } from '@/features/canvas/ui/CanvasMinimapBookmarksOverlay';
@@ -2825,7 +2827,7 @@ export function Canvas({
   // 侧栏素材卡片拖进画布时携带的自定义 MIME(见 assetDrag.ts)。
   const hasDraggedAsset = useCallback(
     (event: ReactDragEvent<HTMLDivElement>) =>
-      Array.from(event.dataTransfer.types ?? []).includes(CANVAS_ASSET_DRAG_MIME),
+      Array.from(event.dataTransfer.types ?? []).some(type => type === CANVAS_ASSET_DRAG_MIME || type === FIXED_ASSET_DRAG_MIME),
     []
   );
 
@@ -2886,6 +2888,20 @@ export function Canvas({
       });
 
       // ── Sidebar asset drop path ──
+      const fixedRaw = event.dataTransfer.getData(FIXED_ASSET_DRAG_MIME);
+      if (fixedRaw) {
+        void (async () => {
+          try {
+            const payload = JSON.parse(fixedRaw);
+            const target = fixedAssetDestination();
+            if (!target || target.project !== payload.project) throw new Error('请在同项目的已注册画布中应用此资产');
+            const result = await applyFixedAsset({ ...target, entry: payload.entry, media: payload.media, position: basePosition });
+            if (result.status === 'applied') toast.success('已应用固定资产版本');
+            else if (result.status !== 'detached') toast.error('资产操作待处理，请查看画布同步提示');
+          } catch (error) { toast.error(error instanceof Error ? error.message : String(error)); }
+        })();
+        return;
+      }
       // 侧栏素材卡片(图片 / 视频 / 音频 / 3GS)拖进来 → 在落点直接生成对应节点。
       // 与「加入」按钮共用 spawnAssetNode,保持节点构造一致。
       const assetPayload = readAssetDragPayload(event.dataTransfer);
@@ -3289,7 +3305,7 @@ export function Canvas({
       for (const sourceNode of sourceNodes) {
         const data = sourceNode.type === CANVAS_NODE_TYPES.videoDirector
           ? cloneVideoDirectorData(sourceNode.data as VideoDirectorNodeData)
-          : cloneNodeData(sourceNode.data);
+          : independentAssetCopy(cloneNodeData(sourceNode.data));
         if ('isGenerating' in (data as Record<string, unknown>)) {
           (data as { isGenerating?: boolean }).isGenerating = false;
         }

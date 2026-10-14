@@ -193,6 +193,8 @@ export function ProjectHeaderNavigation({ project }: { project: string }) {
             key={item.labelKey}
             to={item.to}
             params={{ project }}
+            search={new URLSearchParams(location.searchStr).get('workspace')
+              ? { workspace: new URLSearchParams(location.searchStr).get('workspace')! } : {}}
             aria-current={active ? "page" : undefined}
             className={cn(
               "relative inline-flex min-h-10 shrink-0 items-center px-3 text-xs font-medium transition-colors duration-150",

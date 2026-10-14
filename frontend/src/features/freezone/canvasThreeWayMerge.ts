@@ -59,7 +59,7 @@ export function pinHistoryBindings(nodes: CanvasNode[], remoteNodes: CanvasNode[
 }
 
 /** JSON field merge. Conflicting local values remain recoverable; callers must not save them. */
-export function mergeCanvasOperation(base: FreezoneCanvasPayload, local: FreezoneCanvasPayload, remote: FreezoneCanvasPayload, serverWinsConflicts = false) {
+export function mergeCanvasOperation(base: FreezoneCanvasPayload, local: FreezoneCanvasPayload, remote: FreezoneCanvasPayload, serverWinsConflicts = false, resolveReferences = false) {
   const conflicts: string[] = [];
   const merge = (b: unknown, l: unknown, r: unknown, path: string): unknown => {
     if (equal(l, b)) return r;
@@ -83,8 +83,41 @@ export function mergeCanvasOperation(base: FreezoneCanvasPayload, local: Freezon
       return value === undefined ? [] : [value];
     });
   };
-  const nodes = graph('nodes');
-  const edges = graph('edges');
+  let nodes = graph('nodes');
+  let edges = graph('edges');
+  if (resolveReferences) {
+    const serverNodes = new Map((remote.nodes as Record<string, unknown>[]).map(node => [node.id, node]));
+    const serverEdges = new Set((remote.edges as { id: string }[]).map(edge => edge.id));
+    const byId = new Map(nodes.filter(object).map(node => [node.id, node]));
+    edges = edges.filter(object).filter(edge => {
+      for (const endpoint of ['source', 'target']) {
+        if (!byId.has(edge[endpoint])) {
+          const server = serverNodes.get(edge[endpoint]);
+          if (!serverEdges.has(edge.id as string) || !server) return false;
+          byId.set(server.id, server);
+        }
+      }
+      return true;
+    });
+    for (const node of byId.values()) {
+      if (node.parentId && byId.get(node.parentId)?.type !== 'groupNode') {
+        const parent = serverNodes.get(node.parentId);
+        if (parent?.type === 'groupNode') byId.set(parent.id, parent);
+        else { const next = { ...node }; delete next.parentId; delete next.extent; byId.set(node.id, next); }
+      }
+    }
+    nodes = [...byId.values()];
+    for (let attempt = 0; attempt < nodes.length; attempt++) {
+      const invalid = graphReferenceConflicts(nodes, edges).find(path => path.endsWith('.parentId'));
+      if (!invalid) break;
+      const id = invalid.slice('nodes.'.length, -'.parentId'.length);
+      nodes = nodes.map(node => {
+        if (!object(node) || node.id !== id) return node;
+        const next = { ...node }; delete next.parentId; delete next.extent;
+        return next;
+      });
+    }
+  }
   // Independently valid edits can form an invalid graph when combined: a deletion
   // on one side must not strand a new edge or child introduced by the other.
   conflicts.push(...graphReferenceConflicts(nodes, edges));

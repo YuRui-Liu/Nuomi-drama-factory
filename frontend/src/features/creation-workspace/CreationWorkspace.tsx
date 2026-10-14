@@ -8,6 +8,8 @@ import { flushFreezoneCanvasRuntime } from '@/features/freezone/canvasSyncRuntim
 import { useCreateWorkspace, useCreationCanvases } from '@/lib/queries/creation';
 import { CanvasWorkspaceSwitcher } from './CanvasWorkspaceSwitcher';
 import { creationErrorDetail, resolveWorkspace, type CreateWorkspaceInput, type WorkspaceKind } from './contracts';
+import { readAssetReturn, clearAssetReturn } from './assetReferenceNavigation';
+import { applyFixedAsset } from './fixedAssets';
 
 export function CreationWorkspace({ project }: { project: SupertaleProjectSummary }) {
   const registry = useCreationCanvases(project.id);
@@ -26,7 +28,25 @@ export function CreationWorkspace({ project }: { project: SupertaleProjectSummar
   const request = useRef<CreateWorkspaceInput | null>(null);
   const flight = useRef(false);
   const canvasState = useRef<WorkspaceCanvasState | null>(null);
-  const onWorkspaceState = useCallback((state: WorkspaceCanvasState) => { canvasState.current = state; }, []);
+  const returnFlight = useRef(false);
+  const onWorkspaceState = useCallback((state: WorkspaceCanvasState) => {
+    canvasState.current = state;
+    if (!state.hydrated || state.status !== 'ready' || returnFlight.current) return;
+    let intent;
+    try { intent = readAssetReturn(project.id, state.canvasId); }
+    catch (error) { setLeaveError(String(error)); return; }
+    if (!intent) return;
+    const origin = router.state.location;
+    returnFlight.current = true;
+    void applyFixedAsset(intent).then(result => {
+      if (result.status !== 'detached') clearAssetReturn(project.id, state.canvasId);
+      if (router.state.location === origin && result.status !== 'applied') setLeaveError('资产操作尚未完成，请通过同步提示恢复。');
+    }).catch(error => {
+      // A rejected proof needs an explicit new selection, not an automatic retry loop.
+      clearAssetReturn(project.id, state.canvasId);
+      if (router.state.location === origin) setLeaveError(String(error));
+    }).finally(() => { returnFlight.current = false; });
+  }, [project.id, router]);
   const select = (id: string, replace = false) => navigate({ to: '/projects/$project/freezone', params: { project: project.id }, search: { workspace: id }, replace, resetScroll: false });
 
   useBlocker({

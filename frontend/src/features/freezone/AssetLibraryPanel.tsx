@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { ViewportLazyImage } from "@/components/viewport-lazy-image";
 import { CanvasesTab } from "./CanvasesTab";
+import { FixedAssetLibrary } from '@/features/creation-workspace/FixedAssetLibrary';
 import { ASSET_ORGANIZATION_DRAG_MIME, AssetFolderTree } from "./AssetFolderTree";
 import { type AssetPurpose, useAssetOrganization } from "@/lib/queries/asset-organization";
 import { hasLegacyPresetCanvasMetadata } from "@/features/freezone/projections";
@@ -838,7 +839,7 @@ export function AssetLibraryPanel({
               </div>
 
               {/* ─ 列表内容 ── */}
-              {!organizationHasUsableData ? null : error ? (
+              {managedWorkspace && (tab === 'characters' || tab === 'scenes') ? <FixedAssetLibrary project={project} canvasId={currentCanvasId} query={query} onApplied={() => setCollapsed(true)} kind={tab === 'characters' ? 'character' : 'scene'} /> : !organizationHasUsableData ? null : error ? (
                 <div className="mx-3 mt-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-400">
                   项目素材加载失败：{error}
                 </div>

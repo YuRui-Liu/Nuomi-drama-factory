@@ -8,7 +8,7 @@ import { ApiError } from "@/api/client";
 import { applyCreationOperation, getCreationOperation } from '@/api/creation';
 import { readPendingCanvasOperation } from '@/features/freezone/externalCanvasOperation';
 import type { AssetBindRequest } from '@/features/creation-workspace/contracts';
-import { runExternalCanvasOperation } from '@/features/freezone/canvasSyncRuntime';
+import { runExternalCanvasOperation, resolveExternalCanvasConflict } from '@/features/freezone/canvasSyncRuntime';
 vi.mock('@/api/creation', () => ({ applyCreationOperation: vi.fn(), getCreationOperation: vi.fn() }));
 import {
   FREEZONE_HYDRATE_RELEASE_GRACE_MS,
@@ -262,6 +262,28 @@ describe("useCanvasSync hydrate lifecycle", () => {
     expect(useCanvasStore.getState().nodes[0].position.x).toBe(99);
     expect(useCanvasStore.getState().nodes[0].data.imageUrl).toBe('old');
     next.unmount();
+  });
+
+  it('explicit conflict resolution preserves independent edits and requires a fresh comparison', async () => {
+    const canvas = 'external-resolve';
+    const hook = await openExternal(canvas);
+    let release!: (value: typeof applied) => void;
+    vi.mocked(applyCreationOperation).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    let pending!: ReturnType<typeof runExternalCanvasOperation>;
+    act(() => { pending = runExternalCanvasOperation('project-a', canvas, binding(canvas)); });
+    await waitFor(() => expect(applyCreationOperation).toHaveBeenCalled());
+    act(() => useCanvasStore.getState().updateNodeData('a', { imageUrl: '/local', prompt: 'independent' }));
+    vi.mocked(getFreezoneCanvas).mockResolvedValue(remoteBound());
+    await act(async () => { release(applied); expect((await pending).status).toBe('conflict'); });
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ ...remoteBound(), revision: 3 });
+    await act(async () => { expect((await resolveExternalCanvasConflict('project-a', canvas, 2)).status).toBe('conflict'); });
+    expect(useCanvasStore.getState().nodes[0].data.imageUrl).toBe('/local');
+    await act(async () => { expect((await resolveExternalCanvasConflict('project-a', canvas, 3)).status).toBe('applied'); });
+    expect(useCanvasStore.getState().nodes[0].data.imageUrl).toBe('/fixed');
+    expect(useCanvasStore.getState().nodes[0].data.prompt).toBe('independent');
+    expect(readPendingCanvasOperation('project-a', canvas)).toBeNull();
+    expect(Object.keys(localStorage).some(key => key.includes(':backup:'))).toBe(true);
+    hook.unmount();
   });
 
   it('rebases undo and redo so server bindings survive independent local edits', async () => {

@@ -18,6 +18,8 @@ import {
   projectionKeyForPresetRequest,
 } from "@/features/freezone/projections";
 import type { CanvasEdge, CanvasNode } from "@/stores/canvasStore";
+import { getSupertaleProject } from '@/api/projects';
+import { requestAssetWorkspace } from '@/features/creation-workspace/assetReferenceNavigation';
 
 export async function openPresetProjectionInMyCanvas(
   projectId: string,
@@ -29,6 +31,12 @@ export async function openPresetProjectionInMyCanvas(
   // Reading window.location here would miss that and wrongly pull the SPA back
   // to Freezone below.
   const router = getAppRouter();
+  const origin = router?.state.location;
+  if (request.scope === 'asset') {
+    const project = await getSupertaleProject(projectId);
+    if (router && router.state.location !== origin) return '';
+    if (project.creation_mode === 'agent_canvas_v1') return requestAssetWorkspace(projectId, request);
+  }
   const startPathname =
     router?.state.location.pathname ??
     (typeof window !== "undefined" ? window.location.pathname : null);

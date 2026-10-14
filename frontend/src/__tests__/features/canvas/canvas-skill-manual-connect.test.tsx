@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { act, render, waitFor } from "@testing-library/react";
+import { act, render, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Connection, FinalConnectionState, OnConnectStartParams } from "@xyflow/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +8,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CANVAS_NODE_TYPES } from "@/features/canvas/domain/canvasNodes";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { Canvas } from "@/features/canvas/Canvas";
+import { applyFixedAsset, FIXED_ASSET_DRAG_MIME } from '@/features/creation-workspace/fixedAssets';
+import { hydrateAssetDragPayload } from '@/features/canvas/domain/assetDragHydrate';
+vi.mock('@/features/creation-workspace/fixedAssets', async original => ({ ...await original<typeof import('@/features/creation-workspace/fixedAssets')>(), applyFixedAsset: vi.fn() }));
+vi.mock('@/features/canvas/domain/assetDragHydrate', () => ({ hydrateAssetDragPayload: vi.fn() }));
 
 // Canvas 用 useQueryClient()(beats/episodeDetail 预取),渲染需包 QueryClientProvider。
 function renderCanvas() {
@@ -243,6 +247,22 @@ describe("Canvas manual skill connections", () => {
       ],
       [],
     );
+  });
+
+  it('fixed asset drops use the runtime path and never hydrate latest media or create a half node on failure', async () => {
+    window.history.replaceState({}, '', '/projects/p/freezone?workspace=episode-two');
+    vi.mocked(applyFixedAsset).mockRejectedValueOnce(new Error('proof conflict'));
+    const view = renderCanvas();
+    await waitFor(() => expect(capturedReactFlowProps).toBeTruthy());
+    const before = useCanvasStore.getState().nodes;
+    const payload = JSON.stringify({ project: 'p', entry: { proof: 'proof' }, media: { role: 'portrait' } });
+    const drop = new MouseEvent('drop', { bubbles: true, clientX: 4, clientY: 8 });
+    Object.defineProperty(drop, 'dataTransfer', { value: { types: [FIXED_ASSET_DRAG_MIME], getData: (type: string) => type === FIXED_ASSET_DRAG_MIME ? payload : '', files: [] } });
+    fireEvent(view.getByTestId('react-flow'), drop);
+    await waitFor(() => expect(applyFixedAsset).toHaveBeenCalled());
+    expect(applyFixedAsset).toHaveBeenCalledWith(expect.objectContaining({ canvasId: 'episode-two', position: { x: 4, y: 8 } }));
+    expect(hydrateAssetDragPayload).not.toHaveBeenCalled();
+    expect(useCanvasStore.getState().nodes).toEqual(before);
   });
 
   it("configures ReactFlow loose connection mode so image and skill input handles can be dragged from either side", async () => {

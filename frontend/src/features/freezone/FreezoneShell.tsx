@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
+import { resolveExternalCanvasConflict } from './canvasSyncRuntime';
+import { readPendingCanvasOperation, readCanvasOperationBackup } from './externalCanvasOperation';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
@@ -856,6 +858,7 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
           )}
           {sync.status === "conflict" && (
             <CanvasConflictOverlay
+              project={projectId}
               error={sync.error}
               canvasId={canvasId}
               onRefresh={sync.retry}
@@ -868,6 +871,7 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
             />
           )}
           <BackupStatusIndicator status={sync.backupStatus} />
+          {managedWorkspace && <OperationDraftBackup project={projectId} canvasId={canvasId} />}
           <CanvasRunPanel project={projectId} canvas={canvasId} enabled={sync.hydratedCanvasId === canvasId && sync.status !== 'conflict' && sync.status !== 'error'} />
           {/* 调试面板暂时隐藏，恢复时去掉 `false &&` 即可 */}
           {false && import.meta.env.DEV && (
@@ -1436,13 +1440,25 @@ function Toast({ text, onClose }: { text: string; onClose: () => void }) {
   );
 }
 
+function OperationDraftBackup({ project, canvasId }: { project: string; canvasId: string }) {
+  let backup: string | null = null;
+  try { backup = readCanvasOperationBackup(project, canvasId); } catch { return null; }
+  if (!backup) return null;
+  return <button className="absolute bottom-3 left-4 rounded border border-border bg-surface px-2 py-1 text-xs" onClick={() => {
+    const url = URL.createObjectURL(new Blob([backup!], { type: 'application/json' }));
+    const link = document.createElement('a'); link.href = url; link.download = 'canvas-local-conflict-backup.json'; link.click(); URL.revokeObjectURL(url);
+  }}>下载冲突前本地草稿</button>;
+}
+
 function CanvasConflictOverlay({
+  project,
   error,
   canvasId,
   onRefresh,
   onSaveCopy,
   readConflictSnapshot,
 }: {
+  project: string;
   error: string | null;
   canvasId: string;
   onRefresh: () => void;
@@ -1452,20 +1468,22 @@ function CanvasConflictOverlay({
   const { t } = useTranslation();
   const [savingCopy, setSavingCopy] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
+  const [keptDraft, setKeptDraft] = useState(false);
+  const pending = readPendingCanvasOperation(project, canvasId);
   // Read once on mount so the "下载本地 JSON" button always renders against
   // the snapshot captured at the moment the 409 fired, even if a later save
   // would have rewritten it.
   const snapshot = useMemo(() => readConflictSnapshot(), [readConflictSnapshot]);
 
   const handleDownload = () => {
-    if (!snapshot) return;
-    const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
+    if (!snapshot && !pending) return;
+    const blob = new Blob([JSON.stringify(pending ?? snapshot, null, 2)], {
       type: "application/json",
     });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    const stamp = snapshot.timestamp
+    const stamp = snapshot?.timestamp
       ? snapshot.timestamp.replace(/[:.]/g, "-")
       : new Date().toISOString().replace(/[:.]/g, "-");
     anchor.download = `freezone-${canvasId}-conflict-${stamp}.json`;
@@ -1475,6 +1493,7 @@ function CanvasConflictOverlay({
     URL.revokeObjectURL(url);
   };
 
+  if (keptDraft) return <button className="absolute bottom-12 left-4 rounded border border-amber-400 bg-surface px-3 py-2 text-xs" onClick={() => setKeptDraft(false)}>草稿待处理 · 比较并恢复</button>;
   return (
     <div className="absolute inset-0 bg-bg-dark/60 flex items-center justify-center">
       <div className="px-4 py-3 rounded-lg bg-surface border border-amber-400/50 text-sm text-amber-100 max-w-md flex flex-col gap-3">
@@ -1488,6 +1507,15 @@ function CanvasConflictOverlay({
           </div>
         )}
         <div className="flex flex-wrap gap-2">
+          {pending?.remote && <>
+            <button className="rounded border border-amber-400/40 px-3 py-1" onClick={() => setKeptDraft(true)}>保留本地草稿，继续待处理</button>
+            <button disabled={savingCopy} className="rounded border border-amber-400/40 px-3 py-1" onClick={async () => {
+              setSavingCopy(true);
+              const result = await resolveExternalCanvasConflict(project, canvasId, pending.remote!.revision!);
+              if (result.status !== 'applied') setCopyError(result.message ?? '恢复尚未完成');
+              setSavingCopy(false);
+            }}>采用服务器冲突值（备份草稿并保留独立编辑）</button>
+          </>}
           <button
             type="button"
             onClick={onRefresh}
