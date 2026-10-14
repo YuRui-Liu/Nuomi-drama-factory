@@ -69,6 +69,7 @@ from novelvideo.api.routes import (  # noqa: E402
     media_capabilities,
     project_costs,
     model_gateway,
+    creation_library,
     model_credits,
     narrative_groups,
     pipeline,
@@ -182,6 +183,7 @@ def register_verification_routes():
     if _verification_routes_registered:
         return
     from novelvideo.verification.routes import router as verification_router
+api_router.include_router(creation_library.router)
 
     api_router.include_router(verification_router, tags=["verification"])
     _verification_routes_registered = True

@@ -131,9 +131,11 @@ class ObjectStore:
     def update(self, object_id: str, expected_revision: int, payload: dict[str, Any], actor_id: str) -> dict[str, Any]:
         serialized = json.dumps(payload, ensure_ascii=False, allow_nan=False)
         with self.transaction() as conn:
-            row = conn.execute('SELECT current_revision FROM objects WHERE id = ?', (object_id,)).fetchone()
+            row = conn.execute('SELECT current_revision, kind FROM objects WHERE id = ?', (object_id,)).fetchone()
             if row is None:
                 raise KeyError(object_id)
+            if row['kind'].startswith('custom:'):
+                raise ValueError('自定义对象必须通过已确认定义的领域操作更新')
             current = row['current_revision']
             if current != expected_revision:
                 raise RevisionConflict(object_id, expected_revision, current)
