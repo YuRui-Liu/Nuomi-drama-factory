@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import functools
 import hashlib
 import inspect
@@ -507,6 +508,79 @@ def _leased(method):
     return wrapper
 
 
+async def _rollback_source_write(db: aiosqlite.Connection) -> None:
+    """Finish rollback in the lock owner, even after repeated cancellation.
+
+    Call only while handling a failed source write; the caller re-raises its
+    original exception after cleanup. Shielding a coroutine here would create
+    a child Task that could outlive the owner and roll back a later transaction.
+    """
+    while True:
+        try:
+            await db.rollback()
+            return
+        except asyncio.CancelledError:
+            continue
+
+
+def _source_asset_write(method=None, *, snapshot_inputs=False):
+    """Share the adapter's task-owned lock without initializing creation state.
+
+    Reload the source cache at the outer store mutation boundary, so a cached
+    whole-character upsert cannot discard another writer's unrelated fields.
+    Nested mutations belong to the actual Task, never an inherited ContextVar.
+    This is source consistency only; semantic publication remains explicit.
+    """
+    if method is None:
+        return functools.partial(_source_asset_write, snapshot_inputs=snapshot_inputs)
+
+    @functools.wraps(method)
+    async def wrapper(self, *args, **kwargs):
+        from novelvideo.production_workflow.coordination import asset_project_lock
+
+        if snapshot_inputs:
+            # Catalogue publication promises to freeze caller-owned models
+            # before its first await, including waiting for the project lock.
+            args, kwargs = copy.deepcopy((args, kwargs))
+        state_dir = getattr(self, "state_dir", Path(self.db_path).parent)
+        async with asset_project_lock(state_dir):
+            task = asyncio.current_task()
+            if getattr(self, "_asset_write_task", None) is task:
+                return await method(self, *args, **kwargs)
+            self._asset_write_task = task
+            characters = "character" in method.__name__ or "identity" in method.__name__
+            try:
+                if characters:
+                    await self._reload_source_character_cache()
+                result = await method(self, *args, **kwargs)
+                if characters:
+                    await self._reload_source_character_cache()
+                return result
+            except BaseException:
+                # Stay in the owning Task until rollback and cache repair have
+                # completed. Repeated cancellation must not release the lock
+                # with queued SQL work or spawn a shielded orphan writer.
+                while True:
+                    try:
+                        if self._db is not None:
+                            await self._db.rollback()
+                        if characters:
+                            await self._reload_source_character_cache()
+                        break
+                    except asyncio.CancelledError:
+                        continue
+                    except BaseException:
+                        if characters:
+                            self._characters.clear()
+                            self._alias_index.clear()
+                        raise
+                raise
+            finally:
+                self._asset_write_task = None
+
+    return wrapper
+
+
 def _auto_lease_public_async_methods(cls):
     """Wrap public async store methods once at class creation time."""
     for name, attr in list(vars(cls).items()):
@@ -867,6 +941,7 @@ class SQLiteStore:
                 await asyncio.shield(db.rollback())
                 raise
 
+    @_source_asset_write(snapshot_inputs=True)
     async def publish_identity_plan_atomic(
         self,
         *,
@@ -1019,7 +1094,7 @@ class SQLiteStore:
                         await self._insert_planned_reference_binding(db, binding)
                 await db.commit()
             except BaseException:
-                await asyncio.shield(db.rollback())
+                await _rollback_source_write(db)
                 raise
         refresh_pending = False
         try:
@@ -1095,6 +1170,7 @@ class SQLiteStore:
         )
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
+    @_source_asset_write(snapshot_inputs=True)
     async def publish_scene_plan_atomic(
         self,
         *,
@@ -1260,7 +1336,7 @@ class SQLiteStore:
                         await self._insert_planned_reference_binding(db, binding)
                 await db.commit()
             except BaseException:
-                await asyncio.shield(db.rollback())
+                await _rollback_source_write(db)
                 raise
         refresh_pending = not refresh_cache
         self._cache_refresh_pending = refresh_pending
@@ -1778,18 +1854,24 @@ class SQLiteStore:
         await db.commit()
         return cursor.rowcount
 
+    async def _reload_source_character_cache(self) -> None:
+        characters = await self.list_characters()
+        self._characters.clear()
+        self._characters.update({char.name: char for char in characters})
+        self._alias_index.clear()
+        for char in characters:
+            for alias in char.aliases:
+                self._alias_index[alias] = char.name
+
+    @_source_asset_write
     async def _update_character_field(self, name: str, field: str, value: Any) -> bool:
-        try:
-            db = await self._ensure_db()
-            await db.execute(
-                f"UPDATE characters SET {field} = ?, updated_at = datetime('now') WHERE name = ?",
-                (value, name),
-            )
-            await db.commit()
-            return True
-        except Exception as e:
-            console.print(f"[red]更新角色字段失败: {e}[/red]")
-            return False
+        db = await self._ensure_db()
+        cursor = await db.execute(
+            f"UPDATE characters SET {field} = ?, updated_at = datetime('now') WHERE name = ?",
+            (value, name),
+        )
+        await db.commit()
+        return bool(cursor.rowcount)
 
     async def _merge_stored_voice_facts(self, db, character: NovelCharacter) -> None:
         from novelvideo.character_voice_facts import VoiceFacts, merge_voice_facts
@@ -1806,6 +1888,7 @@ class SQLiteStore:
                 character.voice_facts,
             )
 
+    @_source_asset_write
     async def add_character(self, character: NovelCharacter) -> None:
         db = await self._ensure_db()
         incoming_voice_facts_json = character.voice_facts_json
@@ -1866,6 +1949,7 @@ class SQLiteStore:
         for alias in character.aliases:
             self._alias_index[alias] = character.name
 
+    @_source_asset_write
     async def set_character_extraction_locked(self, name: str, locked: bool) -> bool:
         """Persist extraction lock without rewriting any character asset fields."""
         db = await self._ensure_db()
@@ -1881,6 +1965,7 @@ class SQLiteStore:
             character.extraction_locked = bool(locked)
         return bool(cursor.rowcount)
 
+    @_source_asset_write
     async def apply_character_voice_recommendation(self, name: str, *, expected_digest: str, voice_facts) -> bool:
         """CAS only verified missing speech facts; never overwrite a stale profile."""
         import sqlite3
@@ -1916,6 +2001,7 @@ class SQLiteStore:
         await self.load_graph_state()
         return True
 
+    @_source_asset_write
     async def update_character(self, name: str, **updates) -> None:
         char = self.get_character(name)
         if not char:
@@ -1932,20 +2018,18 @@ class SQLiteStore:
         await self.add_character(char)
         console.print(f"[green]已更新角色: {name}[/green]")
 
+    @_source_asset_write
     async def delete_all_characters(self) -> int:
-        try:
-            db = await self._ensure_db()
-            cursor = await db.execute("DELETE FROM characters")
-            await db.commit()
-            self._characters.clear()
-            self._alias_index.clear()
-            deleted = cursor.rowcount
-            console.print(f"[dim]已删除 {deleted} 个旧角色[/dim]")
-            return deleted
-        except Exception as e:
-            console.print(f"[yellow]删除旧角色失败: {e}[/yellow]")
-            return 0
+        db = await self._ensure_db()
+        cursor = await db.execute("DELETE FROM characters")
+        await db.commit()
+        self._characters.clear()
+        self._alias_index.clear()
+        deleted = cursor.rowcount
+        console.print(f"[dim]已删除 {deleted} 个旧角色[/dim]")
+        return deleted
 
+    @_source_asset_write
     async def rename_character(self, old_name: str, new_name: str) -> None:
         char = self.get_character(old_name)
         if not char:
@@ -1987,6 +2071,7 @@ class SQLiteStore:
             old_dir.replace(new_dir)
         console.print(f"[green]已重命名角色: {old_name} → {new_name}[/green]")
 
+    @_source_asset_write
     async def delete_character(self, name: str) -> None:
         char = self.get_character(name)
         if not char:
@@ -2006,6 +2091,7 @@ class SQLiteStore:
         """统一别名查找键，降低空格/大小写差异导致的失配。"""
         return " ".join((value or "").replace("\u3000", " ").strip().lower().split())
 
+    @_source_asset_write
     async def add_scene(self, scene: NovelScene) -> None:
         """添加或更新场景。"""
         db = await self._ensure_db()
@@ -2045,6 +2131,7 @@ class SQLiteStore:
         )
         await db.commit()
 
+    @_source_asset_write
     async def add_scene_if_absent(self, scene: NovelScene) -> bool:
         """Atomically insert a scene without changing an existing record."""
         await self._ensure_db()
@@ -2077,7 +2164,7 @@ class SQLiteStore:
                 await db.commit()
                 return cursor.rowcount == 1
             except BaseException:
-                await asyncio.shield(db.rollback())
+                await _rollback_source_write(db)
                 raise
 
     async def get_scene_exact(self, name: str) -> Optional[NovelScene]:
@@ -2110,6 +2197,7 @@ class SQLiteStore:
             rows = await cursor.fetchall()
         return [self._row_to_scene(row) for row in rows]
 
+    @_source_asset_write
     async def update_scene(self, name: str, **updates) -> bool:
         """更新场景字段。"""
         allowed = {
@@ -2149,6 +2237,7 @@ class SQLiteStore:
         await db.commit()
         return (cursor.rowcount or 0) > 0
 
+    @_source_asset_write
     async def clear_scene_stale_reference_kind(self, name: str, kind: str) -> bool:
         """Clear one persisted stale marker without changing the other kinds."""
         if kind not in {"master", "reverse_master", "pano"}:
@@ -2159,6 +2248,7 @@ class SQLiteStore:
         remaining = [item for item in scene.stale_reference_kinds if item != kind]
         return await self.update_scene(name, stale_reference_kinds=remaining)
 
+    @_source_asset_write
     async def rename_scene(self, old_name: str, new_name: str) -> bool:
         """重命名场景记录。资源目录迁移由调用方处理。"""
         old_name = str(old_name or "").strip()
@@ -2175,6 +2265,7 @@ class SQLiteStore:
         await db.commit()
         return (cursor.rowcount or 0) > 0
 
+    @_source_asset_write
     async def delete_scene(self, name: str) -> bool:
         """删除场景。"""
         db = await self._ensure_db()
@@ -2341,6 +2432,7 @@ class SQLiteStore:
             updated_at=row["updated_at"] if "updated_at" in row.keys() else "",
         )
 
+    @_source_asset_write
     async def add_character_identity(
         self, character_name: str, identity: CharacterIdentity
     ) -> None:
@@ -2356,7 +2448,8 @@ class SQLiteStore:
         identities = char.identities
         identities.append(identity)
         char.identities = identities
-        await self._update_character_field(char.name, "identities_json", char.identities_json)
+        if not await self._update_character_field(char.name, "identities_json", char.identities_json):
+            raise RuntimeError("Character source is stale: database write failed")
         console.print(f"[green]已为 {char.name} 添加身份: {identity.identity_name}[/green]")
 
     async def _cascade_identity_change(self, old_id: str, new_id: str | None = None) -> None:
@@ -2369,6 +2462,7 @@ class SQLiteStore:
                     ids = [x for x in ids if x != old_id]
                 await self.update_episode(ep.number, identity_ids=ids)
 
+    @_source_asset_write
     async def update_character_identity(
         self,
         character_name: str,
@@ -2421,9 +2515,11 @@ class SQLiteStore:
             new_id = target_identity.identity_id
             if old_id != new_id:
                 await self._cascade_identity_change(old_id, new_id)
-        await self._update_character_field(char.name, "identities_json", char.identities_json)
+        if not await self._update_character_field(char.name, "identities_json", char.identities_json):
+            raise RuntimeError("Character source is stale: database write failed")
         console.print(f"[green]已更新 {char.name} 的身份: {target_identity.identity_id}[/green]")
 
+    @_source_asset_write
     async def delete_character_identity(self, character_name: str, identity_id: str) -> None:
         char = self.get_character(character_name)
         if not char:
@@ -2438,7 +2534,8 @@ class SQLiteStore:
             raise ValueError(f"身份 {identity_id} 不存在")
         char.identities = identities
         await self._cascade_identity_change(identity_id, None)
-        await self._update_character_field(char.name, "identities_json", char.identities_json)
+        if not await self._update_character_field(char.name, "identities_json", char.identities_json):
+            raise RuntimeError("Character source is stale: database write failed")
         console.print(f"[green]已删除 {char.name} 的身份: {identity_id}[/green]")
 
     async def delete_identity_image(self, character_name: str, identity_id: str) -> bool:
@@ -3164,6 +3261,7 @@ class SQLiteStore:
         await db.commit()
         return updated_count
 
+    @_source_asset_write
     async def delete_all_scenes(self) -> int:
         """删除所有场景。"""
         db = await self._ensure_db()
@@ -3635,6 +3733,7 @@ class SQLiteStore:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
+    @_source_asset_write
     async def publish_character_analysis_atomic(
         self,
         run_id: str,
@@ -3806,7 +3905,7 @@ class SQLiteStore:
                 raise ValueError(f"Story analysis run not found: {run_id}")
             await db.commit()
         except BaseException:
-            await asyncio.shield(db.rollback())
+            await _rollback_source_write(db)
             raise
         await self.load_graph_state()
         return {
@@ -3816,6 +3915,7 @@ class SQLiteStore:
             "preserved": preserved,
         }
 
+    @_source_asset_write
     async def add_characters_atomic(
         self, characters: List[NovelCharacter], *, skip_existing: bool = True
     ) -> list[str]:
@@ -3864,11 +3964,12 @@ class SQLiteStore:
                     added.append(character.name)
             await db.commit()
         except BaseException:
-            await asyncio.shield(db.rollback())
+            await _rollback_source_write(db)
             raise
         await self.load_graph_state()
         return added
 
+    @_source_asset_write
     async def add_scenes_atomic(
         self, scenes: List[NovelScene], *, skip_existing: bool = True
     ) -> list[str]:
@@ -3912,7 +4013,7 @@ class SQLiteStore:
                     added.append(scene.name)
             await db.commit()
         except BaseException:
-            await asyncio.shield(db.rollback())
+            await _rollback_source_write(db)
             raise
         return added
 

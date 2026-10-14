@@ -33,9 +33,12 @@ async def test_interleaved_source_write_cannot_erase_human_confirmation(tmp_path
         monkeypatch.setattr(store, "_merge_stored_voice_facts", paused_merge)
         pending = asyncio.create_task(store.add_character(NovelCharacter(name="小狐", role="pause", voice_facts={"vocalization_mode": "dialogue", "provenance": "source"})))
         await asyncio.wait_for(ready.wait(), timeout=3)
-        await store.add_character(NovelCharacter(name="小狐", voice_facts={"vocalization_mode": "nonverbal", "provenance": "human"}))
+        confirmation = asyncio.create_task(store.add_character(NovelCharacter(name="小狐", voice_facts={"vocalization_mode": "nonverbal", "provenance": "human"})))
+        await asyncio.sleep(.03)
+        confirmation_waited = not confirmation.done()
         resume.set()
-        await pending
+        await asyncio.gather(pending, confirmation)
+        assert confirmation_waited, "Human confirmation must wait for the shared source write lock"
         await store.load_graph_state()
         assert store.get_character("小狐").voice_facts.vocalization_mode == "nonverbal"
         assert store.get_character("小狐").voice_facts.provenance == "human"
