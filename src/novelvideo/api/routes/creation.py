@@ -91,6 +91,52 @@ async def service_for(project, user, role):
                                    authorize=lambda candidate, target: candidate == actor and target == ctx.project_id)
 
 
+@router.get('/direction-catalog')
+async def browse_direction_catalog(project: str, kind: str, user: dict = Depends(get_api_user)):
+    from novelvideo.creation.library_references import DirectionReferences
+    with errors():
+        ctx = await context_for(project, user, 'viewer')
+        return {'ok':True, 'data':await asyncio.to_thread(DirectionReferences(ctx).catalog, kind)}
+
+
+@router.get('/direction-bindings')
+async def inspect_direction_bindings(project: str, level: str = 'project', canvas_id: str | None = None,
+        group_id: str | None = None, node_id: str | None = None, mode: str | None = None,
+        duration_seconds: float | None = None, user: dict = Depends(get_api_user)):
+    from novelvideo.creation.library_references import DirectionReferences
+    with errors():
+        ctx = await context_for(project, user, 'viewer')
+        scope = {'level':level, 'canvas_id':canvas_id, 'group_id':group_id, 'node_id':node_id}
+        return {'ok':True, 'data':await asyncio.to_thread(DirectionReferences(ctx).inspect, scope,
+            mode=mode, duration_seconds=duration_seconds)}
+
+
+@router.post('/direction-bindings')
+async def apply_direction_bindings(project: str, body: dict, user: dict = Depends(get_api_user)):
+    from novelvideo.creation.library_references import DirectionReferences
+    with errors():
+        ctx = await context_for(project, user, 'editor')
+        return {'ok':True, 'data':await DirectionReferences(ctx).apply(body)}
+
+
+@router.get('/direction-snapshots/{snapshot_id}')
+async def read_direction_snapshot(project: str, snapshot_id: str, user: dict = Depends(get_api_user)):
+    from novelvideo.creation.library_references import DirectionReferences
+    with errors():
+        ctx = await context_for(project, user, 'viewer')
+        return {'ok':True, 'data':await asyncio.to_thread(DirectionReferences(ctx).snapshot, snapshot_id)}
+
+
+@router.get('/direction-requests/{request_id}')
+async def read_direction_request(project: str, request_id: str, user: dict = Depends(get_api_user)):
+    from novelvideo.creation.library_references import DirectionReferences
+    with errors():
+        ctx = await context_for(project, user, 'viewer')
+        row = await asyncio.to_thread(DirectionReferences(ctx).receipt, request_id)
+        # Absence is not proof of failure: an in-flight transaction may commit.
+        return {'ok':True, 'data':json.loads(row['result']) if row else {'request_id':request_id,'status':'unknown'}}
+
+
 @router.get('/assets')
 async def browse_assets(project: str, user: dict = Depends(get_api_user)):
     with errors():
