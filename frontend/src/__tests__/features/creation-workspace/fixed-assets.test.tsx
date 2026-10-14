@@ -15,6 +15,27 @@ const entry = { kind: 'character' as const, source_name: 'Lin', parent_source_na
   media: [{ slot_id: 'character:Lin:portrait', role: 'portrait', preview_url: '/latest.png', sha256: 'hash', adoption_status: 'adopted' }] };
 describe('fixed asset application', () => {
   beforeEach(() => vi.clearAllMocks());
+  it('places consecutive button additions in free space using nodes present after registration', async () => {
+    useCanvasStore.setState({ nodes: [], edges: [], selectedNodeId: null });
+    vi.mocked(listCreationCanvases).mockResolvedValue([{ canvas_id: 'free', title: '自由', kind: 'free', episode_id: null, status: 'applied' }]);
+    vi.mocked(registerCreationAsset).mockImplementation(async () => {
+      if (!useCanvasStore.getState().nodes.length) useCanvasStore.setState({ nodes: [{ id: 'existing', type: 'uploadNode', position: { x: 120, y: 120 }, measured: { width: 360, height: 360 }, data: {} }] as never });
+      return { base_asset_id: 'base', revision: 1 };
+    });
+    const run = vi.fn().mockImplementation(async request => {
+      const store = useCanvasStore.getState();
+      useCanvasStore.setState({ nodes: [...store.nodes, { id: request.payload.node_id, type: request.payload.create.type, position: request.payload.create.position, measured: { width: 360, height: 360 }, data: {} }] });
+      return { status: 'applied' };
+    });
+    vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue({ isCurrent: () => true, run } as never);
+    await applyFixedAsset({ project: 'p', canvasId: 'free', entry, media: entry.media[0] });
+    await applyFixedAsset({ project: 'p', canvasId: 'free', entry: { ...entry, title: 'Another' }, media: entry.media[0] });
+    const nodes = useCanvasStore.getState().nodes;
+    for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+      const a = nodes[i].position, b = nodes[j].position;
+      expect(Math.abs(a.x - b.x) >= 360 || Math.abs(a.y - b.y) >= 360).toBe(true);
+    }
+  });
   it.each(['pano', 'panorama_360'])('previews the selected %s rather than the master thumbnail', async role => {
     window.history.replaceState({}, '', '/projects/p/freezone?workspace=free');
     const ref = { base_asset_id: 'scene', revision: 1 };

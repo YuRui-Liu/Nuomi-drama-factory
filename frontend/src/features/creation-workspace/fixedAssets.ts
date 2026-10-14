@@ -49,12 +49,18 @@ export async function applyFixedAsset(input: FixedAssetApplication) {
   const ref = await registerCreationAsset(project, { selection: entry.selection, proof: entry.proof });
   if (!runtime.isCurrent()) return { status: 'detached' as const };
   const nodeId = input.targetNodeId ?? crypto.randomUUID();
+  const store = useCanvasStore.getState();
+  // Resolve after registration: local edits may have added nodes while awaiting proof.
+  // Root anchors avoid treating a group's relative child coordinates as canvas coordinates.
+  const roots = store.nodes.filter(node => !node.parentId);
+  const anchor = roots.find(node => node.id === store.selectedNodeId) ?? roots[roots.length - 1];
+  const position = input.position ?? (anchor ? store.findNodePosition(anchor.id, 360, 360) : { x: 120, y: 120 });
   const request: AssetBindRequest = {
     request_id: crypto.randomUUID(), kind: 'asset.bind',
     scope: { project_id: project, canvas_id: canvasId, episode_id: workspace.episode_id, node_ids: [nodeId] },
     expected_revisions: {}, payload: { node_id: nodeId, asset_ref: ref,
       media: { slot_id: media.slot_id, role: media.role },
-      ...(input.targetNodeId ? {} : { create: { type: input.nodeType ?? fixedAssetNodeType(media), position: input.position ?? { x: 120, y: 120 } } }),
+      ...(input.targetNodeId ? {} : { create: { type: input.nodeType ?? fixedAssetNodeType(media), position } }),
     },
   };
   const result = await runtime.run(request);
