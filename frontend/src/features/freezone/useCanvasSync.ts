@@ -59,6 +59,8 @@ import {
   type StoredCanvasDraft,
 } from "./canvasDraftStorage";
 import { safeLocalStorageSet } from "@/lib/localStorageQuota";
+import { createExternalCanvasOperation, readPendingCanvasOperation, type ExternalCanvasOperation } from './externalCanvasOperation';
+import { graphReferenceConflicts, mergeCanvasOperation, pinHistoryBindings } from './canvasThreeWayMerge';
 
 const DEBOUNCE_MS = 800;
 const DRAFT_DEBOUNCE_MS = 300;
@@ -678,6 +680,9 @@ export function useCanvasSync(
   // never survive into a canvas it was not written for. See
   // `canvasSaveCoordinator`.
   const sessionRef = useRef<CanvasSaveSession | null>(null);
+  const externalRef = useRef<ExternalCanvasOperation | null>(null);
+  const externalBarrierRef = useRef(false);
+  const serverBaselineRef = useRef<FreezoneCanvasPayload>({ nodes: [], edges: [] });
   // Incremented alongside every new session. Outgoing requests are stamped with
   // it so a late response can be recognised as belonging to a canvas load we
   // have already moved past.
@@ -865,7 +870,15 @@ export function useCanvasSync(
     const session = createCanvasSaveSession({
       canvasKey: `${project}:${canvasId}`,
       generation: canvasGenerationRef.current,
-      runSave: (version, self) => scheduleSave(buildSaveArgs(self, version)),
+      runSave: async (version, self) => {
+        const args = buildSaveArgs(self, version);
+        const saved = await scheduleSave(args);
+        if (saved && !self.isDisposed()) serverBaselineRef.current = structuredClone({
+          ...canvasEnvelopeRef.current, nodes: args.nodes, edges: args.edges,
+          metadata: args.metadata, viewport: args.viewport, revision: revisionRef.current,
+        });
+        return saved;
+      },
     });
     sessionRef.current = session;
     return session;
@@ -900,6 +913,73 @@ export function useCanvasSync(
   // signature/revision/envelope so the next local edit doesn't immediately
   // re-PUT with stale baseline, then push the new content into the store.
   useEffect(() => {
+    const capture = (): FreezoneCanvasPayload => ({ ...canvasEnvelopeRef.current,
+      nodes: useCanvasStore.getState().nodes, edges: useCanvasStore.getState().edges,
+      viewport: useCanvasStore.getState().currentViewport,
+      metadata: buildPersistMetadata(useShotMetadataStore.getState().shot), revision: revisionRef.current });
+    const operation = createExternalCanvasOperation(project, canvasId, {
+      capture,
+      baseline: () => serverBaselineRef.current,
+      drain: async () => {
+        const session = sessionRef.current;
+        if (!session || !hydratedRef.current || switchingRef.current) return false;
+        externalBarrierRef.current = true;
+        const saved = await flush();
+        if (sessionRef.current !== session) return false;
+        if (saved !== true) { externalBarrierRef.current = false; return false; }
+        if (debounceTimerRef.current != null) { clearTimeout(debounceTimerRef.current); debounceTimerRef.current = null; }
+        return session.drainAndPause();
+      },
+      resume: (save = true) => {
+        externalBarrierRef.current = false;
+        sessionRef.current?.resume();
+        setSyncStatus('ready');
+        if (save && currentDraftSignature() !== lastPersistedDraftSignatureRef.current) void requestSave();
+      },
+      report: (state, message) => {
+        if (state === 'conflict') {
+          const local = capture();
+          writeConflictSnapshot({ canvas_id: canvasId, nodes: local.nodes, edges: local.edges,
+            viewport: local.viewport, metadata: local.metadata ?? null, timestamp: new Date().toISOString() });
+        }
+        setSyncStatus(state === 'working' ? 'saving' : state === 'conflict' ? 'conflict' : state === 'applied' ? 'ready' : 'error');
+        setError(message ?? null);
+      },
+      apply: (merged, remote, baseline) => {
+        switchingRef.current = true;
+        const state = useCanvasStore.getState();
+        const rebaseFrame = (frame: CanvasHistorySnapshot): CanvasHistorySnapshot | null => {
+          const next = mergeCanvasOperation(baseline, { ...baseline, nodes: frame.nodes, edges: frame.edges }, remote, true).canvas;
+          // A pre-operation frame may predate a parent or endpoint now required
+          // by server-created content. Such a frame is no longer a usable undo.
+          if (graphReferenceConflicts(next.nodes, next.edges).length) return null;
+          return { ...frame, nodes: pinHistoryBindings(next.nodes as CanvasNode[], remote.nodes as CanvasNode[]), edges: next.edges as CanvasEdge[] };
+        };
+        const rebaseHistory = (frames: CanvasHistorySnapshot[]) => frames.map(rebaseFrame).filter((frame): frame is CanvasHistorySnapshot => frame !== null);
+        // Keep selection/dirty flags and independent undo, but never undo a server binding locally.
+        useCanvasStore.setState({ nodes: merged.nodes as CanvasNode[], edges: merged.edges as CanvasEdge[],
+          history: { past: rebaseHistory(state.history.past), future: rebaseHistory(state.history.future) },
+          dragHistorySnapshot: state.dragHistorySnapshot ? rebaseFrame(state.dragHistorySnapshot) : null,
+          userEditsSinceHydrate: Math.max(1, state.userEditsSinceHydrate), lastMutationSource: 'user_edit' });
+        metadataRef.current = merged.metadata ?? null;
+        setMetadata(metadataRef.current);
+        setFreezoneCanvasMetadata(metadataRef.current);
+        useCanvasStore.getState().hydrateViewportBookmarks(merged.metadata?.viewportBookmarks);
+        useShotMetadataStore.getState().hydrate((merged.metadata?.shotMetadata as ShotMetadata) ?? EMPTY_SHOT_METADATA);
+        revisionRef.current = remote.revision ?? null;
+        setRevision(revisionRef.current);
+        canvasEnvelopeRef.current = canvasEnvelopeFromRemote(remote);
+        serverBaselineRef.current = structuredClone(remote);
+        lastRemoteNodeCountRef.current = remote.nodes.length;
+        lastSignatureRef.current = canvasContentSignature(merged.nodes as CanvasNode[], merged.edges as CanvasEdge[]);
+        lastPersistedDraftSignatureRef.current = canvasDraftSignature(remote.nodes as CanvasNode[], remote.edges as CanvasEdge[], remote.metadata ?? null);
+        pendingClientSaveIdRef.current = null;
+        pendingClientSaveIdSignatureRef.current = null;
+        switchingRef.current = false;
+        if (!writeDraftNow()) throw new Error('无法保存合并草稿，资产操作恢复记录已保留');
+      },
+    });
+    externalRef.current = operation;
     const saveProjectionEditNow = () => {
       window.setTimeout(() => {
         if (!hydratedRef.current || switchingRef.current) return;
@@ -914,6 +994,7 @@ export function useCanvasSync(
     };
 
     return registerFreezoneCanvasRuntime(project, canvasId, (remote, merge) => {
+      if (sessionRef.current?.isPaused() || externalBarrierRef.current) { setError('资产操作待确认，暂不能应用其他服务端刷新'); return; }
       if (debounceTimerRef.current != null) {
         window.clearTimeout(debounceTimerRef.current);
         debounceTimerRef.current = null;
@@ -943,6 +1024,7 @@ export function useCanvasSync(
       revisionRef.current = remoteRevision;
       setRevision(remoteRevision);
       canvasEnvelopeRef.current = canvasEnvelopeFromRemote(remote);
+      serverBaselineRef.current = structuredClone(remote);
       lastSignatureRef.current = nextSignature;
       lastRemoteNodeCountRef.current = remoteNodes.length;
       pendingClientSaveIdRef.current = null;
@@ -1013,8 +1095,8 @@ export function useCanvasSync(
       applyCanvasDataEdit(next.nodes, next.edges);
       saveProjectionEditNow();
       return true;
-    });
-  }, [applyCanvasDataEdit, project, canvasId, setCanvasData]);
+    }, operation);
+  }, [applyCanvasDataEdit, project, canvasId, setCanvasData, reloadKey]);
 
   // ---- 1. Hydrate ---- //
   useEffect(() => {
@@ -1039,6 +1121,7 @@ export function useCanvasSync(
     // session owns save scheduling from now on, and the old one can no longer
     // write to anything this canvas reads.
     startSaveSession();
+    externalBarrierRef.current = false;
     lastRemoteNodeCountRef.current = 0;
     pendingClientSaveIdRef.current = null;
     pendingClientSaveIdSignatureRef.current = null;
@@ -1053,6 +1136,7 @@ export function useCanvasSync(
         revisionRef.current = remoteRevision;
         setRevision(remoteRevision);
         canvasEnvelopeRef.current = canvasEnvelopeFromRemote(remote);
+        serverBaselineRef.current = structuredClone(remote);
         const nodes = (remote.nodes ?? []) as Parameters<typeof setCanvasData>[0];
         const edges = (remote.edges ?? []) as Parameters<typeof setCanvasData>[1];
         const meta = (remote.metadata ?? null) as
@@ -1060,7 +1144,10 @@ export function useCanvasSync(
           | null;
         const remoteSignature = canvasDraftSignature(nodes, edges, meta);
         lastPersistedDraftSignatureRef.current = remoteSignature;
-        const draft = readCanvasDraft(project, canvasId);
+        const pendingOperation = readPendingCanvasOperation(project, canvasId);
+        if (pendingOperation) { externalBarrierRef.current = true; sessionRef.current?.pause(); }
+        const storedDraft = readCanvasDraft(project, canvasId);
+        const draft = pendingOperation ? null : storedDraft;
         const draftDecision = decideHydrateDraft(
           draft,
           remoteRevision,
@@ -1176,6 +1263,7 @@ export function useCanvasSync(
         useCanvasStore.getState().hydrateViewportBookmarks(meta?.viewportBookmarks);
         const hydrate = useShotMetadataStore.getState().hydrate;
         hydrate(meta?.shotMetadata ?? EMPTY_SHOT_METADATA);
+        lastPersistedDraftSignatureRef.current = currentDraftSignature();
         // Order matters: only flip `hydrated → true` after the store is fully
         // seeded, then drop the `switching` gate. Inverting these would let
         // the first signature-change subscription fire while the dangerous-
@@ -1188,6 +1276,20 @@ export function useCanvasSync(
           setSyncStatus("conflict");
         } else {
           setSyncStatus("ready");
+          if (pendingOperation) {
+            // Recovery owns the save barrier before restoring any unsaved local content.
+            const matchingHistory = storedDraft && storedDraft.signature === canvasDraftSignature(
+              pendingOperation.local.nodes as CanvasNode[], pendingOperation.local.edges as CanvasEdge[], pendingOperation.local.metadata ?? null,
+            ) ? storedDraft.history : null;
+            useCanvasStore.setState({ nodes: pendingOperation.local.nodes as CanvasNode[], edges: pendingOperation.local.edges as CanvasEdge[],
+              ...(matchingHistory ? { history: matchingHistory } : {}), userEditsSinceHydrate: 1, lastMutationSource: 'user_edit' });
+            metadataRef.current = pendingOperation.local.metadata ?? null;
+            setMetadata(metadataRef.current);
+            useCanvasStore.getState().hydrateViewportBookmarks(metadataRef.current?.viewportBookmarks);
+            useShotMetadataStore.getState().hydrate((metadataRef.current?.shotMetadata as ShotMetadata) ?? EMPTY_SHOT_METADATA);
+            void externalRef.current?.run();
+            return;
+          }
           consumeQueuedLocalFreezoneProjections(project, canvasId);
         }
       } catch (err) {
@@ -1265,6 +1367,11 @@ export function useCanvasSync(
   useEffect(() => {
     const triggerSave = () => {
       if (!hydratedRef.current || switchingRef.current) return;
+      if (sessionRef.current?.isPaused()) {
+        try { externalRef.current?.capture(); if (!writeDraftNow()) throw new Error('无法保存本地草稿'); }
+        catch (err) { setSyncStatus('error'); setError(String(err)); }
+        return;
+      }
       scheduleDraftWrite();
       if (statusRef.current === "conflict" || statusRef.current === "error") {
         return;
@@ -1295,6 +1402,12 @@ export function useCanvasSync(
         return;
       }
       const nextSignature = canvasContentSignature(state.nodes, state.edges);
+      if (sessionRef.current?.isPaused()) {
+        suppressNextCanvasAutosaveRef.current = false;
+        lastSignatureRef.current = nextSignature;
+        triggerSave();
+        return;
+      }
       if (suppressNextCanvasAutosaveRef.current) {
         suppressNextCanvasAutosaveRef.current = false;
         lastSignatureRef.current = nextSignature;
@@ -1349,6 +1462,7 @@ export function useCanvasSync(
   }, [project, canvasId, status]);
 
   const flush = async (): Promise<boolean> => {
+    if (sessionRef.current?.isPaused()) { writeDraftNow(); return false; }
     // A workspace switch unmounts the 300ms viewport writer. Persist the
     // current camera before that timer can be cancelled, including clean
     // canvases that take the fast path below. Never capture a previous
@@ -1358,8 +1472,7 @@ export function useCanvasSync(
     }
     if (hydratedRef.current && !switchingRef.current && statusRef.current === "ready" &&
         !sessionRef.current?.isSaving() && debounceTimerRef.current == null &&
-        (currentDraftSignature() === lastPersistedDraftSignatureRef.current ||
-         useCanvasStore.getState().userEditsSinceHydrate === 0)) {
+        currentDraftSignature() === lastPersistedDraftSignatureRef.current) {
       return true;
     }
     if (debounceTimerRef.current != null) {
@@ -1379,6 +1492,10 @@ export function useCanvasSync(
   // keeps the correct method + cookie auth.
   useEffect(() => {
     const handler = () => {
+      if (sessionRef.current?.isPaused() || externalBarrierRef.current) {
+        try { externalRef.current?.capture(); writeDraftNow(); } catch (err) { setError(String(err)); }
+        return;
+      }
       const currentViewport = useCanvasStore.getState().currentViewport;
       // Final, synchronous guarantee for the refresh case: a pending debounced
       // localStorage write may not have fired yet, so persist the latest
@@ -1473,6 +1590,11 @@ export function useCanvasSync(
   }, [project, canvasId, metadata]);
 
   const retry = () => {
+    if (externalBarrierRef.current) {
+      // This is recovery, not permission to discard a possibly committed operation's draft.
+      setReloadKey((k) => k + 1);
+      return;
+    }
     // The user picked "refresh" on the conflict overlay — discard the local
     // snapshot so a future 409 starts fresh. If they wanted to keep it, they
     // would have clicked the "下载本地 JSON" button first.
@@ -1481,6 +1603,7 @@ export function useCanvasSync(
     setReloadKey((k) => k + 1);
   };
   const saveCopy = async () => {
+    if (externalBarrierRef.current) throw new Error('请先恢复待确认的资产操作，再保存副本');
     const snapshot = readConflictSnapshot(canvasId);
     if (!snapshot) {
       throw new Error("No local conflict snapshot is available to save.");
@@ -1521,6 +1644,7 @@ export function useCanvasSync(
   // metadata envelope pass-through, but do not read/write dedicated fields.
 
   const restoreMainlineDefault = async (options?: { bestEffort?: boolean }) => {
+    if (externalBarrierRef.current) throw new Error('请先恢复待确认的资产操作，再恢复主线');
     const preset = metadata?.preset as Record<string, unknown> | undefined;
     const request = presetRequestFromMetadata(preset);
     if (!request) {
@@ -1551,6 +1675,7 @@ export function useCanvasSync(
           throw new Error("当前画布还有未保存冲突，处理后再同步主线视图");
         }
       }
+      if (externalBarrierRef.current) throw new Error('资产操作正在进行，暂不能恢复主线');
       await createCanvasFromPreset(project, {
         ...request,
         canvas_id: canvasId,

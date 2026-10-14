@@ -1,7 +1,12 @@
 import { apiCall } from './client';
+import type { AssetBindRequest, CanvasOperationResult } from '@/features/creation-workspace/contracts';
 import type { CreationCanvas, CreationResult, CreateWorkspaceInput } from '@/features/creation-workspace/contracts';
 
 const root = (project: string) => `projects/${encodeURIComponent(project)}/creation`;
+export const applyCreationOperation = (project: string, request: AssetBindRequest) =>
+  apiCall<CanvasOperationResult>(`${root(project)}/operations`, { method: 'POST', json: request });
+export const getCreationOperation = (project: string, operationId: string) =>
+  apiCall<CanvasOperationResult>(`${root(project)}/operations/${encodeURIComponent(operationId)}`);
 export function listCreationCanvases(project: string, signal?: AbortSignal) {
   return apiCall<CreationCanvas[]>(`${root(project)}/canvases`, { signal });
 }

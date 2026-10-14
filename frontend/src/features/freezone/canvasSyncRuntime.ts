@@ -2,6 +2,8 @@
 // Copyright (c) 2026 ClaymoreLab
 import type { FreezoneCanvasPayload } from "@/api/canvas";
 import type { CanvasEdge, CanvasNode } from "@/stores/canvasStore";
+import type { AssetBindRequest } from '@/features/creation-workspace/contracts';
+import type { ExternalCanvasOperation, ExternalOperationOutcome } from './externalCanvasOperation';
 
 export type RemoteCanvasMerge = (
   remoteNodes: CanvasNode[],
@@ -36,6 +38,7 @@ interface RemoteCanvasRuntime {
   flush?: CanvasFlush;
   applyLocalProjection?: LocalProjectionApplier;
   removeLocalProjection?: LocalProjectionRemover;
+  operation?: ExternalCanvasOperation;
 }
 
 let currentRuntime: RemoteCanvasRuntime | null = null;
@@ -52,14 +55,23 @@ export function registerFreezoneCanvasRuntime(
   flush?: CanvasFlush,
   applyLocalProjection?: LocalProjectionApplier,
   removeLocalProjection?: LocalProjectionRemover,
+  operation?: ExternalCanvasOperation,
 ): () => void {
-  const runtime = { project, canvasId, apply, flush, applyLocalProjection, removeLocalProjection };
+  currentRuntime?.operation?.dispose();
+  const runtime = { project, canvasId, apply, flush, applyLocalProjection, removeLocalProjection, operation };
   currentRuntime = runtime;
   return () => {
+    operation?.dispose();
     if (currentRuntime === runtime) {
       currentRuntime = null;
     }
   };
+}
+
+export function runExternalCanvasOperation(project: string, canvasId: string, request?: AssetBindRequest): Promise<ExternalOperationOutcome> {
+  const runtime = currentRuntime;
+  if (!runtime || runtime.project !== project || runtime.canvasId !== canvasId || !runtime.operation) return Promise.resolve({ status: 'detached' });
+  return runtime.operation.run(request);
 }
 
 export function applyRemoteFreezoneCanvas(

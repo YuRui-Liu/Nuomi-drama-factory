@@ -5,6 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getFreezoneCanvas, putFreezoneCanvas } from "@/api/canvas";
 import { ApiError } from "@/api/client";
+import { applyCreationOperation, getCreationOperation } from '@/api/creation';
+import { readPendingCanvasOperation } from '@/features/freezone/externalCanvasOperation';
+import type { AssetBindRequest } from '@/features/creation-workspace/contracts';
+import { runExternalCanvasOperation } from '@/features/freezone/canvasSyncRuntime';
+vi.mock('@/api/creation', () => ({ applyCreationOperation: vi.fn(), getCreationOperation: vi.fn() }));
 import {
   FREEZONE_HYDRATE_RELEASE_GRACE_MS,
   FREEZONE_HYDRATE_SETTLED_REUSE_MS,
@@ -43,6 +48,346 @@ vi.mock("@xyflow/react", () => ({
 }));
 
 describe("useCanvasSync hydrate lifecycle", () => {
+  const binding = (canvas: string): AssetBindRequest => ({
+    request_id: `bind-${canvas}`, kind: 'asset.bind',
+    scope: { project_id: 'project-a', canvas_id: canvas, node_ids: ['a'] }, expected_revisions: {},
+    payload: { node_id: 'a', asset_ref: { base_asset_id: 'asset', revision: 1 }, media: { slot_id: 'portrait', role: 'portrait' } },
+  });
+  const originalNode = { id: 'a', type: 'uploadNode', position: { x: 0, y: 0 }, data: { imageUrl: 'old' } };
+  const applied = { operation_id: 'operation', status: 'applied' as const, object_refs: [], canvas_revision: 2 };
+  const remoteBound = () => ({ nodes: [{ ...originalNode, data: { imageUrl: '/fixed', assetRef: { revision: 1 } } }], edges: [], revision: 2 });
+  const openExternal = async (canvas: string) => {
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ nodes: [originalNode], edges: [], revision: 1 });
+    const hook = renderHook(() => useCanvasSync('project-a', canvas));
+    await waitFor(() => expect(hook.result.current.status).toBe('ready'));
+    return hook;
+  };
+
+  it('does not claim a pending older request completed a different new request', async () => {
+    const canvas = 'external-new-request';
+    const hook = await openExternal(canvas);
+    vi.mocked(applyCreationOperation).mockRejectedValue(new TypeError('unknown'));
+    await act(async () => { await runExternalCanvasOperation('project-a', canvas, binding(canvas)); });
+    vi.mocked(applyCreationOperation).mockResolvedValue(applied);
+    vi.mocked(getFreezoneCanvas).mockResolvedValue(remoteBound());
+    const second = { ...binding(canvas), request_id: 'different-asset-choice' };
+    await act(async () => { expect((await runExternalCanvasOperation('project-a', canvas, second)).status).toBe('busy'); });
+    expect(applyCreationOperation).toHaveBeenCalledTimes(1);
+    hook.unmount();
+  });
+
+  it('drains an already sent PUT before posting the binding and blocks unload during draining', async () => {
+    const canvas = 'external-drain';
+    const hook = await openExternal(canvas);
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    let release!: (value: { saved: boolean; revision: number }) => void;
+    vi.mocked(putFreezoneCanvas).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    act(() => useCanvasStore.setState({ nodes: useCanvasStore.getState().nodes.map(n => ({ ...n, position: { x: 12, y: 0 } })), userEditsSinceHydrate: 1 }));
+    let flush!: Promise<boolean | null>;
+    act(() => { flush = flushFreezoneCanvasRuntime('project-a', canvas); });
+    await waitFor(() => expect(putFreezoneCanvas).toHaveBeenCalledTimes(1));
+    vi.mocked(applyCreationOperation).mockResolvedValue(applied);
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ ...remoteBound(), revision: 3, nodes: [{ ...remoteBound().nodes[0], position: { x: 12, y: 0 } }] });
+    let operation!: ReturnType<typeof runExternalCanvasOperation>;
+    act(() => { operation = runExternalCanvasOperation('project-a', canvas, binding(canvas)); window.dispatchEvent(new Event('beforeunload')); });
+    expect(applyCreationOperation).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    await act(async () => { release({ saved: true, revision: 2 }); await flush; expect((await operation).status).toBe('applied'); });
+    expect(vi.mocked(applyCreationOperation).mock.calls[0][1].expected_revisions).toEqual({ [canvas]: 2 });
+    expect(useCanvasStore.getState().nodes[0].data.imageUrl).toBe('/fixed');
+    hook.unmount();
+  });
+
+  it('does not send a mutation without durable recovery storage', async () => {
+    const canvas = 'external-quota';
+    const hook = await openExternal(canvas);
+    const original = Storage.prototype.setItem;
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key, value) {
+      if (key.startsWith('canvas-operation:')) throw new Error('quota');
+      return original.call(this, key, value);
+    });
+    await act(async () => { expect((await runExternalCanvasOperation('project-a', canvas, binding(canvas))).status).toBe('failed'); });
+    expect(applyCreationOperation).not.toHaveBeenCalled();
+    expect(hook.result.current.error).toContain('quota');
+    spy.mockRestore();
+    hook.unmount();
+  });
+
+  it('keeps local edits and resumes saves after a definite first-attempt rejection', async () => {
+    const canvas = 'external-rejected';
+    const hook = await openExternal(canvas);
+    let reject!: (error: Error) => void;
+    vi.mocked(applyCreationOperation).mockImplementation(() => new Promise((_, fail) => { reject = fail; }));
+    let pending!: ReturnType<typeof runExternalCanvasOperation>;
+    act(() => { pending = runExternalCanvasOperation('project-a', canvas, binding(canvas)); });
+    await waitFor(() => expect(applyCreationOperation).toHaveBeenCalled());
+    act(() => useCanvasStore.setState({ nodes: useCanvasStore.getState().nodes.map(n => ({ ...n, position: { x: 81, y: 0 } })), userEditsSinceHydrate: 1 }));
+    await act(async () => { reject(new ApiError('invalid asset', 409)); expect((await pending).status).toBe('failed'); });
+    expect(useCanvasStore.getState().nodes[0].position.x).toBe(81);
+    expect(useCanvasStore.getState().nodes[0].data.imageUrl).toBe('old');
+    expect(readPendingCanvasOperation('project-a', canvas)).toBeNull();
+    expect(putFreezoneCanvas).toHaveBeenCalled();
+    hook.unmount();
+  });
+
+  it('does not resume stale saves when a recovered unknown POST now returns an auth error', async () => {
+    const canvas = 'external-uncertain-auth';
+    const hook = await openExternal(canvas);
+    vi.mocked(applyCreationOperation).mockRejectedValueOnce(new TypeError('lost response')).mockRejectedValueOnce(new ApiError('not authorized', 403));
+    await act(async () => { expect((await runExternalCanvasOperation('project-a', canvas, binding(canvas))).status).toBe('pending'); });
+    await act(async () => { expect((await runExternalCanvasOperation('project-a', canvas)).status).toBe('pending'); });
+    expect(readPendingCanvasOperation('project-a', canvas)).not.toBeNull();
+    expect(await flushFreezoneCanvasRuntime('project-a', canvas)).toBe(false);
+    hook.unmount();
+  });
+
+  it('queries a known running operation and retries its identical request before fetching the applied canvas', async () => {
+    const canvas = 'external-running';
+    const hook = await openExternal(canvas);
+    vi.mocked(applyCreationOperation).mockResolvedValueOnce({ ...applied, status: 'running' }).mockResolvedValueOnce(applied);
+    vi.mocked(getCreationOperation).mockResolvedValue({ ...applied, status: 'running' });
+    await act(async () => { expect((await runExternalCanvasOperation('project-a', canvas, binding(canvas))).status).toBe('pending'); });
+    vi.mocked(getFreezoneCanvas).mockResolvedValue(remoteBound());
+    await act(async () => { expect((await runExternalCanvasOperation('project-a', canvas)).status).toBe('applied'); });
+    expect(getCreationOperation).toHaveBeenCalledWith('project-a', 'operation');
+    expect(vi.mocked(applyCreationOperation).mock.calls[1][1]).toEqual(vi.mocked(applyCreationOperation).mock.calls[0][1]);
+    hook.unmount();
+  });
+
+  it('retains the barrier when fetching the canvas after an applied operation fails', async () => {
+    const canvas = 'external-read-failure';
+    const hook = await openExternal(canvas);
+    vi.mocked(applyCreationOperation).mockResolvedValue(applied);
+    vi.mocked(getFreezoneCanvas).mockRejectedValue(new ApiError('read failed', 404));
+    await act(async () => { expect((await runExternalCanvasOperation('project-a', canvas, binding(canvas))).status).toBe('pending'); });
+    expect(readPendingCanvasOperation('project-a', canvas)?.operationId).toBe('operation');
+    expect(await flushFreezoneCanvasRuntime('project-a', canvas)).toBe(false);
+    expect(putFreezoneCanvas).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
+  it('does not submit an operation when draining a local save fails', async () => {
+    const canvas = 'external-save-failure';
+    const hook = await openExternal(canvas);
+    act(() => useCanvasStore.setState({ nodes: useCanvasStore.getState().nodes.map(n => ({ ...n, position: { x: 66, y: 0 } })), userEditsSinceHydrate: 1 }));
+    vi.mocked(putFreezoneCanvas).mockRejectedValue(new ApiError('save rejected', 409));
+    await act(async () => { expect((await runExternalCanvasOperation('project-a', canvas, binding(canvas))).status).toBe('failed'); });
+    expect(applyCreationOperation).not.toHaveBeenCalled();
+    expect(useCanvasStore.getState().nodes[0].position.x).toBe(66);
+    hook.unmount();
+  });
+
+  it('reopens while the first POST is still in flight without losing a just-edited draft', async () => {
+    const canvas = 'external-close-inflight';
+    const hook = await openExternal(canvas);
+    let release!: (value: typeof applied) => void;
+    vi.mocked(applyCreationOperation).mockImplementationOnce(() => new Promise(resolve => { release = resolve; })).mockResolvedValue(applied);
+    let first!: ReturnType<typeof runExternalCanvasOperation>;
+    act(() => { first = runExternalCanvasOperation('project-a', canvas, binding(canvas)); });
+    await waitFor(() => expect(applyCreationOperation).toHaveBeenCalled());
+    act(() => useCanvasStore.setState({ nodes: useCanvasStore.getState().nodes.map(n => ({ ...n, position: { x: 123, y: 0 } })) }));
+    hook.unmount();
+    vi.mocked(getFreezoneCanvas).mockResolvedValue(remoteBound());
+    const reopened = renderHook(() => useCanvasSync('project-a', canvas));
+    await waitFor(() => expect(readPendingCanvasOperation('project-a', canvas)).toBeNull());
+    expect(useCanvasStore.getState().nodes[0].position.x).toBe(123);
+    expect(useCanvasStore.getState().nodes[0].data.imageUrl).toBe('/fixed');
+    await act(async () => { release(applied); expect((await first).status).toBe('detached'); });
+    expect(useCanvasStore.getState().nodes[0].position.x).toBe(123);
+    reopened.unmount();
+  });
+
+  it('recovers unknown operation with the exact request and immediately persisted local metadata after reopen', async () => {
+    const canvas = 'external-reopen';
+    const hook = await openExternal(canvas);
+    vi.mocked(applyCreationOperation).mockRejectedValueOnce(new TypeError('network unknown'));
+    await act(async () => { expect((await runExternalCanvasOperation('project-a', canvas, binding(canvas))).status).toBe('pending'); });
+    const sent = structuredClone(vi.mocked(applyCreationOperation).mock.calls[0][1]);
+    act(() => {
+      useCanvasStore.setState({ nodes: useCanvasStore.getState().nodes.map(n => ({ ...n, position: { x: 73, y: 0 } })) });
+      useShotMetadataStore.getState().hydrate({ title: 'during-pending' } as never);
+    });
+    expect(readPendingCanvasOperation('project-a', canvas)?.local.metadata?.shotMetadata).toEqual({ title: 'during-pending' });
+    hook.unmount();
+    vi.mocked(applyCreationOperation).mockResolvedValue(applied);
+    vi.mocked(getFreezoneCanvas).mockResolvedValue(remoteBound());
+    const reopened = renderHook(() => useCanvasSync('project-a', canvas));
+    await waitFor(() => expect(readPendingCanvasOperation('project-a', canvas)).toBeNull());
+    expect(vi.mocked(applyCreationOperation).mock.calls[1][1]).toEqual(sent);
+    expect(useCanvasStore.getState().nodes[0].position.x).toBe(73);
+    expect(useCanvasStore.getState().nodes[0].data.imageUrl).toBe('/fixed');
+    expect(useShotMetadataStore.getState().shot).toEqual({ title: 'during-pending' });
+    reopened.unmount();
+  });
+
+  it('keeps same-field conflicts recoverable and prevents autosave of either half', async () => {
+    const canvas = 'external-conflict';
+    const hook = await openExternal(canvas);
+    let release!: (value: typeof applied) => void;
+    vi.mocked(applyCreationOperation).mockImplementation(() => new Promise(resolve => { release = resolve; }));
+    let pending!: ReturnType<typeof runExternalCanvasOperation>;
+    act(() => { pending = runExternalCanvasOperation('project-a', canvas, binding(canvas)); });
+    await waitFor(() => expect(applyCreationOperation).toHaveBeenCalled());
+    act(() => useCanvasStore.setState({ nodes: useCanvasStore.getState().nodes.map(n => ({ ...n, data: { ...n.data, imageUrl: '/local' } })) }));
+    vi.mocked(getFreezoneCanvas).mockResolvedValue(remoteBound());
+    await act(async () => { release(applied); expect((await pending).status).toBe('conflict'); });
+    expect(hook.result.current.status).toBe('conflict');
+    expect((hook.result.current.readConflictSnapshot()?.nodes[0] as typeof originalNode)?.data.imageUrl).toBe('/local');
+    const journal = readPendingCanvasOperation('project-a', canvas)!;
+    expect((journal.local.nodes[0] as typeof originalNode).data.imageUrl).toBe('/local');
+    expect((journal.remote!.nodes[0] as typeof originalNode).data.imageUrl).toBe('/fixed');
+    expect(await flushFreezoneCanvasRuntime('project-a', canvas)).toBe(false);
+    expect(putFreezoneCanvas).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
+  it('rejects duplicate clicks and isolates an old response after A to B to A', async () => {
+    const canvas = 'external-late-a';
+    const hook = await openExternal(canvas);
+    let release!: (value: typeof applied) => void;
+    vi.mocked(applyCreationOperation).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    let pending!: ReturnType<typeof runExternalCanvasOperation>;
+    act(() => { pending = runExternalCanvasOperation('project-a', canvas, binding(canvas)); });
+    await waitFor(() => expect(applyCreationOperation).toHaveBeenCalled());
+    expect((await runExternalCanvasOperation('project-a', canvas, binding(canvas))).status).toBe('busy');
+    hook.unmount();
+    const middle = await openExternal('external-late-b');
+    middle.unmount();
+    vi.mocked(applyCreationOperation).mockRejectedValue(new TypeError('offline'));
+    const next = renderHook(() => useCanvasSync('project-a', canvas));
+    await waitFor(() => expect(next.result.current.status).toBe('error'));
+    act(() => useCanvasStore.setState({ nodes: useCanvasStore.getState().nodes.map(n => ({ ...n, position: { x: 99, y: 0 } })) }));
+    await act(async () => { release(applied); expect((await pending).status).toBe('detached'); });
+    expect(useCanvasStore.getState().nodes[0].position.x).toBe(99);
+    expect(useCanvasStore.getState().nodes[0].data.imageUrl).toBe('old');
+    next.unmount();
+  });
+
+  it('rebases undo and redo so server bindings survive independent local edits', async () => {
+    const canvas = 'external-history';
+    const hook = await openExternal(canvas);
+    act(() => {
+      useCanvasStore.setState({ history: { past: [{ nodes: [{ ...originalNode, position: { x: -10, y: 0 } }] as never, edges: [] }], future: [] }, selectedNodeId: 'a' });
+    });
+    vi.mocked(applyCreationOperation).mockResolvedValue(applied);
+    vi.mocked(getFreezoneCanvas).mockResolvedValue(remoteBound());
+    await act(async () => { expect((await runExternalCanvasOperation('project-a', canvas, binding(canvas))).status).toBe('applied'); });
+    expect(useCanvasStore.getState().selectedNodeId).toBe('a');
+    act(() => { expect(useCanvasStore.getState().undo()).toBe(true); });
+    expect(useCanvasStore.getState().nodes[0].position.x).toBe(-10);
+    expect(useCanvasStore.getState().nodes[0].data.imageUrl).toBe('/fixed');
+    act(() => { expect(useCanvasStore.getState().redo()).toBe(true); });
+    expect(useCanvasStore.getState().nodes[0].data.imageUrl).toBe('/fixed');
+    hook.unmount();
+  });
+
+  it('pins even unchanged bound media in older undo frames and retains server-created nodes', async () => {
+    const canvas = 'external-history-unchanged';
+    const hook = await openExternal(canvas);
+    act(() => useCanvasStore.setState({ history: { past: [{ nodes: [{ ...originalNode, data: { imageUrl: '/older' }, position: { x: -8, y: 0 } }] as never, edges: [] }], future: [] } }));
+    vi.mocked(applyCreationOperation).mockResolvedValue(applied);
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ ...remoteBound(), nodes: [
+      { ...originalNode, data: { imageUrl: 'old', assetRef: { revision: 1 } } },
+      { ...remoteBound().nodes[0], id: 'server-new' },
+    ] });
+    await act(async () => { await runExternalCanvasOperation('project-a', canvas, binding(canvas)); });
+    act(() => { useCanvasStore.getState().undo(); });
+    expect(useCanvasStore.getState().nodes.find(n => n.id === 'a')?.data.imageUrl).toBe('old');
+    expect(useCanvasStore.getState().nodes.find(n => n.id === 'a')?.position.x).toBe(-8);
+    expect(useCanvasStore.getState().nodes.find(n => n.id === 'server-new')?.data.imageUrl).toBe('/fixed');
+    hook.unmount();
+  });
+
+  it('keeps independent local deletions, new edges and bookmarks alongside server nodes and receipts', async () => {
+    const canvas = 'external-graph-metadata';
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ nodes: [originalNode, { ...originalNode, id: 'b' }], edges: [], revision: 1 });
+    const hook = renderHook(() => useCanvasSync('project-a', canvas));
+    await waitFor(() => expect(hook.result.current.status).toBe('ready'));
+    let release!: (value: typeof applied) => void;
+    vi.mocked(applyCreationOperation).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    let pending!: ReturnType<typeof runExternalCanvasOperation>;
+    act(() => { pending = runExternalCanvasOperation('project-a', canvas, binding(canvas)); });
+    await waitFor(() => expect(applyCreationOperation).toHaveBeenCalled());
+    const bookmarks = [{ x: 1, y: 2, zoom: 1 }];
+    act(() => useCanvasStore.setState({ nodes: [useCanvasStore.getState().nodes[0], { ...useCanvasStore.getState().nodes[0], id: 'local-new' }],
+      edges: [{ id: 'local-edge', source: 'a', target: 'local-new' }], viewportBookmarks: bookmarks as never, userEditsSinceHydrate: 1 }));
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ ...remoteBound(), nodes: [...remoteBound().nodes, { ...originalNode, id: 'b' }, { ...originalNode, id: 'server-new' }], metadata: { creation_projection_receipts: ['operation'] } });
+    await act(async () => { release(applied); expect((await pending).status).toBe('applied'); });
+    expect(useCanvasStore.getState().nodes.map(n => n.id).sort()).toEqual(['a', 'local-new', 'server-new']);
+    expect(useCanvasStore.getState().edges.map(e => e.id)).toEqual(['local-edge']);
+    const calls = vi.mocked(putFreezoneCanvas).mock.calls;
+    const lastSave = calls[calls.length - 1][2];
+    expect(lastSave.metadata?.creation_projection_receipts).toEqual(['operation']);
+    expect((lastSave.metadata?.viewportBookmarks as unknown[])[0]).toEqual(bookmarks[0]);
+    expect(lastSave.base_revision).toBe(2);
+    hook.unmount();
+  });
+
+  it('retains both drafts when a server edge references a locally deleted node', async () => {
+    const canvas = 'external-dangling-edge';
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ nodes: [originalNode, { ...originalNode, id: 'b' }], edges: [], revision: 1 });
+    const hook = renderHook(() => useCanvasSync('project-a', canvas));
+    await waitFor(() => expect(hook.result.current.status).toBe('ready'));
+    let release!: (value: typeof applied) => void;
+    vi.mocked(applyCreationOperation).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    let pending!: ReturnType<typeof runExternalCanvasOperation>;
+    act(() => { pending = runExternalCanvasOperation('project-a', canvas, binding(canvas)); });
+    await waitFor(() => expect(applyCreationOperation).toHaveBeenCalled());
+    act(() => useCanvasStore.setState({ nodes: [useCanvasStore.getState().nodes[0]], userEditsSinceHydrate: 1 }));
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ ...remoteBound(), nodes: [...remoteBound().nodes, { ...originalNode, id: 'b' }], edges: [{ id: 'server-edge', source: 'a', target: 'b' }] });
+    await act(async () => { release(applied); expect((await pending).status).toBe('conflict'); });
+    expect(hook.result.current.status).toBe('conflict');
+    expect(useCanvasStore.getState().edges).toEqual([]);
+    const journal = readPendingCanvasOperation('project-a', canvas)!;
+    expect(journal.local.nodes).toHaveLength(1);
+    expect(journal.remote!.edges).toHaveLength(1);
+    expect(putFreezoneCanvas).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
+  it('keeps usable undo frames without restoring dangling server child references', async () => {
+    const canvas = 'external-history-parent';
+    const group = { ...originalNode, id: 'group', type: 'groupNode' };
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ nodes: [originalNode, group], edges: [], revision: 1 });
+    const hook = renderHook(() => useCanvasSync('project-a', canvas));
+    await waitFor(() => expect(hook.result.current.status).toBe('ready'));
+    act(() => useCanvasStore.setState({ history: { past: [
+      { nodes: [{ ...originalNode, position: { x: -10, y: 0 } }, group] as never, edges: [] },
+      { nodes: [originalNode] as never, edges: [] },
+    ], future: [] } }));
+    vi.mocked(applyCreationOperation).mockResolvedValue(applied);
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ ...remoteBound(), nodes: [...remoteBound().nodes, group, { ...originalNode, id: 'child', parentId: 'group' }] });
+    await act(async () => { expect((await runExternalCanvasOperation('project-a', canvas, binding(canvas))).status).toBe('applied'); });
+    act(() => { expect(useCanvasStore.getState().undo()).toBe(true); });
+    expect(useCanvasStore.getState().nodes.find(n => n.id === 'a')?.position.x).toBe(-10);
+    expect(useCanvasStore.getState().nodes.find(n => n.id === 'group')?.type).toBe('groupNode');
+    expect(useCanvasStore.getState().nodes.find(n => n.id === 'child')?.parentId).toBe('group');
+    hook.unmount();
+  });
+  it('merges a server bind with edits made during the operation and fences unload PUT', async () => {
+    const nodes = [{ id: 'a', type: 'uploadNode', position: { x: 0, y: 0 }, data: { imageUrl: 'old' } }];
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ nodes, edges: [], revision: 1 });
+    let release!: (value: never) => void;
+    vi.mocked(applyCreationOperation).mockImplementation(() => new Promise(resolve => { release = resolve; }));
+    const hook = renderHook(() => useCanvasSync('project-a', 'external-bind'));
+    await waitFor(() => expect(hook.result.current.status).toBe('ready'));
+    let operation!: ReturnType<typeof runExternalCanvasOperation>;
+    act(() => { operation = runExternalCanvasOperation('project-a', 'external-bind', {
+      request_id: 'bind-one', kind: 'asset.bind', scope: { project_id: 'project-a', canvas_id: 'external-bind', node_ids: ['a'] },
+      expected_revisions: {}, payload: { node_id: 'a', asset_ref: { base_asset_id: 'asset', revision: 1 }, media: { slot_id: 'portrait', role: 'portrait' } },
+    }); });
+    await waitFor(() => expect(applyCreationOperation).toHaveBeenCalled());
+    expect(hook.result.current.status).toBe('saving');
+    act(() => { useCanvasStore.setState({ nodes: useCanvasStore.getState().nodes.map(n => ({ ...n, position: { x: 42, y: 0 } })), userEditsSinceHydrate: 1 }); });
+    act(() => window.dispatchEvent(new Event('beforeunload')));
+    expect(putFreezoneCanvas).not.toHaveBeenCalled();
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ nodes: [{ ...nodes[0], data: { imageUrl: '/fixed', assetRef: { revision: 1 } } }], edges: [], revision: 2 });
+    await act(async () => { release({ operation_id: 'op', status: 'applied', object_refs: [], canvas_revision: 2 } as never); await operation; });
+    expect(useCanvasStore.getState().nodes[0].position.x).toBe(42);
+    expect(useCanvasStore.getState().nodes[0].data.imageUrl).toBe('/fixed');
+    hook.unmount();
+  });
   it("does not PUT an unchanged hydrated canvas before a server run refresh", async () => {
     vi.mocked(getFreezoneCanvas).mockResolvedValue({ nodes: [], edges: [], revision: 12, metadata: {} });
     const hook = renderHook(() => useCanvasSync("project-a", "run-refresh-clean"));
@@ -52,6 +397,8 @@ describe("useCanvasSync hydrate lifecycle", () => {
     hook.unmount();
   });
   beforeEach(() => {
+    vi.mocked(applyCreationOperation).mockReset();
+    vi.mocked(getCreationOperation).mockReset();
     vi.useRealTimers();
     vi.mocked(getFreezoneCanvas).mockReset();
     vi.mocked(putFreezoneCanvas).mockReset();

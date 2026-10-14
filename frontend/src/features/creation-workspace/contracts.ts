@@ -1,4 +1,22 @@
 export type WorkspaceKind = 'concept' | 'episode' | 'free';
+export interface AssetBindRequest {
+  request_id: string;
+  kind: 'asset.bind';
+  scope: { project_id: string; canvas_id: string; episode_id?: string | null; node_ids: string[] };
+  expected_revisions: Record<string, number>;
+  payload: {
+    node_id: string;
+    asset_ref: { base_asset_id: string; variant_id?: string | null; revision: number };
+    media: { slot_id: string; role: string };
+    create?: { type: 'uploadNode' | 'threeDWorldNode'; position: { x: number; y: number }; [key: string]: unknown };
+  };
+}
+export interface CanvasOperationResult {
+  operation_id: string;
+  status: 'applied' | 'awaiting_confirmation' | 'running' | 'conflict';
+  canvas_revision: number | null;
+  object_refs: Record<string, unknown>[];
+}
 export type WorkspaceStatus = 'applied' | 'running' | 'conflict';
 export interface CreationCanvas {
   canvas_id: string;

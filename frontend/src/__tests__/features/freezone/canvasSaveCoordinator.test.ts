@@ -51,6 +51,24 @@ const tick = async (times = 6) => {
 };
 
 describe("createCanvasSaveSession", () => {
+  it("drains the wire before pausing and holds later saves until resumed", async () => {
+    const gate = controllable();
+    const s = session(gate.runSave);
+    void s.requestSave();
+    const barrier = s.drainAndPause();
+    expect(s.isPaused()).toBe(false);
+    gate.releases[0](true);
+    expect(await barrier).toBe(true);
+    expect(s.isPaused()).toBe(true);
+    const later = s.requestSave();
+    await tick();
+    expect(gate.calls).toHaveLength(1);
+    s.resume();
+    await tick();
+    expect(gate.calls).toHaveLength(2);
+    gate.releases[1](true);
+    expect(await later).toBe(true);
+  });
   it("keeps at most one request on the wire", async () => {
     const gate = controllable();
     const s = session(gate.runSave);

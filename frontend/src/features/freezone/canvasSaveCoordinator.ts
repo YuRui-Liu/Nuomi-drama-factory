@@ -44,6 +44,11 @@ export interface CanvasSaveSession {
   isDisposed(): boolean;
   /** True while a request is on the wire or a follow-up is queued. */
   isSaving(): boolean;
+  isPaused(): boolean;
+  /** Drain already queued writes, then atomically close the send gate. */
+  drainAndPause(): Promise<boolean>;
+  pause(): void;
+  resume(): void;
   /** Monotonic counter of save requests made against this session. */
   contentVersion(): number;
   /** The highest content version known to have reached the server. */
@@ -96,6 +101,15 @@ export function createCanvasSaveSession(
   let pendingVersion: number | null = null;
   let pumping = false;
   let disposed = false;
+  let paused = false;
+  let barrier: ((ok: boolean) => void) | null = null;
+  const finishBarrier = (ok: boolean) => {
+    if (!barrier) return;
+    paused = ok;
+    const resolve = barrier;
+    barrier = null;
+    resolve(ok);
+  };
   const waiters: Waiter[] = [];
 
   /** Release every waiter at or below `upTo`. */
@@ -113,6 +127,14 @@ export function createCanvasSaveSession(
     generation: options.generation,
     isDisposed: () => disposed,
     isSaving: () => pumping,
+    isPaused: () => paused,
+    pause: () => { paused = true; },
+    resume: () => { paused = false; if (pendingVersion !== null) startPump(); },
+    drainAndPause: () => {
+      if (disposed || barrier) return Promise.resolve(false);
+      if (!pumping && pendingVersion === null) { paused = true; return Promise.resolve(true); }
+      return new Promise<boolean>((resolve) => { barrier = resolve; });
+    },
     contentVersion: () => contentVersion,
     savedVersion: () => savedVersion,
     hasUnsavedContentBeyond: (version: number) =>
@@ -133,6 +155,7 @@ export function createCanvasSaveSession(
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      finishBarrier(false);
       pendingVersion = null;
       // Nothing queued will ever run now. Waiters must learn that rather than
       // hang — `flush()` on the way out of a canvas depends on it.
@@ -141,7 +164,7 @@ export function createCanvasSaveSession(
   };
 
   async function pump(): Promise<void> {
-    while (!disposed && pendingVersion !== null) {
+    while (!disposed && !paused && pendingVersion !== null) {
       const version = pendingVersion;
       pendingVersion = null;
 
@@ -170,18 +193,20 @@ export function createCanvasSaveSession(
       // it. Everything still waiting is told its content did not land.
       pendingVersion = null;
       settle(Number.POSITIVE_INFINITY, false);
+      finishBarrier(false);
       return;
     }
   }
 
   function startPump(): void {
-    if (pumping) return;
+    if (pumping || paused || disposed) return;
     pumping = true;
     void (async () => {
       try {
         await pump();
       } finally {
         pumping = false;
+        if (!disposed && pendingVersion === null) finishBarrier(true);
         // Re-check before parking. `settle()` only *resolves* the waiters — their
         // `.then` callbacks run in a later microtask, after the loop has already
         // seen an empty queue and returned. So a caller that saves again the
@@ -189,7 +214,7 @@ export function createCanvasSaveSession(
         // while `pumping` is still true, and its `startPump()` bails out. Without
         // this re-check that work would sit in `pendingVersion` forever and its
         // promise would never settle.
-        if (!disposed && pendingVersion !== null) {
+        if (!disposed && !paused && pendingVersion !== null) {
           startPump();
         }
       }
