@@ -91,7 +91,7 @@ assert other_canvas_object['revision'] == original_revision
 
 ## 任务 7：资产及风格／手法引用
 
-**状态：进行中。7A1、A2a-1、A2a-2、A2a-3 已双审提交，分别为 `4317952`、`0784b2c`、`7b8bf35`、`99b111a`。A2b-1 已提交 `4290cf6`；A2b-2 的 production-assets、角色、场景直接入口组已提交 `3edd058`、`af82152`、`94e55fb`。画布采用、场景 worker 发布和 7B 界面尚未完成。**
+**状态：进行中。7A1、A2a-1、A2a-2、A2a-3 已双审提交，分别为 `4317952`、`0784b2c`、`7b8bf35`、`99b111a`。A2b-1 已提交 `4290cf6`；A2b-2 的 production-assets、角色、场景直接入口、画布资产发布组已提交 `3edd058`、`af82152`、`94e55fb`、`d49160b`。casting 入口测试上下文夹具独立修复为 `0e1aeca`。场景 worker 发布正在接入，7B 界面尚未完成。**
 
 文件：原任务 7 文件，新增 `creation/library_references.py` 和测试。AssetAdapter 源写锁、重命名映射、interrupted publication 的显式对账并入本任务。
 
