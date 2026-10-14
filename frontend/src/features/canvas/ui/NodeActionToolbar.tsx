@@ -107,6 +107,7 @@ import { getNodeToolPlugins } from "@/features/canvas/tools";
 import type { ToolIconKey } from "@/features/canvas/tools";
 import { UiChipButton, UiPanel } from "@/components/ui";
 import { ZoomScaledToolbar } from "@/features/canvas/ui/ZoomScaledToolbar";
+import { useNodeToolbarPlacement } from "./useNodeToolbarPlacement";
 import { copyImageSourceToClipboard } from "@/commands/image";
 import { resolveImageDisplayUrl } from "@/features/canvas/application/imageData";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -127,7 +128,6 @@ import {
   NODE_TOOLBAR_ALIGN,
   NODE_TOOLBAR_CLASS,
   NODE_TOOLBAR_OFFSET,
-  NODE_TOOLBAR_POSITION,
 } from "./nodeToolbarConfig";
 import type {
   GridActionKey,
@@ -1055,6 +1055,8 @@ export const NodeActionToolbar = memo(
     // missing.
     const _toolbarFlags = nodeMainlineFlags(node);
     const isPresetLocked = _toolbarFlags.isPresetManaged;
+    const placement = useNodeToolbarPlacement(node.id, NODE_TOOLBAR_OFFSET,
+      `${node.position.x}:${node.position.y}:${node.width}:${node.height}`);
 
     // 分镜组 has its own dedicated toolbar (aspect / grid / index / convert /
     // ungroup) — render it instead of the generic node toolbar.
@@ -1067,12 +1069,13 @@ export const NodeActionToolbar = memo(
         <ReactFlowNodeToolbar
           nodeId={node.id}
           isVisible
-          position={NODE_TOOLBAR_POSITION}
+          position={placement.position}
           align={NODE_TOOLBAR_ALIGN}
           offset={NODE_TOOLBAR_OFFSET}
           className={NODE_TOOLBAR_CLASS}
         >
-          <ZoomScaledToolbar origin="bottom center" mode="counter" counterMax={1}>
+          <div ref={placement.ref}>
+          <ZoomScaledToolbar origin={placement.origin} mode="counter" counterMax={1}>
           {/* 节点激活时，顶部菜单从节点上沿淡入+轻微上滑浮现（而非生硬地直接出现），
               与下方操作区的入场动画呼应。motion-reduce 下退化为无动画。 */}
           <UiPanel className="flex animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 items-center gap-1.5 rounded-[18px] !border-white/10 !bg-[#242426]/95 px-2 py-1.5 text-sm shadow-[0_10px_24px_rgba(0,0,0,0.28)] backdrop-blur-2xl duration-200 ease-out motion-reduce:animate-none [&_svg]:h-4 [&_svg]:w-4">
@@ -2474,6 +2477,7 @@ export const NodeActionToolbar = memo(
             )}
           </UiPanel>
           </ZoomScaledToolbar>
+          </div>
         </ReactFlowNodeToolbar>
       </>
     );

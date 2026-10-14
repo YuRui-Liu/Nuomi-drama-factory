@@ -12,6 +12,7 @@ import { StylePickerPopover } from '@/features/canvas/nodes/StylePickerPopover';
 import { ExtensionStyleChip } from '@/features/canvas/extension-styles/ExtensionStyleChip';
 import { fixedStyleVersionLabel, useFixedNodeStyle } from '@/features/direction-references/useFixedNodeStyle';
 import { useAuthStore } from '@/stores/auth-store';
+import { useCanvasStore } from '@/stores/canvasStore';
 import { getSupertaleProject } from '@/api/projects';
 const navigation=vi.hoisted(()=>({state:{location:{pathname:'/projects/p',search:{}}}}));
 vi.mock('@tanstack/react-router',()=>({useRouter:()=>navigation,useRouterState:({select}:{select:(state:typeof navigation.state)=>unknown})=>select(navigation.state)}));
@@ -27,6 +28,32 @@ const inspect=(scope:api.DirectionScope):api.DirectionState=>({scope,proof:'scop
 const body:api.DirectionRequest={request_id:'one',kind:'style',action:'apply',scope:{level:'project'},expected_revision:0,scope_proof:'scope',selection:{id:'custom',version:'1',proof:'catalog'}};
 const applied:api.DirectionResult={request_id:'one',operation_id:'op',status:'applied',kind:'style',snapshot_ref:null,bindings:[],effective:[]};
 describe('fixed direction operations',()=>{
+ it.each([['group',['g']],['nodes',['a','b']]] as const)('freezes the real %s selection when opening the entry',async(level,ids)=>{
+  useCanvasStore.setState({nodes:[{id:'g',type:'groupNode',selected:ids.includes('g' as never),position:{x:0,y:0},data:{}},{id:'a',type:'imageGenNode',selected:ids.includes('a' as never),position:{x:0,y:0},data:{}},{id:'b',type:'imageGenNode',selected:ids.includes('b' as never),position:{x:0,y:0},data:{}}] as never});
+  render(<DirectionReferenceEntry project="p" canvasId="c" selectedNodes selectedId="custom"/>);
+  const button=await screen.findByRole('button',{name:'风格与手法配置'});await act(async()=>{});fireEvent.click(button);
+  await waitFor(()=>expect(screen.getByLabelText('影响范围')).toHaveValue(level));
+  act(()=>useCanvasStore.setState({nodes:[]}));
+  await waitFor(()=>expect(screen.getByRole('button',{name:'应用固定风格'})).not.toBeDisabled());
+  fireEvent.click(screen.getByRole('button',{name:'应用固定风格'}));
+  await waitFor(()=>expect(api.applyDirectionBindings).toHaveBeenCalled());
+  const body=vi.mocked(api.applyDirectionBindings).mock.calls[0][1];
+  expect(level==='group'?body.scope:body.targets?.map(t=>t.scope.level==='node'?t.scope.node_id:null)).toEqual(level==='group'?{level:'group',canvas_id:'c',group_id:'g'}:['a','b']);
+ });
+ it.each([['g','a'],['g','g2']])('requires an explicit group or leaf selection for mixed/group targets %j',async(...ids)=>{
+  useCanvasStore.setState({nodes:ids.map(id=>({id,type:id.startsWith('g')?'groupNode':'imageGenNode',selected:true,position:{x:0,y:0},data:{}})) as never});
+  render(<DirectionReferenceEntry project="p" canvasId="c" selectedNodes selectedId="custom"/>);
+  const button=await screen.findByRole('button',{name:'风格与手法配置'});await act(async()=>{});fireEvent.click(button);
+  await screen.findByText('当前选择包含多个分组或分组与节点，请明确选择一个分组或节点集合。');
+  expect(screen.getByRole('button',{name:'应用固定风格'})).toBeDisabled();
+  expect(api.applyDirectionBindings).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText('影响范围'),{target:{value:'nodes'}});
+  fireEvent.click(await screen.findByLabelText('小林'));
+  await waitFor(()=>expect(screen.getByRole('button',{name:'应用固定风格'})).not.toBeDisabled());
+  fireEvent.click(screen.getByRole('button',{name:'应用固定风格'}));
+  await waitFor(()=>expect(api.applyDirectionBindings).toHaveBeenCalled());
+  expect(vi.mocked(api.applyDirectionBindings).mock.calls[0][1].targets?.map(t=>t.scope)).toEqual([{level:'node',canvas_id:'c',node_id:'a'}]);
+ });
  it('ignores an older fixed-style read arriving after a newer configuration event',async()=>{
   vi.mocked(currentFreezoneCanvasScope).mockReturnValue({project:'p',canvasId:'c'} as never);
   vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue({isCurrent:()=>true} as never);

@@ -8,22 +8,25 @@ import { captureFreezoneCanvasRuntime,currentFreezoneCanvasScope } from '@/featu
 import { createDirectionOperation,readDirectionIntent,finishDirectionIntent,type DirectionOwner,type DirectionIntent } from './directionOperation';
 
 interface NodeOption {id:string;type?:string;data?:Record<string,unknown>}
-export interface DirectionPanelProps {owner:DirectionOwner;kind:DirectionKind;selectedId?:string;canvasId?:string;nodeIds?:string[];isCurrent:()=>boolean;onApplied?:()=>void}
+export interface DirectionPanelProps {owner:DirectionOwner;kind:DirectionKind;selectedId?:string;canvasId?:string;nodeIds?:string[];selectedTargets?:{id:string;type?:string}[];isCurrent:()=>boolean;onApplied?:()=>void}
 const control='rounded border border-border bg-background px-2 py-1 text-sm';
 export function DirectionReferencePanel(props:DirectionPanelProps){
- const [frozen]=useState(()=>({...props,nodeIds:props.nodeIds?[...props.nodeIds]:[]}));
+ const [frozen]=useState(()=>({...props,nodeIds:props.nodeIds?[...props.nodeIds]:[],selectedTargets:props.selectedTargets?.map(n=>({...n}))}));
+ const groupTargets=frozen.selectedTargets?.filter(n=>n.type==='groupNode')??[];
+ const singleGroup=groupTargets.length===1&&frozen.selectedTargets?.length===1?groupTargets[0].id:'';
+ const ambiguous=!!frozen.selectedTargets?.length&&!singleGroup&&(groupTargets.length>0||frozen.selectedTargets.some(n=>!n.type));
  const {owner,kind}=frozen;const title=kind==='style'?'风格':'手法';
  const alive=useRef(true);useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
  const current=()=>alive.current&&frozen.isCurrent();
  const [catalog,setCatalog]=useState<DirectionEntry[]>([]),[selected,setSelected]=useState(frozen.selectedId??'');
  const [canvases,setCanvases]=useState<CreationCanvas[]>([]),[canvas,setCanvas]=useState(frozen.canvasId??'');
- const [nodes,setNodes]=useState<NodeOption[]>([]),[nodeIds,setNodeIds]=useState(frozen.nodeIds),[group,setGroup]=useState('');
- const [level,setLevel]=useState<'project'|'canvas'|'group'|'nodes'>(frozen.nodeIds.length?'nodes':frozen.canvasId?'canvas':'project');
+ const [nodes,setNodes]=useState<NodeOption[]>([]),[nodeIds,setNodeIds]=useState(ambiguous||singleGroup?[]:frozen.nodeIds),[group,setGroup]=useState(singleGroup);
+ const [level,setLevel]=useState<'project'|'canvas'|'group'|'nodes'|'choose'>(ambiguous?'choose':singleGroup?'group':frozen.nodeIds.length?'nodes':frozen.canvasId?'canvas':'project');
  const [states,setStates]=useState<DirectionState[]>([]),[error,setError]=useState(''),[busy,setBusy]=useState(false),[compare,setCompare]=useState(0);
  const [intent,setIntent]=useState<DirectionIntent|null>(null),[message,setMessage]=useState('');
  const runtime=useRef<ReturnType<typeof captureFreezoneCanvasRuntime>>(null);
  const [initialRuntime]=useState(()=>frozen.canvasId?captureFreezoneCanvasRuntime(owner.project,frozen.canvasId):null);
- const scopes:DirectionScope[]=level==='project'?[{level:'project'}]:!canvas?[]:level==='canvas'?[{level:'canvas',canvas_id:canvas}]:level==='group'?(group?[{level:'group',canvas_id:canvas,group_id:group}]:[]):nodeIds.map(node_id=>({level:'node',canvas_id:canvas,node_id}));
+ const scopes:DirectionScope[]=level==='choose'?[]:level==='project'?[{level:'project'}]:!canvas?[]:level==='canvas'?[{level:'canvas',canvas_id:canvas}]:level==='group'?(group?[{level:'group',canvas_id:canvas,group_id:group}]:[]):nodeIds.map(node_id=>({level:'node',canvas_id:canvas,node_id}));
  const scopeKey=JSON.stringify(scopes);
  const ready=states.length>0&&JSON.stringify(states.map(s=>s.scope))===scopeKey;
  const nodeName=(id:string)=>{const node=nodes.find(n=>n.id===id);return String(node?.data?.displayName??node?.data?.label??node?.data?.title??(node?.type==='groupNode'?'分组':`节点 ${nodes.findIndex(n=>n.id===id)+1}`));};
@@ -72,7 +75,8 @@ export function DirectionReferencePanel(props:DirectionPanelProps){
    {intent.result?.effective.map((s,i)=>{const effect=s.effective[intent.request.kind];return <p key={i}>此次保存结果 · 目标 {i+1}：{effect.title??(effect.state==='disabled'?'已禁用':'继承上级')} {effect.version&&`· v${effect.version}`}；来源：{effect.origin_scope?{project:'项目',canvas:'画布',group:'分组',node:'节点'}[effect.origin_scope.level]:'无'}</p>;})}
   </div>}
   <fieldset disabled={busy||!!intent} className="space-y-3 disabled:opacity-60">
-   <label className="block">影响范围 <select aria-label="影响范围" value={level} onChange={e=>setLevel(e.target.value as typeof level)} className={control}><option value="project">整个项目</option><option value="canvas">一个画布</option><option value="group">一个分组</option><option value="nodes">明确选择的节点</option></select></label>
+   {ambiguous&&<p role="alert">当前选择包含多个分组或分组与节点，请明确选择一个分组或节点集合。</p>}
+   <label className="block">影响范围 <select aria-label="影响范围" value={level} onChange={e=>setLevel(e.target.value as typeof level)} className={control}>{ambiguous?<option value="choose">请选择明确范围</option>:<><option value="project">整个项目</option><option value="canvas">一个画布</option></>}<option value="group">一个分组</option><option value="nodes">明确选择的节点</option></select></label>
    {level!=='project'&&<label className="block">目标画布 <select aria-label="目标画布" value={canvas} onChange={e=>{setCanvas(e.target.value);setGroup('');setNodeIds([]);}} className={control}><option value="">请选择注册画布</option>{canvases.map(c=><option key={c.canvas_id} value={c.canvas_id}>{c.title}</option>)}</select></label>}
    {level==='group'&&<label>目标分组 <select aria-label="目标分组" value={group} onChange={e=>setGroup(e.target.value)} className={control}><option value="">请选择分组</option>{nodes.filter(n=>n.type==='groupNode').map(n=><option key={n.id} value={n.id}>{nodeName(n.id)}</option>)}</select></label>}
    {level==='nodes'&&<div><p>{nodeIds.map(nodeName).join('、')||'请选择目标节点；跨组选择不会自动应用整组'}</p><div className="max-h-32 overflow-auto">{nodes.filter(n=>n.type!=='groupNode').map(n=><label key={n.id} className="mr-3 inline-flex gap-1"><input type="checkbox" checked={nodeIds.includes(n.id)} onChange={e=>setNodeIds(ids=>e.target.checked?[...ids,n.id]:ids.filter(id=>id!==n.id))}/>{nodeName(n.id)}</label>)}</div></div>}
