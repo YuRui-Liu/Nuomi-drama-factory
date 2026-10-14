@@ -78,6 +78,66 @@ def publication_targets(state_dir):
     return frozenset()
 
 
+def scene_mutation_path(project_dir, name, value):
+    from .asset_media import controlled_path
+    from novelvideo.director_world.stage_manifest import stage_dir
+    path = controlled_path(project_dir,value)
+    roots = [controlled_path(project_dir,Path(project_dir)/'assets/scenes'/name),
+             controlled_path(project_dir,stage_dir(Path(project_dir),name))]
+    if not any(path.is_relative_to(root) for root in roots):
+        raise ValueError('Scene mutation must stay in its own media directory')
+    return path
+
+
+@asynccontextmanager
+async def scene_media_publication(project_dir, state_dir, scene, *, actor='scene-media', publish=True, expected=None, input_base=None):
+    """Validate cached locators before writing; provider work stays outside."""
+    from novelvideo.sqlite_store import SQLiteStore
+    from novelvideo.utils.safe_paths import validate_path_segment
+    from .asset_rename import assert_asset_locators_writable, assert_no_pending_rename
+    from .asset_media import snapshot, scene_media_layouts
+    name = scene.name
+    validate_path_segment(name,label='scene name')
+    source_before = fingerprint(scene.model_dump(mode='json'))
+    base_before = fingerprint(input_base.model_dump(mode='json')) if input_base else None
+    source = None
+    try:
+        async with asset_project_lock(state_dir):
+            scene_mutation_path(project_dir,name,Path(project_dir)/'assets/scenes'/name)
+            scene_media_layouts(project_dir,name)
+            if not (Path(state_dir)/'data.db').is_file() and not (Path(state_dir)/'creation/objects.sqlite3').is_file():
+                yield None
+                return
+            source = SQLiteStore('scene-media',output_dir=str(project_dir),state_dir=str(state_dir))
+            assert_no_pending_rename(source,kind='scene',names={name})
+            assert_asset_locators_writable(source,'scene',[name])
+            current = await source.get_scene(name)
+            if source_before != fingerprint(current.model_dump(mode='json') if current else None):
+                raise ValueError('Scene input changed before publication; reload and retry')
+            parent = await source.get_scene(current.base_scene_id) if current.base_scene_id else None
+            if base_before is not None and base_before != fingerprint(parent.model_dump(mode='json') if parent else None):
+                raise ValueError('Base scene input changed before publication; reload and retry')
+            frozen = {'scene':fingerprint(snapshot(source,{'kind':'scene','parent_id':current.base_scene_id or ''},current,archive=False))}
+            if parent:
+                frozen['base'] = fingerprint(snapshot(source,{'kind':'scene','parent_id':''},parent,archive=False))
+            from novelvideo.script_creation.asset_context import load_asset_authoring_context
+            context = load_asset_authoring_context(Path(state_dir)/'data.db','scene',name)
+            if parent:
+                context += load_asset_authoring_context(Path(state_dir)/'data.db','scene',parent.name)
+            frozen['context'] = json.dumps(context,sort_keys=True,ensure_ascii=False)
+            if expected is not None and expected != frozen:
+                raise ValueError('Scene media/input changed during preparation; result was not published')
+            if not publish:
+                yield frozen
+                return
+            slot = f'scene:{current.base_scene_id}:state:{name}:master' if current.base_scene_id else f'scene:{name}:base:master'
+            async with media_publication(source,[slot],'scene-media:'+uuid4().hex,actor):
+                yield frozen
+    finally:
+        if source is not None:
+            await source.close()
+
+
 def _checkpoint(phase):
     """Fault seam after each durable boundary, never an I/O implementation."""
 

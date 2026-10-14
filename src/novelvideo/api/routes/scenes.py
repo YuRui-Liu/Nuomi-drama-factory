@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import io
+import asyncio
+from copy import deepcopy
+from contextlib import asynccontextmanager
 import shutil
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Query, UploadFile, HTTPException
+from novelvideo.creation.asset_media_publication import scene_media_publication, scene_mutation_path
 
 from novelvideo.api.asset_metadata import newest_updated_at, tree_updated_at
 from novelvideo.api.auth import get_api_user
@@ -382,6 +386,31 @@ def _scene_payload(
 
 async def _require_scene(store: SQLiteStore, name: str) -> NovelScene | None:
     return await store.get_scene(name)
+
+
+@asynccontextmanager
+async def _publish_scene_media(ctx,project_dir,scene,*,preflight=False,expected=None):
+    from novelvideo.creation.asset_sync import SourceSyncPending
+    state_dir = Path(ctx.state_dir) if ctx is not None else project_dir/'_state'
+    try:
+        async with scene_media_publication(project_dir,state_dir,scene,
+                actor=str(getattr(ctx,'requester_user_id',None) or 'scene-api'),publish=not preflight,expected=expected) as frozen:
+            yield frozen
+    except SourceSyncPending as exc:
+        raise HTTPException(409,{'code':'asset_media_pending','message':str(exc)}) from exc
+    except ValueError as exc:
+        raise HTTPException(409,str(exc)) from exc
+
+
+def _clear_scene_currents(ctx,scene,roles):
+    from novelvideo.production_workflow import ProductionWorkflowStore
+    path=Path(ctx.state_dir)/'production_workflow.json'
+    if not path.is_file():
+        return
+    prefix=f'scene:{scene.base_scene_id}:state:{scene.name}:' if scene.base_scene_id else f'scene:{scene.name}:base:'
+    workflow=ProductionWorkflowStore(path)
+    for role in roles:
+        workflow.clear_current(slot_id=prefix+role)
 
 
 async def _derived_scene_names_for(store: SQLiteStore, scene_name: str) -> list[str]:
@@ -923,9 +952,12 @@ async def upload_scene_master(
     ctx, username, project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user)
     )
-    scene = await _require_scene(store, name)
+    scene = deepcopy(await _require_scene(store, name))
     if scene is None:
         return {"ok": False, "error": f"Scene '{name}' not found"}
+
+    async with _publish_scene_media(ctx,project_dir,scene,preflight=True) as frozen:
+        pass
 
     try:
         from PIL import Image
@@ -934,19 +966,22 @@ async def upload_scene_master(
     except Exception as exc:
         return {"ok": False, "error": f"Invalid image file: {exc}"}
 
-    master_path = canonical_scene_master_path(project_dir, scene.name)
-    master_path.parent.mkdir(parents=True, exist_ok=True)
-    if master_path.exists():
-        master_path.replace(master_path.parent / f"master_{int(time.time())}.png")
-    img.save(master_path, format="PNG")
-    clear_stale = getattr(store, "clear_scene_stale_reference_kind", None)
-    if callable(clear_stale):
-        await clear_stale(scene.name, "master")
-    scene.stale_reference_kinds = [
-        kind
-        for kind in (getattr(scene, "stale_reference_kinds", []) or [])
-        if kind != "master"
-    ]
+    async with _publish_scene_media(ctx,project_dir,scene,expected=frozen):
+        master_path = canonical_scene_master_path(project_dir, scene.name)
+        scene_mutation_path(project_dir,scene.name,master_path)
+        master_path.parent.mkdir(parents=True, exist_ok=True)
+        if master_path.exists():
+            backup=scene_mutation_path(project_dir,scene.name,master_path.parent / f"master_{int(time.time())}.png")
+            master_path.replace(backup)
+        img.save(master_path, format="PNG")
+        clear_stale = getattr(store, "clear_scene_stale_reference_kind", None)
+        if callable(clear_stale):
+            await clear_stale(scene.name, "master")
+        scene.stale_reference_kinds = [
+            kind
+            for kind in (getattr(scene, "stale_reference_kinds", []) or [])
+            if kind != "master"
+        ]
 
     return {
         "ok": True,
@@ -964,17 +999,19 @@ async def delete_scene_master(
     name: str,
     user: dict = Depends(get_api_user),
 ):
-    _ctx, _username, _project_name, project_dir, _output_dir, store = (
+    ctx, _username, _project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user)
     )
-    scene = await _require_scene(store, name)
+    scene = deepcopy(await _require_scene(store, name))
     if scene is None:
         return {"ok": False, "error": f"Scene '{name}' not found"}
-    master_path = compute_scene_master_path(project_dir, scene.name)
-    deleted = False
-    if master_path:
-        Path(master_path).unlink(missing_ok=True)
-        deleted = True
+    async with _publish_scene_media(ctx,project_dir,scene):
+        master_path = compute_scene_master_path(project_dir, scene.name)
+        deleted = False
+        if master_path:
+            scene_mutation_path(project_dir,scene.name,master_path).unlink(missing_ok=True)
+            deleted = True
+        _clear_scene_currents(ctx,scene,['master'])
     return {"ok": True, "data": {"deleted": deleted}}
 
 
@@ -1090,9 +1127,12 @@ async def upload_scene_pano(
     ctx, username, project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user)
     )
-    scene = await _require_scene(store, name)
+    scene = deepcopy(await _require_scene(store, name))
     if scene is None:
         return {"ok": False, "error": f"Scene '{name}' not found"}
+
+    async with _publish_scene_media(ctx,project_dir,scene,preflight=True) as frozen:
+        pass
 
     try:
         from PIL import Image
@@ -1108,33 +1148,36 @@ async def upload_scene_pano(
             "error": f"360 panorama must be close to 2:1 equirectangular; got {width}x{height}",
         }
 
-    out_dir = stage_manifest.stage_dir(project_dir, scene.name)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    pano_path = out_dir / "pano_360.png"
-    if pano_path.exists():
-        pano_path.replace(out_dir / f"pano_360_{int(time.time())}.png")
-    img.save(pano_path, format="PNG")
-    stage_manifest.update_manifest(
-        project_dir,
-        scene.name,
-        clear_fields=[
-            "ply_path",
-            "collision_glb_path",
-            "voxel_json_path",
-            "pano_sharp_args",
-            "splat_transform_args",
-        ],
-        pano_path=pano_path.name,
-        source="uploaded_360",
-    )
-    clear_stale = getattr(store, "clear_scene_stale_reference_kind", None)
-    if callable(clear_stale):
-        await clear_stale(scene.name, "pano")
-    scene.stale_reference_kinds = [
-        kind
-        for kind in (getattr(scene, "stale_reference_kinds", []) or [])
-        if kind != "pano"
-    ]
+    async with _publish_scene_media(ctx,project_dir,scene,expected=frozen):
+        out_dir = stage_manifest.stage_dir(project_dir, scene.name)
+        scene_mutation_path(project_dir,scene.name,out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        pano_path = scene_mutation_path(project_dir,scene.name,out_dir / 'pano_360.png')
+        if pano_path.exists():
+            backup=scene_mutation_path(project_dir,scene.name,out_dir / f"pano_360_{int(time.time())}.png")
+            pano_path.replace(backup)
+        img.save(pano_path, format="PNG")
+        stage_manifest.update_manifest(
+            project_dir,
+            scene.name,
+            clear_fields=[
+                "ply_path",
+                "collision_glb_path",
+                "voxel_json_path",
+                "pano_sharp_args",
+                "splat_transform_args",
+            ],
+            pano_path=pano_path.name,
+            source="uploaded_360",
+        )
+        clear_stale = getattr(store, "clear_scene_stale_reference_kind", None)
+        if callable(clear_stale):
+            await clear_stale(scene.name, "pano")
+        scene.stale_reference_kinds = [
+            kind
+            for kind in (getattr(scene, "stale_reference_kinds", []) or [])
+            if kind != "pano"
+        ]
 
     return {
         "ok": True,
@@ -1152,30 +1195,32 @@ async def delete_scene_pano(
     name: str,
     user: dict = Depends(get_api_user),
 ):
-    _ctx, _username, _project_name, project_dir, _output_dir, store = (
+    ctx, _username, _project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user)
     )
-    scene = await _require_scene(store, name)
+    scene = deepcopy(await _require_scene(store, name))
     if scene is None:
         return {"ok": False, "error": f"Scene '{name}' not found"}
-    pano_path = stage_manifest.resolve_pano_path(project_dir, scene.name)
-    deleted = False
-    if pano_path is not None:
-        pano_path.unlink(missing_ok=True)
-        deleted = True
-    stage_manifest.update_manifest(
-        project_dir,
-        scene.name,
-        clear_fields=[
-            "source",
-            "pano_path",
-            "ply_path",
-            "collision_glb_path",
-            "voxel_json_path",
-            "pano_sharp_args",
-            "splat_transform_args",
-        ],
-    )
+    async with _publish_scene_media(ctx,project_dir,scene):
+        pano_path = stage_manifest.resolve_pano_path(project_dir, scene.name)
+        deleted = False
+        if pano_path is not None:
+            scene_mutation_path(project_dir,scene.name,pano_path).unlink(missing_ok=True)
+            deleted = True
+        stage_manifest.update_manifest(
+            project_dir,
+            scene.name,
+            clear_fields=[
+                "source",
+                "pano_path",
+                "ply_path",
+                "collision_glb_path",
+                "voxel_json_path",
+                "pano_sharp_args",
+                "splat_transform_args",
+            ],
+        )
+        _clear_scene_currents(ctx,scene,['pano', 'ply', 'collision_glb', 'voxel_json'])
     return {"ok": True, "data": {"deleted": deleted}}
 
 
@@ -1189,9 +1234,12 @@ async def upload_scene_custom_package(
     ctx, username, project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user)
     )
-    scene = await _require_scene(store, name)
+    scene = deepcopy(await _require_scene(store, name))
     if scene is None:
         return {"ok": False, "error": f"Scene '{name}' not found"}
+    async with _publish_scene_media(ctx,project_dir,scene,preflight=True) as frozen:
+        pass
+
     suffix = Path(str(file.filename or "")).suffix.lower()
     if suffix not in {".ply", ".sog", ".splat", ".ksplat"}:
         return {
@@ -1207,7 +1255,11 @@ async def upload_scene_custom_package(
     from novelvideo import stage_asset_tasks
 
     try:
-        stage_asset_tasks.upload_scene_package(project_dir, scene.name, tmp_path)
+        with tempfile.TemporaryDirectory(prefix='scene-package-') as staging:
+            prepared = await asyncio.to_thread(stage_asset_tasks.prepare_scene_package,tmp_path,Path(staging))
+            async with _publish_scene_media(ctx,project_dir,scene,expected=frozen):
+                scene_mutation_path(project_dir,scene.name,stage_manifest.stage_dir(project_dir,scene.name))
+                stage_asset_tasks.upload_scene_package(project_dir, scene.name, prepared)
     finally:
         try:
             tmp_path.unlink()
@@ -1230,39 +1282,41 @@ async def delete_scene_custom_package(
     name: str,
     user: dict = Depends(get_api_user),
 ):
-    _ctx, _username, _project_name, project_dir, _output_dir, store = (
+    ctx, _username, _project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user)
     )
-    scene = await _require_scene(store, name)
+    scene = deepcopy(await _require_scene(store, name))
     if scene is None:
         return {"ok": False, "error": f"Scene '{name}' not found"}
 
-    custom_scene_path = stage_manifest.resolve_ply_path(
-        project_dir, scene.name, ply_kind="custom"
-    )
-    active_ply_path = stage_manifest.resolve_ply_path(project_dir, scene.name)
-    deleted = False
-    if custom_scene_path is not None:
-        custom_scene_path.unlink(missing_ok=True)
-        deleted = True
-
-    clear_fields = ["custom_scene_path"]
-    manifest = stage_manifest.load_manifest(project_dir, scene.name) or {}
-    if manifest.get("source") == "custom_scene" or (
-        custom_scene_path is not None
-        and active_ply_path is not None
-        and custom_scene_path.resolve() == active_ply_path.resolve()
-    ):
-        clear_fields.extend(
-            [
-                "source",
-                "ply_path",
-                "collision_glb_path",
-                "voxel_json_path",
-                "splat_transform_args",
-            ]
+    async with _publish_scene_media(ctx,project_dir,scene):
+        custom_scene_path = stage_manifest.resolve_ply_path(
+            project_dir, scene.name, ply_kind="custom"
         )
-    stage_manifest.update_manifest(project_dir, scene.name, clear_fields=clear_fields)
+        active_ply_path = stage_manifest.resolve_ply_path(project_dir, scene.name)
+        deleted = False
+        if custom_scene_path is not None:
+            scene_mutation_path(project_dir,scene.name,custom_scene_path).unlink(missing_ok=True)
+            deleted = True
+
+        clear_fields = ["custom_scene_path"]
+        manifest = stage_manifest.load_manifest(project_dir, scene.name) or {}
+        if manifest.get("source") == "custom_scene" or (
+            custom_scene_path is not None
+            and active_ply_path is not None
+            and custom_scene_path.resolve() == active_ply_path.resolve()
+        ):
+            clear_fields.extend(
+                [
+                    "source",
+                    "ply_path",
+                    "collision_glb_path",
+                    "voxel_json_path",
+                    "splat_transform_args",
+                ]
+            )
+        stage_manifest.update_manifest(project_dir, scene.name, clear_fields=clear_fields)
+        _clear_scene_currents(ctx,scene,['custom_scene'] + (['ply','collision_glb','voxel_json'] if 'ply_path' in clear_fields else []))
 
     return {"ok": True, "data": {"deleted": deleted}}
 
@@ -1278,7 +1332,7 @@ async def _start_3gs_single_face_task(
     ctx, username, project_name, project_dir, output_dir, store = (
         await _resolve_scene_project(project, user)
     )
-    scene = await _require_scene(store, name)
+    scene = deepcopy(await _require_scene(store, name))
     if scene is None:
         return {"ok": False, "error": f"Scene '{name}' not found"}
 

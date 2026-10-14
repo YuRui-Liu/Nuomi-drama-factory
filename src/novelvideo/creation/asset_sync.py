@@ -51,6 +51,13 @@ def fingerprint(payload):
         media = []
         for item in normalized['_media']:
             item = dict(item)
+            slot_parts = item.get('slot_id','').split(':')
+            known_scene_roles = {'master','reverse_master','spatial_layout','pano','ply','pano_ply',
+                'pano_depth_ply','master_ply','reverse_ply','custom_scene','collision_glb','voxel_json'}
+            if (slot_parts[0] == 'scene' and all(slot_parts)
+                    and ((len(slot_parts)==4 and slot_parts[2]=='base') or (len(slot_parts)==5 and slot_parts[2]=='state'))
+                    and slot_parts[-1] in known_scene_roles and item.get('media_role') == slot_parts[-1]):
+                item.pop('media_role',None)
             actual = item.get('canonical_blob') or item.get('blob')
             if item.get('current_blob') == actual:
                 item.pop('current_blob', None)

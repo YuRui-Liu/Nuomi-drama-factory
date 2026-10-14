@@ -366,6 +366,19 @@ def _cleanup_raw_ply(*paths: Path | None) -> None:
             logger.warning("failed to remove raw 3GS PLY: %s", path)
 
 
+def prepare_scene_package(src_asset: Path, staging_dir: Path) -> Path:
+    """Convert an upload in isolation; this never changes current scene media."""
+    src=Path(src_asset)
+    if src.suffix.lower() not in SCENE_PACKAGE_SUFFIXES:
+        raise ValueError('Unsupported scene package')
+    if src.suffix.lower() != '.ply':
+        return src
+    staging_dir.mkdir(parents=True,exist_ok=True)
+    dest=staging_dir/'custom.sog'
+    _compress_ply_to_sog(src,dest)
+    return dest
+
+
 def upload_scene_package(
     project_dir: Path,
     scene_id: str,
@@ -380,15 +393,22 @@ def upload_scene_package(
     suffix = src.suffix.lower()
     if suffix not in SCENE_PACKAGE_SUFFIXES:
         raise ValueError("Custom scene package must be .ply, .sog, .splat, or .ksplat")
-    out_dir = stage_manifest.stage_dir(project_dir, scene_id)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    from novelvideo.creation.asset_media_publication import scene_mutation_path
+    out_dir = scene_mutation_path(project_dir,scene_id,stage_manifest.stage_dir(project_dir,scene_id))
     if target_name is None:
         target_name = f"custom{suffix}"
-    dest = out_dir / target_name
+    dest = scene_mutation_path(project_dir,scene_id,out_dir/target_name)
+    manifest = stage_manifest.manifest_path(project_dir,scene_id)
+    scene_mutation_path(project_dir,scene_id,manifest)
+    scene_mutation_path(project_dir,scene_id,manifest.with_suffix(manifest.suffix+'.lock'))
+    if suffix == '.ply':
+        raw_dest = scene_mutation_path(project_dir,scene_id,out_dir/Path(target_name).with_suffix('.ply').name)
+        dest = scene_mutation_path(project_dir,scene_id,out_dir/Path(target_name).with_suffix('.sog').name)
+    # Validate every eventual output before copying even the raw PLY. File
+    # symlinks (including dangling or same-scene links) are never write targets.
+    out_dir.mkdir(parents=True, exist_ok=True)
     if suffix == ".ply":
-        raw_dest = out_dir / Path(target_name).with_suffix(".ply").name
         shutil.copy2(src, raw_dest)
-        dest = out_dir / Path(target_name).with_suffix(".sog").name
         _compress_ply_to_sog(raw_dest, dest)
         _cleanup_raw_ply(raw_dest)
     else:

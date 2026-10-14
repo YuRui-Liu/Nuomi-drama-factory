@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from novelvideo.project_context import ProjectContext
+from novelvideo.creation.asset_media_publication import scene_media_publication, scene_mutation_path
 from novelvideo.production_workflow.slot_ids import (
     scene_base_slot_id,
     scene_state_slot_id,
@@ -179,6 +180,8 @@ async def _run_scene_reference_asset(
     style = str(payload.get("style") or "")
     scope = envelope.get("scope")
     output_dir = Path(str(payload.get("output_dir") or ctx.output_dir))
+    if output_dir.absolute() != Path(ctx.output_dir).absolute():
+        raise ValueError('Scene output directory must match project context')
     manager = get_task_manager()
 
     if kind not in {"master", "spatial_layout", "reverse_master"}:
@@ -210,6 +213,8 @@ async def _run_scene_reference_asset(
         base_scene_id = str(getattr(scene, "base_scene_id", "") or "").strip()
         if base_scene_id and base_scene_id != scene.name:
             base_scene = await store.get_scene(base_scene_id)
+        async with scene_media_publication(output_dir,ctx.state_dir,scene,publish=False,input_base=base_scene) as frozen:
+            source_context = _scene_authoring_context(ctx,scene,base_scene)
 
         style_id = (style or IMAGE_DEFAULT_STYLE).strip() or IMAGE_DEFAULT_STYLE
         preset = get_style_preset(
@@ -282,7 +287,7 @@ async def _run_scene_reference_asset(
         output_path = await generate_scene_reference_image(
             project_dir=output_dir,
             scene=scene,
-            source_context=_scene_authoring_context(ctx, scene, base_scene),
+            source_context=source_context,
             kind=kind,  # type: ignore[arg-type]
             provider=provider,
             model=model,
@@ -292,31 +297,33 @@ async def _run_scene_reference_asset(
             base_scene=base_scene,
             output_path_override=candidate_path,
         )
-        workflow_result, canonical_updated = _register_scene_reference_candidate(
-            ctx=ctx,
-            output_dir=output_dir,
-            scene=scene,
-            kind=kind,
-            output_path=Path(output_path),
-            canonical_path=canonical_path,
-            source_attempt_id=str(
-                envelope.get("task_id") or envelope.get("job_id") or ""
+        async with scene_media_publication(output_dir,ctx.state_dir,scene,expected=frozen,input_base=base_scene,actor=str(getattr(ctx,'requester_user_id',None) or 'scene-runner')):
+            scene_mutation_path(output_dir,scene.name,canonical_path)
+            workflow_result, canonical_updated = _register_scene_reference_candidate(
+                ctx=ctx,
+                output_dir=output_dir,
+                scene=scene,
+                kind=kind,
+                output_path=Path(output_path),
+                canonical_path=canonical_path,
+                source_attempt_id=str(
+                    envelope.get("task_id") or envelope.get("job_id") or ""
+                )
+                or None,
+                recipe_revision=str(payload.get("recipe_revision") or "1"),
+                requested_model=resolution.requested_model,
+                resolved_model=resolution.model,
+                resolution_source=resolution.resolution_source,
             )
-            or None,
-            recipe_revision=str(payload.get("recipe_revision") or "1"),
-            requested_model=resolution.requested_model,
-            resolved_model=resolution.model,
-            resolution_source=resolution.resolution_source,
-        )
-        if (
-            canonical_updated
-            and canonical_path.is_file()
-            and kind in {"master", "reverse_master"}
-        ):
-            await store.clear_scene_stale_reference_kind(scene_name, kind)
-        if kind == "spatial_layout":
-            rel_path = str(canonical_path.relative_to(output_dir))
-            await store.update_scene(scene_name, spatial_layout_image=rel_path)
+            if (
+                canonical_updated
+                and canonical_path.is_file()
+                and kind in {"master", "reverse_master"}
+            ):
+                await store.clear_scene_stale_reference_kind(scene_name, kind)
+            if canonical_updated and kind == "spatial_layout":
+                rel_path = str(canonical_path.relative_to(output_dir))
+                await store.update_scene(scene_name, spatial_layout_image=rel_path)
         result = {
             "scene_name": scene_name,
             "kind": kind,
