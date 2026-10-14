@@ -127,6 +127,10 @@ A2b 分两批串行交付：**A2b-1** 可信媒体内容快照、可恢复发布
 
 **7B-3（当前）**按服务与界面串行交付：3a已双审提交 `8faaa73`，可信固定快照、作用域绑定、只读预览/解析与显式CAS应用API；专项最终28 passed，之前含27专项的关联合集180 passed，规格独立28通过，真实API继承/覆盖/禁用/解除、双节点原子应用、适用性及receipt重放通过。3b正在复用库选择和作用域编辑界面，展示继承/覆盖/禁用来源与冲突。取消本级覆盖和明确禁用不能混同；group须为真实画布组及明确成员关系，不按视觉包含推断。历史快照不得重新解析latest，普通画布保存不能伪造或擦除服务端绑定。Agent上下文/真实执行消费分别在8B/10接入。每批独立双审。
 
+7B-3b 已双审提交 `72f444a`：完整风格页、扩展风格抽屉三个入口、手法库及画布作用域配置已接入固定引用。8 文件 93 tests、末次专项 25 tests、规格独立 25 tests 和 tsc-b 通过。真实 1440/1280 分组、多节点一次应用、禁用/解除、丢响应刷新恢复、并发冲突保留选择通过。用户已允许独立测试并行执行；共享文件实现仍串行。
+
+**7B-3c（当前）**补齐审查发现的另一套 `freezone/image/style-templates`：保留插画、摄影、电商等特色模板和分类浏览，将可信模板纳入同一固定风格目录及不可变快照，ImageGen 的旧 `styleTemplateId` 选择入口在新模式改用同一作用域配置。旧模式保留；配置不启动生成。完成可信目录/CAS/历史及真实入口测试后双审，实际编译消费仍在任务 10 接入。
+
 ## 任务 8A：Agent 与模板、可扩展对象定义
 
 文件：新增 `creation/{agent_profiles,creative_templates,ontology,creative_constraints}.py`；API `api/routes/creation_library.py`；前端 `creation-workspace/{AgentProfileEditor,TemplateLibrary,ProjectConstraints}.tsx`；各模块对应 tests/creation 测试。
