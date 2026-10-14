@@ -191,6 +191,7 @@ class SharedAssetPublication:
                 if evidence['proof'] != request.source.proof:
                     fail('asset_source_changed', '画布素材已变化，请重新选择')
                 self._metadata(request)
+                await registration_io(self._preflight_new_name, request)
                 selection = request.selection.model_dump() if request.selection else {
                     'kind':request.kind, 'source_name':request.name, 'parent_source_name':''}
                 if request.mode == 'new_variant':
@@ -371,6 +372,39 @@ class SharedAssetPublication:
                 if actual_ref and actual_ref['revision'] == request.expected_ref.revision + 1 and fingerprint(current) == fingerprint(expected):
                     return
         fail('asset_selection_stale', '基础资产在中断期间已变化，不能按新版本继续创建')
+
+    def _preflight_new_name(self, request):
+        """Mirror existing locator rules without creating schema or request state.
+
+        The caller retains the project lock through the eventual INSERT. Only
+        fresh requests use this check: owned interrupted sources and completed
+        receipts must continue through their existing recovery paths.
+        """
+        if request.mode == 'existing_version':
+            return
+        if request.mode == 'new_variant' and request.kind == 'character':
+            # Character variants own generated stable IDs. Their display names
+            # are not unique in AssetAdapter.create_variant.
+            return
+        locator = request.name
+        if request.mode == 'new_variant':
+            from novelvideo.utils.derived_scenes import compose_derived_scene_name
+            locator = compose_derived_scene_name(request.selection.source_name, request.name)
+        db_path = self.state_dir/'data.db'
+        if not db_path.is_file():
+            return
+        from .asset_rename import assert_asset_locators_writable, assert_no_pending_rename
+        guard_source = SimpleNamespace(db_path=db_path)
+        assert_no_pending_rename(guard_source, kind=request.kind, names={locator})
+        assert_asset_locators_writable(guard_source, request.kind, {locator})
+        table_name = 'characters' if request.kind == 'character' else 'scenes'
+        with readonly(db_path) as conn:
+            if not table(conn, table_name):
+                return
+            records = conn.execute(f'SELECT name,aliases_json FROM {table_name}').fetchall()
+            if any(locator == row['name'] or request.mode == 'new_base'
+                   and locator in json.loads(row['aliases_json'] or '[]') for row in records):
+                fail('asset_name_exists', '此名称已存在，请选择现有资产或使用新名称')
 
     def _create_base(self, source, request, digest):
         """INSERT-only source and request ownership are one source DB transaction."""

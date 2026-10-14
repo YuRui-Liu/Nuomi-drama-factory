@@ -157,6 +157,70 @@ async def test_same_name_source_is_never_upserted_or_claimed(project):
     assert not (service.root/'assets/characters/Lin/portrait.png').exists()
 
 
+@pytest.mark.parametrize('kind',['character','scene'])
+@pytest.mark.parametrize('collision',['name','alias','retired'])
+async def test_new_base_name_conflict_repeatedly_refuses_before_any_business_write(project,kind,collision):
+    import sqlite3
+    from contextlib import closing
+    source,ctx,_=project
+    service,body=await request_for(project,'new_base',kind)
+    name='Lin' if kind=='character' else 'Hall'
+    body['name']=name
+    if collision=='alias':
+        if kind=='character':await source.add_character(NovelCharacter(name='Other',aliases=['Alias']))
+        else:await source.add_scene(NovelScene(name='Other',aliases=['Alias']))
+        body['name']='Alias'
+    elif collision=='retired':
+        if kind=='character':await source.rename_character(name,'Renamed')
+        else:await source.rename_scene(name,'Renamed')
+    def databases():
+        result=[]
+        for path in (Path(source.db_path),service.db_path):
+            with closing(sqlite3.connect(path)) as conn:result.append(list(conn.iterdump()))
+        return result
+    before=databases();media={str(p):p.read_bytes() for p in ctx.output_dir.rglob('*') if p.is_file()}
+    for _ in range(2):
+        with pytest.raises(ValueError):await service.publish(body)
+        assert service._row(body['request_id']) is None
+        assert databases()==before
+        assert {str(p):p.read_bytes() for p in ctx.output_dir.rglob('*') if p.is_file()}==media
+
+
+@pytest.mark.parametrize('retired',[False,True])
+async def test_new_scene_variant_locator_conflict_has_no_prepared_request(project,retired):
+    import sqlite3
+    from contextlib import closing
+    from novelvideo.utils.derived_scenes import compose_derived_scene_name
+    source,ctx,_=project
+    service,body=await request_for(project,'new_variant','scene')
+    locator=compose_derived_scene_name('Hall','Rain')
+    await source.add_scene(NovelScene(name=locator))
+    if retired:await source.rename_scene(locator,'RenamedVariant')
+    def databases():
+        result=[]
+        for path in (Path(source.db_path),service.db_path):
+            with closing(sqlite3.connect(path)) as conn:result.append(list(conn.iterdump()))
+        return result
+    before=databases();media={str(p):p.read_bytes() for p in ctx.output_dir.rglob('*') if p.is_file()}
+    for _ in range(2):
+        with pytest.raises(ValueError):await service.publish(body)
+        assert service._row(body['request_id']) is None
+        assert databases()==before
+        assert {str(p):p.read_bytes() for p in ctx.output_dir.rglob('*') if p.is_file()}==media
+
+
+async def test_character_variant_display_name_is_not_a_unique_locator(project):
+    from novelvideo.models import CharacterIdentity
+    source,_,_=project
+    await source.add_character_identity('Lin',CharacterIdentity(identity_id='existing-identity',character_name='Lin',identity_name='Rain'))
+    service,body=await request_for(project,'new_variant','character')
+    result=await service.publish(body)
+    assert result['status']=='applied'
+    identities=(await source.get_character_from_graph('Lin')).identities
+    assert len([i for i in identities if i.identity_name=='Rain'])==2
+    assert len({i.identity_id for i in identities})==2
+
+
 @pytest.mark.parametrize('tamper', ['url_project','canvas_project','canvas_registry','source_bytes','selection'])
 async def test_selection_and_source_proofs_are_not_silently_refreshed(project, tamper):
     service, body = await request_for(project)
