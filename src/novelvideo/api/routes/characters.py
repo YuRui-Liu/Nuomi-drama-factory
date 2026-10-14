@@ -1202,9 +1202,6 @@ async def update_character(
     )
 
     character = store.get_character(name)
-    if character is None:
-        return {"ok": False, "error": f"Character '{name}' not found"}
-
     updates = body.model_dump(exclude_none=True)
     if "voice_facts" in updates:
         updates["voice_facts"]["provenance"] = "human"
@@ -1218,16 +1215,21 @@ async def update_character(
     renamed_from = None
     target_name = name
 
+    if character is None and (not requested_name or requested_name == name):
+        return {"ok": False, "error": f"Character '{name}' not found"}
+
     if requested_name and requested_name != name:
-        if store.get_character(requested_name) is not None:
+        if character is not None and store.get_character(requested_name) is not None:
             return {"ok": False, "error": f"Character '{requested_name}' already exists"}
         try:
-            await store.rename_character(name, requested_name)
+            await store.rename_character(name, requested_name, **updates)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
         target_name = requested_name
         renamed_from = name
         updated_fields.append("name")
+        updated_fields.extend(updates.keys())
+        updates = {}
 
     if not updates and not updated_fields:
         return {"ok": True, "data": {"message": "No fields to update"}}

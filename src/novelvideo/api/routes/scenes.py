@@ -298,34 +298,6 @@ def _copy_upload_to_temp_file(file: UploadFile, *, suffix: str) -> tuple[Path, i
     return tmp_path, size
 
 
-def _move_dir_if_exists(old_dir: Path, new_dir: Path) -> None:
-    if not old_dir.exists():
-        return
-    if new_dir.exists():
-        raise ValueError("Target asset directory already exists")
-    new_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(old_dir), str(new_dir))
-
-
-def _rename_scene_asset_dirs(project_dir: Path, old_name: str, new_name: str) -> None:
-    old_name = validate_path_segment(old_name)
-    new_name = validate_path_segment(new_name)
-    scene_root = project_dir / "assets" / "scenes"
-    _move_dir_if_exists(
-        resolve_under_root(scene_root, old_name),
-        resolve_under_root(scene_root, new_name),
-    )
-
-    old_stage_root = stage_manifest.stage_dir(project_dir, old_name).parent
-    new_stage_root = stage_manifest.stage_dir(project_dir, new_name).parent
-    _move_dir_if_exists(old_stage_root, new_stage_root)
-
-    manifest = stage_manifest.load_manifest(project_dir, new_name)
-    if manifest is not None:
-        manifest["scene_id"] = new_name
-        stage_manifest.save_manifest(project_dir, new_name, manifest)
-
-
 def _scene_payload(
     scene: NovelScene,
     *,
@@ -839,6 +811,13 @@ async def update_scene(
         await _resolve_scene_project(project, user)
     )
     scene = await _require_scene(store, name)
+    retrying_rename = False
+    if scene is None and body.name:
+        from novelvideo.creation.asset_rename import previous_rename_source
+        previous = previous_rename_source(store, 'scene', name)
+        if previous:
+            scene = store._row_to_scene(previous)
+            retrying_rename = True
     if scene is None:
         return {"ok": False, "error": f"Scene '{name}' not found"}
 
@@ -859,19 +838,16 @@ async def update_scene(
     if next_base:
         requested_name = structured_name
     if requested_name and requested_name != scene.name:
-        guard_error = await _derived_scene_guard_error(store, scene.name)
-        if guard_error:
-            return {"ok": False, "error": guard_error}
-        if await store.get_scene(requested_name) is not None:
+        if not retrying_rename and await store.get_scene(requested_name) is not None:
             return {"ok": False, "error": f"Scene '{requested_name}' already exists"}
         try:
-            _rename_scene_asset_dirs(project_dir, scene.name, requested_name)
+            renamed = await store.rename_scene(scene.name, requested_name, **updates)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
-        renamed = await store.rename_scene(scene.name, requested_name)
         if not renamed:
             return {"ok": False, "error": f"Scene '{scene.name}' rename failed"}
         scene = await _require_scene(store, requested_name) or scene
+        updates = {}
     if updates:
         await store.update_scene(scene.name, **updates)
         scene = await _require_scene(store, scene.name) or scene

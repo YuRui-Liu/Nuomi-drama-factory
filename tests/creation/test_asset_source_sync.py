@@ -173,7 +173,7 @@ async def test_reconcile_never_overwrites_conflicting_semantic_revision(register
         adapter.objects.read(base.base_asset_id)
 
 
-@pytest.mark.parametrize('operation', ['rename', 'delete'])
+@pytest.mark.parametrize('operation', ['delete'])
 async def test_missing_locator_retains_pending_history(registered, operation):
     source, adapter, base, child, scene = registered
     assert hasattr(adapter, 'reconcile_source')

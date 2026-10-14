@@ -37,10 +37,11 @@ class _SceneStore:
             setattr(scene, key, value)
         return True
 
-    async def rename_scene(self, old_name: str, new_name: str):
+    async def rename_scene(self, old_name: str, new_name: str, **updates):
         scene = self.scenes.pop(old_name)
         scene.name = new_name
         self.scenes[new_name] = scene
+        await self.update_scene(new_name, **updates)
         return True
 
     async def delete_scene(self, name: str):
@@ -1492,7 +1493,10 @@ async def test_update_scene_renames_record_and_asset_directories(tmp_path, monke
     stage_dir.mkdir(parents=True)
     (stage_dir / "pano_360.png").write_bytes(b"pano")
     stage_manifest.update_manifest(tmp_path, "Hall", pano_path="pano_360.png")
-    store = _SceneStore([scene])
+    from novelvideo.sqlite_store import SQLiteStore
+    store = SQLiteStore('demo', output_dir=str(tmp_path))
+    await store.initialize()
+    await store.add_scene(scene)
     _patch_project(monkeypatch, scenes, tmp_path, store)
 
     res = await scenes.update_scene(
@@ -1506,24 +1510,24 @@ async def test_update_scene_renames_record_and_asset_directories(tmp_path, monke
     assert res["data"]["name"] == "GrandHall"
     assert await store.get_scene("Hall") is None
     assert (await store.get_scene("GrandHall")).environment_prompt == "brighter hall"
-    assert not (tmp_path / "assets" / "scenes" / "Hall").exists()
+    assert (tmp_path / "assets" / "scenes" / "Hall").exists()
     assert (tmp_path / "assets" / "scenes" / "GrandHall" / "master.png").exists()
-    assert not stage_manifest.stage_dir(tmp_path, "Hall").exists()
+    assert stage_manifest.stage_dir(tmp_path, "Hall").exists()
     assert (stage_manifest.stage_dir(tmp_path, "GrandHall") / "pano_360.png").exists()
+    await store.close()
 
 
 @pytest.mark.asyncio
-async def test_update_scene_rejects_renaming_base_scene_with_derived_scenes(
+async def test_update_scene_coordinates_renaming_base_scene_with_derived_scenes(
     tmp_path, monkeypatch
 ):
     from novelvideo.api.routes import scenes
 
-    store = _SceneStore(
-        [
-            NovelScene(name="故宫"),
-            NovelScene(name="故宫_下雪", base_scene_id="故宫", variant_id="下雪"),
-        ]
-    )
+    from novelvideo.sqlite_store import SQLiteStore
+    store = SQLiteStore('demo', output_dir=str(tmp_path))
+    await store.initialize()
+    await store.add_scene(NovelScene(name="故宫"))
+    await store.add_scene(NovelScene(name="故宫_下雪", base_scene_id="故宫", variant_id="下雪"))
     _patch_project(monkeypatch, scenes, tmp_path, store)
 
     res = await scenes.update_scene(
@@ -1533,10 +1537,11 @@ async def test_update_scene_rejects_renaming_base_scene_with_derived_scenes(
         user={"username": "admin"},
     )
 
-    assert res["ok"] is False
-    assert "派生场景" in res["error"]
-    assert await store.get_scene("故宫") is not None
-    assert await store.get_scene("紫禁城") is None
+    assert res["ok"] is True
+    assert await store.get_scene("故宫") is None
+    assert await store.get_scene("紫禁城") is not None
+    assert (await store.get_scene("故宫_下雪")).base_scene_id == "紫禁城"
+    await store.close()
 
 
 @pytest.mark.asyncio

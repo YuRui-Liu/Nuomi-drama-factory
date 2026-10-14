@@ -73,6 +73,56 @@ def production_workflow_project_lock(state_dir: str | Path):
 character_state_project_lock = production_workflow_project_lock
 
 
+def _canonical_slot(method):
+    """Resolve every read and mutation to the retained historical slot."""
+    from functools import wraps
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        requested = args[0] if args else kwargs.get('slot_id')
+        if method.__name__ not in ('get_slot', 'read_legacy_current'):
+            # A store retained across a rename must not write its stale alias
+            # map (or silently publish into the renamed asset's canonical slot).
+            with production_workflow_project_lock(self.state_path.parent):
+                self._load()
+                if self.read_only_reason:
+                    raise RuntimeError(self.read_only_reason)
+                self._assert_slot_writable(requested)
+                if args:
+                    args = (self.resolve_slot_id(requested), *args[1:])
+                else:
+                    kwargs['slot_id'] = self.resolve_slot_id(requested)
+                return method(self, *args, **kwargs)
+        if args:
+            args = (self.resolve_slot_id(args[0]), *args[1:])
+        elif 'slot_id' in kwargs:
+            kwargs['slot_id'] = self.resolve_slot_id(kwargs['slot_id'])
+        result = method(self, *args, **kwargs)
+        if method.__name__ in ('get_slot', 'read_legacy_current') and requested != self.resolve_slot_id(requested):
+            slot, versions = result
+            slot = slot.model_copy(update={'slot_id': requested})
+            def repath(path):
+                for old, new in self._slot_path_aliases.get(requested, {}).items():
+                    if path == old or path.startswith(old + '/'):
+                        return new + path[len(old):]
+                return path
+            def view(version):
+                metadata = dict(version.generation_metadata or {})
+                if isinstance(metadata.get('canonical_path'), str):
+                    metadata['canonical_path'] = repath(metadata['canonical_path'])
+                for key, value in self._slot_metadata_aliases.get(requested, {}).items():
+                    if key in metadata:
+                        metadata[key] = value
+                return version.model_copy(update={'slot_id': requested, 'asset_path': repath(version.asset_path),
+                                                  'generation_metadata': metadata or version.generation_metadata})
+            if isinstance(versions, dict):
+                versions = {key: view(value) for key, value in versions.items()}
+            else:
+                versions = view(versions)
+            return slot, versions
+        return result
+    return wrapped
+
+
 class ProductionWorkflowStore:
     """Incremental sidecar store; reading legacy assets never mutates a project."""
 
@@ -82,6 +132,10 @@ class ProductionWorkflowStore:
         self._slots: dict[str, AssetSlot] = {}
         self._versions: dict[str, AssetVersion] = {}
         self._events: list[AdoptionEvent] = []
+        self._slot_aliases: dict[str, str] = {}
+        self._slot_display_names: dict[str, str] = {}
+        self._slot_path_aliases: dict[str, dict[str, str]] = {}
+        self._slot_metadata_aliases: dict[str, dict[str, str]] = {}
         self._load()
 
     def _load(self) -> None:
@@ -107,6 +161,32 @@ class ProductionWorkflowStore:
                 for version in [AssetVersion.model_validate(value)]
             }
             self._events = [AdoptionEvent.model_validate(value) for value in events]
+            self._slot_aliases = payload.get('slot_aliases', {})
+            if not isinstance(self._slot_aliases, dict):
+                raise ValueError('invalid slot aliases')
+            for alias in self._slot_aliases:
+                if alias in self._slots or self.resolve_slot_id(alias) not in self._slots:
+                    raise ValueError('invalid slot alias target')
+            self._slot_display_names = payload.get('slot_display_names', {})
+            if not isinstance(self._slot_display_names, dict) or any(
+                key not in self._slots or self.resolve_slot_id(value) != key
+                for key, value in self._slot_display_names.items()
+            ):
+                raise ValueError('invalid slot display name')
+            self._slot_path_aliases = payload.get('slot_path_aliases', {})
+            self._slot_metadata_aliases = payload.get('slot_metadata_aliases', {})
+            if not isinstance(self._slot_path_aliases, dict) or any(
+                alias not in self._slot_aliases or not isinstance(rules, dict)
+                or any(not isinstance(k, str) or not isinstance(v, str) for k, v in rules.items())
+                for alias, rules in self._slot_path_aliases.items()
+            ):
+                raise ValueError('invalid slot media aliases')
+            if not isinstance(self._slot_metadata_aliases, dict) or any(
+                alias not in self._slot_aliases or not isinstance(values, dict)
+                or any(k not in ('scene_id', 'base_scene_id', 'character_name') or not isinstance(v, str) for k, v in values.items())
+                for alias, values in self._slot_metadata_aliases.items()
+            ):
+                raise ValueError('invalid slot metadata aliases')
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             self._slots = {}
             self._versions = {}
@@ -120,6 +200,10 @@ class ProductionWorkflowStore:
             self.state_path,
             {
                 "schema_version": 1,
+                "slot_aliases": self._slot_aliases,
+                "slot_display_names": self._slot_display_names,
+                "slot_path_aliases": self._slot_path_aliases,
+                "slot_metadata_aliases": self._slot_metadata_aliases,
                 "slots": {
                     key: value.model_dump(mode="json") for key, value in self._slots.items()
                 },
@@ -151,6 +235,35 @@ class ProductionWorkflowStore:
         finally:
             temporary.unlink(missing_ok=True)
 
+    def resolve_slot_id(self, slot_id: str) -> str:
+        visited = set()
+        while slot_id in self._slot_aliases:
+            if slot_id in visited:
+                raise ValueError('Cyclic workflow slot alias')
+            visited.add(slot_id)
+            slot_id = self._slot_aliases[slot_id]
+        return slot_id
+
+    def _assert_slot_writable(self, requested: str) -> None:
+        """Keep historical reads while reserving every retired asset prefix."""
+        def locators(slot_id):
+            parts = slot_id.split(':')
+            if len(parts) < 3 or parts[0] not in ('character', 'scene'):
+                return []
+            values = [(parts[0], parts[1])]
+            if parts[0] == 'scene' and parts[2] == 'state' and len(parts) >= 5:
+                values.append(('scene', parts[3]))
+            return values
+
+        retired = set()
+        for historical in (*self._slots, *self._slot_aliases):
+            canonical = self.resolve_slot_id(historical)
+            current = self._slot_display_names.get(canonical, canonical)
+            retired.update(old for old, new in zip(locators(historical), locators(current)) if old != new)
+        if retired.intersection(locators(requested)):
+            raise ValueError(f'Workflow slot {requested} uses a retired asset locator; use its current name')
+
+    @_canonical_slot
     def get_slot(self, slot_id: str) -> tuple[AssetSlot, dict[str, AssetVersion]]:
         slot = self._slots.get(slot_id)
         if slot is None:
@@ -163,8 +276,10 @@ class ProductionWorkflowStore:
 
     def list_slots(self) -> tuple[AssetSlot, ...]:
         """Return the immutable slot views used by read-only consumers."""
-        return tuple(slot.model_copy(deep=True) for slot in self._slots.values())
+        return tuple(slot.model_copy(deep=True, update={'slot_id': self._slot_display_names.get(key, key)})
+                     for key, slot in self._slots.items())
 
+    @_canonical_slot
     def read_legacy_current(
         self, *, slot_id: str, asset_kind: str, asset_path: str
     ) -> tuple[AssetSlot, AssetVersion]:
@@ -192,6 +307,7 @@ class ProductionWorkflowStore:
         )
         return slot, version
 
+    @_canonical_slot
     def materialize_legacy_current(
         self, *, slot_id: str, asset_kind: str, asset_path: str
     ) -> tuple[AssetSlot, AssetVersion]:
@@ -205,6 +321,7 @@ class ProductionWorkflowStore:
         self._save()
         return slot, version
 
+    @_canonical_slot
     def register_candidate_version(
         self,
         *,
@@ -257,6 +374,7 @@ class ProductionWorkflowStore:
         self._save()
         return updated_slot, updated_version, event
 
+    @_canonical_slot
     def record_quality_recheck(
         self, *, slot_id: str, version_id: str, report: dict, image_sha256: str,
         fingerprint: str, route: dict, actor: str, at: datetime,
@@ -292,6 +410,7 @@ class ProductionWorkflowStore:
         self._save()
         return updated
 
+    @_canonical_slot
     def retarget_version_asset_paths(
         self,
         *,
@@ -320,6 +439,7 @@ class ProductionWorkflowStore:
         self._save()
         return updated
 
+    @_canonical_slot
     def adopt_version(
         self,
         *,
@@ -348,6 +468,7 @@ class ProductionWorkflowStore:
         self._save()
         return updated_slot, updated_versions, event
 
+    @_canonical_slot
     def adopt_casting_version(self, *, slot_id: str, version_id: str, actor: str, at: datetime):
         """Explicit casting decision retaining the actual (possibly failed) QC.
 
@@ -378,6 +499,7 @@ class ProductionWorkflowStore:
         self._save()
         return slot, versions, event
 
+    @_canonical_slot
     def delete_version(
         self,
         *,

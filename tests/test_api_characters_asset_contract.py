@@ -36,13 +36,13 @@ class _CharacterStore:
         character.extraction_locked = locked
         return changed
 
-    async def rename_character(self, old_name: str, new_name: str):
+    async def rename_character(self, old_name: str, new_name: str, **updates):
         character = self.characters.pop(old_name)
         character.name = new_name
         for identity in character.identities:
             identity.character_name = new_name
-            identity.identity_id = f"{new_name}_{identity.identity_name}"
         self.characters[new_name] = character
+        await self.update_character(new_name, **updates)
 
     async def delete_character(self, name: str):
         self.characters.pop(name, None)

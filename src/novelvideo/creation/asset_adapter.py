@@ -97,6 +97,8 @@ class AssetAdapter:
     async def reconcile_source(self) -> list[AssetRef]:
         """Replay complete source evidence; unknown or conflicting proof stays pending."""
         async with self._write_lock():
+            from .asset_rename import reconcile_renames
+            await reconcile_renames(self.source)
             results = await SourceSync(self.source, self.objects, self.actor_id).reconcile()
             return [AssetRef(base_asset_id=m['parent_id'] or m['object_id'],
                              variant_id=m['object_id'] if m['parent_id'] else None,
@@ -197,6 +199,10 @@ class AssetAdapter:
         return record
 
     async def _register(self, kind: str, source_name: str, parent_id: str = '') -> AssetRef:
+        from .asset_rename import assert_asset_locators_writable
+        # Character children use stable identity UUIDs, not character names.
+        if kind == 'scene' or not parent_id:
+            assert_asset_locators_writable(self.source, kind, [source_name])
         with self.objects.transaction() as conn:
             if parent_id:
                 assert_current_available(conn, parent_id)
@@ -208,6 +214,7 @@ class AssetAdapter:
         record = await self._source_record(mapping)
         if kind == 'character' and not parent_id:
             source_name = record.name
+            assert_asset_locators_writable(self.source, kind, [source_name])
         if kind == 'scene':
             expected = self._mapping(parent_id)['source_name'] if parent_id else ''
             if record.base_scene_id != expected or (parent_id and not record.variant_id):
@@ -297,6 +304,9 @@ class AssetAdapter:
                     assert_current_available(conn, saved.variant_id or saved.base_asset_id)
                     return saved
                 locator = row['source_name'] if row else proposed_locator
+                if base['kind'] == 'scene':
+                    from .asset_rename import assert_asset_locators_writable
+                    assert_asset_locators_writable(self.source, 'scene', [locator])
                 if not row:
                     if existing_scene is not None:
                         raise ValueError('Scene name already exists; explicitly register it instead')

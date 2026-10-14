@@ -207,10 +207,11 @@ class _M05Store:
             setattr(scene, key, value)
         return True
 
-    async def rename_scene(self, old_name: str, new_name: str):
+    async def rename_scene(self, old_name: str, new_name: str, **updates):
         scene = self.scenes.pop(old_name)
         scene.name = new_name
         self.scenes[new_name] = scene
+        await self.update_scene(new_name, **updates)
         return True
 
     async def delete_scene(self, name: str):

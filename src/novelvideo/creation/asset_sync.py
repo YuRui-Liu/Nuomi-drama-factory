@@ -96,10 +96,10 @@ class SourceSync:
         with self.objects.transaction() as conn:
             return [dict(r) for r in conn.execute('SELECT * FROM asset_sources WHERE (? IS NULL OR kind=?)', (kind, kind))]
 
-    async def records(self, mappings):
+    async def records(self, mappings, *, all_mappings=None):
         """Model projections loaded from SQL, never SQLiteStore's character cache."""
         characters = {c.name: c for c in await self.source.list_characters()} if any(m['kind'] == 'character' for m in mappings) else {}
-        all_mappings = {m['object_id']: m for m in self.mappings()}
+        all_mappings = all_mappings or {m['object_id']: m for m in self.mappings()}
         records = {}
         for mapping in mappings:
             if mapping['kind'] == 'scene':
@@ -159,7 +159,7 @@ class SourceSync:
                 conn.execute('UPDATE asset_source_sync SET source_after=? WHERE object_id=? AND token=?',
                              (json.dumps(payload), object_id, token))
 
-    def apply(self, entries, actual):
+    def apply(self, entries, actual, *, mappings_after=None, rename_token=None):
         """CAS snapshots and clear their exact proof in one transaction."""
         results = []
         with self.objects.transaction() as conn:
@@ -192,7 +192,14 @@ class SourceSync:
                                  (object_id, current_revision, json.dumps(payload), entry['actor_id'], datetime.now(timezone.utc).isoformat()))
                     conn.execute('UPDATE objects SET current_revision=? WHERE id=?', (current_revision, object_id))
                 conn.execute('DELETE FROM asset_source_sync WHERE object_id=? AND token=?', (object_id, entry['token']))
+                if mappings_after is not None:
+                    replacement = mappings_after[object_id]
+                    conn.execute('UPDATE asset_sources SET source_name=? WHERE object_id=?',
+                                 (replacement['source_name'], object_id))
                 results.append((json.loads(entry['mapping']), current_revision))
+            if rename_token:
+                conn.execute('CREATE TABLE IF NOT EXISTS asset_rename_commits (token TEXT PRIMARY KEY)')
+                conn.execute('INSERT INTO asset_rename_commits VALUES (?)', (rename_token,))
         return results
 
     async def finish(self, token):
@@ -215,6 +222,8 @@ class SourceSync:
         raise SourceSyncPending('Source write may already be committed; pending source reconciliation')
 
     async def reconcile(self):
+        from .asset_rename import assert_no_pending_rename
+        assert_no_pending_rename(self.source)
         entries = self.entries()
         if not entries:
             return []
@@ -222,6 +231,8 @@ class SourceSync:
         return self.apply(entries, actual)
 
     async def refresh(self, object_id, expected_revision, acknowledge_pending=False):
+        from .asset_rename import assert_no_pending_rename
+        assert_no_pending_rename(self.source)
         mapping = next((m for m in self.mappings() if m['object_id'] == object_id), None)
         if mapping is None:
             raise KeyError(object_id)

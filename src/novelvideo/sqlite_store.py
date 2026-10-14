@@ -542,12 +542,29 @@ def _source_asset_write(method=None, *, snapshot_inputs=False):
         from novelvideo.creation.asset_sync import SourceSync, SourceSyncPending
 
         state_dir = getattr(self, "state_dir", Path(self.db_path).parent)
-        frozen_inputs = snapshot_inputs or (Path(state_dir) / 'creation' / 'objects.sqlite3').is_file()
+        frozen_inputs = (snapshot_inputs
+                         or any(key in signature.parameters for key in ('character', 'characters', 'scene', 'scenes'))
+                         or (Path(state_dir) / 'creation' / 'objects.sqlite3').is_file())
         if frozen_inputs:
             # Catalogue publication promises to freeze caller-owned models
             # before its first await, including waiting for the project lock.
             args, kwargs = copy.deepcopy((args, kwargs))
         async with asset_project_lock(state_dir):
+            from novelvideo.creation.asset_rename import assert_no_pending_rename, assert_asset_locators_writable
+            bound = signature.bind(self, *args, **kwargs).arguments
+            write_names = None
+            if not method.__name__.startswith('delete_all_'):
+                write_names = {bound[key] for key in ('name', 'character_name', 'old_name', 'new_name') if key in bound}
+                for key in ('characters', 'scenes'):
+                    write_names.update(item.name for item in bound.get(key, []))
+                for key in ('character', 'scene'):
+                    if key in bound:
+                        write_names.add(bound[key].name)
+                write_names.update(char.name for name in tuple(write_names) if (char := self.get_character(name)) is not None)
+            assert_no_pending_rename(self, kind='character' if 'character' in method.__name__ or 'identity' in method.__name__ else 'scene', names=write_names)
+            assert_asset_locators_writable(self,
+                'character' if 'character' in method.__name__ or 'identity' in method.__name__ else 'scene',
+                write_names)
             task = asyncio.current_task()
             if getattr(self, "_asset_write_task", None) is task:
                 return await method(self, *args, **kwargs)
@@ -2072,47 +2089,14 @@ class SQLiteStore:
         console.print(f"[dim]已删除 {deleted} 个旧角色[/dim]")
         return deleted
 
-    @_source_asset_write
-    async def rename_character(self, old_name: str, new_name: str) -> None:
-        char = self.get_character(old_name)
-        if not char:
-            raise ValueError(f"角色 {old_name} 不存在")
+    async def rename_character(self, old_name: str, new_name: str, **updates) -> None:
+        from novelvideo.creation.asset_rename import rename_asset
         if old_name == new_name:
+            if updates:
+                await self.update_character(old_name, **updates)
             return
-        if self.get_character(new_name):
-            raise ValueError(f"角色 {new_name} 已存在")
-        db = await self._ensure_db()
-        char = char.model_copy(deep=True)
-        identities = char.identities
-        for identity in identities:
-            identity.character_name = new_name
-            identity.identity_id = f"{new_name}_{identity.identity_name}"
-        char.identities = identities
-        char.name = new_name
-        try:
-            await db.execute("BEGIN IMMEDIATE")
-            cursor = await db.execute(
-                "UPDATE characters SET name=?, identities_json=?, updated_at=datetime('now') WHERE name=?",
-                (new_name, char.identities_json, old_name),
-            )
-            if cursor.rowcount != 1:
-                raise ValueError(f"角色 {old_name} 不存在")
-            await db.commit()
-        except BaseException:
-            await db.rollback()
-            raise
-        self._characters.pop(old_name, None)
-        self._characters[new_name] = char
-        new_alias_index = {}
-        for key, value in self._alias_index.items():
-            new_alias_index[key] = new_name if value == old_name else value
-        self._alias_index.clear()
-        self._alias_index.update(new_alias_index)
-        old_dir = Path(self.project_dir) / "assets" / "characters" / old_name
-        new_dir = Path(self.project_dir) / "assets" / "characters" / new_name
-        if old_dir.exists() and not new_dir.exists():
-            old_dir.replace(new_dir)
-        console.print(f"[green]已重命名角色: {old_name} → {new_name}[/green]")
+        await rename_asset(self, 'character', old_name, new_name, updates=updates)
+
 
     @_source_asset_write
     async def delete_character(self, name: str) -> None:
@@ -2291,22 +2275,12 @@ class SQLiteStore:
         remaining = [item for item in scene.stale_reference_kinds if item != kind]
         return await self.update_scene(name, stale_reference_kinds=remaining)
 
-    @_source_asset_write
-    async def rename_scene(self, old_name: str, new_name: str) -> bool:
-        """重命名场景记录。资源目录迁移由调用方处理。"""
-        old_name = str(old_name or "").strip()
-        new_name = str(new_name or "").strip()
-        if not old_name or not new_name or old_name == new_name:
-            return False
-        if await self.get_scene(new_name) is not None:
-            return False
-        db = await self._ensure_db()
-        cursor = await db.execute(
-            "UPDATE scenes SET name = ?, updated_at = datetime('now') WHERE name = ?",
-            (new_name, old_name),
-        )
-        await db.commit()
-        return (cursor.rowcount or 0) > 0
+    async def rename_scene(self, old_name: str, new_name: str, **updates) -> bool:
+        from novelvideo.creation.asset_rename import rename_asset
+        if old_name == new_name:
+            return await self.update_scene(old_name, **updates) if updates else False
+        return await rename_asset(self, 'scene', old_name, new_name, updates=updates)
+
 
     @_source_asset_write
     async def delete_scene(self, name: str) -> bool:
@@ -2505,13 +2479,21 @@ class SQLiteStore:
                     ids = [x for x in ids if x != old_id]
                 await self.update_episode(ep.number, identity_ids=ids)
 
-    @_source_asset_write
     async def update_character_identity(
         self,
         character_name: str,
         identity_id: str,
         **updates,
     ) -> None:
+        if 'identity_name' in updates:
+            from novelvideo.creation.asset_rename import rename_asset
+            await rename_asset(self, 'identity', character_name, updates['identity_name'],
+                               identity_id=identity_id, updates=updates)
+            return
+        await self._update_character_identity_metadata(character_name, identity_id, **updates)
+
+    @_source_asset_write
+    async def _update_character_identity_metadata(self, character_name, identity_id, **updates):
         char = self.get_character(character_name)
         if not char:
             raise ValueError(f"角色 {character_name} 不存在")
@@ -2526,38 +2508,7 @@ class SQLiteStore:
         for key, value in updates.items():
             if hasattr(target_identity, key):
                 setattr(target_identity, key, value)
-        if "identity_name" in updates:
-            import re
-
-            new_iname = updates["identity_name"]
-            old_iname = identity_id.split("_", 1)[-1] if "_" in identity_id else identity_id
-            target_identity.identity_id = f"{char.name}_{new_iname}"
-            old_safe = re.sub(r'[/\\:*?"<>|]', "_", old_iname)
-            new_safe = re.sub(r'[/\\:*?"<>|]', "_", new_iname)
-            old_img = (
-                Path(self.project_dir)
-                / "assets"
-                / "characters"
-                / char.name
-                / "identities"
-                / f"{old_safe}.png"
-            )
-            new_img = (
-                Path(self.project_dir)
-                / "assets"
-                / "characters"
-                / char.name
-                / "identities"
-                / f"{new_safe}.png"
-            )
-            if old_img.exists() and not new_img.exists():
-                old_img.replace(new_img)
         char.identities = identities
-        if "identity_name" in updates:
-            old_id = identity_id
-            new_id = target_identity.identity_id
-            if old_id != new_id:
-                await self._cascade_identity_change(old_id, new_id)
         if not await self._update_character_field(char.name, "identities_json", char.identities_json):
             raise RuntimeError("Character source is stale: database write failed")
         console.print(f"[green]已更新 {char.name} 的身份: {target_identity.identity_id}[/green]")
