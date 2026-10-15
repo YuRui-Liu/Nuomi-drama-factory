@@ -204,6 +204,36 @@ class IdeationService(ProjectDomain):
         require(len(nodes) == 1, '目标节点已删除或不属于当前画布', 'scope_violation')
         return {key: value for key, value in nodes[0].items() if key not in _LAYOUT_FIELDS}
 
+    def _missing_canvas_node(self, ref):
+        if not isinstance(ref, dict) or ref.get('kind') != 'canvas_node':
+            return False
+        try:
+            canvas = read_canvas(self.ctx.state_dir, ref['canvas_id'])
+        except (OSError, ValueError):
+            return False
+        if canvas is None:
+            return True
+        return (canvas.get('project_id') == self.ctx.project_id
+                and not any(node.get('id') == ref['node_id'] for node in canvas.get('nodes', [])))
+
+    def _current_input_evidence(self, conn, source):
+        """Capture today's input state separately from the immutable source snapshot."""
+        evidence = []
+        for historical in source['inputs']:
+            ref = historical['ref']
+            try:
+                current = agent_context.inputs(self.ctx, conn, [ref])
+            except OperationError:
+                # A removed canvas input remains reviewable from its historical source.
+                # Recording the missing state lets an explicit preview proceed, while
+                # restoring/changing that input before the write changes the proof.
+                if not self._missing_canvas_node(ref):
+                    raise
+                evidence.append({'ref': ref, 'status': 'missing'})
+            else:
+                evidence.extend(current)
+        return evidence
+
     def _selection(self, conn, object_id):
         if conn is None or not table(conn, 'creative_domain_receipts') or not table(conn, 'operations'):
             return None
@@ -303,6 +333,8 @@ class IdeationService(ProjectDomain):
                     'selection': selection,
                     'action': action, 'candidate_id': candidate_id,
                     'candidate': candidate if action == 'edit' else None}
+        if action is not None:
+            evidence['current_inputs'] = self._current_input_evidence(conn, source['source'])
         return {'object': obj, 'candidates': self._candidates(obj), 'updated_candidates': entries,
                 'entry': entry, 'origin': source['origin'], 'source': source['source'],
                 'selection': selection, 'evidence': evidence,

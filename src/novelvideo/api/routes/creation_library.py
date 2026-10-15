@@ -110,6 +110,8 @@ async def ideation_service(project, user, canvas_id, conversation_id, role='view
     from copy import deepcopy
     from novelvideo.creation.ideation_service import IdeationService
     principal = deepcopy(user)
+    if role == 'editor' and principal.get('credential_kind') == 'agent_session':
+        raise HTTPException(403, {'code': 'scope_violation', 'message': 'Agent 会话不能编辑或采纳提案'})
 
     async def resolve(required_role):
         return await context_for(project, principal, required_role)
@@ -159,8 +161,6 @@ async def adopt_ideation(project: str, object_id: str, body: dict,
                          user: dict = Depends(get_api_user)):
     from novelvideo.creation.ontology import exact
     with errors():
-        if user.get('credential_kind') == 'agent_session':
-            raise HTTPException(403, {'code': 'scope_violation', 'message': 'Agent 会话不能采纳提案'})
         exact(body, {'request_id', 'canvas_id', 'conversation_id', 'node_id',
                      'expected_revision', 'candidate_id', 'proof'})
         service = await ideation_service(project, user, body['canvas_id'], body['conversation_id'], 'editor')

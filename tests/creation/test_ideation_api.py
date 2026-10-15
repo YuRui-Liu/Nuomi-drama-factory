@@ -28,6 +28,13 @@ async def test_ideation_routes_query_preview_edit_and_receipt(api, ctx, ready, t
     assert receipt.status_code == 200 and receipt.json()['data'] == edited.json()['data']
 
     user['credential_kind'] = 'agent_session'
+    agent_preview = await client.post(prefix + '/preview', json={**query, 'action': 'edit',
+        'expected_revision': 2, 'candidate_id': 'idea-1', 'candidate': body_candidate()})
+    assert agent_preview.status_code == 200, agent_preview.text
+    agent_edit = {'request_id': 'agent-edit', **query, 'expected_revision': 2,
+        'candidate_id': 'idea-1', 'proof': agent_preview.json()['data']['proof'],
+        'candidate': body_candidate()}
+    assert (await client.post(prefix + '/edit', json=agent_edit)).status_code == 403
     assert (await client.post(prefix + '/adopt', json={'request_id': 'agent-adopt', **query,
         'expected_revision': 2, 'candidate_id': 'idea-1', 'proof': 'unused'})).status_code == 403
 

@@ -8,7 +8,7 @@ from novelvideo.creation.ideation_service import IdeationService
 from novelvideo.creation.operations import OperationError
 from novelvideo.creation.store import ObjectStore
 from novelvideo.freezone.canvas_store import canvas_path
-from .test_agent_tools import action
+from .test_agent_tools import action, create, selection
 from .test_agent_tools import ctx, ready, service, task
 from .test_agent_runs import decision, runs as run_service, start_request
 
@@ -31,7 +31,8 @@ def object_ref(ref):
     return {'object_id': ref['id'], 'revision': ref['revision']}
 
 
-async def create_output(ctx, ready, task, payload=None, *, target_node_ids=None, request_id='source'):
+async def create_output(ctx, ready, task, payload=None, *, target_node_ids=None,
+                        input_indices=None, request_id='source'):
     canvas_id, conversation_id = ready[:2]
 
     async def resolve(_role):
@@ -42,7 +43,8 @@ async def create_output(ctx, ready, task, payload=None, *, target_node_ids=None,
                        delegation_id=task['delegation_id'], resolve_context=resolve)
     raw = json.dumps(payload or candidates(), ensure_ascii=False)
     result = await tools.execute(action(request_id=request_id, text=raw,
-                                         target_node_ids=target_node_ids or ['a']))
+                                         target_node_ids=target_node_ids or ['a'],
+                                         input_indices=input_indices or []))
     return result['output']['object_ref'], result['output']
 
 
@@ -89,6 +91,36 @@ async def test_edit_creates_immutable_revision_and_keeps_origin(ctx, ready, task
     assert current['revision'] == 2 and current['candidates'][0]['title'] == '改后标题'
     assert current['candidates'][1:] == historical['candidates'][1:]
     assert historical['revision'] == 1 and historical['candidates'][0]['title'] == '标题1'
+
+
+@pytest.mark.parametrize('change', ['edit', 'delete'])
+async def test_preview_binds_current_input_snapshot_without_rewriting_source(ctx, ready, task, service, change):
+    input_task = await create(service, selection(ready, input_refs=[
+        {'kind': 'canvas_node', 'canvas_id': ready[0], 'node_id': 'b'}]), 'input-task')
+    ref, _ = await create_output(ctx, ready, input_task, input_indices=[0])
+    service = ideation(ctx, ready)
+    before = await service.get(ref['id'], node_id='a')
+    assert before['source']['inputs'][0]['snapshot']['content'] == {'text': '开场 B'}
+
+    preview = await service.preview({'object_id': ref['id'], 'action': 'edit', 'node_id': 'a',
+        'expected_revision': 1, 'candidate_id': 'idea-1', 'candidate': body_candidate()})
+    graph_path = canvas_path(ctx.state_dir, ready[0])
+    graph = json.loads(graph_path.read_text())
+    if change == 'edit':
+        next(node for node in graph['nodes'] if node['id'] == 'b')['data']['text'] = '开场 B 已修改'
+    else:
+        graph['nodes'] = [node for node in graph['nodes'] if node['id'] != 'b']
+    graph['revision'] += 1
+    graph_path.write_text(json.dumps(graph))
+
+    with pytest.raises(OperationError) as error:
+        await service.edit(ref['id'], {'request_id': f'input-{change}', 'node_id': 'a',
+            'expected_revision': 1, 'candidate_id': 'idea-1', 'proof': preview['proof'],
+            'candidate': body_candidate()})
+    assert error.value.code == 'source_conflict'
+    assert await service.receipt(f'input-{change}', node_id='a') is None
+    after = await service.get(ref['id'], node_id='a')
+    assert after['source']['inputs'][0]['snapshot']['content'] == {'text': '开场 B'}
 
 
 async def test_adoption_is_fixed_to_explicit_object_version_candidate_and_node(ctx, ready, task):
