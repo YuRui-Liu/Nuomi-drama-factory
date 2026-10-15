@@ -3,7 +3,7 @@ import asyncio
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from novelvideo.api.auth import get_api_user
 from novelvideo.creation.ontology import Ontology
@@ -14,6 +14,118 @@ from novelvideo.creation.personal_library import PersonalLibrary
 from .creation import context_for, errors
 
 router = APIRouter(prefix='/projects/{project}/creation', tags=['creation-library'])
+
+
+async def delegation_service(project, user, role='viewer'):
+    from novelvideo.creation.delegations import Delegations
+    # These are interactive grants, never a generic HTTP tool for an Agent.
+    if user.get('credential_kind') == 'agent_session':
+        raise HTTPException(403, 'Agent 运行须通过受限委托工具，不能模拟用户授权')
+    ctx = await context_for(project, user, role)
+    return Delegations(ctx, username=user['username'], authority='user')
+
+
+@router.get('/main-agent')
+async def main_agent(project: str, user: dict = Depends(get_api_user)):
+    with errors():
+        service = await delegation_service(project, user)
+        return {'ok': True, 'data': await asyncio.to_thread(service.main_agent)}
+
+
+@router.post('/main-agent')
+async def select_main_agent(project: str, body: dict, user: dict = Depends(get_api_user)):
+    from novelvideo.creation.ontology import exact, require
+    with errors():
+        service = await delegation_service(project, user, 'editor')
+        require(body.get('action') in {'select', 'clear'}, '未知主创指派操作')
+        exact(body, {'request_id', 'action', 'expected_binding_revision'},
+              {'adoption_id', 'expected_adoption_revision'})
+        result = await service.apply({'request_id': body['request_id'], 'action': 'main.' + body['action'],
+                                      'payload': {k: v for k, v in body.items() if k not in {'request_id', 'action'}}})
+        return {'ok': True, 'data': result}
+
+
+@router.get('/main-agent/requests/{request_id}')
+async def main_agent_request(project: str, request_id: str, user: dict = Depends(get_api_user)):
+    with errors():
+        service = await delegation_service(project, user)
+        value = await asyncio.to_thread(service.receipt, request_id)
+        if value is None or 'binding_revision' not in value:
+            raise HTTPException(404, '主创指派请求尚无已提交回执')
+        return {'ok': True, 'data': value}
+
+
+@router.post('/delegations/preview')
+async def delegation_preview(project: str, body: dict, user: dict = Depends(get_api_user)):
+    with errors():
+        service = await delegation_service(project, user)
+        return {'ok': True, 'data': await asyncio.to_thread(service.preview, body)}
+
+
+@router.post('/delegations')
+async def delegation_create(project: str, body: dict, user: dict = Depends(get_api_user)):
+    from novelvideo.creation.ontology import require
+    with errors():
+        service = await delegation_service(project, user, 'editor')
+        require('request_id' in body, '缺少请求编号')
+        result = await service.apply({'request_id': body['request_id'], 'action': 'delegation.create',
+                                      'payload': {k: v for k, v in body.items() if k != 'request_id'}})
+        return {'ok': True, 'data': result}
+
+
+@router.get('/delegations')
+async def delegation_list(project: str, canvas_id: str, conversation_id: str,
+                          user: dict = Depends(get_api_user)):
+    with errors():
+        service = await delegation_service(project, user)
+        return {'ok': True, 'data': await asyncio.to_thread(service.catalog, canvas_id, conversation_id)}
+
+
+def check_delegation_query(value, canvas_id, conversation_id):
+    from novelvideo.creation.ontology import require
+    contract = value.get('contract', value)
+    require(contract.get('canvas_id') == canvas_id and contract.get('conversation_id') == conversation_id,
+            '委托不属于指定画布会话', 'scope_violation')
+
+
+@router.get('/delegations/{identifier}')
+async def delegation_detail(project: str, identifier: str, canvas_id: str, conversation_id: str,
+                            user: dict = Depends(get_api_user)):
+    with errors():
+        service = await delegation_service(project, user)
+        value = await asyncio.to_thread(service.get, identifier)
+        check_delegation_query(value, canvas_id, conversation_id)
+        return {'ok': True, 'data': value}
+
+
+@router.get('/delegation-requests/{request_id}')
+async def delegation_request(project: str, request_id: str, canvas_id: str, conversation_id: str,
+                             user: dict = Depends(get_api_user)):
+    with errors():
+        service = await delegation_service(project, user)
+        value = await asyncio.to_thread(service.receipt, request_id)
+        if value is None:
+            raise HTTPException(404, '委托请求尚无已提交回执')
+        if 'contract' in value:
+            check_delegation_query(value, canvas_id, conversation_id)
+        elif value.get('delegation_id'):
+            detail = await asyncio.to_thread(service.get, value['delegation_id'])
+            check_delegation_query(detail, canvas_id, conversation_id)
+        else:
+            raise HTTPException(404, '此请求不是会话委托')
+        return {'ok': True, 'data': value}
+
+
+@router.post('/delegations/{identifier}/revoke')
+async def delegation_revoke(project: str, identifier: str, body: dict, user: dict = Depends(get_api_user)):
+    from novelvideo.creation.ontology import exact
+    with errors():
+        service = await delegation_service(project, user, 'editor')
+        exact(body, {'request_id', 'expected_revision', 'reason'})
+        result = await service.apply({'request_id': body['request_id'], 'action': 'delegation.revoke',
+                                      'payload': {'delegation_id': identifier, 'expected_revision': body['expected_revision'],
+                                                  'reason': body['reason']}})
+        return {'ok': True, 'data': result}
 
 
 LibraryKind=Literal['agent','template']
