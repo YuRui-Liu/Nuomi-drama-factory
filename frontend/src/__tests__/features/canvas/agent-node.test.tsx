@@ -2,7 +2,7 @@
 // Copyright (c) 2026 ClaymoreLab
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ReactFlowProvider } from "@xyflow/react";
 
@@ -232,6 +232,80 @@ describe("Agent canvas node", () => {
       expect.objectContaining({ settings: expect.objectContaining({ genrePrimary: "悬疑推理" }) }),
     );
     expect(screen.getByTestId("agent-settings-summary")).toHaveTextContent("悬疑推理");
+  });
+
+  it("does not let an older inline success overwrite the latest confirmed summary", async () => {
+    const pendingFlushes: Array<(result: boolean) => void> = [];
+    const flush = vi.fn(() => new Promise<boolean>((resolve) => pendingFlushes.push(resolve)));
+    renderAgent(flush);
+    const genre = screen.getByRole("combobox", { name: "主题材" });
+    const summary = screen.getByTestId("agent-settings-summary");
+
+    fireEvent.change(genre, { target: { value: "悬疑推理" } });
+    fireEvent.blur(genre);
+    await waitFor(() => expect(flush).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(genre, { target: { value: "末世科幻" } });
+    fireEvent.blur(genre);
+    await waitFor(() => expect(flush).toHaveBeenCalledTimes(2));
+
+    pendingFlushes[1](true);
+    await waitFor(() => expect(summary).toHaveTextContent("末世科幻"));
+    pendingFlushes[0](true);
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+
+    expect(summary).toHaveTextContent("末世科幻");
+  });
+
+  it("ignores a stale inline failure after a newer save succeeds", async () => {
+    const pendingFlushes: Array<(result: boolean) => void> = [];
+    const flush = vi.fn(() => new Promise<boolean>((resolve) => pendingFlushes.push(resolve)));
+    renderAgent(flush);
+    const genre = screen.getByRole("combobox", { name: "主题材" });
+    const summary = screen.getByTestId("agent-settings-summary");
+
+    fireEvent.change(genre, { target: { value: "悬疑推理" } });
+    fireEvent.blur(genre);
+    await waitFor(() => expect(flush).toHaveBeenCalledTimes(1));
+    fireEvent.change(genre, { target: { value: "末世科幻" } });
+    fireEvent.blur(genre);
+    await waitFor(() => expect(flush).toHaveBeenCalledTimes(2));
+
+    pendingFlushes[1](true);
+    await waitFor(() => expect(summary).toHaveTextContent("末世科幻"));
+    pendingFlushes[0](false);
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+
+    expect(summary).toHaveTextContent("末世科幻");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("ignores a pending save completion after undo restores prior settings", async () => {
+    const pendingFlushes: Array<(result: boolean) => void> = [];
+    const flush = vi.fn(() => new Promise<boolean>((resolve) => pendingFlushes.push(resolve)));
+    const { data } = renderAgent(flush);
+    const genre = screen.getByRole("combobox", { name: "主题材" });
+    const summary = screen.getByTestId("agent-settings-summary");
+
+    fireEvent.change(genre, { target: { value: "悬疑推理" } });
+    fireEvent.blur(genre);
+    await waitFor(() => expect(flush).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      expect(useCanvasStore.getState().undo()).toBe(true);
+    });
+    expect(useCanvasStore.getState().nodes[0].data).toEqual(
+      expect.objectContaining({ settings: data.settings }),
+    );
+    expect(summary).toHaveTextContent("都市现实");
+
+    pendingFlushes[0](true);
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+
+    expect(useCanvasStore.getState().nodes[0].data).toEqual(
+      expect.objectContaining({ settings: data.settings }),
+    );
+    expect(summary).toHaveTextContent("都市现实");
   });
 
   it("updates node fields and saved summary from the shared full settings form", async () => {

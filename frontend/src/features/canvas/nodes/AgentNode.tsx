@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { Bot, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -51,6 +51,16 @@ function getMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+interface AgentSaveAttempt {
+  sequence: number;
+  nodeId: string;
+  agentId: string;
+  agentRevision: number;
+  hydrationEpoch: number;
+}
+
+type AgentSaveContext = Omit<AgentSaveAttempt, "sequence">;
+
 export const AgentNode = memo(function AgentNode({
   id,
   data,
@@ -65,12 +75,58 @@ export const AgentNode = memo(function AgentNode({
   const currentData = storedData ?? data;
   const emptySettings = useMemo(defaultSettings, []);
   const committedSettings = currentData.settings ?? emptySettings;
+  const agentRef = currentData.agentRef ?? { id: "builtin:ideation", revision: 1 };
   const [draftSettings, setDraftSettings] = useState(() => structuredClone(committedSettings));
   const [confirmedSettings, setConfirmedSettings] = useState(() => structuredClone(committedSettings));
   const hydrationEpoch = useCanvasStore((state) => state.canvasHydrationEpoch);
+  const attemptSequence = useRef(0);
+  const contextRef = useRef<AgentSaveContext>({
+    nodeId: id,
+    agentId: agentRef.id,
+    agentRevision: agentRef.revision,
+    hydrationEpoch,
+  });
+  if (
+    contextRef.current.nodeId !== id
+    || contextRef.current.agentId !== agentRef.id
+    || contextRef.current.agentRevision !== agentRef.revision
+    || contextRef.current.hydrationEpoch !== hydrationEpoch
+  ) {
+    attemptSequence.current += 1;
+    contextRef.current = {
+      nodeId: id,
+      agentId: agentRef.id,
+      agentRevision: agentRef.revision,
+      hydrationEpoch,
+    };
+  }
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSession, setSettingsSession] = useState<AgentCanvasSaveSession | null>(null);
   const [saveError, setSaveError] = useState("");
+
+  const beginSaveAttempt = useCallback((): AgentSaveAttempt => ({
+    ...contextRef.current,
+    sequence: ++attemptSequence.current,
+  }), []);
+  const isSaveAttemptCurrent = useCallback((attempt: AgentSaveAttempt, session: AgentCanvasSaveSession | null) => {
+    const state = useCanvasStore.getState();
+    const node = state.nodes.find((item) => item.id === attempt.nodeId);
+    const nodeData = node?.data as AgentNodeData | undefined;
+    return attempt.sequence === attemptSequence.current
+      && attempt.nodeId === contextRef.current.nodeId
+      && attempt.agentId === contextRef.current.agentId
+      && attempt.agentRevision === contextRef.current.agentRevision
+      && attempt.hydrationEpoch === contextRef.current.hydrationEpoch
+      && state.canvasHydrationEpoch === attempt.hydrationEpoch
+      && node?.type === CANVAS_NODE_TYPES.agent
+      && nodeData?.agentRef?.id === attempt.agentId
+      && nodeData.agentRef.revision === attempt.agentRevision
+      && (!session || session.isCurrent());
+  }, []);
+
+  useEffect(() => () => {
+    attemptSequence.current += 1;
+  }, []);
 
   useEffect(() => {
     const hydratedNode = useCanvasStore.getState().nodes.find((node) => node.id === id && node.type === CANVAS_NODE_TYPES.agent);
@@ -78,9 +134,8 @@ export const AgentNode = memo(function AgentNode({
     const snapshot = structuredClone(hydratedSettings);
     setConfirmedSettings(snapshot);
     setDraftSettings(snapshot);
-  }, [hydrationEpoch, id]);
+  }, [agentRef.id, agentRef.revision, hydrationEpoch, id]);
 
-  const agentRef = currentData.agentRef ?? { id: "builtin:ideation", revision: 1 };
   const role = ROLE_TRANSLATION_KEYS[agentRef.id] ?? ROLE_TRANSLATION_KEYS["builtin:ideation"];
   const title = t(role.name);
   const purpose = t(role.purpose);
@@ -95,14 +150,17 @@ export const AgentNode = memo(function AgentNode({
     if (JSON.stringify(draftSettings) === JSON.stringify(confirmedSettings)) return;
     const session = captureAgentCanvasSaveSession(id, agentRef);
     const attemptedSettings = structuredClone(draftSettings);
+    const attempt = beginSaveAttempt();
     try {
       await persistAgentSettings(session, attemptedSettings);
+      if (!isSaveAttemptCurrent(attempt, session)) return;
       setConfirmedSettings(attemptedSettings);
       setSaveError("");
     } catch (error) {
+      if (!isSaveAttemptCurrent(attempt, session)) return;
       setSaveError(getMessage(error, t("canvas.agentNode.saveFailure")));
     }
-  }, [agentRef, confirmedSettings, draftSettings, id, t]);
+  }, [agentRef, beginSaveAttempt, confirmedSettings, draftSettings, id, isSaveAttemptCurrent, t]);
 
   const openSettings = () => {
     setSettingsSession(captureAgentCanvasSaveSession(id, agentRef));
@@ -115,11 +173,21 @@ export const AgentNode = memo(function AgentNode({
     setSettingsSession(null);
   };
 
-  const confirmModalSettings = (settings: AgentNodeData["settings"]) => {
-    const snapshot = structuredClone(settings);
-    setConfirmedSettings(snapshot);
-    setDraftSettings(snapshot);
-    setSaveError("");
+  const saveModalSettings = async (settings: AgentNodeData["settings"]) => {
+    const attempt = beginSaveAttempt();
+    try {
+      await persistAgentSettings(settingsSession, settings);
+      if (!isSaveAttemptCurrent(attempt, settingsSession)) return false;
+      const snapshot = structuredClone(settings);
+      setConfirmedSettings(snapshot);
+      setDraftSettings(snapshot);
+      setSaveError("");
+      return true;
+    } catch (error) {
+      if (!isSaveAttemptCurrent(attempt, settingsSession)) return false;
+      setSaveError(getMessage(error, t("canvas.agentNode.saveFailure")));
+      throw error;
+    }
   };
 
   const secondarySummary = confirmedSettings.genreSecondary === "不融合"
@@ -228,8 +296,7 @@ export const AgentNode = memo(function AgentNode({
           nodeId={id}
           agentRef={agentRef}
           initial={structuredClone(draftSettings)}
-          session={settingsSession}
-          onSaved={confirmModalSettings}
+          onSave={saveModalSettings}
           onClose={closeSettings}
         />
       )}

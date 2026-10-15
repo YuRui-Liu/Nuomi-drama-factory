@@ -27,12 +27,15 @@ export function captureAgentCanvasSaveSession(
   if (!scope) return null;
   const runtime = captureFreezoneCanvasRuntime(scope.project, scope.canvasId);
   if (!runtime) return null;
+  const hydrationEpoch = useCanvasStore.getState().canvasHydrationEpoch;
   return {
     nodeId,
     agentRef: { ...agentRef },
     project: scope.project,
     canvasId: scope.canvasId,
-    isCurrent: () => scope.isCurrent() && runtime.isCurrent(),
+    isCurrent: () => scope.isCurrent()
+      && runtime.isCurrent()
+      && useCanvasStore.getState().canvasHydrationEpoch === hydrationEpoch,
     runtime,
   };
 }
@@ -110,8 +113,7 @@ interface IdeationSettingsProps {
   nodeId: string;
   agentRef: AgentNodeData["agentRef"];
   initial: ScriptSettings;
-  session: AgentCanvasSaveSession | null;
-  onSaved: (settings: ScriptSettings) => void;
+  onSave: (settings: ScriptSettings) => Promise<boolean>;
   onClose: () => void;
 }
 
@@ -119,14 +121,11 @@ export function IdeationSettings({
   nodeId,
   agentRef,
   initial,
-  session,
-  onSaved,
+  onSave,
   onClose,
 }: IdeationSettingsProps) {
   const save = async (settings: ScriptSettings) => {
-    await persistAgentSettings(session, settings);
-    onSaved(structuredClone(settings));
-    onClose();
+    if (await onSave(settings)) onClose();
   };
 
   return (
