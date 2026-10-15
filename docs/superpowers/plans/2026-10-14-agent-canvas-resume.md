@@ -222,6 +222,14 @@ A2b 分两批串行交付：**A2b-1** 可信媒体内容快照、可恢复发布
 
 材料：`/tmp/task08b2a-contract.md`、`/tmp/task08b2a-independent-release.log`、`/tmp/task08b2a-spec-review.md`、`/tmp/task08b2a-quality-review.md`、`/tmp/task08b2a-live-qa.json`。下一批 8B2b 接受限领域 broker 与内置 Agent 首用，定位图 `/tmp/task08b2b-builtin-map.md`；之后 8B2c 接真实支持的 adapter 与现有侧栏／节点委托 UI，适配器边界图 `/tmp/task08b2-adapter-boundary.md`。prepared 仍仅表示委派已保存，不能宣称实际模型执行、结果交付或供应商取消已完成。
 
+### 8B2b1 内置 Agent 交付记录（2026-10-15）
+
+双审提交 `a98048a`，8 个 owned 文件。可信内置目录含通用主创、文本编剧；只读目录不 seed 个人库，显式采用保存项目固定副本和 builtin 来源。同来源显式升级沿用 CAS、keep/drop 与 receipt，跨个人／内置来源升级拒绝。个人 source 形状与模板行为保持兼容。已有配置面板准确区分内置／个人版本，内置条目不会按相同 ID 进入个人升级入口。新主创选择 UI 尚未接入，留 8B2c。
+
+独立 HEAD 加 owned 快照：后端 5 文件 **119 passed**（10 个弃用警告），446 个模块全部来自快照；前端配置面板 **20 passed**；隔离 `/tmp` 构建缓存后 `tsc -b --force` exit0。8/8 实际 index 与验证快照一致，spec PASS、quality APPROVE。真实 API 采用 builtin:creative-lead v1，得到项目副本 `e7f6cfe6303e46fda4104b6cbc51ae2c`，同请求回放相同；页面“内置 v1”与个人来源并存，截图 `/tmp/canvas-builtin-agent-adoption.png` 已检查。未调用模型。API8781当前 session58468，日志 `/tmp/task08b2b1-api.log`，Vite5173保持。
+
+材料 `/tmp/task08b2b1-contract.md`、`/tmp/task08b2b1-independent.log`、`/tmp/task08b2b1-independent-frontend.log`、`/tmp/task08b2b1-independent-tsc.log`、`/tmp/task08b2b1-spec-review.md`、`/tmp/task08b2b1-quality-review.md`。下一步 8B2b2 受限领域 broker，契约 `/tmp/task08b2b-proposed-contract.md` 第2–6节；采用真实 story_fragment 文本候选加 delegation_outputs 关联，不能将授权 proposals 表混作创作成果。其后 8B2c 接实际 adapter 与现有侧栏／节点委托 UI。整个 PRD 仍未完成。
+
 ## 覆盖与执行记录
 
 | PRD | 任务 |
