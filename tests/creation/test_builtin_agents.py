@@ -38,8 +38,13 @@ def add_version(monkeypatch):
 
 def test_catalog_and_preview_do_not_initialize_personal_or_project(service, ctx):
     entries = service.builtin_catalog()
-    assert len(entries) == 2
-    assert len({entry['id'] for entry in entries}) == 2
+    assert len(entries) == 3
+    assert len({entry['id'] for entry in entries}) == 3
+    by_id = {entry['id']:entry for entry in entries}
+    assert {'builtin:creative-lead','builtin:text-writer','builtin:ideation'} <= by_id.keys()
+    ideation = by_id['builtin:ideation']
+    assert ideation['revision'] == 1
+    assert ideation['configuration']['capabilities'] == ['context.read','proposal.create']
     for entry in entries:
         assert entry['id'].startswith('builtin:')
         assert entry['source']['kind'] == 'builtin'

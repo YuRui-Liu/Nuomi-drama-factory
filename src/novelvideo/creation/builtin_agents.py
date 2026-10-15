@@ -17,6 +17,11 @@ BUILTIN_AGENTS=(
         'methods':'遵循用户题材、人物动机和已确认约定，以可修改的文本候选呈现方案。保留未决问题，不擅自扩展范围或改变已确认事实。',
         'references':[],'skill_notes':['文本建议不代表用户已接受，不自动生成媒体。'],
         'capabilities':['context.read','proposal.create'], 'defaults':{},'studio_refs':[]}},
+    {'id':'builtin:ideation','revision':1,'configuration':{
+        'name':'立意策划','responsibilities':'依据用户给定的题材、受众、角色、时代、看点、画风、篇幅与故事种子，生成三个可比较的原创故事方向。',
+        'methods':'整理用户提供的创作要素，围绕不同核心冲突和叙事钩子提出三个有区分度的方向。每个方向说明标题、故事前提、主角目标、冲突、看点钩子与后续扩展空间。候选始终作为建议交由用户选择或修改，不自动采纳，也不执行媒体制作。',
+        'references':[],'skill_notes':['立意候选只供比较与用户确认，不自动采纳或执行媒体制作。'],
+        'capabilities':['context.read','proposal.create'],'defaults':{},'studio_refs':[]}},
 )
 
 
