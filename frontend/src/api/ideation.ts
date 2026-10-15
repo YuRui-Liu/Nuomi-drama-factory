@@ -94,7 +94,7 @@ export const getIdeation = (
   objectId: string,
   scope: IdeationScope & { revision?: number },
 ) => apiCall<IdeationObject>(`${root(project)}/ideation/${encodeURIComponent(objectId)}`, {
-  searchParams: scope,
+  searchParams: { ...scope },
 });
 
 export const previewIdeation = (
@@ -126,5 +126,5 @@ export const getIdeationRequest = (
   requestId: string,
   scope: IdeationScope,
 ) => apiCall<IdeationWriteReceipt>(`${root(project)}/ideation-requests/${encodeURIComponent(requestId)}`, {
-  searchParams: scope,
+  searchParams: { ...scope },
 });
