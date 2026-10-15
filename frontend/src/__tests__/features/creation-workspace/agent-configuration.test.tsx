@@ -68,6 +68,17 @@ function show(isCurrent = () => true) {
     </QueryClientProvider>,
   );
 }
+
+it('labels builtin adoptions and never offers a same-ID personal upgrade', async () => {
+  vi.mocked(api.listAgentAdoptions).mockResolvedValue([{ ...adoption,
+    source: { kind: 'builtin', ref: { id: fixed.id, revision: 1 }, content_hash: 'trusted' },
+  }] as never);
+  vi.mocked(api.listPersonalAgents).mockResolvedValue([{ ...fixed, revision: 2 }] as never);
+  show();
+  expect(await screen.findByText('人物主创 · 内置 v1 · 项目修订 1')).toBeInTheDocument();
+  expect(screen.getByText('使用固定内置版本，无局部覆盖')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '比较个人新版 v2' })).not.toBeInTheDocument();
+});
 beforeEach(() => {
   const held = new Set<string>();
   Object.defineProperty(navigator, 'locks', {configurable:true,value:{request:async(name:string,_options:unknown,callback:(lock:unknown)=>unknown)=>{if(held.has(name))return callback(null);held.add(name);try{return await callback({name});}finally{held.delete(name);}}}});

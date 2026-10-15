@@ -155,6 +155,7 @@ class ProjectLibrary(ProjectDomain):
     schema=_ADOPTION_SCHEMA
     kind='agent'
     editable=frozenset()
+    source_fields=frozenset()
 
     def __init__(self,ctx,library):
         super().__init__(ctx,authority='user')
@@ -184,9 +185,14 @@ class ProjectLibrary(ProjectDomain):
     def _effective(content):
         return {**content['fixed']['configuration'],**{k:v['value'] for k,v in content['overrides'].items()}}
 
-    def upgrade_preview(self,identifier,ref,definition_names=None):
+    def resolve_source(self,ref,*,source=None,old=None):
+        require(source in (None,'personal'),'不支持的配置来源')
+        fixed=self.library.version(self.kind,ref)
+        return fixed,{'user_id':self.library.user_id,'ref':{'id':fixed['id'],'revision':fixed['revision']}}
+
+    def upgrade_preview(self,identifier,ref,definition_names=None,*,source=None):
         old=self.adoption(identifier)
-        new=self.library.version(self.kind,ref)
+        new,_=self.resolve_source(ref,source=source,old=old)
         return self._upgrade_preview(old,new,definition_names)
 
     def _upgrade_preview(self,old,new,definition_names=None):
@@ -242,18 +248,18 @@ class ProjectLibrary(ProjectDomain):
     def dispatch(self,conn,request,operation_id):
         p=request.payload
         if request.action=='adopt':
-            exact(p,{'ref','proof'}, {'definition_names'})
-            fixed=self.library.version(self.kind,p['ref'])
+            exact(p,{'ref','proof'}, {'definition_names'}|self.source_fields)
+            fixed,source=self.resolve_source(p['ref'],source=p.get('source'))
             self.validate_adoption_proof(conn,fixed,p)
             content={'adoption_id':uuid4().hex,'revision':1,'fixed':fixed,'overrides':{},
-                     'source':{'user_id':self.library.user_id,'ref':p['ref']}}
+                     'source':source}
             content=self.install(conn,content,operation_id,p)
             conn.execute('INSERT INTO creative_adoptions VALUES (?,?,?,1)',(content['adoption_id'],self.ctx.project_id,self.kind))
         else:
             require(request.action in {'override','upgrade'},'未知项目采用操作')
             required={'adoption_id','expected_revision'}
             exact(p,required|({'changes','proof'} if request.action=='override' else {'ref','proof','resolutions'}),
-                  set() if request.action=='override' else {'definition_names'})
+                  set() if request.action=='override' else {'definition_names'}|self.source_fields)
             old=self._adoption(conn,p['adoption_id'])
             require(old['revision']==integer(p['expected_revision'],1),'项目采用已变化','revision_conflict')
             content={**old,'revision':old['revision']+1,'overrides':dict(old['overrides'])}
@@ -266,7 +272,7 @@ class ProjectLibrary(ProjectDomain):
                     else:
                         content['overrides'][key]={'value':value,'base':old['fixed']['configuration'].get(key)}
             else:
-                fixed=self.library.version(self.kind,p['ref'])
+                fixed,source=self.resolve_source(p['ref'],source=p.get('source'),old=old)
                 preview=self._upgrade_preview(old,fixed,p.get('definition_names'))
                 require(preview['proof']==p['proof'],'升级比较已过期','source_conflict')
                 require(isinstance(p['resolutions'],dict) and set(p['resolutions'])==set(preview['conflicts'])
@@ -275,8 +281,7 @@ class ProjectLibrary(ProjectDomain):
                     if choice=='drop':
                         content['overrides'].pop(key,None)
                 content['fixed']=fixed
-                content['source']={'user_id':self.library.user_id,
-                                   'ref':{'id':fixed['id'],'revision':fixed['revision']}}
+                content['source']=source
                 for key,item in content['overrides'].items():
                     item={**item,'base':fixed['configuration'].get(key)}
                     content['overrides'][key]=item

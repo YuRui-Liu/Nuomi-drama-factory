@@ -560,12 +560,13 @@ export function AgentConfigurationPanel({
                   </p>
                 )}
                 {projects.data?.map((a) => {
-                  const latest = personal.data?.find((p) => p.id === a.fixed.id);
+                  const builtin = a.source.kind === 'builtin';
+                  const latest = builtin ? undefined : personal.data?.find((p) => p.id === a.fixed.id);
                   return (
                     <article key={a.adoption_id} className="space-y-2 border-b py-2 last:border-0">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="text-sm font-medium">
-                          {a.effective.name} · 个人 v{a.fixed.revision} · 项目修订 {a.revision}
+                          {a.effective.name} · {builtin ? '内置' : '个人'} v{a.fixed.revision} · 项目修订 {a.revision}
                         </span>
                         <Button
                           variant="outline"
@@ -589,7 +590,7 @@ export function AgentConfigurationPanel({
                           ? `本项目覆盖：${Object.keys(a.overrides)
                               .map((k) => agentFields[k as keyof AgentConfiguration] ?? k)
                               .join('、')}`
-                          : '使用固定个人版本，无局部覆盖'}
+                          : `使用固定${builtin ? '内置' : '个人'}版本，无局部覆盖`}
                       </p>
                       {latest && latest.revision !== a.fixed.revision && (
                         <Button

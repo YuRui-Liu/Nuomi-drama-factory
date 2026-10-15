@@ -53,7 +53,9 @@ export interface AgentAdoption {
   fixed: PersonalAgent;
   overrides: Record<string, { value: unknown; base: unknown }>;
   effective: AgentConfiguration;
-  source: { user_id: string; ref: AgentRef };
+  source:
+    | { kind?: 'personal'; user_id: string; ref: AgentRef }
+    | { kind: 'builtin'; ref: AgentRef; content_hash: string };
 }
 export interface AgentPreview {
   configuration: AgentConfiguration;

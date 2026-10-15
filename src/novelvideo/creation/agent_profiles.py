@@ -28,7 +28,31 @@ def portable_studio_configuration(data):
 class AgentProfiles(ProjectLibrary):
     domain='agent_profiles'
     kind='agent'
+    source_fields=frozenset({'source'})
     editable=frozenset({'name','responsibilities','methods','references','skill_notes','capabilities','defaults','studio_refs'})
+
+    def builtin_catalog(self):
+        from .builtin_agents import catalog
+        with self.read():
+            pass
+        return catalog()
+
+    def resolve_source(self,ref,*,source=None,old=None):
+        require(source in (None,'personal','builtin'),'未知Agent来源')
+        chosen=source or 'personal'
+        if old is not None:
+            origin='builtin' if old.get('source',{}).get('kind')=='builtin' else 'personal'
+            require(chosen==origin,'升级不能切换Agent来源','source_conflict')
+        if chosen=='builtin':
+            from .builtin_agents import resolve
+            fixed=resolve(ref)
+            return fixed,fixed['source']
+        return super().resolve_source(ref,source=source,old=old)
+
+    def adoption_preview(self,ref,*,source=None):
+        with self.read():
+            pass
+        return self.resolve_source(ref,source=source)[0]
 
     @staticmethod
     def capabilities():

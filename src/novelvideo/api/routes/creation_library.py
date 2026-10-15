@@ -152,6 +152,13 @@ async def reusable_studio_resources(project: str,user: dict=Depends(get_api_user
         return {'ok':True,'data':await asyncio.to_thread(service.studio_resources)}
 
 
+@router.get('/reusable/agent/builtins')
+async def builtin_agents(project: str,user: dict=Depends(get_api_user)):
+    with errors():
+        service=await reusable_service(project,user,'agent')
+        return {'ok':True,'data':await asyncio.to_thread(service.builtin_catalog)}
+
+
 @router.get('/reusable/{kind}/personal')
 async def personal_catalog(project: str,kind: LibraryKind,user: dict=Depends(get_api_user)):
     with errors():
@@ -217,12 +224,12 @@ async def adopted_version(project: str,kind: LibraryKind,identifier: str,revisio
 async def adoption_preview(project: str,kind: LibraryKind,body: dict,user: dict=Depends(get_api_user)):
     with errors():
         from novelvideo.creation.ontology import exact
-        exact(body,{'ref'},{'definition_names'})
+        exact(body,{'ref'},{'definition_names'}|({'source'} if kind=='agent' else set()))
         service=await reusable_service(project,user,kind)
         if kind=='template':
             result=await asyncio.to_thread(service.adoption_preview,body['ref'],body.get('definition_names'))
         else:
-            result=await asyncio.to_thread(service.library.version,kind,body['ref'])
+            result=await asyncio.to_thread(service.adoption_preview,body['ref'],source=body.get('source'))
         return {'ok':True,'data':result}
 
 
@@ -230,9 +237,10 @@ async def adoption_preview(project: str,kind: LibraryKind,body: dict,user: dict=
 async def upgrade_preview(project: str,kind: LibraryKind,body: dict,user: dict=Depends(get_api_user)):
     with errors():
         from novelvideo.creation.ontology import exact
-        exact(body,{'adoption_id','ref'},{'definition_names'})
+        exact(body,{'adoption_id','ref'},{'definition_names'}|({'source'} if kind=='agent' else set()))
         service=await reusable_service(project,user,kind)
-        return {'ok':True,'data':await asyncio.to_thread(service.upgrade_preview,body['adoption_id'],body['ref'],body.get('definition_names'))}
+        options={'source':body.get('source')} if kind=='agent' else {}
+        return {'ok':True,'data':await asyncio.to_thread(service.upgrade_preview,body['adoption_id'],body['ref'],body.get('definition_names'),**options)}
 
 
 @router.post('/reusable/{kind}/override-preview')
@@ -247,6 +255,8 @@ async def override_preview(project: str,kind: LibraryKind,body: dict,user: dict=
 @router.post('/reusable/{kind}/operations')
 async def adoption_operation(project: str,kind: LibraryKind,body: dict,user: dict=Depends(get_api_user)):
     with errors():
+        if kind=='agent' and user.get('credential_kind')=='agent_session':
+            raise HTTPException(403,detail='项目Agent采用须由用户明确操作')
         service=await reusable_service(project,user,kind,'editor')
         return {'ok':True,'data':await service.apply(body)}
 
