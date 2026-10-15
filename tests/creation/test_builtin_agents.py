@@ -45,6 +45,14 @@ def test_catalog_and_preview_do_not_initialize_personal_or_project(service, ctx)
     ideation = by_id['builtin:ideation']
     assert ideation['revision'] == 1
     assert ideation['configuration']['capabilities'] == ['context.read','proposal.create']
+    methods = ideation['configuration']['methods']
+    assert 'proposal.create' in methods and 'text' in methods
+    assert '无 Markdown 代码围栏的纯 JSON' in methods
+    assert 'schema_version' in methods and '整数 1' in methods
+    assert '根对象仅含 schema_version 和 candidates' in methods
+    assert '恰好三条' in methods
+    assert 'id 是非空字符串，且在三条候选之间唯一' in methods
+    assert '每条候选仅含 id、title、premise、protagonist_goal、conflict、hook、expansion' in methods
     for entry in entries:
         assert entry['id'].startswith('builtin:')
         assert entry['source']['kind'] == 'builtin'

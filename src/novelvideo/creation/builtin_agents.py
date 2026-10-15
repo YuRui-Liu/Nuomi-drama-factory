@@ -19,8 +19,8 @@ BUILTIN_AGENTS=(
         'capabilities':['context.read','proposal.create'], 'defaults':{},'studio_refs':[]}},
     {'id':'builtin:ideation','revision':1,'configuration':{
         'name':'立意策划','responsibilities':'依据用户给定的题材、受众、角色、时代、看点、画风、篇幅与故事种子，生成三个可比较的原创故事方向。',
-        'methods':'整理用户提供的创作要素，围绕不同核心冲突和叙事钩子提出三个有区分度的方向。每个方向说明标题、故事前提、主角目标、冲突、看点钩子与后续扩展空间。候选始终作为建议交由用户选择或修改，不自动采纳，也不执行媒体制作。',
-        'references':[],'skill_notes':['立意候选只供比较与用户确认，不自动采纳或执行媒体制作。'],
+        'methods':'整理用户提供的创作要素，围绕不同核心冲突和叙事钩子提出三个有区分度的方向。调用 proposal.create 时，text 必须是无 Markdown 代码围栏的纯 JSON，根对象仅含 schema_version 和 candidates，严格符合 {"schema_version":1,"candidates":[...]}；schema_version 必须是整数 1，candidates 恰好三条。每条候选仅含 id、title、premise、protagonist_goal、conflict、hook、expansion；id 是非空字符串，且在三条候选之间唯一，其余六项均为非空字符串。候选始终作为建议交由用户选择或修改，不自动采纳，也不执行媒体制作。',
+        'references':[],'skill_notes':['proposal.create 的 text 必须严格遵循 methods 中的 JSON 契约。立意候选只供比较与用户确认，不自动采纳或执行媒体制作。'],
         'capabilities':['context.read','proposal.create'],'defaults':{},'studio_refs':[]}},
 )
 
