@@ -250,6 +250,16 @@ A2b 分两批串行交付：**A2b-1** 可信媒体内容快照、可恢复发布
 
 材料 `/tmp/task08b2c1-contract.md`、`/tmp/task08b2c1-independent.log`、`/tmp/task08b2c1-independent-final.log`、`/tmp/task08b2c1-spec-review.md`、`/tmp/task08b2c1-quality-review.md`。c2 已继续实施：managed 侧栏沿用唯一主输入，禁止旧队列／附件 ingest／工具审批旁路；保留旧历史和 legacy 行为。接线核查 `/tmp/task08b2c2-send-entry-map.md`，原 dirty 两文件基线 `/tmp/task08b2c2-ui-before.json`。真实页面基线 `/tmp/canvas-agent-c2-before.png`，运行时尚未配置。整体 PRD 与任务9–13仍未完成。
 
+### 8B2c2 侧栏主输入交付记录（2026-10-15）
+
+已提交 `29731ff`，10 个 owned 文件，准确增量保留原 dirty。managed 画布沿用单一主输入，采用内置／个人固定版本后指派项目主创；多节点引用、显式画布准备范围、有限调用数、固定委派、结果与停止恢复统一接入受限运行。旧历史保留，旧队列／附件 ingest／工具批准不旁路；legacy 行为保持。成功请求精确归档，未知请求保留原 ID；输入语义及 parent chain 在 flush／preview 后复核，实例改变后不回传迟到成功。主创和运行设置折叠，未配置状态用黄色标识，媒体文字方案显示实际正文和“尚未生成”，定义草案显示固定版本与未启用状态。
+
+用户再次明确允许并行测试验证后，规格／质量／隔离自动测试／浏览器并行收尾，仅重跑受影响项。规格两项 P2（输入漂移、刷新后实例失效）修复后独立 2 passed，PASS；质量媒体方案字段遗漏修复后独立 1 passed／12 skipped，APPROVE。最终隔离快照 4 文件 24 passed，`tsc -b --force` exit0，全部 10/10 index 文件与独立快照哈希一致。其余未变配置／会话测试保留前轮证据，不虚合并计数。材料 `/tmp/task08b2c2-contract.md`、`/tmp/task08b2c2-integration-contents.json`、`/tmp/task08b2c2-independent-release.log`、`/tmp/task08b2c2-spec-review.md`、`/tmp/task08b2c2-quality-review.md`。
+
+真实浏览器无模型验收：builtin:text-writer 直接采用／指派成功，个人 `cd41391f6d314795ad2f4fcb22385899` v4 采用／指派成功；QA 项目主创绑定现 revision3、副本 `c96b2d51fe7f45e48d60bba2c601e56a` revision1。未配置按 Enter 保留草稿并提示；同一侧栏只有一个 composer；引用移除不删节点；自由／分集切换无串会话记录。截图 `/tmp/canvas-agent-c2-final-1280.png`、`/tmp/canvas-agent-c2-final-1440.png` 已查看。浏览器基于带原 dirty 的开发工作树，精确提交由独立快照测试验证。多选与异步窗口由组件验证，真实供应商生成／运行中停止尚未验证，不冒称完整供应商闭环。API8781当前 session71113，日志 `/tmp/task08b2c1-api.log`；实际 runtime-unconfigured，无模型调用。
+
+下一步按任务9–13继续预算、节点执行、候选采用／撤销、物理删除旧流水线与最终验收；8B2 代码链已接通，但真实模型验收仍需可用配置与明确调用范围。无需重新询问已批准产品方向；不要重复全套无关测试。
+
 ## 覆盖与执行记录
 
 | PRD | 任务 |
