@@ -157,6 +157,10 @@ A2b 分两批串行交付：**A2b-1** 可信媒体内容快照、可恢复发布
 
 ## 任务 8B：真实 Agent 协作与固定范围
 
+前置恢复修复已双审提交 `1d09845`：Agent/settings跨标签run与finish互斥、原请求编号与身份校验，65项关联测试、定向fixture修正2项、tsc通过；真实Agent保存清理与约定冲突后草稿恢复通过。模板提交为`b501ee6`，均保留原脏改，未推送。
+
+**8B1a 当前执行后端固定会话归属，8B1b随后接前端**。按用户／规范项目ID／已应用的真实画布／索引会话联合授权，覆盖HTTP及WS所有会话入口；列表缺库只读返回空，不初始化或迁移。旧default不自动归属新画布，未知会话不能隐式创建。显式创建request_id幂等，绑定不可由scope.set改写。后台运行必须保留原会话身份。项目主创运行与范围委托另在8B2完成。
+
 文件：原任务 8 的 agent_context/tools、chat/canvas_context、superchat；新增 `creation/delegations.py`，复用现有 chat conversation 持久化。
 
 - [ ] 保存项目主创配置，每画布独立 conversation 与任务；切换恢复对应讨论，共享已确认项目事实。
