@@ -3,6 +3,7 @@
 import { resolveExternalCanvasConflict } from './canvasSyncRuntime';
 import { DirectionReferenceEntry } from '@/features/direction-references/DirectionReferenceEntry';
 import { AgentConfigurationEntry } from '@/features/agent-configuration/AgentConfigurationEntry';
+import { TemplateLibraryEntry } from '@/features/template-library/TemplateLibraryEntry';
 import { CreativeSettingsEntry } from '@/features/creative-settings/CreativeSettingsEntry';
 import { SharedAssetSaveDialog, isSharedAssetTarget } from './commit/SharedAssetSaveDialog';
 import { readSharedPublication, clearFinishedPublication, type PublicationScope } from './commit/sharedAssetPublication';
@@ -905,7 +906,7 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
           {managedWorkspace && <OperationDraftBackup project={projectId} canvasId={canvasId} />}
           <CanvasRunPanel project={projectId} canvas={canvasId} enabled={sync.hydratedCanvasId === canvasId && sync.status !== 'conflict' && sync.status !== 'error'} />
           {/* 调试面板暂时隐藏，恢复时去掉 `false &&` 即可 */}
-          {managedWorkspace && <div className="absolute right-3 top-20 z-20 flex flex-wrap justify-end gap-2"><DirectionReferenceEntry project={projectId} canvasId={canvasId} selectedNodes /><AgentConfigurationEntry project={projectId} canvasId={canvasId}/><CreativeSettingsEntry project={projectId} canvasId={canvasId}/></div>}
+          {managedWorkspace && <div className="absolute right-3 top-20 z-20 flex flex-wrap justify-end gap-2"><DirectionReferenceEntry project={projectId} canvasId={canvasId} selectedNodes /><AgentConfigurationEntry project={projectId} canvasId={canvasId}/><CreativeSettingsEntry project={projectId} canvasId={canvasId}/><TemplateLibraryEntry project={projectId} canvasId={canvasId}/></div>}
           {false && import.meta.env.DEV && (
             <CanvasDebugPanel
               project={projectId}
