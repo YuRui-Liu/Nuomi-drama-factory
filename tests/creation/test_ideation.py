@@ -111,6 +111,14 @@ def test_rejects_body_text_over_30000_characters_in_one_candidate():
         validate_candidates(payload([first, candidate('idea-2'), candidate('idea-3')]))
 
 
+def test_rejects_six_body_fields_over_30000_characters_in_total():
+    first = candidate('idea-1', title='t' * 5001, premise='p' * 5000,
+                      protagonist_goal='g' * 5000, conflict='c' * 5000,
+                      hook='h' * 5000, expansion='e' * 5000)
+    with pytest.raises(ValueError, match='30000'):
+        validate_candidates(payload([first, candidate('idea-2'), candidate('idea-3')]))
+
+
 def test_rejects_missing_candidate_fields():
     incomplete = candidate('idea-1')
     del incomplete['hook']

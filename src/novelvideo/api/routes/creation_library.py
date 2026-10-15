@@ -106,6 +106,77 @@ async def agent_tools_service(project, user, canvas_id, conversation_id, delegat
                       conversation_id=conversation_id, delegation_id=delegation_id, resolve_context=resolve)
 
 
+async def ideation_service(project, user, canvas_id, conversation_id, role='viewer'):
+    from copy import deepcopy
+    from novelvideo.creation.ideation_service import IdeationService
+    principal = deepcopy(user)
+
+    async def resolve(required_role):
+        return await context_for(project, principal, required_role)
+
+    ctx = await resolve(role)
+    return IdeationService(ctx, username=principal['username'], canvas_id=canvas_id,
+                           conversation_id=conversation_id, resolve_context=resolve)
+
+
+@router.get('/ideation/{object_id}')
+async def get_ideation(project: str, object_id: str, canvas_id: str, conversation_id: str,
+                       node_id: str, revision: int | None = None, user: dict = Depends(get_api_user)):
+    with errors():
+        service = await ideation_service(project, user, canvas_id, conversation_id)
+        return {'ok': True, 'data': await service.get(object_id, node_id=node_id, revision=revision)}
+
+
+@router.post('/ideation/{object_id}/preview')
+async def preview_ideation(project: str, object_id: str, body: dict,
+                           user: dict = Depends(get_api_user)):
+    from novelvideo.creation.ontology import exact, require
+    with errors():
+        required = {'action', 'canvas_id', 'conversation_id', 'node_id',
+                    'expected_revision', 'candidate_id'}
+        optional = {'candidate'}
+        exact(body, required, optional)
+        require(body['action'] in {'edit', 'adopt'}, '未知候选操作')
+        require(('candidate' in body) == (body['action'] == 'edit'),
+                '编辑预览必须提供候选正文，采纳预览不可修改正文')
+        service = await ideation_service(project, user, body['canvas_id'], body['conversation_id'])
+        return {'ok': True, 'data': await service.preview({'object_id': object_id, **body})}
+
+
+@router.post('/ideation/{object_id}/edit')
+async def edit_ideation(project: str, object_id: str, body: dict,
+                        user: dict = Depends(get_api_user)):
+    from novelvideo.creation.ontology import exact
+    with errors():
+        exact(body, {'request_id', 'canvas_id', 'conversation_id', 'node_id',
+                     'expected_revision', 'candidate_id', 'proof', 'candidate'})
+        service = await ideation_service(project, user, body['canvas_id'], body['conversation_id'], 'editor')
+        return {'ok': True, 'data': await service.edit(object_id, body)}
+
+
+@router.post('/ideation/{object_id}/adopt')
+async def adopt_ideation(project: str, object_id: str, body: dict,
+                         user: dict = Depends(get_api_user)):
+    from novelvideo.creation.ontology import exact
+    with errors():
+        if user.get('credential_kind') == 'agent_session':
+            raise HTTPException(403, {'code': 'scope_violation', 'message': 'Agent 会话不能采纳提案'})
+        exact(body, {'request_id', 'canvas_id', 'conversation_id', 'node_id',
+                     'expected_revision', 'candidate_id', 'proof'})
+        service = await ideation_service(project, user, body['canvas_id'], body['conversation_id'], 'editor')
+        return {'ok': True, 'data': await service.adopt(object_id, body)}
+
+
+@router.get('/ideation-requests/{request_id}')
+async def get_ideation_request(project: str, request_id: str, canvas_id: str,
+                              conversation_id: str, node_id: str,
+                              user: dict = Depends(get_api_user)):
+    with errors():
+        service = await ideation_service(project, user, canvas_id, conversation_id)
+        result = await service.receipt(request_id, node_id=node_id)
+        return {'ok': True, 'data': result or {'request_id': request_id, 'status': 'unknown'}}
+
+
 @router.post('/delegations/{identifier}/actions')
 async def execute_agent_action(project: str, identifier: str, canvas_id: str, conversation_id: str,
                                body: dict, user: dict = Depends(get_api_user)):
