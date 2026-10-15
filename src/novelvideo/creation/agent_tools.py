@@ -141,7 +141,9 @@ class AgentTools(ProjectDomain):
         require({k: v for k, v in current.items() if k != 'observed_canvas_revision'}
                 == {k: v for k, v in original.items() if k != 'observed_canvas_revision'},
                 '目标内容、结果或成员归属已变化', 'stale_input')
-        inputs = agent_context.inputs(self.ctx, conn, [item['ref'] for item in contract['inputs']])
+        inputs = agent_context.inputs(self.ctx, conn, [item['ref'] for item in contract['inputs']],
+                                      username=self.username,
+                                      current_canvas_id=self.canvas_id)
         require(inputs == contract['inputs'], '委托引用输入已变化', 'stale_input')
         now = agent_context.context(self.ctx, conn, self.canvas_id, current, inputs)
         before, after = self._hard(contract['context']), self._hard(now)

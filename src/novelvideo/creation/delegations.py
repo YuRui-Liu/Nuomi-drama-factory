@@ -178,7 +178,9 @@ class Delegations(ProjectDomain):
         require(isinstance(acceptance, list) and 0 < len(acceptance) <= 30, '请提供明确交付标准')
         for criterion in acceptance:
             text(criterion, 2000)
-        fixed_inputs = agent_context.inputs(self.ctx, conn, body['input_refs'])
+        fixed_inputs = agent_context.inputs(self.ctx, conn, body['input_refs'],
+                                            username=self.username,
+                                            current_canvas_id=body['canvas_id'])
         parent_hash = None
         if parent_id:
             parent = self._get(conn, parent_id)

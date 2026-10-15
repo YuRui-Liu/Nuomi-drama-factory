@@ -31,6 +31,10 @@ def required_canvases(ctx, conn, body):
         require(isinstance(ref, dict), '输入引用无效')
         if ref.get('kind') == 'canvas_node' and isinstance(ref.get('canvas_id'), str):
             ids.add(ref['canvas_id'])
+        elif ref.get('kind') == 'ideation_selection':
+            require(isinstance(ref.get('canvas_id'), str), '采纳引用画布无效', 'scope_violation')
+            require(ref['canvas_id'] == body.get('canvas_id'), '采纳引用必须来自当前画布', 'scope_violation')
+            ids.add(ref['canvas_id'])
         elif ref.get('kind') == 'object':
             owner = {'level': 'object', 'object_id': ref.get('object_id')}
             seen = set()
@@ -68,13 +72,18 @@ def node_snapshot(node):
         'imageUrl', 'previewImageUrl', 'panoUrl', 'plyUrl', 'videoUrl', 'audioUrl',
         'sources', 'assetRef', 'assetMediaSelection', 'scene', 'scenesBySourceId', 'activeSourceId'}
     media = {key: data[key] for key in sorted(media_keys) if key in data}
+    content = {k: v for k, v in data.items()
+               if k in TEXT_FIELDS and isinstance(v, str)}
+    if node['type'] == 'agentNode':
+        # These settings select the work requested of the Agent. Its active
+        # conversation, runs, and adopted receipt are runtime output metadata.
+        content.update({key: data[key] for key in ('agentRef', 'settings') if key in data})
     return {'node_id': node['id'], 'node_type': node['type'],
             'parent_id': node.get('parentId'), 'input_fingerprint': input_fingerprint(node),
             'media_evidence': {'status': 'not_evaluated', 'byte_stability': 'not_archived',
                                'fields': sorted(media), 'locator_fingerprint': digest(media),
                                'notice': '仅固定节点媒体字段证据；读取字节前须核验受控来源，不授予任意 URL 或文件访问'},
-            'content': {k: v for k, v in node.get('data', {}).items()
-                        if k in TEXT_FIELDS and isinstance(v, str)}}
+            'content': content}
 
 
 def graph_scope(ctx, canvas_id, scope):
@@ -115,7 +124,7 @@ def graph_scope(ctx, canvas_id, scope):
             'nodes': snapshots, 'membership': chains, 'observed_canvas_revision': canvas['revision']}
 
 
-def inputs(ctx, conn, values):
+def inputs(ctx, conn, values, *, username=None, current_canvas_id=None):
     require(isinstance(values, list) and len(values) <= 100, '输入引用数量无效')
     result = []
     for ref in values:
@@ -132,6 +141,11 @@ def inputs(ctx, conn, values):
             payload = obj['payload']
             definition = Ontology(ctx).definition(payload['definition_name'], payload['schema_revision'], conn)
             value = {'ref': ref, 'snapshot': obj, 'definition': definition}
+        elif kind == 'ideation_selection':
+            require(username is not None and current_canvas_id is not None,
+                    '固定采纳引用需要可信用户和当前画布', 'scope_violation')
+            from .ideation_reference import resolve
+            value = resolve(ctx, conn, ref, username=username, current_canvas_id=current_canvas_id)
         elif kind == 'asset':
             exact(ref, {'kind', 'asset_ref', 'slot_id', 'role'})
             asset = AssetReferences(ctx.state_dir, ctx.output_dir, ctx.project_id).resolve(ref['asset_ref'])

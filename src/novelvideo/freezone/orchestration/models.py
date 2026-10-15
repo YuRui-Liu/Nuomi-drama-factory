@@ -43,12 +43,20 @@ RESULT_FIELDS = {
     "threeDWorldNode": {"plyUrl", "sources", "taskKey"},
 }
 
+# Agent nodes persist runtime handles on the canvas for navigation. They do not
+# alter the node's semantic input or its media evidence. Keep settings and the
+# selected Agent reference inside the normal input fingerprint.
+INPUT_METADATA_FIELDS = {
+    "agentNode": frozenset({"conversationId", "runRefs", "adoptedRef"}),
+}
+
 
 def input_fingerprint(node: dict) -> str:
     data = node.get("data", {})
     # Reference-only media nodes treat their URLs as inputs, unlike generators.
     outputs = set() if data.get("referenceOnly") else RESULT_FIELDS.get(node.get("type"), set())
+    metadata = INPUT_METADATA_FIELDS.get(node.get("type"), frozenset())
     return fingerprint({"type": node.get("type"), "data": {
         key: value for key, value in data.items()
-        if key not in PRESENTATION_FIELDS and key not in outputs
+        if key not in PRESENTATION_FIELDS and key not in outputs and key not in metadata
     }})

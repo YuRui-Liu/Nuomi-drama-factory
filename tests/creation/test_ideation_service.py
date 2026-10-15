@@ -8,6 +8,9 @@ from novelvideo.creation.ideation_service import IdeationService
 from novelvideo.creation.operations import OperationError
 from novelvideo.creation.store import ObjectStore
 from novelvideo.freezone.canvas_store import canvas_path
+from novelvideo.creation import agent_context
+from novelvideo.creation.agent_context import node_snapshot
+from novelvideo.chat.conversations import ConversationStore
 from .test_agent_tools import action, create, selection
 from .test_agent_tools import ctx, ready, service, task
 from .test_agent_runs import decision, runs as run_service, start_request
@@ -56,6 +59,19 @@ def ideation(ctx, ready):
 
     return IdeationService(ctx, username='alice', canvas_id=canvas_id,
                            conversation_id=conversation_id, resolve_context=resolve)
+
+
+async def adopted_reference(ctx, ready, task, *, candidate_id='idea-2', request_id='adopt-ref'):
+    object_ref, _ = await create_output(ctx, ready, task)
+    service = ideation(ctx, ready)
+    preview = await service.preview({'object_id': object_ref['id'], 'action': 'adopt', 'node_id': 'a',
+        'expected_revision': object_ref['revision'], 'candidate_id': candidate_id})
+    receipt = await service.adopt(object_ref['id'], {'request_id': request_id, 'node_id': 'a',
+        'expected_revision': object_ref['revision'], 'candidate_id': candidate_id, 'proof': preview['proof']})
+    ref = {'kind': 'ideation_selection', 'request_id': request_id,
+        'canvas_id': ready[0], 'conversation_id': ready[1], 'node_id': 'a',
+        'object_id': object_ref['id'], 'revision': object_ref['revision'], 'candidate_id': candidate_id}
+    return ref, service, receipt
 
 
 async def test_reads_only_verified_delegation_output_and_returns_origin_source(ctx, ready, task):
@@ -295,3 +311,134 @@ async def test_read_does_not_create_domain_schema_or_receipt(ctx, ready, task):
         after = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         receipt = conn.execute("SELECT 1 FROM creative_domain_receipts WHERE domain='ideation'").fetchone()
     assert after == before and receipt is None
+
+
+async def test_agent_delegation_input_resolves_only_the_adopted_candidate(ctx, ready, task, service):
+    ref, _ideation, receipt = await adopted_reference(ctx, ready, task)
+    body = selection(ready, input_refs=[ref])
+    frozen = await create(service, body, 'adopted-candidate-input')
+    item = frozen['contract']['inputs'][0]
+
+    assert item['ref'] == ref
+    assert item['snapshot']['candidate'] == next(
+        candidate for candidate in candidates()['candidates'] if candidate['id'] == 'idea-2')
+    assert set(item['snapshot']['candidate']) == {
+        'id', 'title', 'premise', 'protagonist_goal', 'conflict', 'hook', 'expansion'}
+    assert 'candidates' not in item['snapshot']
+    assert item['snapshot']['provenance']['request_id'] == receipt['request_id']
+    assert item['snapshot']['provenance']['source'] == receipt['selection']['source']
+    assert 'execution_enabled' not in item['snapshot']
+    assert agent_context.required_canvases(ctx, None, body) == {ready[0]}
+
+
+async def test_agent_tools_revalidates_fixed_ideation_input_before_execution(ctx, ready, task, service):
+    ref, _ideation, _receipt = await adopted_reference(ctx, ready, task,
+                                                       request_id='adopt-agent-tools-input')
+    delegated = await create(service, selection(ready, input_refs=[ref]), 'agent-tools-input-task')
+    _object_ref, output = await create_output(ctx, ready, delegated, input_indices=[0],
+                                               request_id='proposal-with-adopted-input')
+
+    assert output['operation'] == 'proposal.create'
+    assert output['input_indices'] == [0]
+    assert output['target_node_ids'] == ['a']
+
+
+@pytest.mark.parametrize('forgery', [
+    'request_id', 'canvas_id', 'conversation_id', 'node_id', 'object_id',
+    'revision', 'candidate_id', 'actor', 'project',
+])
+async def test_forged_ideation_selection_is_rejected(ctx, ready, task, forgery):
+    ref, source, _receipt = await adopted_reference(ctx, ready, task,
+                                                    request_id=f'adopt-forgery-{forgery}')
+    fake_ref = dict(ref)
+    fake_ctx = ctx
+    if forgery in {'request_id', 'canvas_id', 'conversation_id', 'node_id', 'object_id',
+                   'revision', 'candidate_id'}:
+        fake_ref[forgery] = {'request_id': 'missing-request', 'revision': 99}.get(
+            forgery, f'forged-{forgery}')
+    elif forgery == 'actor':
+        fake_ctx = SimpleNamespace(**{**vars(ctx), 'requester_user_id': 'mallory'})
+    else:
+        fake_ctx = SimpleNamespace(**{**vars(ctx), 'project_id': 'another-project'})
+
+    with source.read() as conn, pytest.raises(OperationError):
+        agent_context.inputs(fake_ctx, conn, [fake_ref], username='alice',
+                             current_canvas_id=ready[0])
+
+
+async def test_old_selection_stays_fixed_after_edit_and_readoption(ctx, ready, task):
+    old_ref, service, old_receipt = await adopted_reference(ctx, ready, task,
+                                                             request_id='adopt-before-edits')
+    edit = body_candidate(title='编辑后的候选二')
+    preview = await service.preview({'object_id': old_ref['object_id'], 'action': 'edit', 'node_id': 'a',
+        'expected_revision': 1, 'candidate_id': 'idea-2', 'candidate': edit})
+    await service.edit(old_ref['object_id'], {'request_id': 'edit-after-adoption', 'node_id': 'a',
+        'expected_revision': 1, 'candidate_id': 'idea-2', 'proof': preview['proof'], 'candidate': edit})
+    next_preview = await service.preview({'object_id': old_ref['object_id'], 'action': 'adopt',
+        'node_id': 'a', 'expected_revision': 2, 'candidate_id': 'idea-3'})
+    await service.adopt(old_ref['object_id'], {'request_id': 'readopt-after-edit', 'node_id': 'a',
+        'expected_revision': 2, 'candidate_id': 'idea-3', 'proof': next_preview['proof']})
+
+    with service.read() as conn:
+        frozen = agent_context.inputs(ctx, conn, [old_ref], username='alice',
+                                      current_canvas_id=ready[0])[0]
+    assert frozen['snapshot']['candidate']['title'] == '标题2'
+    assert frozen['snapshot']['provenance']['request_id'] == old_receipt['request_id']
+
+
+async def test_adopted_reference_can_cross_conversations_on_the_same_canvas(ctx, ready, task, service):
+    ref, _ideation, receipt = await adopted_reference(ctx, ready, task,
+                                                       request_id='adopt-old-conversation')
+    current = ConversationStore('alice', 'project', 'p').create(
+        '新的画布会话', canvas_id=ready[0], request_id='new-canvas-conversation')
+    body = selection(ready, conversation_id=current['id'], input_refs=[ref])
+    preview = service.preview(body)
+
+    assert ref['conversation_id'] != current['id']
+    assert preview['contract']['conversation_id'] == current['id']
+    assert preview['contract']['inputs'][0]['snapshot']['provenance']['conversation_id'] == ref['conversation_id']
+    assert preview['contract']['inputs'][0]['snapshot']['provenance']['request_id'] == receipt['request_id']
+
+
+async def test_adopted_reference_rejects_a_deleted_source_node(ctx, ready, task):
+    ref, service, _receipt = await adopted_reference(ctx, ready, task,
+                                                     request_id='adopt-delete-node')
+    path = canvas_path(ctx.state_dir, ready[0])
+    graph = json.loads(path.read_text())
+    graph['nodes'] = [node for node in graph['nodes'] if node['id'] != ref['node_id']]
+    path.write_text(json.dumps(graph))
+
+    with service.read() as conn, pytest.raises(OperationError) as error:
+        agent_context.inputs(ctx, conn, [ref], username='alice', current_canvas_id=ready[0])
+    assert error.value.code == 'scope_violation'
+    assert '节点已删除' in str(error.value)
+
+
+def test_agent_node_runtime_metadata_does_not_change_semantic_snapshot():
+    node = {'id': 'agent', 'type': 'agentNode', 'data': {
+        'agentRef': {'id': 'builtin:ideation', 'revision': 1},
+        'settings': {'genrePrimary': '悬疑', 'idea': '雨夜站台'},
+        'conversationId': 'conversation-1', 'runRefs': [], 'adoptedRef': None,
+    }}
+    before = node_snapshot(node)
+    runtime_update = {'id': 'agent', 'type': 'agentNode', 'data': {
+        **node['data'], 'conversationId': 'conversation-2',
+        'runRefs': [{'id': 'run-1', 'revision': 3, 'state': 'complete',
+                     'inputSignature': 'signature', 'delegationId': 'delegation'}],
+        'adoptedRef': {'kind': 'ideation_selection', 'request_id': 'adopt',
+                       'canvas_id': 'canvas', 'conversation_id': 'conversation-1',
+                       'node_id': 'agent', 'object_id': 'object', 'revision': 1,
+                       'candidate_id': 'idea-1'},
+    }}
+
+    after_runtime_update = node_snapshot(runtime_update)
+    changed_settings = {'id': 'agent', 'type': 'agentNode', 'data': {
+        **runtime_update['data'], 'settings': {'genrePrimary': '喜剧', 'idea': '雨夜站台'},
+    }}
+    after_settings_change = node_snapshot(changed_settings)
+
+    assert before == after_runtime_update
+    assert before['content']['agentRef'] == node['data']['agentRef']
+    assert before['content']['settings'] == node['data']['settings']
+    assert after_settings_change['input_fingerprint'] != before['input_fingerprint']
+    assert after_settings_change['content']['settings']['genrePrimary'] == '喜剧'

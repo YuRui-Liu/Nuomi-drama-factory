@@ -222,7 +222,9 @@ class IdeationService(ProjectDomain):
         for historical in source['inputs']:
             ref = historical['ref']
             try:
-                current = agent_context.inputs(self.ctx, conn, [ref])
+                current = agent_context.inputs(self.ctx, conn, [ref],
+                                               username=self.username,
+                                               current_canvas_id=self.canvas_id)
             except OperationError:
                 # A removed canvas input remains reviewable from its historical source.
                 # Recording the missing state lets an explicit preview proceed, while
