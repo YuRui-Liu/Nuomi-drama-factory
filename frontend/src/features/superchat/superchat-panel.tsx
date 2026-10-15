@@ -57,6 +57,8 @@ import { backendErrorToastMessage, jsonWithBackendError } from "@/lib/api-errors
 import { p } from "@/lib/api-path";
 import { useSuperChat } from "@/features/superchat/use-superchat";
 import { ConversationPicker } from './conversation-picker';
+import { useAgentRuntime } from '@/features/agent-runtime/useAgentRuntime';
+import { AgentRuntimePanel } from '@/features/agent-runtime/AgentRuntimePanel';
 import { useAiAvatarUrl } from "@/features/superchat/ai-avatar";
 import { buildChatTaskLabel } from "@/features/superchat/task-notification-label";
 import { ComposerWaitingStatus } from "@/features/superchat/composer-waiting-status";
@@ -2462,18 +2464,27 @@ function ConversationWorkspace({project, ...props}: SuperChatPanelProps & {proje
       {props.onRequestClose && <Button variant="outline" size="sm" onClick={props.onRequestClose} aria-label={t('freezone.chat.close')}>{t('freezone.chat.close')}</Button>}
     </div>}
     {opened.filter(id => !props.managedWorkspace || (identityReady && id !== 'default' && available.includes(id))).map(id => <div key={id} className={id === active ? 'min-h-0 flex-1' : 'hidden'} aria-hidden={id !== active}>
-      <ConversationPanel {...props} conversationId={id} active={id === active} />
+      {props.managedWorkspace ? <ManagedConversationPanel {...props} conversationId={id} active={id===active}/> : <ConversationPanel {...props} conversationId={id} active={id === active} />}
     </div>)}
   </div>;
 }
 
+function ManagedConversationPanel(props:SuperChatPanelProps) {
+  const params=useParams({strict:false}) as {project?:string};
+  const user=useAuthStore(s=>s.username);
+  const runtime=useAgentRuntime({user:user||'',project:params.project||'',canvas:props.canvasId||'',conversation:props.conversationId||''},true,props.active!==false);
+  return <ConversationPanel {...props} agentRuntime={runtime}/>;
+}
+
 function ConversationPanel({
   managedWorkspace = false,
+  active = true,
   conversationId = 'default',
   canvasId,
   variant = "default",
   onRequestClose,
-}: SuperChatPanelProps = {}) {
+  agentRuntime: suppliedRuntime,
+}: SuperChatPanelProps & {agentRuntime?:ReturnType<typeof useAgentRuntime>} = {}) {
   const { t } = useTranslation();
   const params = useParams({ strict: false }) as { project?: string };
   const username = useAuthStore((s) => s.username);
@@ -2520,10 +2531,12 @@ function ConversationPanel({
     conversationId,
   });
   const isChatInitializing = !chat.historyReady && chat.messages.length === 0 && (chat.connecting || chat.connected);
+  const agentRuntime = suppliedRuntime!;
+  const composerBusy = managedWorkspace ? agentRuntime.busy : chat.busy;
 
   const hasSendableContent = draft.trim().length > 0 || attachments.length > 0;
-  const canSend = hasSendableContent && chat.connected && !preparingSend;
-  const composerWaiting = chat.busy && (!hasSendableContent || !chat.connected || preparingSend);
+  const canSend = hasSendableContent && (managedWorkspace ? agentRuntime.canSend : chat.connected && !preparingSend);
+  const composerWaiting = managedWorkspace ? agentRuntime.working : chat.busy && (!hasSendableContent || !chat.connected || preparingSend);
   const composerBeamActive =
     composerInputFocused
     && chat.connected
@@ -2737,6 +2750,7 @@ function ConversationPanel({
 
   const sendWithIngestAutomation = useCallback(
     async (text: string, messageAttachments: ChatAttachment[]): Promise<boolean> => {
+      if (managedWorkspace) return false;
       let nextText = text;
       let transportAttachments = messageAttachments;
       let contextUploadedFiles = uploadedIngestFiles;
@@ -2923,7 +2937,7 @@ function ConversationPanel({
 
       return chat.send(text, transportAttachments, nextText);
     },
-    [chat, params.project, recordUploadedFiles, reingestConfirmation, t, uploadedIngestFiles],
+    [managedWorkspace, chat, params.project, recordUploadedFiles, reingestConfirmation, t, uploadedIngestFiles],
   );
 
   useEffect(() => {
@@ -2950,7 +2964,7 @@ function ConversationPanel({
   }, [composerBeamActive]);
 
   useEffect(() => {
-    if (chat.busy || !chat.connected || preparingSend || queuedMessages.length === 0) return;
+    if (managedWorkspace || chat.busy || !chat.connected || preparingSend || queuedMessages.length === 0) return;
     const selectedIndex = selectedQueuedMessageId
       ? queuedMessages.findIndex((message) => message.id === selectedQueuedMessageId)
       : -1;
@@ -2964,6 +2978,7 @@ function ConversationPanel({
       setSelectedQueuedMessageId(remainingMessages[0]?.id ?? null);
     });
   }, [
+    managedWorkspace,
     chat.busy,
     chat.sessionEpoch,
     chat.connected,
@@ -2994,6 +3009,13 @@ function ConversationPanel({
   }, [draft]);
 
   const submit = () => {
+    if (managedWorkspace) {
+      const original = draft;
+      void agentRuntime.send(original, attachments.length > 0).then(sent => {
+        if (sent) setDraft(current => current === original ? '' : current);
+      });
+      return;
+    }
     const hasCurrentContent = draft.trim().length > 0 || attachments.length > 0;
     if (!hasCurrentContent || preparingSend) return;
     if (!chat.connected) {
@@ -3186,7 +3208,7 @@ function ConversationPanel({
 
   return (
     <div className={cn("relative flex h-full min-h-0 overflow-hidden bg-background", isFreezoneLayout && "bg-transparent")}>
-      {!isFreezoneLayout && (
+      {!isFreezoneLayout && !managedWorkspace && (
         <HeaderControlPortal
           chat={chat}
           searchOpen={searchOpen}
@@ -3204,12 +3226,14 @@ function ConversationPanel({
                 <span
                   className={cn(
                     "size-1.5 rounded-full",
-                    chat.connected ? "bg-emerald-400" : chat.connecting ? "bg-amber-300" : "bg-muted-foreground",
+                    managedWorkspace
+                      ? agentRuntime.runtime?.available ? "bg-emerald-400" : "bg-amber-300"
+                      : chat.connected ? "bg-emerald-400" : chat.connecting ? "bg-amber-300" : "bg-muted-foreground",
                   )}
                   aria-hidden="true"
                 />
                 <span className="truncate">
-                  {chat.connected
+                  {managedWorkspace ? (agentRuntime.runtime?.available ? '受限主创已就绪' : '文本模型待配置') : chat.connected
                     ? t("aiAssistant.connected")
                     : chat.connecting || chat.busy
                       ? t("aiAssistant.reconnecting")
@@ -3217,12 +3241,12 @@ function ConversationPanel({
                 </span>
               </div>
             </div>
-            <ControlBar
+            {!managedWorkspace ? <ControlBar
               chat={chat}
               compact
               searchOpen={searchOpen}
               onToggleSearch={() => setSearchOpen((value) => !value)}
-            />
+            /> : <Button size="icon-sm" variant="ghost" aria-label={t('aiAssistant.search')} onClick={()=>setSearchOpen(v=>!v)}><Search className="size-4"/></Button>}
             {onRequestClose && (
               <Button
                 type="button"
@@ -3244,7 +3268,8 @@ function ConversationPanel({
           </div>
         )}
 
-        {chat.approvals.map((approval) => (
+        {managedWorkspace && <AgentRuntimePanel runtime={agentRuntime}/>}
+        {!managedWorkspace && chat.approvals.map((approval) => (
           <ApprovalCard
             key={approval.id}
             approval={approval}
@@ -3507,7 +3532,7 @@ function ConversationPanel({
                 }
               }}
               dir="auto"
-              placeholder={t("aiAssistant.placeholder")}
+              placeholder={managedWorkspace ? '交给主创：为选中内容提出文本方案…' : t("aiAssistant.placeholder")}
               className={cn(
                 "max-h-[220px] min-h-14 resize-none border-0 bg-transparent px-5 py-4 text-base shadow-none placeholder:text-muted-foreground/70 focus-visible:ring-0 dark:bg-transparent",
                 isFreezoneLayout && "min-h-11 px-3.5 py-3 text-sm",
@@ -3541,7 +3566,7 @@ function ConversationPanel({
                   variant="ghost"
                   size="icon"
                   className={cn("size-8 rounded-full text-white/85 hover:bg-white/[0.08] hover:text-white", recording && "text-primary")}
-                  disabled={!chat.connected}
+                  disabled={managedWorkspace ? !active : !chat.connected}
                   onClick={toggleSpeech}
                   aria-label={recording ? t("aiAssistant.stopVoice") : t("aiAssistant.voiceInput")}
                   title={recording ? t("aiAssistant.stopVoice") : t("aiAssistant.voiceInput")}
@@ -3553,16 +3578,16 @@ function ConversationPanel({
                   size="icon"
                   className={cn(
                     "size-8 rounded-full shadow-none disabled:bg-white/30 disabled:text-black/45",
-                    chat.busy
+                    composerBusy
                       ? "bg-white/10 text-white hover:bg-white/15"
                       : "bg-white text-black hover:bg-white/90",
                   )}
-                  disabled={chat.busy ? false : !canSend}
-                  onClick={chat.busy ? chat.abort : submit}
-                  aria-label={chat.busy ? t("aiAssistant.stop") : t("aiAssistant.send")}
-                  title={chat.busy ? t("aiAssistant.stop") : t("aiAssistant.send")}
+                  disabled={managedWorkspace ? (agentRuntime.liveRun ? agentRuntime.working : !canSend) : chat.busy ? false : !canSend}
+                  onClick={managedWorkspace ? (agentRuntime.liveRun ? ()=>void agentRuntime.control(agentRuntime.liveRun!,'stop') : submit) : chat.busy ? chat.abort : submit}
+                  aria-label={composerBusy ? t("aiAssistant.stop") : t("aiAssistant.send")}
+                  title={composerBusy ? t("aiAssistant.stop") : t("aiAssistant.send")}
                 >
-                  {chat.busy ? (
+                  {composerBusy ? (
                     <span className="size-2.5 rounded-[2.5px] bg-current" aria-hidden />
                   ) : (
                     <ArrowUp className="size-[18px]" />

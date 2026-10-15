@@ -14,7 +14,9 @@ const chat = vi.hoisted(() => ({
   appendNotification: vi.fn(),
 }));
 vi.mock("@/features/superchat/use-superchat", () => ({ useSuperChat: (input: unknown) => { transport.hook(input); return chat; } }));
-vi.mock("@tanstack/react-router", () => ({ useParams: () => ({ project: "team-project" }) }));
+const location = vi.hoisted(() => ({ key:'team-chat' }));
+vi.mock("@tanstack/react-router", () => ({ useParams: () => ({ project: "team-project" }),useRouter:()=>({state:{location}}),useRouterState:()=>location }));
+vi.mock('@xyflow/react',async original=>({...await original<object>(),useReactFlow:()=>({fitView:vi.fn()})}));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/task-center/event-bus-context", () => ({ useEventBus: () => ({ on: () => () => {} }) }));
 vi.mock("@/features/superchat/ai-avatar", () => ({ useAiAvatarUrl: () => null }));

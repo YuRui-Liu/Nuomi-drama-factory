@@ -889,6 +889,7 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
           )}
           <BackupStatusIndicator status={sync.backupStatus} />
           {managedWorkspace && <OperationDraftBackup project={projectId} canvasId={canvasId} />}
+          {managedWorkspace && <button type="button" className="absolute right-3 top-32 z-20 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-foreground" disabled={sync.hydratedCanvasId!==canvasId||sync.status==='conflict'||sync.status==='error'} onClick={()=>{setChatOpen(true);window.dispatchEvent(new CustomEvent('nuomi:agent-selection',{detail:{project:projectId,canvas:canvasId}}));}}>交给 Agent</button>}
           <CanvasRunPanel project={projectId} canvas={canvasId} enabled={sync.hydratedCanvasId === canvasId && sync.status !== 'conflict' && sync.status !== 'error'} />
           {/* 调试面板暂时隐藏，恢复时去掉 `false &&` 即可 */}
           {managedWorkspace && <div className="absolute right-3 top-20 z-20 flex flex-wrap justify-end gap-2"><DirectionReferenceEntry project={projectId} canvasId={canvasId} selectedNodes /><AgentConfigurationEntry project={projectId} canvasId={canvasId}/><CreativeSettingsEntry project={projectId} canvasId={canvasId}/><TemplateLibraryEntry project={projectId} canvasId={canvasId}/></div>}
