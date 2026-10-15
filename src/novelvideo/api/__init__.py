@@ -46,8 +46,13 @@ from novelvideo.api.routes import (  # noqa: E402
     auth,
     characters,
     character_casting,
+    character_reference_repair,
     chat,
+    chat_canvas,
     chat_conversations,
+    director_library,
+    freezone_video_processing,
+    video_processing_config,
     config,
     creative_studios,
     studio_director,
@@ -64,13 +69,13 @@ from novelvideo.api.routes import (  # noqa: E402
     freezone_video_director,
     freezone_orchestration,
     creation,
+    creation_library,
     generation,
     ingest,
     knowledge_runtime,
     media_capabilities,
     project_costs,
     model_gateway,
-    creation_library,
     model_credits,
     narrative_groups,
     pipeline,
@@ -94,6 +99,7 @@ api_router = APIRouter(prefix="/api/v1")
 from .routes import music_desk
 api_router.include_router(music_desk.router, tags=["music"])
 api_router.include_router(character_casting.router, tags=['characters'])
+api_router.include_router(character_reference_repair.router, tags=['characters'])
 
 OPENAPI_TAGS = [
     {"name": "freezone-bootstrap", "description": "Freezone 启动、初始化与 provider 能力发现。"},
@@ -126,7 +132,11 @@ if not runtime_env.is_self_hosted():
         ep.load()(api_router)
 api_router.include_router(config.router, tags=["config"])
 api_router.include_router(chat.router, tags=["chat"])
+api_router.include_router(chat_canvas.router)
 api_router.include_router(chat_conversations.router)
+api_router.include_router(director_library.router)
+api_router.include_router(freezone_video_processing.router)
+api_router.include_router(video_processing_config.router)
 api_router.include_router(projects.router, tags=["projects"])
 from .routes import agent_teams
 from .routes import agent_team_trials

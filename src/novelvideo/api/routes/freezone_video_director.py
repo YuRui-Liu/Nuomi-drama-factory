@@ -45,6 +45,29 @@ class PrepareStoryboardBody(BaseModel):
     rects: list[tuple[int, int, int, int]] | None = None
 
 
+class RecommendFramesBody(BaseModel):
+    frames: list[dict] = Field(min_length=1, max_length=64)
+    segments: list[dict] = Field(min_length=1, max_length=64)
+
+
+@router.post('/recommend-frames')
+async def recommend_frame_modes(project: str, body: RecommendFramesBody, user: dict = Depends(get_api_user)):
+    from novelvideo.freezone.video_director.frame_recommendation import recommend_frames
+    from novelvideo.text_task_runtime.settings import resolve_configured_agent_task_route
+    from novelvideo.text_task_runtime.runtime import build_text_task_runtime
+    ctx, *_ = await _resolve_freezone_project(project, user, required_role='editor')
+    for records in (body.frames, body.segments):
+        ids = [item.get('id') for item in records]
+        if any(not isinstance(key, str) or not key for key in ids) or len(set(ids)) != len(ids):
+            raise HTTPException(422, detail='unique nonempty frame and segment IDs are required')
+    snapshot = resolve_configured_agent_task_route(ctx=ctx, task_role='director_plan')
+    try:
+        pairs = await recommend_frames(build_text_task_runtime(snapshot), body.frames, body.segments)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
+    return {'ok': True, 'data': {'pairs': pairs, 'route': snapshot.model_dump(mode='json')}}
+
+
 @router.post('/prepare-storyboard')
 async def prepare(project: str, body: PrepareStoryboardBody, user: dict = Depends(get_api_user)):
     from novelvideo.freezone.canvas_store import CanvasRevisionConflict, CanvasIdempotencyConflict

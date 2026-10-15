@@ -53,6 +53,7 @@ import {
   type DirectorWorldSourceTransform,
 } from "./sourceTransform";
 import { ThreeDStageCanvas } from "./ThreeDStageCanvas";
+import { TimelinePanel, type PrevizExport } from './TimelinePanel';
 import {
   POSES,
   POSE_LABELS,
@@ -112,6 +113,7 @@ type NormalizedDirectorSource = {
 };
 
 export interface ThreeDDirectorDialogProps {
+  onExportPreviz?: PrevizExport;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   manifest: DirectorStageManifest | null;
@@ -748,6 +750,7 @@ function captureFilename(manifest: DirectorStageManifest, kind: CaptureKind) {
 }
 
 export function ThreeDDirectorDialog({
+  onExportPreviz,
   open,
   onOpenChange,
   manifest,
@@ -791,6 +794,7 @@ export function ThreeDDirectorDialog({
           <DialogDescription>{dialogDescription}</DialogDescription>
         </DialogHeader>
         <ThreeDDirectorSurface
+          onExportPreviz={onExportPreviz}
           manifest={effectiveManifest}
           onCaptureSelectedBackground={onCaptureSelectedBackground}
           onCaptureCanvasNode={onCaptureCanvasNode}
@@ -809,6 +813,7 @@ export function ThreeDDirectorDialog({
 }
 
 function ThreeDDirectorSurface({
+  onExportPreviz,
   manifest,
   onCaptureSelectedBackground,
   onCaptureCanvasNode,
@@ -821,6 +826,7 @@ function ThreeDDirectorSurface({
   onClearScene,
   onClose,
 }: {
+  onExportPreviz?: PrevizExport;
   manifest: DirectorStageManifest;
   onCaptureSelectedBackground?: (blob: Blob, meta: ThreeDDirectorCaptureMeta) => void | Promise<void>;
   onCaptureCanvasNode?: (blob: Blob, meta: ThreeDDirectorCaptureMeta) => void | Promise<void>;
@@ -2626,6 +2632,7 @@ function ThreeDDirectorSurface({
       )}
 
       <main className="relative min-h-0 overflow-hidden bg-black/25">
+        {viewer?.getTimeline && <TimelinePanel key={activeSourceId} viewer={viewer} rotationOnly={Boolean(activePanoUrl)} onExport={onExportPreviz} />}
         <ThreeDStageCanvas
               splatUrl={resolveMediaUrl(activeSplatUrl) ?? activeSplatUrl}
               panoUrl={resolveMediaUrl(activePanoUrl) ?? activePanoUrl}

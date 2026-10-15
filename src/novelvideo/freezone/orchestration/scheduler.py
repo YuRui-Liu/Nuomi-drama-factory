@@ -20,13 +20,15 @@ class Scheduler:
             return run
         # Separate from the canvas save lock: serialize ticks across processes
         # while allowing result projection to use the regular canvas lock.
-        with canvas_write_lock(self.store.root, run["canvas_id"], timeout_seconds=0):
+        with canvas_write_lock(self.store.root, 'run-' + run_id, timeout_seconds=0):
             return await self._tick(self.store.get(run_id))
 
     async def _tick(self, run):
         latest = {key: attempts[-1] for key, attempts in run["attempts"].items()}
         dependencies = {key: [] for key in latest}
         for edge in run["snapshot"]["edges"]:
+            if (edge.get("data") or {}).get("contextLink"):
+                continue
             if edge["target"] in latest and edge["source"] in latest:
                 dependencies[edge["target"]].append(edge["source"])
         run["status"] = "running"
@@ -55,6 +57,14 @@ class Scheduler:
                     attempt["error"] = {"code": "reconcile_error", "message": str(exc)}
                     self.store.save(run, "reconcile_error")
             if attempt["status"] == "verifying":
+                if (self.store.get(run['id'])['cancel_requested']
+                        and attempt.get('artifacts')
+                        and (attempt.get('error') or {}).get('code') == 'input_conflict'):
+                    # The provider result is already accounted for. Cancellation
+                    # abandons only stale projection, preserving its artifacts.
+                    attempt['status'] = 'cancelled'
+                    self.store.save(run, 'cancelled_stale_projection')
+                    continue
                 try:
                     if not attempt["artifacts"]:
                         attempt["artifacts"] = await self.adapter.verify(run, attempt)

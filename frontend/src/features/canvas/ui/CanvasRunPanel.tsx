@@ -1,5 +1,6 @@
 import { useCanvasStore } from '@/stores/canvasStore';
 import { useCanvasRun } from '../application/useCanvasRun';
+import { flushFreezoneCanvasRuntime } from '@/features/freezone/canvasSyncRuntime';
 
 const statuses: Record<string, string> = { pending: '等待执行', running: '制作中', succeeded: '已完成',
   failed: '执行失败', blocked: '等待处理', submission_unknown: '提交结果待核实', cancel_requested: '正在停止', cancelled: '已停止' };
@@ -16,6 +17,11 @@ export function CanvasRunPanel({ project, canvas, enabled }: { project: string; 
   return <div className="absolute bottom-4 left-4 z-20 max-w-sm rounded-xl border border-white/15 bg-[#17191c]/95 p-3 text-xs text-white shadow-xl">
     <div className="mb-2 flex items-center gap-3">
       <span>画布制作</span>
+      {selected && <button disabled={!enabled} onClick={async () => {
+        if (await flushFreezoneCanvasRuntime(project, canvas) !== true) return;
+        const node = useCanvasStore.getState().nodes.find(n => n.id === selected);
+        if (node) window.dispatchEvent(new CustomEvent('nuomi:chat-reference', {detail: {id: node.id, label: String(node.data.displayName || node.type), kind: 'node', canvas}}));
+      }}>引用到对话</button>}
       {run && <span className="text-white/65">{statuses[run.status] ?? run.status} · {succeeded}/{attempts.length}</span>}
     </div>
     <div className="flex gap-2">

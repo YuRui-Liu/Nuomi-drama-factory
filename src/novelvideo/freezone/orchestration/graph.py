@@ -65,6 +65,8 @@ def validate_graph(nodes: list[dict], edges: list[dict]) -> dict:
         if source not in by_id or target not in by_id:
             error("missing_endpoint", edge_id=edge_id)
             continue
+        if (edge.get("data") or {}).get("contextLink"):
+            continue
         dependencies[target].add(source)
         src = catalog.get(by_id[source].get("type"))
         dst = catalog.get(by_id[target].get("type"))
@@ -115,7 +117,8 @@ def execution_order(nodes: list[dict], edges: list[dict], target: str) -> list[s
         raise OrchestrationError("unknown_target", "Target node does not exist", node_id=target)
     dependencies = {n["id"]: set() for n in nodes}
     for edge in edges:
-        dependencies[edge["target"]].add(edge["source"])
+        if not (edge.get("data") or {}).get("contextLink"):
+            dependencies[edge["target"]].add(edge["source"])
     selected: set[str] = set()
     pending = [target]
     while pending:

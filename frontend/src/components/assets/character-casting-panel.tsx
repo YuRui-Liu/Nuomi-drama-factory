@@ -19,7 +19,7 @@ import type {
   CastingWorkspace,
 } from "@/types/character-casting";
 
-type Props = { project: string; name: string; imageModel?: string; studioBridge?: boolean };
+type Props = { project: string; name: string; imageModel?: string; studioBridge?: boolean; onAdopted?: () => void | Promise<void> };
 type RunAction = (action: CastingAction, onSuccess?: () => void) => void;
 const card = "rounded-xl border border-border/70 bg-card/50 p-4 space-y-3";
 const field =
@@ -128,6 +128,7 @@ export function CharacterCastingPanel({
   identityId: controlledIdentityId,
   onIdentityChange,
   studioBridge,
+  onAdopted,
 }: Props & {
   identityId?: string | null;
   onIdentityChange?: (identityId: string | null) => void;
@@ -169,6 +170,7 @@ export function CharacterCastingPanel({
         imageModel={imageModel}
         identityId={identityId}
         studioBridge={studioBridge}
+        onAdopted={onAdopted}
       />
       {switching.dialog}
     </div>
@@ -181,6 +183,7 @@ function CastingStage({
   imageModel,
   identityId,
   studioBridge,
+  onAdopted,
 }: Props & { identityId: string | null }) {
   const workspace = useCharacterCasting(project, name, identityId);
   const candidates = useCastingCandidates(project, name, identityId);
@@ -210,6 +213,11 @@ function CastingStage({
       onError: () => { if (studioBridge && action.kind === "draft") window.dispatchEvent(new Event("studio-save-failed-character")); },
       onSuccess: () => {
         onSuccess?.();
+        if (action.kind === "adopt" && onAdopted) {
+          void Promise.resolve().then(() => onAdopted()).catch(() => {
+            setNotice("定角已确认，但引用刷新失败，请返回引用面板重试绑定。");
+          });
+        }
         setSubmitted(null);
         setNotice(
           action.kind === "adopt"

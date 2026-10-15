@@ -25,6 +25,25 @@ def client(monkeypatch, tmp_path):
 PREFIX = "/api/v1/projects/p/freezone/orchestration"
 
 
+def test_preview_is_read_only_and_rejects_legacy_narrative(client):
+    client.post(PREFIX + '/canvases', json={'canvas_id': 'preview', 'name': 'preview'})
+    client.post(PREFIX + '/canvases/preview/patch', json={'base_revision': 1, 'request_id': 'p',
+        'operations': [{'op': 'add_node', 'node': {'id': 'board', 'type': 'storyboardGenNode',
+            'data': {'storyboardMode': 'narrative', 'frames': [{'id': 's1', 'description': '动作过程'}]}}}]})
+    response = client.get(PREFIX + '/canvases/preview/nodes/board/preview')
+    assert response.status_code == 422, response.text
+    assert 'static_contract_required' in response.text
+    assert client.get(PREFIX + '/canvases/preview/runs').json()['data'] == []
+
+
+def test_execution_refuses_a_stale_preview_revision(client):
+    client.post(PREFIX + '/canvases', json={'canvas_id': 'stale', 'name': 'stale'})
+    response = client.post(PREFIX + '/runs', json={'canvas_id': 'stale', 'target': 'board',
+        'request_id': 'stale-request', 'expected_revision': 999})
+    assert response.status_code == 409, response.text
+    assert 'preview' in response.text
+
+
 @pytest.mark.asyncio
 async def test_orchestration_uses_the_same_state_root_as_web(monkeypatch, tmp_path):
     from novelvideo.api.routes import freezone_orchestration as routes

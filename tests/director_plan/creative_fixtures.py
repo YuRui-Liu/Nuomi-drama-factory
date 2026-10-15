@@ -2,7 +2,7 @@
 from novelvideo.director_plan.models import ShotPlan
 
 
-def creative_shot(shot_id="shot-1", next_shot_id=None, duration=20):
+def creative_shot(shot_id="shot-1", next_shot_id=None, duration=10):
     base = {"purpose": "Let the audience inspect the locked doorway", "source": {"kind": "director_choice", "reference_ids": ["span-1"]}}
     def decision(**values):
         return {**base, **values}

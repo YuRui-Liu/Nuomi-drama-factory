@@ -93,11 +93,9 @@ def validate_generation(draft: DirectorDraft, reference_limit: int = 5) -> Gener
         if not segment.prompt.strip():
             raise DirectorCapabilityError(f"{field}.prompt", "prompt is required", segment.id)
         if reference_ids:
-            if segment.first_frame is not None:
-                raise DirectorCapabilityError(f"{field}.first_frame", "reference images with a first frame are unsupported", segment.id)
-            if segment.last_frame is not None:
-                raise DirectorCapabilityError(f"{field}.last_frame", "reference images with a last frame are unsupported", segment.id)
-            mode = "ref_only"
+            if segment.last_frame is not None and segment.first_frame is None:
+                raise DirectorCapabilityError(f"{field}.first_frame", "first frame is required with a last frame", segment.id)
+            mode = ('ref_plus_first_last' if segment.last_frame else 'ref_plus_first') if segment.first_frame else 'ref_only'
         else:
             if segment.first_frame is None:
                 raise DirectorCapabilityError(f"{field}.first_frame", "first frame is required without references", segment.id)
@@ -139,8 +137,8 @@ def describe_capabilities(reference_limit: int = 5) -> dict:
             {"id": "i2v", "supported": True},
             {"id": "fl2v", "supported": True},
             {"id": "ref_only", "supported": True},
-            {"id": "ref_plus_first", "supported": False},
-            {"id": "ref_plus_first_last", "supported": False},
+            {"id": "ref_plus_first", "supported": True},
+            {"id": "ref_plus_first_last", "supported": True},
             {"id": "text_only", "supported": False},
             {"id": "last_only", "supported": False},
         ),

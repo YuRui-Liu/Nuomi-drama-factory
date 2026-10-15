@@ -63,7 +63,11 @@ export function GroupVideoResult({ stage, project = "", episode = 0, groupId = "
       const native = span.dialogue_source === "h3_native";
       return <div key={`${span.beat_numbers.join("-")}-${index}`} className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-black/20 px-3 py-2 text-xs">
         <span>镜头 {span.beat_numbers.join("、")} · {span.start_seconds.toFixed(1)}–{span.end_seconds.toFixed(1)} 秒</span>
-        <div className="flex items-center gap-2"><span className="text-muted-foreground">{native ? "H3 原声" : "外部配音"}</span><Button type="button" variant="outline" size="sm" onClick={() => onDialogueSourceChange?.({ spanIndex: index, dialogueSource: native ? "external_tts" : "h3_native" })}>{native ? "改用外部配音" : "改用 H3 原声"}</Button></div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-muted-foreground">{native ? "H3 原声" : span.external_audio_ready ? "外部配音 · 已就绪" : "外部配音 · 待生成"}</span>
+          {!native && !span.external_audio_ready && <Button type="button" size="sm" disabled={!onDialogueSourceChange} onClick={() => onDialogueSourceChange?.({ spanIndex: index, dialogueSource: "external_tts" })}>生成角色配音</Button>}
+          <Button type="button" variant="outline" size="sm" disabled={!onDialogueSourceChange} onClick={() => onDialogueSourceChange?.({ spanIndex: index, dialogueSource: native ? "external_tts" : "h3_native" })}>{native ? "生成角色配音并采用" : "改用 H3 原声"}</Button>
+        </div>
       </div>;
     })}</div> : <p className="mt-3 text-xs text-muted-foreground">镜头切分与对白源将在导演清单就绪后显示。</p>}
     {promptsOpen ? <GroupVideoPromptDrawer

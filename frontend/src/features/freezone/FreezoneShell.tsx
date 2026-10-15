@@ -15,6 +15,7 @@ import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { Canvas } from "@/features/canvas/Canvas";
 import { CanvasRunPanel } from "@/features/canvas/ui/CanvasRunPanel";
+import { refreshCanvasRunResults } from '@/features/canvas/infrastructure/orchestrationGateway';
 import {
   CANVAS_NODE_TYPES,
   DEFAULT_NODE_WIDTH,
@@ -424,6 +425,15 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
   const [assetPanelCollapsed, setAssetPanelCollapsed] = useState(true);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  const [chatReference, setChatReference] = useState<import('@/features/superchat/canvas-references').ReferenceItem>();
+  useEffect(() => {
+    const reference = (event: Event) => {
+      setChatReference((event as CustomEvent).detail);
+      setChatOpen(true);
+    };
+    window.addEventListener('nuomi:chat-reference', reference);
+    return () => window.removeEventListener('nuomi:chat-reference', reference);
+  }, []);
   // Re-entrancy guard for in-flight projection sync/remove lives in the refs;
   // there is no UI bound to a syncing/removing value, so no state is kept.
   const syncingProjectionRef = useRef<string | null>(null);
@@ -470,6 +480,13 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
   useEffect(() => {
     onWorkspaceState?.({ canvasId, hydrated: sync.hydratedCanvasId === canvasId, status: sync.status });
   }, [canvasId, sync.hydratedCanvasId, sync.status, onWorkspaceState]);
+  useEffect(() => {
+    const updated = (event: Event) => {
+      if ((event as CustomEvent).detail?.project === projectId) void refreshCanvasRunResults(projectId, canvasId).catch(() => undefined);
+    };
+    window.addEventListener('nuomi:chat-canvas-updated', updated);
+    return () => window.removeEventListener('nuomi:chat-canvas-updated', updated);
+  }, [projectId, canvasId]);
 
   const handleBlankPaneClick = useCallback(() => {
     setAssetPanelCollapsed(true);
@@ -890,9 +907,9 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
           <BackupStatusIndicator status={sync.backupStatus} />
           {managedWorkspace && <OperationDraftBackup project={projectId} canvasId={canvasId} />}
           {managedWorkspace && <button type="button" className="absolute right-3 top-32 z-20 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-foreground" disabled={sync.hydratedCanvasId!==canvasId||sync.status==='conflict'||sync.status==='error'} onClick={()=>{setChatOpen(true);window.dispatchEvent(new CustomEvent('nuomi:agent-selection',{detail:{project:projectId,canvas:canvasId}}));}}>交给 Agent</button>}
+          {managedWorkspace && <div className="absolute right-3 top-20 z-20 flex flex-wrap justify-end gap-2"><DirectionReferenceEntry project={projectId} canvasId={canvasId} selectedNodes /><AgentConfigurationEntry project={projectId} canvasId={canvasId}/><CreativeSettingsEntry project={projectId} canvasId={canvasId}/><TemplateLibraryEntry project={projectId} canvasId={canvasId}/></div>}
           <CanvasRunPanel project={projectId} canvas={canvasId} enabled={sync.hydratedCanvasId === canvasId && sync.status !== 'conflict' && sync.status !== 'error'} />
           {/* 调试面板暂时隐藏，恢复时去掉 `false &&` 即可 */}
-          {managedWorkspace && <div className="absolute right-3 top-20 z-20 flex flex-wrap justify-end gap-2"><DirectionReferenceEntry project={projectId} canvasId={canvasId} selectedNodes /><AgentConfigurationEntry project={projectId} canvasId={canvasId}/><CreativeSettingsEntry project={projectId} canvasId={canvasId}/><TemplateLibraryEntry project={projectId} canvasId={canvasId}/></div>}
           {false && import.meta.env.DEV && (
             <CanvasDebugPanel
               project={projectId}
@@ -936,6 +953,7 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
             managedWorkspace={managedWorkspace}
             agentConfiguration={managedWorkspace ? <AgentConfigurationEntry project={projectId} canvasId={canvasId} compact/> : undefined}
             canvasId={canvasId}
+            reference={chatReference}
             open={chatOpen}
             onOpenChange={setChatOpen}
             title={t("freezone.chat.title")}
@@ -1028,6 +1046,7 @@ function FreezoneChatDock({
   managedWorkspace,
   agentConfiguration,
   canvasId,
+  reference,
   open,
   onOpenChange,
   title,
@@ -1037,6 +1056,7 @@ function FreezoneChatDock({
   managedWorkspace?: boolean;
   agentConfiguration?: React.ReactNode;
   canvasId: string;
+  reference?: import('@/features/superchat/canvas-references').ReferenceItem;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
@@ -1098,7 +1118,7 @@ function FreezoneChatDock({
         <Suspense
           fallback={<div role="status" aria-live="polite" className="p-4 text-sm text-muted-foreground">正在加载糯米助手…</div>}
         >
-          <LazySuperChatPanel managedWorkspace={managedWorkspace} canvasId={canvasId} variant="freezone" onRequestClose={() => onOpenChange(false)} />
+          <LazySuperChatPanel managedWorkspace={managedWorkspace} reference={reference} canvasId={canvasId} variant="freezone" onRequestClose={() => onOpenChange(false)} />
         </Suspense>
       </aside>
     </>

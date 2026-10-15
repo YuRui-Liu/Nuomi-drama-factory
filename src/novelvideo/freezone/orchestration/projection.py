@@ -54,6 +54,11 @@ def patch_graph(project_dir: Path, canvas_id: str, *, base_revision: int, reques
                 nodes.append(deepcopy(operation["node"]))
             elif op == "add_edge":
                 edges.append(deepcopy(operation["edge"]))
+            elif op == "remove_edge":
+                edge = next((edge for edge in edges if edge["id"] == operation.get("edge_id")), None)
+                if edge is None:
+                    raise OrchestrationError("edge_not_found", "Edge does not exist")
+                edges.remove(edge)
             elif op == "update_node":
                 node = next((node for node in nodes if node["id"] == operation.get("node_id")), None)
                 if node is None:
@@ -83,6 +88,23 @@ def project_result(project_dir: Path, canvas_id: str, *, node_id: str,
             raise OrchestrationError("invalid_result_patch", "Result contains fields outside the operation output", fields=sorted(set(result) - allowed))
         node["data"].update(deepcopy(result))
         node["data"]["orchestration"] = {"attempt_id": attempt_id, "status": "succeeded"}
+        origin = node['data'].get('chatOrigin')
+        if isinstance(origin, dict):
+            from novelvideo.chat.canvas_context import node_fingerprint
+            source = next((item for item in payload['nodes'] if item['id'] == origin.get('node_id')), None)
+            changed = source is None or node_fingerprint(source) != origin.get('fingerprint')
+            if changed:
+                node['data']['orchestration'].update(
+                    status='source_changed', source_node_id=origin.get('node_id'),
+                    reason='source_deleted' if source is None else 'source_modified',
+                    message='来源已变化，候选成果已保留，待选择放置位置')
+                node['data']['displayName'] = str(node['data'].get('displayName') or node_id) + ' · 来源已变化，待选择放置位置'
+            # Provenance remains in chatOrigin even if the visible source was deleted.
+            # Remove only dangling provenance edges, never executable dependencies.
+            ids = {item['id'] for item in payload['nodes']}
+            payload['edges'] = [edge for edge in payload['edges'] if not (
+                (edge.get('data') or {}).get('contextLink') and
+                (edge.get('source') not in ids or edge.get('target') not in ids))]
         if node["type"] == "videoComposeNode" and result.get("resultVideoUrl"):
             # Logical output identity survives retry/resume and successive renders.
             output_id = "output-" + fingerprint([canvas_id, node_id, "video"])[:24]

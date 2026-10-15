@@ -9,7 +9,6 @@ import { Loader2, Sparkles } from "lucide-react";
 
 import {
   isPlanEpisodeAssetsResult,
-  useEpisodeBeats,
   useEpisodeDetail,
   usePlanEpisodeProps,
   usePlanEpisodeScenes,
@@ -44,7 +43,6 @@ import {
 } from "@/components/ui/select";
 import { EpisodeSourceEditor } from "@/components/episode/episode-source-editor";
 import { DirectorReviewWorkbench } from "@/components/episode/director-review";
-import { ScriptBeatPreview } from "@/components/episode/script-beat-preview";
 import { ScreenplayWorkbench } from "@/components/episode/screenplay-workbench";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -94,10 +92,6 @@ function ScriptTabContent() {
   const queryClient = useQueryClient();
   const { data: episodeRes } = useEpisodeDetail(project, epNum);
   const { data: projectRes } = useProject(project);
-  const { data: beatsRes, isLoading: beatsLoading } = useEpisodeBeats(
-    project,
-    epNum,
-  );
   const directorPlans = useDirectorPlans(project, epNum);
   const planningBlocked = assetPlanningBlockReason(directorPlans);
   const { data: charactersRes } = useCharacters(project);
@@ -134,7 +128,6 @@ function ScriptTabContent() {
   const sourceTextForEditor = sourceText || rawContent;
   const sceneMenu = episodeData?.scene_menu ?? [];
   const propMenu = episodeData?.prop_menu ?? [];
-  const beats = beatsRes?.data ?? [];
   const planRevisions = directorPlans.data?.ok ? directorPlans.data.data : [];
   const directorPlan = planRevisions.find((item) => item.status === "review_required")
     ?? planRevisions.find((item) => item.status === "active")
@@ -557,18 +550,7 @@ function ScriptTabContent() {
               }}
               className="min-w-0"
             />
-            </div><details className="mt-4 rounded-lg border border-white/10 p-3"><summary className="cursor-pointer text-sm text-muted-foreground">逐镜头文案与对白预览</summary><ScriptBeatPreview beats={beats} loading={beatsLoading} labels={{
-                title: t("episode.script.previewTitle"),
-                count: count => t("episode.script.previewCount", {count}),
-                loading: t("episode.script.previewLoading"),
-                emptyTitle: t("episode.script.previewEmptyTitle"),
-                empty: t("episode.script.previewEmpty"),
-                audioType: type => t(`audioType.${type}`, {defaultValue:type}),
-                speaker: t("episode.script.previewSpeaker"), noSpeaker:t("episode.script.previewNoSpeaker"),
-                dialogueLine:t("episode.script.previewDialogueLine"), narrationLine:t("episode.script.previewNarrationLine"),
-                noNarration:t("episode.script.previewNoNarration"), visualDescription:t("episode.script.previewVisualDescription"),
-                noVisualDescription:t("episode.script.previewNoVisualDescription")
-              }} /></details></section>
+            </div></section>
           <section hidden={workspace !== "semantics"} aria-label="场次校对工作区" className="h-full overflow-y-auto p-3"><ScreenplayWorkbench compact project={project} episode={epNum} onReviewRequest={() => setWorkspace("review")} /></section>
           <section hidden={workspace !== "assets"} aria-label="本集资产核对" className="h-full overflow-y-auto p-4"><section id="script-assets" className="rounded-xl border border-white/10 p-4">
               <div className="mb-2 flex h-7 items-center justify-between gap-3">

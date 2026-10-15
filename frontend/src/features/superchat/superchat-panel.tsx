@@ -56,6 +56,7 @@ import { api } from "@/lib/api";
 import { backendErrorToastMessage, jsonWithBackendError } from "@/lib/api-errors";
 import { p } from "@/lib/api-path";
 import { useSuperChat } from "@/features/superchat/use-superchat";
+import { CanvasReferences, toCanvasReferences, type ReferenceItem } from './canvas-references';
 import { ConversationPicker } from './conversation-picker';
 import { useAgentRuntime } from '@/features/agent-runtime/useAgentRuntime';
 import { AgentRuntimePanel } from '@/features/agent-runtime/AgentRuntimePanel';
@@ -149,6 +150,7 @@ type QueuedSendItem = {
   id: string;
   text: string;
   attachments: ChatAttachment[];
+  references: import('./types').CanvasChatReference[];
   createdAt: number;
 };
 
@@ -1270,6 +1272,16 @@ const MessageBubble = memo(function MessageBubble({
             >
               {actions}
               <AttachmentList attachments={message.attachments} align="end" />
+              {message.canvasContext && <details className="mb-2 rounded border border-white/10 px-2 py-1 text-xs">
+                <summary className="cursor-pointer">本轮画布与资产引用</summary>
+                {message.canvasContext.references.map(group => <div key={group.canvas_id} className="mt-1 space-y-1">
+                  {group.nodes.map(node => <p key={node.id} title={`画布 ${group.canvas_id} · ${node.fingerprint}`}>
+                    {message.canvasContext?.primary_target?.node_id === node.id && message.canvasContext.primary_target.canvas_id === group.canvas_id ? '主目标 · ' : '节点 · '}
+                    {String(node.data.displayName || node.type || node.id)}
+                  </p>)}
+                  {group.assets?.map(asset => <p key={String(asset.id)}>资产 · {String(asset.label || asset.id)}</p>)}
+                </div>)}
+              </details>}
               {displayText && (
                 <div className="whitespace-pre-wrap break-words">{displayText}</div>
               )}
@@ -2440,6 +2452,7 @@ interface SuperChatPanelProps {
   conversationId?: string;
   active?: boolean;
   canvasId?: string;
+  reference?: ReferenceItem;
   variant?: SuperChatPanelVariant;
   onRequestClose?: () => void;
 }
@@ -2457,6 +2470,13 @@ function ConversationWorkspace({project, ...props}: SuperChatPanelProps & {proje
   const [active, setActive] = useState(props.managedWorkspace ? '' : 'default');
   const [opened, setOpened] = useState<string[]>(props.managedWorkspace ? [] : ['default']);
   const [available, setAvailable] = useState<string[]>([]);
+  const [deliveries, setDeliveries] = useState<Record<string, ReferenceItem>>({});
+  const consumedReference = useRef<ReferenceItem | undefined>(undefined);
+  useEffect(() => {
+    if (!active || !props.reference || consumedReference.current === props.reference) return;
+    consumedReference.current = props.reference;
+    setDeliveries(previous => ({...previous, [active]: props.reference!}));
+  }, [props.reference, active]);
   return <div className="flex h-full min-h-0 flex-col">
     <ConversationPicker project={project} canvasId={props.canvasId} managedWorkspace={props.managedWorkspace} value={active} onAvailable={setAvailable} onChange={id => { if (id) setOpened(ids => ids.includes(id) ? ids : [...ids, id]); setActive(id); }} />
     {props.managedWorkspace && (!identityReady || !active || !available.includes(active)) && <div className="space-y-3 p-4 text-sm text-muted-foreground">
@@ -2464,7 +2484,7 @@ function ConversationWorkspace({project, ...props}: SuperChatPanelProps & {proje
       {props.onRequestClose && <Button variant="outline" size="sm" onClick={props.onRequestClose} aria-label={t('freezone.chat.close')}>{t('freezone.chat.close')}</Button>}
     </div>}
     {opened.filter(id => !props.managedWorkspace || (identityReady && id !== 'default' && available.includes(id))).map(id => <div key={id} className={id === active ? 'min-h-0 flex-1' : 'hidden'} aria-hidden={id !== active}>
-      {props.managedWorkspace ? <ManagedConversationPanel {...props} conversationId={id} active={id===active}/> : <ConversationPanel {...props} conversationId={id} active={id === active} />}
+      {props.managedWorkspace ? <ManagedConversationPanel {...props} conversationId={id} active={id===active} reference={deliveries[id]}/> : <ConversationPanel {...props} conversationId={id} active={id === active} reference={deliveries[id]} />}
     </div>)}
   </div>;
 }
@@ -2478,9 +2498,10 @@ function ManagedConversationPanel(props:SuperChatPanelProps) {
 
 function ConversationPanel({
   managedWorkspace = false,
-  active = true,
   conversationId = 'default',
+  active = true,
   canvasId,
+  reference,
   variant = "default",
   onRequestClose,
   agentRuntime: suppliedRuntime,
@@ -2489,6 +2510,11 @@ function ConversationPanel({
   const params = useParams({ strict: false }) as { project?: string };
   const username = useAuthStore((s) => s.username);
   const [draft, setDraft] = useState("");
+  const [canvasReferences, setCanvasReferences] = useState<ReferenceItem[]>([]);
+  useEffect(() => { setCanvasReferences([]); }, [params.project]);
+  useEffect(() => {
+    if (reference) setCanvasReferences(items => items.some(i => i.id === reference.id && i.canvas === reference.canvas && i.kind === reference.kind) ? items : [...items, reference].slice(0, 20));
+  }, [reference]);
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [detailMessage, setDetailMessage] = useState<ChatMessage | null>(null);
@@ -2529,6 +2555,7 @@ function ConversationPanel({
     canvasId: managedWorkspace ? canvasId : undefined,
     displayName: username || "Nuomi Drama Factory",
     conversationId,
+    references: toCanvasReferences(canvasReferences),
   });
   const isChatInitializing = !chat.historyReady && chat.messages.length === 0 && (chat.connecting || chat.connected);
   const agentRuntime = suppliedRuntime!;
@@ -2749,8 +2776,9 @@ function ConversationPanel({
   );
 
   const sendWithIngestAutomation = useCallback(
-    async (text: string, messageAttachments: ChatAttachment[]): Promise<boolean> => {
+    async (text: string, messageAttachments: ChatAttachment[], referenceSnapshot = toCanvasReferences(canvasReferences)): Promise<boolean> => {
       if (managedWorkspace) return false;
+      const send = (value: string, files: ChatAttachment[] = [], transport?: string) => chat.send(value, files, transport, referenceSnapshot);
       let nextText = text;
       let transportAttachments = messageAttachments;
       let contextUploadedFiles = uploadedIngestFiles;
@@ -2763,7 +2791,7 @@ function ConversationPanel({
           if (!isOverwriteChoice(text)) {
             const pending = reingestConfirmation;
             setReingestConfirmation(null);
-            return chat.send(
+            return send(
               text,
               [],
               appendAttachmentAnalysisContext(text, buildReingestCancelledContext(pending)),
@@ -2775,7 +2803,7 @@ function ConversationPanel({
             stage: "confirm_clear" as const,
           };
           setReingestConfirmation(nextPending);
-          return chat.send(
+          return send(
             text,
             [],
             appendAttachmentAnalysisContext(text, buildReingestConfirmationContext(nextPending)),
@@ -2785,7 +2813,7 @@ function ConversationPanel({
         if (!isFinalOverwriteConfirmation(text)) {
           const pending = reingestConfirmation;
           setReingestConfirmation(null);
-          return chat.send(
+          return send(
             text,
             [],
             appendAttachmentAnalysisContext(text, buildReingestCancelledContext(pending)),
@@ -2808,7 +2836,7 @@ function ConversationPanel({
           });
           toast.success(t("aiAssistant.ingestAutomationStarted", { filename: reingestConfirmation.filename }));
           setReingestConfirmation(null);
-          return chat.send(text, [], nextText);
+          return send(text, [], nextText);
         } catch (error) {
           const message = backendErrorToastMessage(error, t);
           toast.error(t("aiAssistant.ingestAutomationFailed", { message }));
@@ -2850,7 +2878,7 @@ function ConversationPanel({
               text,
               buildReingestConfirmationContext(pending),
             );
-            return chat.send(text, transportAttachments, nextText);
+            return send(text, transportAttachments, nextText);
           }
           const started = await startNovelIngest(project, uploaded.filename);
           nextText = appendIngestAutomationContext(text, {
@@ -2889,7 +2917,7 @@ function ConversationPanel({
               text,
               buildReingestConfirmationContext(pending),
             );
-            return chat.send(text, [], nextText);
+            return send(text, [], nextText);
           }
           const started = await startNovelIngest(project, uploaded.filename);
           nextText = appendIngestAutomationContext(text, {
@@ -2935,9 +2963,9 @@ function ConversationPanel({
         );
       }
 
-      return chat.send(text, transportAttachments, nextText);
+      return send(text, transportAttachments, nextText);
     },
-    [managedWorkspace, chat, params.project, recordUploadedFiles, reingestConfirmation, t, uploadedIngestFiles],
+    [managedWorkspace, chat, params.project, recordUploadedFiles, reingestConfirmation, t, uploadedIngestFiles, canvasReferences],
   );
 
   useEffect(() => {
@@ -2972,7 +3000,7 @@ function ConversationPanel({
     const nextMessage = queuedMessages[nextIndex];
     if (nextMessage.sessionEpoch !== chat.sessionEpoch) return;
     const remainingMessages = queuedMessages.filter((_, index) => index !== nextIndex);
-    void sendWithIngestAutomation(nextMessage.text, nextMessage.attachments).then((sent) => {
+    void sendWithIngestAutomation(nextMessage.text, nextMessage.attachments, nextMessage.references).then((sent) => {
       if (!sent) return;
       setQueuedMessages(remainingMessages);
       setSelectedQueuedMessageId(remainingMessages[0]?.id ?? null);
@@ -3033,6 +3061,7 @@ function ConversationPanel({
           sessionEpoch: chat.sessionEpoch,
           text,
           attachments: queuedAttachments,
+          references: toCanvasReferences(canvasReferences),
           createdAt: Date.now(),
         },
       ]);
@@ -3269,6 +3298,7 @@ function ConversationPanel({
         )}
 
         {managedWorkspace && <AgentRuntimePanel runtime={agentRuntime}/>}
+        {!managedWorkspace && active && canvasId && params.project && <CanvasReferences project={params.project} canvas={canvasId} items={canvasReferences} onChange={setCanvasReferences} />}
         {!managedWorkspace && chat.approvals.map((approval) => (
           <ApprovalCard
             key={approval.id}

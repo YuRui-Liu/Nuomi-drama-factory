@@ -12,7 +12,7 @@ it("shows evidenced blockers and last draft separately, with stale warning", () 
     { stage: "structure_review_1", output: { summary: "动机断裂", coverage: ["人物目标"], issues: [{ id: "i1", severity: "blocker", basis: "context", dimension: "人物动机", quote: "忽然离开", start: 3, end: 7, reason: "缺少触发", repair_goal: "补上触发事件", reference_quote: "他承诺留下" }] }, attempts: 1, elapsed_seconds: 1 },
   ]} />);
   expect(screen.getByText("需要修改")).toBeInTheDocument();
-  expect(screen.getByText("保留的最终草稿")).toBeInTheDocument();
+  expect(screen.getByText("保留的最终草稿")).toBeVisible();
   expect(screen.queryByText("第一稿")).not.toBeInTheDocument();
   expect(screen.getByText(/参考依据：他承诺留下/)).toBeInTheDocument();
   expect(screen.getByText(/需要重新审查/)).toBeInTheDocument();

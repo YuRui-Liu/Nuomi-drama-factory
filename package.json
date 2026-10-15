@@ -8,6 +8,10 @@
   "license": "Elastic-2.0",
   "author": "ClaymoreLab",
   "scripts": {
+    "desktop:stage:mac": "python3 desktop/scripts/stage-macos.py",
+    "desktop:package:mac": "electron-builder --config desktop/electron-builder.mac.cjs --mac dmg --arm64 --publish never",
+    "desktop:frontend:mac": "cd frontend && ./node_modules/.bin/tsc --noEmit --incremental false -p tsconfig.desktop.json && ./node_modules/.bin/vite build --mode ce",
+    "desktop:build:mac": "pnpm desktop:frontend:mac && pnpm desktop:stage:mac && pnpm desktop:package:mac",
     "desktop:test": "node --test desktop/test/*.test.cjs",
     "desktop:frontend": "corepack pnpm --dir frontend build:ce",
     "desktop:stage": "node desktop/scripts/stage-runtime.cjs",

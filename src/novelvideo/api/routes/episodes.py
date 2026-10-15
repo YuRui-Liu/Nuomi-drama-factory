@@ -707,4 +707,22 @@ async def update_episode_asset_bindings(
         scene_menu=[scenes.get(name, {"scene_id": name}) for name in selected["scene_ids"]],
         prop_menu=[props.get(name, {"prop_id": name}) for name in selected["prop_ids"]],
     )
+    if resolved.ctx:
+        from novelvideo.director_plan.store import DirectorPlanStore
+        from novelvideo.narrative_groups.reference_refresh import refresh_active_references
+
+        plan_store = DirectorPlanStore(resolved.ctx.output_dir)
+        active_plan = plan_store.load_active(episode_num)
+        if active_plan is not None:
+            try:
+                await refresh_active_references(
+                    resolved.ctx, store, plan_store, episode_num, active_plan.revision_id,
+                )
+            except (ValueError, RuntimeError, OSError) as exc:
+                # Selection is already durable: report the recovery path honestly.
+                raise HTTPException(409, detail={
+                    "code": "ASSET_BINDINGS_SAVED_REFRESH_REQUIRED",
+                    "active_revision_id": active_plan.revision_id,
+                    "message": "资产选择已保存，引用刷新未完成，请刷新该导演版本的引用。",
+                }) from exc
     return {"ok": True, "data": _episode_detail_payload(store.get_episode(episode_num), episode_num)}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from .execution import MIN_CREATIVE_SHOT_SECONDS, MAX_SHOT_SECONDS
 
 from .models import (
     DirectorPlanRevision,
@@ -89,15 +90,15 @@ def plan_video_segments(
     shot_groups: list[list[ShotPlan]] = []
     current: list[ShotPlan] = []
     for shot in group.shots:
-        if shot.duration_seconds > 15:
+        if shot.duration_seconds > MAX_SHOT_SECONDS:
             raise ValueError(
                 f"capability_conflict: shot {shot.id} requires {shot.duration_seconds:g}s; "
-                "video backend supports at most 15s without cutting the adopted shot"
+                f"video backend supports at most {MAX_SHOT_SECONDS}s without cutting the adopted shot"
             )
         if group.creative_contract_version == 1 or shot.creative is not None:
-            if shot.duration_seconds < 4:
+            if shot.duration_seconds < MIN_CREATIVE_SHOT_SECONDS:
                 raise ValueError(f"capability_conflict: shot {shot.id} requires {shot.duration_seconds:g}s; "
-                                 "video backend requires at least 4s without extending the adopted shot")
+                                 f"video backend requires at least {MIN_CREATIVE_SHOT_SECONDS}s without extending the adopted shot")
             if current:
                 shot_groups.append(current)
                 current = []
@@ -248,7 +249,7 @@ def _can_merge(
         and previous_space == next_space
         and sum(shot.duration_seconds for shot in current)
         + next_shot.duration_seconds
-        <= 15
+        <= MAX_SHOT_SECONDS
     )
 
 

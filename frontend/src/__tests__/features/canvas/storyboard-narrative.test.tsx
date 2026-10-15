@@ -6,7 +6,8 @@ import type { StoryboardGenNodeData } from '@/features/canvas/domain/canvasNodes
 import { extractCanvasAssets } from '@/features/canvas/domain/canvasAssets';
 
 const mocks = vi.hoisted(() => ({ start: vi.fn(), models: [{ id: 'gpt-image-2', providerId: 'grsai', apiModel: 'gpt-image-2', label: 'gpt-image-2' }] }));
-vi.mock('@/features/canvas/infrastructure/orchestrationGateway', () => ({ startCanvasRun: mocks.start }));
+const previewMock = vi.hoisted(() => vi.fn());
+vi.mock('@/features/canvas/infrastructure/orchestrationGateway', () => ({ startCanvasRun: mocks.start, previewCanvasNode: previewMock }));
 vi.mock('@xyflow/react', async () => ({ ...await vi.importActual('@xyflow/react'), Handle: () => null, useViewport: () => ({ zoom: 1 }), useUpdateNodeInternals: () => () => {} }));
 vi.mock('@/features/canvas/ui/NodeResizeHandle', () => ({ NodeResizeHandle: () => null }));
 vi.mock('@/features/canvas/ui/NodeHeader', () => ({ NODE_HEADER_FLOATING_POSITION_CLASS: '', NodeHeader: () => null }));
@@ -39,6 +40,27 @@ it('keeps plain prepared shot descriptions independent when frame IDs are absent
 it('shows the saved group narrative as an editable prompt', () => {
   render(<StoryboardGenNode id="board" data={data} />);
   expect(screen.getByDisplayValue('林澈递过试卷。周野点头。')).toBeVisible();
+});
+it('shows the backend final prompt rather than composing another frontend prompt', async () => {
+  previewMock.mockResolvedValue({ request: { prompt: '唯一后端静态提示词' }, reference_manifest: [] });
+  render(<StoryboardGenNode id="board" data={data} />);
+  fireEvent.click(screen.getByRole('button', { name: '预览实际生成请求' }));
+  await waitFor(() => expect(screen.getByText('唯一后端静态提示词')).toBeVisible());
+  expect(previewMock).toHaveBeenCalledWith('demo', 'check', 'board');
+});
+it('allows directing individual narrative shots and saves their duration', () => {
+  data.frames[0].description = '母亲说完，停留在她脸上';
+  data.frames[0].duration_seconds = 6;
+  render(<StoryboardGenNode id="board" data={data} />);
+  expect(screen.getByDisplayValue('母亲说完，停留在她脸上')).toBeVisible();
+  fireEvent.change(screen.getByLabelText('镜头 1 时长（秒）'), { target: { value: '8' } });
+  expect((useCanvasStore.getState().nodes[0].data.frames as typeof data.frames)[0].duration_seconds).toBe(8);
+});
+it('never deletes directed shots to fit a grid setting', () => {
+  data.gridRows = 1;
+  data.gridCols = 1;
+  render(<StoryboardGenNode id="board" data={data} />);
+  expect((useCanvasStore.getState().nodes[0].data.frames as typeof data.frames)).toHaveLength(4);
 });
 it('runs the same narrative node so its downstream video consumes the projected result', async () => {
   render(<StoryboardGenNode id="board" data={data} />);

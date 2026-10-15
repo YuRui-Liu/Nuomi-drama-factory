@@ -8,8 +8,11 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { coerceNarrativeImageSize, defaultNarrativeImageSize, supportedNarrativeImageSizes, type NarrativeImageSize } from "@/lib/narrative-image-resolution";
 import type { NarrativeReferenceUpload, PlannedNarrativeGroupGenerationSelection, PlannedNarrativeGroupReferencePreview } from "@/lib/queries/narrative-groups";
+import { refreshPlannedReferences } from "@/lib/queries/narrative-groups";
 import { isPlannedReferenceAvailable, normalizePlannedReferenceSelection, PlannedReferencePicker } from "./planned-reference-picker";
 import { TemporaryReferencePicker, type TemporaryReferenceSelection } from "./temporary-reference-picker";
+import { CharacterReferenceRepairDialog } from "./character-reference-repair-dialog";
+import type { RepairContext } from "@/lib/queries/character-reference-repair";
 
 export interface GroupReferenceDialogProps {
   open: boolean;
@@ -19,7 +22,8 @@ export interface GroupReferenceDialogProps {
   submitting?: boolean;
   onSubmit: (selection: PlannedNarrativeGroupGenerationSelection) => void;
   onOpenChange: (open: boolean) => void;
-  onRetry?: () => void;
+  onRetry?: () => unknown | Promise<unknown>;
+  onRefreshBindings?: () => Promise<void>;
   onResolvePlanning?: () => void;
   stage?: "sketch" | "render";
   defaultProvider?: string;
@@ -65,6 +69,13 @@ export function GroupReferenceDialog({
   onSubmit,
   onOpenChange,
   onRetry,
+  project,
+  episode,
+  groupId,
+  onRefreshBindings = project && episode && preview?.source_plan_revision_id ? async () => {
+    await refreshPlannedReferences(project, episode, preview.source_plan_revision_id!);
+    await onRetry?.();
+  } : undefined,
   onResolvePlanning = () => undefined,
   stage = "render",
   defaultProvider = "grsai-main",
@@ -83,6 +94,14 @@ export function GroupReferenceDialog({
   const [allowUnconstrained, setAllowUnconstrained] = useState(true);
   const [saveAsProjectDefault, setSaveAsProjectDefault] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [repairTarget, setRepairTarget] = useState<{ context: RepairContext; mode: "create" | "existing"; owner: string } | null>(null);
+  const contextKey = JSON.stringify([project, episode, groupId, preview?.source_plan_revision_id, open]);
+  const currentContext = useRef(contextKey);
+  currentContext.current = contextKey;
+  const repairRefresh = useRef<{ owner: string; revision: string; targetRevision?: string } | null>(null);
+  useEffect(() => { setRepairTarget(null); repairRefresh.current = null; }, [contextKey]);
   const wasOpen = useRef(false);
   const previousRevision = useRef<string | null>(null);
   const uploadContext = useRef({ open: false, revision: null as string | null, generation: 0 });
@@ -91,7 +110,16 @@ export function GroupReferenceDialog({
     const justOpened = open && !wasOpen.current;
     const revisionChanged = !!preview && preview.reference_revision !== previousRevision.current;
     if (justOpened || revisionChanged) {
-      setReferences({ selectedBindingIds: readyDefaults(preview), temporaryUploads: [] });
+      if (!justOpened && preview && repairRefresh.current?.owner === contextKey && repairRefresh.current.revision === previousRevision.current && (!repairRefresh.current.targetRevision || repairRefresh.current.targetRevision === preview.reference_revision)) {
+        setReferences((current) => ({ ...current, selectedBindingIds: normalizePlannedReferenceSelection(preview.bindings, current.selectedBindingIds, preview.max_images, current.temporaryUploads.length).selectedIds }));
+        repairRefresh.current = null;
+      } else {
+        setReferences({ selectedBindingIds: readyDefaults(preview), temporaryUploads: [] });
+      }
+      setUploadError(null);
+      setRefreshError(null);
+    }
+    if (justOpened) {
       setUseStyle(true);
       setProviderId(defaultProvider);
       setModel(defaultModel);
@@ -154,6 +182,16 @@ export function GroupReferenceDialog({
       {errorMessage ? <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-300 bg-red-950/70 p-3 text-red-100"><span>{errorMessage}</span><span className="flex gap-2">{onRetry ? <Button variant="outline" size="sm" onClick={onRetry}>重试</Button> : null}<Button variant="outline" size="sm" onClick={onResolvePlanning}>返回规划</Button></span></div> : null}
 
       {!loading && preview ? <div className="space-y-4">
+        {onRefreshBindings ? <div>
+          <Button type="button" variant="outline" disabled={refreshing || submitting || uploading} onClick={async () => {
+            setRefreshing(true);
+            setRefreshError(null);
+            try { await onRefreshBindings(); }
+            catch (caught) { setRefreshError(caught instanceof Error ? caught.message : "引用刷新失败，请重试"); }
+            finally { setRefreshing(false); }
+          }}>{refreshing ? "正在刷新引用…" : "从已有资产刷新引用"}</Button>
+          {refreshError ? <p role="alert">{refreshError}</p> : null}
+        </div> : null}
         {(preview.warnings ?? []).length > 0 ? <div
           role="alert"
           aria-label="引用预览警告"
@@ -174,16 +212,35 @@ export function GroupReferenceDialog({
           <span><span className="block font-semibold">项目风格</span><span className="text-xs text-zinc-200">作为独立风格约束，不计入参考图数量。</span></span>
           <Checkbox aria-label="使用项目风格" checked={useStyle} onCheckedChange={(checked) => setUseStyle(checked === true)} />
         </div>
-        <PlannedReferencePicker bindings={preview.bindings} selectedIds={references.selectedBindingIds} maxImages={maxImages} temporaryCount={references.temporaryUploads.length} onChange={(selectedBindingIds) => setReferences((current) => ({ ...current, selectedBindingIds }))} onResolvePlanning={onResolvePlanning} />
+        <PlannedReferencePicker bindings={preview.bindings} selectedIds={references.selectedBindingIds} maxImages={maxImages} temporaryCount={references.temporaryUploads.length} onChange={(selectedBindingIds) => setReferences((current) => ({ ...current, selectedBindingIds }))} onResolvePlanning={onResolvePlanning}
+          onRepairCharacter={project && episode && preview.source_plan_revision_id ? (binding, mode) => setRepairTarget({ owner: contextKey, mode, context: { project, episode, groupId, revision: preview.source_plan_revision_id!, bindingId: binding.binding_id, referenceRevision: preview.reference_revision } }) : undefined} />
         <TemporaryReferencePicker uploads={references.temporaryUploads} uploading={uploading} disabled={imageCount >= maxImages} error={uploadError} onUpload={uploadTemporary} onRemove={(uploadId) => setReferences((current) => ({ ...current, temporaryUploads: current.temporaryUploads.filter((item) => item.uploadId !== uploadId) }))} />
       </div> : null}
 
       <DialogFooter className="px-0 pb-0">
         <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
-        <Button disabled={loading || !!errorMessage || !preview || submitting || uploading || normalizedSelection.hasRequiredUnavailable || normalizedSelection.requiredOverflow || normalizedSelection.bindingConflict || imageCount > maxImages || !providerId.trim() || !model.trim() || (stage === "render" && !sketchReady && !allowUnconstrained)} onClick={() => preview && !normalizedSelection.hasRequiredUnavailable && onSubmit({ selectedBindingIds: normalizedSelection.selectedIds, uploadIds: references.temporaryUploads.map((item) => item.uploadId), referenceRevision: preview.reference_revision, useStyle, providerId, model, imageSize, allowUnconstrained, saveAsProjectDefault })}>
+        <Button disabled={refreshing || loading || !!errorMessage || !preview || submitting || uploading || normalizedSelection.hasRequiredUnavailable || normalizedSelection.requiredOverflow || normalizedSelection.bindingConflict || imageCount > maxImages || !providerId.trim() || !model.trim() || (stage === "render" && !sketchReady && !allowUnconstrained)} onClick={() => preview && !normalizedSelection.hasRequiredUnavailable && onSubmit({ selectedBindingIds: normalizedSelection.selectedIds, uploadIds: references.temporaryUploads.map((item) => item.uploadId), referenceRevision: preview.reference_revision, useStyle, providerId, model, imageSize, allowUnconstrained, saveAsProjectDefault })}>
           {submitting ? <Loader2 className="size-4 animate-spin" /> : null}使用 {imageCount} 张参考图生成
         </Button>
       </DialogFooter>
+      {repairTarget && repairTarget.owner === contextKey && open ? <CharacterReferenceRepairDialog key={JSON.stringify(repairTarget.context)} context={repairTarget.context} initialMode={repairTarget.mode} onClose={() => setRepairTarget(null)} onReloadSource={async () => {
+        const result = await onRetry?.() as { error?: unknown } | undefined;
+        if (result?.error) throw new Error("引用刷新失败，请重试。");
+        if (currentContext.current === repairTarget.owner) setRepairTarget(null);
+      }} onBound={async () => {
+        if (currentContext.current !== repairTarget.owner) return;
+        repairRefresh.current = { owner: repairTarget.owner, revision: preview!.reference_revision };
+        try {
+          const result = await onRetry?.() as { error?: unknown; data?: { data?: { reference_revision?: string } } } | undefined;
+          if (result?.error) throw new Error("引用刷新失败，请重试。");
+          if (repairRefresh.current?.owner === repairTarget.owner) {
+            const targetRevision = result?.data?.data?.reference_revision;
+            if (!targetRevision || targetRevision === repairRefresh.current.revision) repairRefresh.current = null;
+            else repairRefresh.current.targetRevision = targetRevision;
+          }
+        }
+        catch (error) { if (repairRefresh.current?.owner === repairTarget.owner) repairRefresh.current = null; throw error; }
+      }} /> : null}
     </DialogContent>
   </Dialog>;
 }

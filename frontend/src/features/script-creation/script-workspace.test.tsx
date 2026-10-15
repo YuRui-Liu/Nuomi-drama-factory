@@ -39,6 +39,36 @@ beforeEach(() => {
 });
 
 describe("ScriptWorkspace", () => {
+  it("persists the final generated draft over episode two and retains it after reopening", async () => {
+    let episode = doc("ep2", "episode_script", "# 第 2 集\n\n本集目标：", 2);
+    const markdown = "# 第 2 集\n\n莉娅推开钟楼的门。";
+    const run = { id: "run2", mode: "continue", status: "needs_review", episode_number: 2, steps: [{ key: "episode_script:2", kind: "episode_script", title: "第二集", episode_number: 2, status: "needs_review", output: null }] };
+    let writes = 0;
+    server.use(
+      http.get(base + "/documents", () => HttpResponse.json({ data: [episode] })),
+      http.get(base + "/documents/ep2", () => HttpResponse.json({ data: episode })),
+      http.get(base + "/generations", () => HttpResponse.json({ data: [run] })),
+      http.get(base + "/generations/run2/craft", () => HttpResponse.json({ data: { steps: [], records: [{ step_key: "episode_script:2", stage: "repair", output: { markdown } }], stale: false } })),
+      http.put(base + "/documents/ep2", async ({ request }) => {
+        const body = await request.json() as { markdown: string; base_revision_id: string };
+        expect(body.base_revision_id).toBe("r1");
+        writes++;
+        episode = { ...episode, current_revision_id: "r2", revision: { ...episode.revision, id: "r2", parent_revision_id: "r1", markdown: body.markdown, blocks: [{ id: "b2", markdown: body.markdown }] } };
+        return HttpResponse.json({ data: episode });
+      }),
+    );
+    const view = renderWorkspace();
+    await userEvent.click(await screen.findByRole("button", { name: "第 2 集" }));
+    await userEvent.click(await screen.findByRole("button", { name: "采用最终草稿并覆盖本集正文" }));
+    expect(await screen.findByText("最终草稿已覆盖本集正文并保存。审查意见仍保留。")).toBeVisible();
+    expect(writes).toBe(1);
+    expect(episode.revision.markdown).toBe(markdown);
+    view.unmount();
+    renderWorkspace();
+    await userEvent.click(await screen.findByRole("button", { name: "第 2 集" }));
+    await userEvent.click(screen.getByRole("button", { name: "编辑 Markdown" }));
+    expect(screen.getByRole("textbox", { name: "文档 Markdown" })).toHaveValue(markdown);
+  });
   it("keeps a rapid unsaved edit recoverable after leaving, even when the exit save fails", async () => {
     const user = userEvent.setup();
     const outline = doc("one", "outline", "# 故事大纲");
@@ -119,7 +149,7 @@ describe("ScriptWorkspace", () => {
     );
     renderWorkspace();
     await user.click(await screen.findByRole("button", { name: "创建空白文档" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(/response lost|500/);
+    expect(await screen.findByText(/response lost|500/)).toHaveAttribute("role", "alert");
     await user.click(screen.getByRole("button", { name: "创建空白文档" }));
     await waitFor(() => expect(docs).toHaveLength(7));
     expect(docs.filter((entry) => entry.kind === "outline")).toHaveLength(1);

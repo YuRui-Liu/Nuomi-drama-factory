@@ -24,6 +24,20 @@ function renderDialog(overrides: Partial<React.ComponentProps<typeof GroupRefere
 }
 
 describe("GroupReferenceDialog planned references", () => {
+  it("offers binding refresh and displays a failed refresh without submitting generation", async () => {
+    const onRefreshBindings = vi.fn().mockRejectedValue(new Error("导演版本已更新，请重新打开"));
+    const { onSubmit } = renderDialog({ onRefreshBindings });
+    fireEvent.click(screen.getByRole("button", { name: "从已有资产刷新引用" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("导演版本已更新，请重新打开");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+  it("preserves edited generation parameters when reference versions refresh", () => {
+    const { props, rerender, onSubmit } = renderDialog();
+    fireEvent.click(screen.getByRole("checkbox", { name: "使用项目风格" }));
+    rerender(<GroupReferenceDialog {...props} preview={{ ...preview, reference_revision: "r8" }} />);
+    fireEvent.click(screen.getByRole("button", { name: "使用 2 张参考图生成" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ useStyle: false, referenceRevision: "r8" }));
+  });
   it("shows preview warnings in a high-contrast alert", () => {
     renderDialog({
       preview: {

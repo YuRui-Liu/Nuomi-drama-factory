@@ -24,6 +24,11 @@ function dataWithImages(): VideoDirectorNodeData {
 }
 
 describe('video director inputs', () => {
+  it('honors the saved Ref mode on connected storyboards without a hidden intent flag', () => {
+    const data = { ...dataWithImages(), activeInputMode: 'ref' as const, autoStoryboard: { sourceNodeId: 'board' } };
+    expect(resolveDirectorInputMode(data)).toBe('ref');
+  });
+
   it('defaults an empty legacy node to Ref and infers legacy nodes from their images', () => {
     const empty = dataWithImages();
     empty.draft.references = [];
@@ -66,7 +71,7 @@ describe('video director inputs', () => {
     const draft = dataWithImages().draft;
     const ref = projectDirectorDraft(draft, 'ref');
     expect(ref.references).toEqual([reference]);
-    expect(ref.segments[0]).toMatchObject({ firstFrame: null, lastFrame: null });
+    expect(ref.segments[0]).toMatchObject({ firstFrame, lastFrame });
 
     const frames = projectDirectorDraft(draft, 'frames');
     expect(frames.references).toEqual([]);

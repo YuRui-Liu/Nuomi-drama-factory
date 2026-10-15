@@ -96,11 +96,17 @@ def build_request(node: dict, operation: str, upstream: list[dict], *, canvas_id
         body.update(source_url=images[0], source_kind=data.get("plyKind", "master"))
     body.update(deepcopy(data.get("request", {})))
     if kind == "storyboardGenNode":
-        rows = data.get("gridRows", data.get("rows", 2))
-        cols = data.get("gridCols", data.get("cols", 2))
-        notes = "\n".join(f"分镜{i + 1}：{frame['description']}" for i, frame in
-                          enumerate(data.get("frames", [])) if frame.get("description", "").strip())
-        body["prompt"] = f"生成 {rows} 行 {cols} 列分镜图，每格等大、无边框、无间隙、无文字、无编号、无字幕；按从左到右从上到下叙事，保持角色一致。\n{prompt}\n{notes}".strip()
+        if data.get('storyboardMode') == 'narrative' or data.get('group_id'):
+            from .storyboard import compile_canvas_storyboard
+            compiled = compile_canvas_storyboard(data, inputs)
+            body['prompt'] = compiled['prompt']
+            body['reference_urls'] = [r['url'] for r in compiled['references']]
+        else:
+            rows = data.get("gridRows", data.get("rows", 2))
+            cols = data.get("gridCols", data.get("cols", 2))
+            notes = "\n".join(f"分镜{i + 1}：{frame['description']}" for i, frame in
+                              enumerate(data.get("frames", [])) if frame.get("description", "").strip())
+            body["prompt"] = f"生成 {rows} 行 {cols} 列分镜图，每格等大、无边框、无间隙、无文字、无编号、无字幕；按从左到右从上到下叙事，保持角色一致。\n{prompt}\n{notes}".strip()
     if kind in {"imageNode", "imageGenNode", "storyboardGenNode"}:
         # Visible node controls are authoritative over legacy request overrides.
         for source, target in (("model", "model"), ("size", "image_size"), ("quality", "quality")):
@@ -153,7 +159,7 @@ def director_draft(draft: dict) -> dict:
 
 
 def project_director_inputs(node: dict, upstream: list[dict], edges: list[dict]) -> dict:
-    """Respect explicit frame slots; reference mode never carries frame inputs."""
+    """Preserve explicit frame slots alongside optional identity references."""
     data = node.get('data', {})
     draft = director_draft(deepcopy(data.get('draft') or data.get('request', {}).get('draft') or {}))
     mode = data.get('activeInputMode', 'ref')
@@ -166,17 +172,13 @@ def project_director_inputs(node: dict, upstream: list[dict], edges: list[dict])
             continue
         image = {'image_id': item['node_id'], 'url': url}
         slot = incoming.get(item['node_id'], {}).get('data', {}).get('slot', {})
-        if mode == 'ref':
-            if slot.get('kind', 'reference') == 'reference':
-                refs.append(image)
+        if mode == 'ref' and slot.get('kind', 'reference') == 'reference':
+            refs.append(image)
         elif slot.get('kind') in {'firstFrame', 'lastFrame', 'first', 'last'}:
             segment = by_id.get(slot.get('segmentId'))
             if segment is not None:
                 segment['first_frame' if slot['kind'] in {'firstFrame', 'first'} else 'last_frame'] = image
     draft['references'] = list({r['image_id']: r for r in refs}.values())
-    if mode == 'ref':
-        for segment in draft.get('segments', []):
-            segment.update(first_frame=None, last_frame=None)
     return draft
 
 

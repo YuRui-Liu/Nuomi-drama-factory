@@ -43,6 +43,11 @@ def create_canvas_app(*, perform, body, segment, emit):
         if not plan and not result.get("dry_run") and not result.get("data", {}).get("valid"):
             raise typer.Exit(2)
 
+    @app.command('preview')
+    def preview(ctx: typer.Context, canvas_id: str, node: str = typer.Option(...)):
+        """Inspect the saved node's actual request without generating media."""
+        call(ctx, 'GET', f'canvases/{segment(canvas_id)}/nodes/{segment(node)}/preview')
+
     def patch(ctx, canvas_id, base_revision, request_id, operation):
         call(ctx, "POST", f"canvases/{segment(canvas_id)}/patch", {
             "base_revision": base_revision, "request_id": request_id or uuid4().hex, "operations": [operation]})
@@ -62,6 +67,11 @@ def create_canvas_app(*, perform, body, segment, emit):
     def add_edge(ctx: typer.Context, canvas_id: str, body_file: Path = typer.Option(..., exists=True, dir_okay=False),
                  base_revision: int = typer.Option(..., min=1), request_id: str | None = typer.Option(None)):
         patch(ctx, canvas_id, base_revision, request_id, {"op": "add_edge", "edge": body("{}", body_file)})
+
+    @edges.command("remove")
+    def remove_edge(ctx: typer.Context, canvas_id: str, edge_id: str,
+                    base_revision: int = typer.Option(..., min=1), request_id: str | None = typer.Option(None)):
+        patch(ctx, canvas_id, base_revision, request_id, {"op": "remove_edge", "edge_id": segment(edge_id)})
 
     @nodes.command("configure")
     def configure_node(ctx: typer.Context, canvas_id: str, node_id: str,
@@ -89,11 +99,15 @@ def create_canvas_app(*, perform, body, segment, emit):
 
     @app.command("run")
     def run(ctx: typer.Context, canvas_id: str, target: str | None = typer.Option(None), node: str | None = typer.Option(None),
-            operation: str | None = typer.Option(None), request_id: str | None = typer.Option(None)):
+            operation: str | None = typer.Option(None), request_id: str | None = typer.Option(None),
+            expected_revision: int | None = typer.Option(None, min=1)):
         if bool(target) == bool(node):
             raise typer.BadParameter("Choose exactly one of --target or --node")
-        call(ctx, "POST", "runs", {"canvas_id": segment(canvas_id), "target": segment(target or node),
-                                   "request_id": request_id or uuid4().hex, "operation": operation})
+        payload = {"canvas_id": segment(canvas_id), "target": segment(target or node),
+                   "request_id": request_id or uuid4().hex, "operation": operation}
+        if expected_revision is not None:
+            payload['expected_revision'] = expected_revision
+        call(ctx, "POST", "runs", payload)
 
     @app.command("status")
     def status(ctx: typer.Context, run_id: str):
@@ -102,13 +116,15 @@ def create_canvas_app(*, perform, body, segment, emit):
     @app.command("plan")
     def plan(ctx: typer.Context, canvas_id: str, script: Path = typer.Option(..., exists=True, dir_okay=False),
              duration: float = typer.Option(90, min=1), aspect_ratio: str = typer.Option("16:9"),
+             director_brief: str = typer.Option('', help='导演要求：视点、节奏、镜头与声音偏好'),
              request_id: str | None = typer.Option(None)):
         try:
             text = script.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
             raise typer.BadParameter("Script must be readable UTF-8") from exc
         call(ctx, "POST", "plans", {"canvas_id": segment(canvas_id), "script": text, "duration": duration,
-                                   "aspect_ratio": aspect_ratio, "request_id": request_id or uuid4().hex})
+                                   "aspect_ratio": aspect_ratio, "director_brief": director_brief,
+                                   "request_id": request_id or uuid4().hex})
 
     @app.command("apply")
     def apply(ctx: typer.Context, canvas_id: str, plan: str = typer.Option(...), base_revision: int = typer.Option(..., min=1)):

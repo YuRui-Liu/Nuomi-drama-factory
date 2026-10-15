@@ -7,12 +7,14 @@ import { Button } from "@/components/ui/button";
 import { DirectorReviewWorkbench } from "@/components/episode/director-review/director-review-workbench";
 import { useEpisodes } from "@/lib/queries/episodes";
 import { directorPlanKeys, useDirectorPlans, useEditDirectorPlan } from "@/lib/queries/director-plans";
-import { directorPresets, directorSuggestions, emptyDirectorConfig, type DirectorConfig } from "./director-config";
+import { directorSuggestions, emptyDirectorConfig, type DirectorConfig } from "./director-config";
+import { DirectorLibrary } from "./director-library";
+import { useAuthStore } from "@/stores/auth-store";
 import { readStudioContext } from "./studio-context";
 import { useTasks } from "@/lib/queries/tasks";
 import { DirectorAdaptations } from "./director-adaptations";
 import { DirectorActivation } from "./director-activation";
-import { ArrowRight, Check, Clapperboard, Film, SlidersHorizontal, Sparkles } from "lucide-react";
+import { ArrowRight, Clapperboard, Film, SlidersHorizontal, Sparkles } from "lucide-react";
 
 type Doc = { id: string; name: string; data: DirectorConfig; revision: number };
 type TeamOverview = { draft: { draft_revision: number; data: { template_id: string; template_revision: number; overrides: Record<string, Record<string, Record<string, unknown>>> } } | null; active: { active_revision: number } | null; effective: { director: { director_plan: { config: { director_preferences: Partial<DirectorConfig> } } } } };
@@ -20,7 +22,8 @@ const fieldClass = "w-full rounded-md border bg-background p-2 text-sm";
 const labels = { pace: "叙事节奏", camera_motion: "运镜", composition: "构图", performance: "人物表演", method: "补充方法" } as const;
 
 export function DirectorStudio({ project }: { project: string }) {
-  return <DirectorWorkspace key={project} project={project} />;
+  const username = useAuthStore(state => state.username);
+  return <DirectorWorkspace key={`${project}/${username}`} project={project} />;
 }
 
 function DirectorWorkspace({ project }: { project: string }) {
@@ -33,7 +36,6 @@ function DirectorWorkspace({ project }: { project: string }) {
   const [legacyImportId, setLegacyImportId] = useState('');
   const [dirty, setDirty] = useState(false);
   const [source, setSource] = useState("builtin");
-  const [presetName, setPresetName] = useState("");
   const [workflow, setWorkflow] = useState<"existing" | "ai">("existing");
   const [text, setText] = useState("");
   const [message, setMessage] = useState("");
@@ -125,7 +127,7 @@ function DirectorWorkspace({ project }: { project: string }) {
     <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-xl font-semibold">导演自定义</h2><p className="mt-1 text-sm text-muted-foreground">选一套导演方法，让镜头有清晰的表达。所有预设都可以继续修改。</p></div><div className="flex items-center gap-2 text-xs text-muted-foreground"><span>选导演</span><ArrowRight className="size-3" /><span>选对象</span><ArrowRight className="size-3" /><span>预览与应用</span></div></div>
     <section className="director-presets space-y-3" aria-label="选择导演方法">
       <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="flex items-center gap-2 font-medium"><Clapperboard className="size-4 text-primary" /><span className="text-xs text-muted-foreground">01</span> 选择导演</h3><label className="flex items-center gap-2 text-sm">配置来源<select className="rounded-md border bg-background px-3 py-2 text-sm" value={source} onChange={(event) => setSource(event.target.value)}><option value="builtin">内置导演预设</option><option value="custom">自建配置</option><option value="import">导入个人方法</option></select></label></div>
-      {source === "builtin" && <><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{directorPresets.map((preset, index) => <button key={preset.name} type="button" aria-label={preset.name} aria-pressed={presetName === preset.name} className={`group relative overflow-hidden rounded-lg border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${presetName === preset.name ? 'border-primary bg-primary/10 ring-1 ring-primary' : 'border-border bg-background hover:border-primary/50 hover:bg-muted/50'}`} onClick={() => { setPresetName(preset.name); setName(preset.name); update({ ...preset.data }); }}><div aria-hidden="true" className="relative mb-4 flex h-16 items-center justify-between overflow-hidden rounded-md border border-border/50 bg-gradient-to-br from-muted to-background px-3"><span className="text-[10px] font-medium tracking-[0.18em] text-muted-foreground">{preset.code}</span><span className="relative flex h-10 w-14 items-center justify-center rounded border border-foreground/20"><span className={`h-6 w-px bg-primary/70 ${index % 2 ? 'rotate-45' : '-rotate-12'}`} /><span className="absolute inset-x-2 top-1/2 h-px bg-primary/50" /></span></div><div className="flex items-center justify-between gap-2"><span className="font-medium">{preset.name}</span>{presetName === preset.name && <Check className="size-4 text-primary" aria-hidden="true" />}</div><p className="mt-1 text-xs leading-relaxed text-muted-foreground">{preset.description}</p><div className="mt-3 flex flex-wrap gap-1.5">{preset.tags.map(tag => <span key={tag} className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{tag}</span>)}</div></button>)}</div><p className="text-xs text-muted-foreground">本地创作配置 · 选择和编辑免费，不会调用模型。预设描述的是导演偏好，不代表特定平台模型或自动生成能力。</p></>}
+      <DirectorLibrary compact={source !== 'builtin'} name={name} config={config} dirty={dirty} disabled={save.isPending} onChoose={card => { setName(card.name); update({ ...config, ...card.preferences, director_library_source: { id: card.id, revision: card.revision } }); }} />
       {source === "custom" && <div className="flex items-center gap-3 rounded-lg border border-dashed p-4"><SlidersHorizontal className="size-5 text-muted-foreground" /><div><p className="text-sm font-medium">你的方法，你来定义</p><p className="text-xs text-muted-foreground">在下方设置名称，展开高级导演参数，从当前配置继续调整。</p></div></div>}
       {source === "import" && <div className="space-y-2"><textarea aria-label="导演方法原文" className={fieldClass} value={text} onChange={(event) => setText(event.target.value)} placeholder="粘贴方法，可用 节奏：/运镜：/构图：/表演： 标注" /><Button disabled={!text.trim() || importing.isPending} onClick={() => importing.mutate(undefined)}>提取文字配置</Button><label className="block text-sm">导入 TXT / MD / PDF / DOCX<input type="file" accept=".txt,.md,.pdf,.docx" disabled={importing.isPending} onChange={(event) => { const file = event.target.files?.[0]; if (file) importing.mutate(file); event.target.value = ""; }} /></label><p className="text-xs text-muted-foreground">最多 10 MB；扫描件不执行 OCR。文档内容仅作为创作素材。</p></div>}
     </section>

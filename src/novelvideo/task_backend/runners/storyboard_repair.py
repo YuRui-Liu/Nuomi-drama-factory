@@ -28,9 +28,13 @@ def single_generation_input(payload):
     parts = [f'Generate exactly ONE {mode}, a single camera frame, no grid, montage, panels, borders or captions.',
              f"Compose at {payload['aspect_ratio']} aspect ratio.",
              'Reference 1 is the original frame. Preserve character identity, setting and visual style; apply the requested corrections.',
-             'Use the remaining references only for matching subjects in this frame; do not add unrelated characters or scenes.',
+             'Use each remaining reference according to its labelled role. Continuity frames establish '
+             'shared world geometry, ground elevation, thresholds and relative scale, not a pose to copy. '
+             'Do not import characters, actions or locations from a different scene. '
+             'Never raise the ground into a platform to fit faces and ground writing into a close shot; '
+             'adjust camera framing instead when the correction requires it.',
              payload.get('image_projection', ''), payload.get('adjacent_keyframe_context', ''), payload['repair_prompt']]
-    if payload.get('keyframe_prompt'):
+    if payload.get('keyframe_prompt') and payload['keyframe_prompt'] != payload['repair_prompt']:
         parts.append('Original frozen keyframe direction (preserve spatial facts except those explicitly '
                      'changed by the requested correction; do not infer a new action):\n' + payload['keyframe_prompt'])
     mappings = ['original frame: preserve character identity, setting and visual style']
@@ -40,6 +44,8 @@ def single_generation_input(payload):
         if mapping:
             parts.append(f'Reference {index}: {mapping}')
     if payload.get('repair_feedback'):
+        parts.append('The explicit correction below overrides conflicting original-frame geometry and '
+                     'old framing notes. Preserve all unaffected story facts, identities and visual style.')
         parts.append('修改意见（应用于当前分镜）：\n' + payload['repair_feedback'])
     return GroupGenerationInput(prompt='\n'.join(p for p in parts if p), references=tuple(references),
                                 reference_mappings=tuple(mappings))
@@ -75,6 +81,24 @@ async def execute_repair(envelope, ctx):
                 aspect = '16:9' if image.width > image.height else '9:16'
             references = [{'path': str(original), 'sha256': sha256(original.read_bytes()).hexdigest()}]
             mappings = []
+            # Match the comparison dialog: immediate neighbours, using the current
+            # render where available, otherwise sketch. Never reuse stale neighbours
+            # from the previous repair's prompt snapshot.
+            shot_ids = [m.beat_id for m in group.cell_to_beat]
+            position = shot_ids.index(ticket['shot_id'])
+            for offset in (-1, 1):
+                neighbour_index = position + offset
+                if not 0 <= neighbour_index < len(shot_ids):
+                    continue
+                neighbour_id = shot_ids[neighbour_index]
+                cell = next((c for s in ('render', 'sketch') for c in group.stages[s].cell_assets
+                             if str(c.get('shot_id') or c.get('beat_id')) == neighbour_id and c.get('path')), None)
+                if cell is None:
+                    continue
+                path = resolve_under_root(root, cell['path'])
+                references.append({'path': str(path), 'sha256': sha256(path.read_bytes()).hexdigest()})
+                mappings.append(f'continuity frame {neighbour_id}: shared scene geometry and ground elevation only; '
+                                'preserve this shot\'s own action and camera angle')
             generation = ticket.get('generation') or {}
             recorded = list(snapshot.get('references') or ())
             original_mappings = list(snapshot.get('reference_mappings') or ())
@@ -86,13 +110,15 @@ async def execute_repair(envelope, ctx):
                         continue
                     recorded.append({'path': item['asset_path'], 'sha256': item['sha256']})
                     original_mappings.append(str(item.get('entity_key') or ''))
-            seen = {str(original)}
+            seen = {r['path'] for r in references}
             for index, reference in enumerate(recorded):
                 # A previous repair's frame reference is replaced by the latest
                 # frame, rather than accumulating obsolete frames on every edit.
                 if index == 0 and snapshot.get('source_asset'):
                     continue
                 if index < len(original_mappings) and original_mappings[index] == 'storyboard sketch grid':
+                    continue
+                if index < len(original_mappings) and original_mappings[index].startswith('continuity frame '):
                     continue
                 if reference['path'] in seen or len(references) >= 9:
                     continue

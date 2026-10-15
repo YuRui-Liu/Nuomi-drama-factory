@@ -7,6 +7,7 @@ import re
 from novelvideo.screenplay_semantics.models import DramaticBeat
 from .cinematography import production_direction_errors
 from .creative_contract import creative_shot_errors
+from .execution import video_duration_issues
 
 from .models import (
     DirectorPlanRevision,
@@ -27,7 +28,7 @@ def validate_director_plan(
     dramatic_beats: Sequence[DramaticBeat] = (),
 ) -> ValidationReport:
     """Validate a director plan without mutating the plan or its source spans."""
-    issues: list[ValidationIssue] = []
+    issues: list[ValidationIssue] = list(video_duration_issues(revision.groups))
     flat_shots = [shot for group in revision.groups for shot in group.shots]
     next_ids = {shot.id: flat_shots[index + 1].id if index + 1 < len(flat_shots) else None
                 for index, shot in enumerate(flat_shots)}

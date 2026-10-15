@@ -13,7 +13,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.websockets import WebSocketState
 
 from novelvideo.api.auth import (
@@ -157,6 +157,7 @@ class ChatMessageIn(BaseModel):
     turn_id: str | None = None
     generation: int | None = None
     attachments: list[ChatAttachmentIn] = []
+    references: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
 
 
 class ScopeSetIn(BaseModel):
@@ -596,18 +597,23 @@ async def _stream_project_turn(
     text: str,
     attachments: list[ChatAttachmentIn],
     turn_id: str,
+    references: list[dict[str, Any]] | None = None,
 ) -> None:
     project = str(scope.id)
     project_ctx = await _project_context_for_scope(user, scope)
     project_dir = project_ctx.output_dir if project_ctx is not None else None
     project_state_dir = project_ctx.state_dir if project_ctx is not None else None
     agent_text = _text_with_attachment_context(text, attachments)
+    from novelvideo.api.routes.chat_canvas import resolved_chat_context, resolve_chat_snapshot
+    reference_snapshot = await resolve_chat_snapshot(project, references, user, turn_id=turn_id)
+    agent_text += await resolved_chat_context(project, references, user, snapshot=reference_snapshot)
     chat_service.add_user_message(
         username,
         project,
         text,
         project_dir=project_dir,
         project_state_dir=project_state_dir,
+        metadata={'canvas_context': reference_snapshot, 'turn_id': turn_id} if reference_snapshot['references'] else None,
     )
     send_lock = asyncio.Lock()
     heartbeat_task = asyncio.create_task(
@@ -1009,6 +1015,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                         text=text,
                         attachments=msg.attachments,
                         turn_id=turn_id,
+                        references=msg.references,
                     ), websocket, username, scope, turn_id=turn_id, generation=generation, user=user)
                 elif scope.kind == "home":
                     await _run_team_chat_turn(_stream_home_turn(

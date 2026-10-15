@@ -21,24 +21,31 @@ def ref_canvas(ctx):
     return canvas
 
 
-def test_ref_prepares_full_board_and_identity_references(ctx):
+def test_ref_prepares_only_identities_and_cropped_frame_inputs(ctx):
     ref_canvas(ctx)
     result = prepare_storyboard(ctx, canvas_id='canvas', node_id='video', base_revision=1, request_id='ref')
     draft = DirectorDraft.model_validate(result['draft'])
-    assert [r.image_id for r in draft.references] == ['board', 'actor-a', 'actor-b']
-    assert all(s.first_frame is None and s.last_frame is None for s in draft.segments)
-    assert '<Picture 1>' in draft.segments[0].prompt and '第1行第1列' in draft.segments[0].prompt
-    assert '第2行第2列' in draft.segments[3].prompt
+    assert [r.image_id for r in draft.references] == ['actor-a', 'actor-b']
+    assert all(s.first_frame and s.first_frame.url != 'board.png' for s in draft.segments)
     assert validate_generation(draft).route == 'h3_ref'
     assert result['preparation']['inputMode'] == 'ref'
     assert result['canvas']['nodes'][1]['data']['activeInputMode'] == 'ref'
     guard_prepared(ctx, 'canvas', 'video', draft)
 
 
+def test_saved_ref_mode_does_not_require_hidden_manual_intent(ctx):
+    canvas = ref_canvas(ctx)
+    canvas['nodes'][1]['data'].pop('inputModeIntent')
+    atomic_write_json(canvas_path(ctx.state_dir, 'canvas'), canvas)
+    result = prepare_storyboard(ctx, canvas_id='canvas', node_id='video', base_revision=1, request_id='legacy-ref')
+    assert result['preparation']['inputMode'] == 'ref'
+    assert [r['image_id'] for r in result['draft']['references']] == ['actor-a', 'actor-b']
+
+
 def test_ref_capacity_rejects_without_dropping_assets(ctx):
     ref_canvas(ctx)
-    with pytest.raises(ValueError, match='at most 2'):
-        prepare_storyboard(ctx, canvas_id='canvas', node_id='video', base_revision=1, request_id='ref', reference_limit=2)
+    with pytest.raises(ValueError, match='at most 1'):
+        prepare_storyboard(ctx, canvas_id='canvas', node_id='video', base_revision=1, request_id='ref', reference_limit=1)
     assert read_canvas(ctx.state_dir, 'canvas')['revision'] == 1
 
 
@@ -68,7 +75,7 @@ async def test_api_uses_configured_reference_limit(ctx, monkeypatch):
     async def resolve(*args, **kwargs):
         return ctx, None, None, ctx.output_dir, str(ctx.output_dir)
     monkeypatch.setattr(api, '_resolve_freezone_project', resolve)
-    monkeypatch.setattr(api, '_limits', lambda: (2, 2))
+    monkeypatch.setattr(api, '_limits', lambda: (1, 1))
     with pytest.raises(HTTPException) as error:
         await api.prepare('p', api.PrepareStoryboardBody(canvas_id='canvas', node_id='video', base_revision=1, request_id='a'), {})
     assert error.value.status_code == 422
@@ -94,7 +101,8 @@ async def test_automatic_ref_orchestration_matches_persisted_draft(ctx, monkeypa
     monkeypatch.setattr(api, '_limits', lambda: (5, 5))
     await NodeAdapter(ctx.state_dir).submit(run, {'node_id': 'video', 'id': 'a'}, [])
     assert validate_generation(captured[0]).route == 'h3_ref'
-    assert len(captured[0].references) == 3
+    assert len(captured[0].references) == 2
+    assert all(s.first_frame for s in captured[0].segments)
 
 
 @pytest.mark.parametrize('mutation', ['remove', 'replace'])
@@ -107,7 +115,7 @@ def test_corrupted_persisted_references_cannot_reuse_preparation(ctx, mutation):
     if mutation == 'remove':
         references.pop(0)
     else:
-        references[0]['url'] = 'actor-a.png'
+        references[0]['url'] = 'actor-b.png'
     atomic_write_json(canvas_path(ctx.state_dir, 'canvas'), canvas)
     corrupted = director_draft(canvas['nodes'][1]['data']['draft'])
     with pytest.raises(ValueError, match='reference'):
@@ -115,4 +123,4 @@ def test_corrupted_persisted_references_cannot_reuse_preparation(ctx, mutation):
     with pytest.raises(ValueError):
         prepare_storyboard(ctx, canvas_id='canvas', node_id='video', base_revision=2, request_id='again')
     repaired = prepare_storyboard(ctx, canvas_id='canvas', node_id='video', base_revision=2, request_id='replace', resolution='replace_generated')
-    assert repaired['draft']['references'][0]['url'] == 'board.png'
+    assert repaired['draft']['references'][0]['url'] == 'actor-a.png'

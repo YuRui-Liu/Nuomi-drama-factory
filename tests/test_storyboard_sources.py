@@ -222,3 +222,34 @@ def test_selected_batches_merge_without_losing_other_shots(tmp_path):
     assert [cell["shot_id"] for cell in render.cell_assets] == [f"shot-{i}" for i in range(1, 5)]
     assert render.cell_assets[2]["storyboard_source_id"] == other.source_id
     assert render.selected_storyboard_id != selected
+
+
+def test_new_director_batch_replaces_obsolete_selection_but_preserves_history(tmp_path):
+    from novelvideo.narrative_groups.service import (
+        group_beats, save_groups, register_storyboard_source,
+    )
+    group = group_beats([{"id": "shot-1"}, {"id": "shot-2"}])[0]
+    group = replace(group, generation_batches=({"id": "old-batch", "shot_ids": ["shot-1", "shot-2"]},))
+    save_groups(tmp_path, 1, [group])
+    Image.new("RGB", (160, 80), "blue").save(tmp_path / "grid.png")
+    old = _split(tmp_path).model_copy(update={"group_id": group.id, "batch_id": "old-batch"})
+    group = register_storyboard_source(tmp_path, 1, group.id, source=old, project_id="project")
+    current = _split(tmp_path, generation_id="new-task").model_copy(update={
+        "group_id": group.id, "batch_id": "new-batch",
+        "cells": tuple(cell.model_copy(update={"shot_id": f"new-shot-{i}"})
+                       for i, cell in enumerate(old.cells)),
+    })
+    group = replace(group, shot_ids=("new-shot-0", "new-shot-1"),
+        generation_batches=({"id": "new-batch", "shot_ids": ["new-shot-0", "new-shot-1"]},),
+        stages={**group.stages, "render": replace(group.stages["render"], status="failed",
+            error="storyboard source must cover the complete group or declared batch",
+            needs_regeneration=True)})
+    save_groups(tmp_path, 1, [group])
+    repaired = register_storyboard_source(tmp_path, 1, group.id, source=current, project_id="project")
+    render = repaired.stages["render"]
+    assert render.selected_storyboard_sources == {"new-batch": current.source_id}
+    assert len(render.storyboard_sources) == 2
+    assert [cell["shot_id"] for cell in render.cell_assets] == ["new-shot-0", "new-shot-1"]
+    assert render.status == "completed"
+    assert not render.error
+    assert not render.needs_regeneration

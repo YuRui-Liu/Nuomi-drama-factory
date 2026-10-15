@@ -547,6 +547,9 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         )
         """
     )
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(chat_messages)')}
+    if 'metadata_json' not in columns:
+        conn.execute("ALTER TABLE chat_messages ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
     conn.commit()
     return conn
 
@@ -813,7 +816,8 @@ async def _chat_run_lock_heartbeat_loop(username: str, project: str, lock_id: st
 
 
 def _append_message(
-    conn: sqlite3.Connection, role: str, content: str, media: list[dict[str, Any]] | None = None
+    conn: sqlite3.Connection, role: str, content: str, media: list[dict[str, Any]] | None = None,
+    *, metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from .session_manager import fence_write
     fence_write(conn)
@@ -821,10 +825,10 @@ def _append_message(
     created_at_iso = _now_iso()
     cursor = conn.execute(
         """
-        INSERT INTO chat_messages(role, content, media_json, created_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO chat_messages(role, content, media_json, metadata_json, created_at)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (role, content, json.dumps(media, ensure_ascii=False), created_at_iso),
+        (role, content, json.dumps(media, ensure_ascii=False), json.dumps(metadata or {}, ensure_ascii=False), created_at_iso),
     )
     conn.commit()
     return {
@@ -832,6 +836,7 @@ def _append_message(
         "role": role,
         "content": content,
         "media": media,
+        **(metadata or {}),
         "created_at": created_at_iso,
     }
 
@@ -2603,9 +2608,9 @@ def list_messages(
     try:
         rows = conn.execute(
             """
-            SELECT id, role, content, media_json, created_at
+            SELECT id, role, content, media_json, metadata_json, created_at
               FROM (
-                    SELECT id, role, content, media_json, created_at
+                    SELECT id, role, content, media_json, metadata_json, created_at
                       FROM chat_messages
                      WHERE role <> 'trace'
                      ORDER BY id DESC
@@ -2638,6 +2643,7 @@ def list_messages(
                     "role": role,
                     "content": content,
                     "media": _filter_markdown_duplicate_images(content, merged_media),
+                    **json.loads(row['metadata_json'] or '{}'),
                     "created_at": str(row["created_at"]),
                 }
             )
@@ -2653,10 +2659,11 @@ def add_user_message(
     *,
     project_dir: str | Path | None = None,
     project_state_dir: str | Path | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     conn = _connect(_chat_db_path(username, project, project_dir, project_state_dir))
     try:
-        return _append_message(conn, "user", content)
+        return _append_message(conn, "user", content, metadata=metadata)
     finally:
         conn.close()
 

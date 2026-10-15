@@ -207,7 +207,7 @@ export function GroupVideoStage({ modelId, mode, hasFirstFrame, hasLastFrame, in
       </div>
       {failureMessage && <p role="alert" className="mt-3 rounded-lg border border-amber-400/40 bg-amber-950/40 p-3 text-sm text-amber-100">{failureMessage}</p>}
       <p className="mt-2 text-xs text-muted-foreground">模型标识：{modelId} · 渠道：{catalogModel?.provider || "暂未知"}</p>
-      <p className="mt-1 text-xs text-muted-foreground">计费单位与金额暂未知，请核对渠道账单；生成前将检查本组对白角色的声音设定。</p>
+      <p className="mt-1 text-xs text-muted-foreground">计费单位与金额暂未知，请核对渠道账单；声音特征可选，未配置时由 H3 生成原生声音。</p>
       {planningBlocked && <Button type="button" className="mt-2" size="sm" variant="outline"
         disabled={!selectedMode.available || !onGenerate || editingDisabled || planChanged || !workflowSynchronized || referenceBlocked}
         onClick={() => onGenerate?.({ video_model: modelId, h3_mode: mode })}>复核原图并继续视频</Button>}

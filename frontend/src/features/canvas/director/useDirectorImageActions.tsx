@@ -105,7 +105,8 @@ export function useDirectorImageActions(nodeId: string, referenceLimit?: number,
         ? { ...segment, [target.field]: images[0] ?? null } : segment) };
     }
     let next: VideoDirectorNodeData = { ...current, draft: nextDraft };
-    if (images.length) next.activeInputMode = target.kind === 'frame' ? 'frames' : 'ref';
+    if (images.length) next.activeInputMode = target.kind === 'frame'
+      ? (current.activeInputMode === 'ref' || nextDraft.references.length > 0 ? 'ref' : 'frames') : 'ref';
     else if (target.kind !== 'frame' && (removeId || draft.references.length > 0)) {
       const canvas = useCanvasStore.getState();
       const projected = resolveDirectorBindings(nextDraft, canvas.nodes, canvas.edges.filter((edge) => edge.target === nodeId), 'ref');

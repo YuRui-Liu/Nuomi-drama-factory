@@ -14,10 +14,24 @@ def test_canvas_cli_capabilities_uses_project_transport():
     assert json.loads(result.output)["path"] == "/projects/p/freezone/orchestration/capabilities"
 
 
+def test_canvas_preview_is_a_read_only_public_request():
+    result = invoke('preview', 'canvas', '--node', 'board')
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload['method'] == 'GET'
+    assert payload['path'] == '/projects/p/freezone/orchestration/canvases/canvas/nodes/board/preview'
+
+
 def test_run_cli_freezes_explicit_target_and_idempotency():
     result = invoke("run", "canvas", "--target", "final", "--request-id", "unique")
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["body"] == {"canvas_id": "canvas", "target": "final", "request_id": "unique", "operation": None}
+
+
+def test_run_cli_can_require_the_reviewed_canvas_revision():
+    result = invoke('run', 'canvas', '--node', 'board', '--expected-revision', '70')
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)['body']['expected_revision'] == 70
 
 
 def test_cli_patch_uses_file_and_explicit_revision(tmp_path):
@@ -45,3 +59,11 @@ def test_node_configure_exposes_visible_image_parameters():
     assert data["aspectRatio"] == data["requestAspectRatio"] == "16:9"
     assert data["extensionStyleId"] == "cinematic-photorealism"
     assert data["quality"] == "high" and data["size"] == "2K"
+
+
+def test_plan_carries_user_director_brief(tmp_path):
+    source = tmp_path / 'script.md'
+    source.write_text('第一场 房间\n【本集完】')
+    result = invoke('plan', 'c', '--script', str(source), '--director-brief', '固定机位，母亲说完再切')
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)['body']['director_brief'] == '固定机位，母亲说完再切'

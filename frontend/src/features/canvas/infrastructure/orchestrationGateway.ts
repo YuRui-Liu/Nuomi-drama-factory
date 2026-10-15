@@ -12,6 +12,17 @@ export interface CanvasRun {
 }
 
 const root = (project: string) => `projects/${encodeURIComponent(project)}/freezone/orchestration`;
+export interface CanvasRequestPreview {
+  canvas_revision: number;
+  dependency_hash: string;
+  request: { prompt: string; model?: string; aspect_ratio?: string; image_size?: string };
+  reference_manifest: Array<{ index: number; name: string; role: string; url: string; panel_ids: string[] }>;
+}
+export async function previewCanvasNode(project: string, canvas: string, node: string) {
+  const flushed = await flushFreezoneCanvasRuntime(project, canvas);
+  if (flushed !== true) throw new Error('画布尚未保存，请先解决保存冲突再预览。');
+  return apiCall<CanvasRequestPreview>(`${root(project)}/canvases/${encodeURIComponent(canvas)}/nodes/${encodeURIComponent(node)}/preview`);
+}
 export const listCanvasRuns = (project: string, canvas: string) =>
   apiCall<CanvasRun[]>(`${root(project)}/canvases/${encodeURIComponent(canvas)}/runs`);
 export const getCanvasRun = (project: string, run: string) =>
@@ -21,11 +32,12 @@ export const controlCanvasRun = (project: string, run: string, action: 'resume' 
     method: 'POST', ...(action === 'retry' ? { json: { request_id: crypto.randomUUID() } } : {}),
   });
 
-export async function startCanvasRun(project: string, canvas: string, target: string, operation?: string) {
+export async function startCanvasRun(project: string, canvas: string, target: string, operation?: string, expectedRevision?: number) {
   const flushed = await flushFreezoneCanvasRuntime(project, canvas);
   if (flushed !== true) throw new Error('画布尚未保存，请先解决保存冲突再运行。');
   return apiCall<CanvasRun>(`${root(project)}/runs`, { method: 'POST', json: {
     canvas_id: canvas, target, operation: operation ?? null, request_id: crypto.randomUUID(),
+    ...(expectedRevision === undefined ? {} : { expected_revision: expectedRevision }),
   } });
 }
 

@@ -110,6 +110,12 @@ class TeamSecurityMiddleware:
                 pass
             elif path == "/api/v1/chat/session" and method == "GET":
                 pass  # Handler authorizes the requested project scope.
+            elif path == '/api/v1/chat/conversations' and method in {'GET', 'POST'}:
+                pass  # Owner-scoped history; handler checks project access.
+            elif path == '/api/v1/director-library' and method in {'GET', 'POST'}:
+                pass  # Personal library handler isolates the authenticated user.
+            elif re.fullmatch(r'/api/v1/director-library/[^/]+', path) and method in {'PUT', 'DELETE'}:
+                pass
             elif path in {"/api/v1/chat/cancel", "/api/v1/chat/notifications", "/api/v1/chat/ui-events", "/api/v1/chat/session/clear"} and method == "POST":
                 pass
             elif (method == "POST" and path == "/api/v1/styles") or (method == "DELETE" and re.fullmatch(r"/api/v1/styles/[^/]+", path)):

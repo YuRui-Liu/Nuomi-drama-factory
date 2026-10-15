@@ -6,7 +6,7 @@ import pytest
 def test_canvas_planner_uses_a_user_configurable_role():
     from novelvideo.task_backend.runners import canvas_planning
     from novelvideo.task_backend.registry import get_project_task_runner_registration
-    assert get_project_task_runner_registration("freezone_canvas_plan").text_task_role == "script_creation"
+    assert get_project_task_runner_registration("freezone_canvas_plan").text_task_role == "director_plan"
 
 
 @pytest.mark.asyncio

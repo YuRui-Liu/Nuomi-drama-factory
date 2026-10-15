@@ -83,6 +83,66 @@ def _workflow(project_dir: Path, binding: PlannedReferenceBinding) -> Production
     return workflow
 
 
+@pytest.mark.asyncio
+async def test_missing_image_binding_recovers_when_current_image_exists(tmp_path):
+    binding = _binding(status="missing_image")
+    workflow = _workflow(tmp_path, binding)
+    preview = await resolve_planned_reference_preview(
+        _BindingStore([binding]), workflow, project_id="p1", episode_number=1,
+        group_id="group-01", project_dir=tmp_path,
+    )
+    assert preview.bindings[0].status == "ready"
+    assert preview.bindings[0].version_id == "version-1"
+
+
+@pytest.mark.asyncio
+async def test_character_alias_counts_as_published_requirement(tmp_path):
+    binding = _binding()
+    store = _BindingStore([binding])
+    async def list_characters():
+        return [{"name": "alice", "aliases": ["Queen Alice"]}]
+    store.list_characters = list_characters
+    preview = await resolve_planned_reference_preview(
+        store, _workflow(tmp_path, binding), project_id="p1", episode_number=1,
+        group_id="group-01", project_dir=tmp_path,
+        required_binding_keys=frozenset({("character_identity", "Queen Alice", "")}),
+    )
+    assert not preview.warnings
+    assert len(preview.bindings) == 1
+    assert preview.bindings[0].status == "ready"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,code", [
+    ("missing_asset", "asset_not_bound"),
+    ("pending_confirmation", "binding_confirmation_required"),
+])
+async def test_unresolved_reference_has_actionable_diagnostic(tmp_path, status, code):
+    binding = _binding(status=status, asset_slot_id="")
+    preview = await resolve_planned_reference_preview(
+        _BindingStore([binding]), ProductionWorkflowStore(tmp_path / "workflow.json"),
+        project_id="p1", episode_number=1, group_id="group-01", project_dir=tmp_path,
+    )
+    result = preview.bindings[0]
+    assert result.issue_code == code
+    assert result.repair_action == "resolve_binding"
+    assert "planned binding status" not in result.warning
+    assert result.shot_ids == ("shot-07",)
+
+
+@pytest.mark.asyncio
+async def test_missing_file_is_not_reported_as_missing_entity(tmp_path):
+    binding = _binding()
+    workflow = _workflow(tmp_path, binding)
+    (tmp_path / "assets/characters/alice/alice.png").unlink()
+    preview = await resolve_planned_reference_preview(
+        _BindingStore([binding]), workflow, project_id="p1", episode_number=1,
+        group_id="group-01", project_dir=tmp_path,
+    )
+    assert preview.bindings[0].issue_code == "media_unavailable"
+    assert preview.bindings[0].repair_action == "repair_media"
+
+
 def _planned_runner_payload(
     tmp_path: Path, image: Path, *, sha256: str, use_style: bool = True
 ) -> dict[str, object]:

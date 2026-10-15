@@ -79,6 +79,8 @@ def inspect_h3_reference_semantics(
         line.strip() for line in subject_definitions.splitlines() if line.strip()
     )
     for line in definition_lines:
+        if len(re.findall(r'<Subject [1-9][0-9]*>\s*:', line)) > 1:
+            _append_once(issues, "reference_definitions_need_newlines")
         if _has_malformed_reference_label(line):
             _append_once(issues, "reference_definition_invalid")
             continue

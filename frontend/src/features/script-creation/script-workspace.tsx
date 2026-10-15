@@ -5,6 +5,7 @@ import { useEpisodeImports } from "@/lib/queries/ingest";
 import { scriptCreationApi } from "./api";
 import { DraftManager } from "./draft-manager";
 import { GenerationPanel } from "./generation-panel";
+import { EpisodeDraftNotice } from "./episode-draft-notice";
 import { ProposalReview } from "./proposal-review";
 import { EntityPanel } from "./entity-panel";
 import { ProductionStyleBridge } from "./production-style-bridge";
@@ -254,6 +255,17 @@ function ProjectScriptWorkspace({ project, initialDocumentId }: { project: strin
         </div>
       </aside>
       <section aria-label="文档正文" className="min-h-0 overflow-y-auto bg-[#15171B] px-4">
+        {current?.kind === "episode_script" && current.episode_number != null && <EpisodeDraftNotice key={current.id} project={project} episodeNumber={current.episode_number} revisionKey={current.current_revision_id} disabled={!allSaved || busy} onApply={async (markdown) => {
+          const id = current.id;
+          if (manager.get(id)?.status !== "saved") throw new Error("请先保存或处理正文版本冲突。");
+          manager.edit(id, markdown);
+          await manager.flush(id);
+          const saved = manager.get(id);
+          if (saved?.status !== "saved" || saved.markdown !== markdown) throw new Error(saved?.error || "正文尚未保存，请处理当前编辑后重试。");
+          const persisted = await scriptCreationApi.get(project, id);
+          if (persisted.revision.markdown !== markdown) throw new Error("服务器正文与采用草稿不一致，请刷新后核对。");
+          await refresh();
+        }} />}
         {current?.kind === "episode_script" && <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-2 border-b border-white/10 py-3 text-xs">
           <span className="text-white/50">当前草稿 {current.current_revision_id.slice(0, 8)} · 已交接 {current.adopted_revision_id?.slice(0, 8) ?? "无"}</span>
           <button disabled={!allSaved || busy} onClick={() => setHandoffOpen(true)} className="rounded bg-[#E5FF5C] px-3 py-2 font-semibold text-black disabled:opacity-40">确认本集并交接制作</button>

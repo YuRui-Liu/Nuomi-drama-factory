@@ -210,15 +210,17 @@ class DirectorPlanner:
 
     async def repair_creative(self, input, candidate, history):
         import json
-        from .creative_review import CreativeRepairDraft, evidence_map, repair_prompt, validate_repair
+        from .creative_review import CreativeRepairDraft, CreativeV1RepairDraft, evidence_map, repair_prompt, validate_repair
         prompt = repair_prompt(input, candidate, history)
+        output_type = CreativeV1RepairDraft if candidate.creative_contract_version == 1 else CreativeRepairDraft
         for attempt in range(2):
             if self._runtime is not None:
                 output = await self._author_for(input).run_structured(
-                    prompt=prompt, output_type=CreativeRepairDraft)
+                    prompt=prompt, output_type=output_type)
             else:
                 output = (await self._agent.run(prompt)).output
-            draft = CreativeRepairDraft.model_validate(output)
+            raw = output.model_dump(mode="python") if isinstance(output, BaseModel) else output
+            draft = CreativeRepairDraft.model_validate(output_type.model_validate(raw).model_dump(mode="python"))
             replacement = candidate.model_copy(update={"groups": draft.groups})
             try:
                 required = {state.issue.issue_id for state in history.open_issues}

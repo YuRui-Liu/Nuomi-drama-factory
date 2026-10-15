@@ -14,6 +14,22 @@ def seed(tmp_path):
     return read_canvas(tmp_path, "canvas")
 
 
+def test_remove_edge_preserves_nodes_and_is_idempotent(tmp_path):
+    from novelvideo.freezone.orchestration.projection import patch_graph
+    seed(tmp_path)
+    patch_graph(tmp_path, "canvas", base_revision=2, request_id="connect", operations=[
+        {"op": "add_node", "node": {"id": "text", "type": "textAnnotationNode", "data": {"content": "hi"}}},
+        {"op": "add_edge", "edge": {"id": "link", "source": "text", "target": "gen", "data": {"sourcePort": "text", "targetPort": "text"}}},
+    ])
+    args = dict(base_revision=3, request_id="disconnect", operations=[{"op": "remove_edge", "edge_id": "link"}])
+    patch_graph(tmp_path, "canvas", **args)
+    patch_graph(tmp_path, "canvas", **args)
+    saved = read_canvas(tmp_path, "canvas")
+    assert saved["edges"] == []
+    assert len(saved["nodes"]) == 2
+    assert saved["revision"] == 4
+
+
 def test_created_canvas_round_trips_through_web_schema(tmp_path):
     from novelvideo.api.schemas import CanvasPayload
     from novelvideo.freezone.orchestration.projection import create_canvas

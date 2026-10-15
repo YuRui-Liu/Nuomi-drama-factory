@@ -259,6 +259,25 @@ async def test_structured_backend_retries_invalid_output_twice() -> None:
 
 
 @pytest.mark.asyncio
+async def test_structured_repair_receives_the_invalid_draft_without_regenerating_it() -> None:
+    from novelvideo.script_creation.craft_models import CraftDraft
+    import json
+    markdown = '△莉娅握紧纸片，火柴熄灭。雪地上只剩下两个人的脚印。'
+    bad = dict(markdown=markdown, repair_notes=[dict(issue_id='one', diagnosis='引用不符',
+        strategy='保留动作', changed_quote='没有出现在正文中的另一句话')])
+    good = {**bad, 'repair_notes': [{**bad['repair_notes'][0], 'changed_quote': markdown}]}
+    raw = json.dumps(bad, ensure_ascii=False)
+    backend = CodexCliStructuredBackend()
+    backend._run_once = AsyncMock(side_effect=[raw, json.dumps(good, ensure_ascii=False)])
+    result = await backend.acreate_structured_output('改稿', '保留剧情', CraftDraft,
+        validation_context={'repair_issues': [{'id': 'one', 'severity': 'blocker'}]})
+    repair_prompt = backend._run_once.await_args_list[1].args[0]
+    assert raw in repair_prompt
+    assert '仅修正校验错误' in repair_prompt
+    assert result.markdown == markdown
+
+
+@pytest.mark.asyncio
 async def test_structured_backend_does_not_retry_codex_exec_failure() -> None:
     backend = CodexCliStructuredBackend()
     backend._run_once = AsyncMock(

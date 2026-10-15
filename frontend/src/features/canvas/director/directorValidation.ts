@@ -80,12 +80,11 @@ export function validateDirectorDraft(draft: DirectorDraft, capabilities: Direct
     if (!segment.prompt.trim()) errors[`${prefix}.prompt`] = '请输入分段提示词';
     if (!Number.isFinite(segment.durationSeconds) || segment.durationSeconds <= 0) errors[`${prefix}.duration_seconds`] = '时长必须为正数';
     if (uniqueReferences.size) {
-      if (segment.firstFrame) errors[`${prefix}.first_frame`] = '参考图与首帧不可同时使用';
-      if (segment.lastFrame) errors[`${prefix}.last_frame`] = '参考图与尾帧不可同时使用';
+      if (segment.lastFrame && !segment.firstFrame) errors[`${prefix}.first_frame`] = '尾帧不能单独使用，请选择首帧';
     } else if (!segment.firstFrame) {
       errors[`${prefix}.first_frame`] = segment.lastFrame ? '尾帧不能单独使用，请选择首帧' : '没有参考图时必须选择首帧';
     }
-    const mode = uniqueReferences.size ? 'ref_only' : segment.lastFrame ? 'fl2v' : 'i2v';
+    const mode = uniqueReferences.size ? (segment.firstFrame ? (segment.lastFrame ? 'ref_plus_first_last' : 'ref_plus_first') : 'ref_only') : segment.lastFrame ? 'fl2v' : 'i2v';
     if (segment.technique) {
       const card = techniques?.find((item) => item.id === segment.technique?.id && item.version === segment.technique?.version);
       errors[`${prefix}.technique`] = !techniques ? 'techniqueCatalogUnavailable' : !card ? 'techniqueUnknown'

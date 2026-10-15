@@ -68,3 +68,39 @@ def test_plan_freezes_configured_image_route_on_every_image_generator():
         if node["type"] in {"imageGenNode", "storyboardGenNode"}:
             assert node["data"]["request"] == route
             assert node["data"]["model"] == route["model"]
+
+
+@pytest.mark.parametrize("count", [1, 3, 5, 6])
+def test_directed_shot_count_is_preserved_instead_of_forcing_four(count):
+    from novelvideo.freezone.orchestration.planning import compile_plan
+    b = blueprint()
+    for group in b['groups']:
+        group['shots'] = [{'id': f'{group["id"]}-s{i}', 'description': f'观察变化{i}',
+                           'duration_seconds': 10 / count} for i in range(count)]
+    plan = compile_plan(SCRIPT, b, duration=20, aspect_ratio='16:9')
+    board = next(n['data'] for n in plan['nodes'] if n['id'] == 'board-g1')
+    assert len(board['frames']) == count
+    assert board['gridRows'] * board['gridCols'] == count
+    assert board['frames'][0]['id'] == 'g1-s0'
+
+
+def test_invalid_shot_budget_fails_before_image_generation():
+    from novelvideo.freezone.orchestration.planning import compile_plan
+    b = blueprint()
+    b['groups'][0]['shots'] = [{'description': '动作', 'duration_seconds': 7}] * 2
+    with pytest.raises(OrchestrationError) as error:
+        compile_plan(SCRIPT, b, duration=20, aspect_ratio='16:9')
+    assert error.value.code == 'shot_duration_mismatch'
+
+
+def test_narrative_group_can_outlast_a_provider_request():
+    from novelvideo.freezone.orchestration.planning import compile_plan
+    b = blueprint()
+    for group in b['groups']:
+        group['duration'] = 40
+        group['shots'] = [{'id': f'{group["id"]}-s{i}', 'description': '有动机的连续观察',
+                           'duration_seconds': 10} for i in range(4)]
+    plan = compile_plan(SCRIPT, b, duration=80, aspect_ratio='16:9')
+    assert plan['duration'] == 80
+    board = next(n['data'] for n in plan['nodes'] if n['id'] == 'board-g1')
+    assert sum(s['duration_seconds'] for s in board['frames']) == 40

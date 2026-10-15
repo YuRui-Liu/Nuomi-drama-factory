@@ -1,14 +1,14 @@
 const path = require('node:path');
 
-function packagedPaths(resourcesPath) {
+function packagedPaths(resourcesPath, platform = process.platform) {
   const runtime = path.join(resourcesPath, 'runtime');
   return {
     runtime,
-    python: path.join(runtime, 'python', 'python.exe'),
+    python: path.join(runtime, 'python', ...(platform === 'darwin' ? ['bin', 'python3'] : ['python.exe'])),
     source: path.join(runtime, 'backend', 'src'),
     frontend: path.join(runtime, 'frontend'),
-    ffmpeg: path.join(runtime, 'ffmpeg', 'ffmpeg.exe'),
-    ffprobe: path.join(runtime, 'ffmpeg', 'ffprobe.exe'),
+    ffmpeg: path.join(runtime, 'ffmpeg', platform === 'darwin' ? 'ffmpeg' : 'ffmpeg.exe'),
+    ffprobe: path.join(runtime, 'ffmpeg', platform === 'darwin' ? 'ffprobe' : 'ffprobe.exe'),
   };
 }
 
@@ -36,6 +36,9 @@ function backendEnvironment(paths, userDataPath, port, baseEnvironment = process
     PYTHONPATH: paths.source,
     PYTHONUTF8: '1',
     PYTHONNOUSERSITE: '1',
+    PYTHONDONTWRITEBYTECODE: '1',
+    SYSTEM_ROOT_DIRECTORY: path.join(dataRoot, 'cognee', 'system'),
+    DATA_ROOT_DIRECTORY: path.join(dataRoot, 'cognee', 'data'),
     FFMPEG_PATH: paths.ffmpeg,
     FFPROBE_PATH: paths.ffprobe,
     PATH: pathValue,

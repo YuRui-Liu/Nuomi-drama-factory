@@ -40,6 +40,12 @@ export interface PlannedReferenceBinding {
   adoption_status?: "provisional" | "adopted" | "candidate" | null;
   thumbnail_url?: string | null;
   warning?: string | null;
+  issue_code?: string;
+  issue_message?: string;
+  repair_action?: string;
+  entity_id?: string;
+  group_ids?: string[];
+  shot_ids?: string[];
 }
 
 export interface NarrativeReferenceUpload {
@@ -53,10 +59,19 @@ export interface NarrativeReferenceUpload {
 }
 
 export interface PlannedNarrativeGroupReferencePreview {
+  source_plan_revision_id?: string;
   reference_revision: string;
   bindings: PlannedReferenceBinding[];
   max_images: number;
   warnings?: string[];
+}
+
+export async function refreshPlannedReferences(project: string, episode: number, revision: string) {
+  const response = await jsonWithBackendError<ApiResponse<unknown>>(api.post(
+    p`api/v1/projects/${project}/episodes/${episode}/director-plans/${revision}/references/refresh`,
+    { throwHttpErrors: false },
+  ));
+  if (!response.ok) throw new Error(response.error);
 }
 
 export type VideoReferenceSourceKind =
@@ -146,6 +161,7 @@ export interface NarrativeStageState {
     start_seconds: number;
     end_seconds: number;
     dialogue_source: "external_tts" | "h3_native";
+    external_audio_ready?: boolean;
   }>;
 }
 

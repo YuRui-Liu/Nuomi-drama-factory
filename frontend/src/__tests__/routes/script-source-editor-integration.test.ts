@@ -15,15 +15,18 @@ describe("script route source editor integration", () => {
     expect(route).toContain("saveScopes.episodeSource");
   });
 
-  it("mounts the beat-level script preview from episode beats", () => {
+  it("keeps legacy beat previews out of the source-reading workspace", () => {
     const route = readFileSync(
       "src/routes/_app/projects.$project/episodes.$episode/script.lazy.tsx",
       "utf8",
     );
 
-    expect(route).toContain("useEpisodeBeats");
-    expect(route).toContain("ScriptBeatPreview");
-    expect(route).toContain("episode.script.previewTitle");
+    expect(route).not.toContain("useEpisodeBeats");
+    expect(route).not.toContain("ScriptBeatPreview");
+    expect(route).not.toContain("逐镜头文案与对白预览");
+    expect(route).toContain("EpisodeSourceEditor");
+    expect(route).toContain("ScreenplayWorkbench");
+    expect(route).toContain("DirectorReviewWorkbench");
   });
 
   it("keeps the episode story context panel hidden on the script page", () => {

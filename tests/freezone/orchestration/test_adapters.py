@@ -6,6 +6,23 @@ from PIL import Image
 from novelvideo.freezone.orchestration.models import OrchestrationError
 
 
+@pytest.mark.asyncio
+async def test_cancelled_planner_releases_canvas_instead_of_running_forever(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from novelvideo.freezone.orchestration.adapters import NodeAdapter
+    from novelvideo.api.routes import freezone
+    import novelvideo.task_state as task_state
+    async def resolve(*args, **kwargs):
+        return (SimpleNamespace(),)
+    monkeypatch.setattr(freezone, '_resolve_freezone_project', resolve)
+    monkeypatch.setattr(task_state, 'get_task_manager', lambda: SimpleNamespace(
+        get_task_for_project=lambda *args, **kwargs: SimpleNamespace(status='cancelled', error=None)))
+    run = {'project_id': 'p', 'actor': {}, 'snapshot': {'nodes': [{'id': 'script', 'type': 'scriptNode'}]}}
+    attempt = {'node_id': 'script', 'submission': {'plan': True, 'job_id': 'job'}}
+    result = await NodeAdapter(tmp_path).reconcile(run, attempt)
+    assert result['status'] == 'cancelled'
+
+
 def test_image_node_parameters_override_stale_request_and_include_style_camera():
     from novelvideo.freezone.orchestration.adapters.requests import build_request
     node = {"id": "n", "type": "imageGenNode", "data": {

@@ -39,6 +39,17 @@ it("opens spatial comparison without generation and shows frozen facts honestly"
   expect(screen.getByText(/跨场不强求连续/)).toBeInTheDocument();
   expect(post).not.toHaveBeenCalled();
 });
+it("shows repair dependencies before generating", async () => {
+  get.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ ok: true, data: {
+    ...data, impact: { scope: "segments", affected_segment_ids: ["v1"],
+      preserved_shot_ids: ["shot-2"], downstream_stages: ["video"],
+      history_preserved: true, automatic_video_generation: false },
+  } }))));
+  setup();
+  expect(await screen.findByText("需更新的视频片段：v1")).toBeInTheDocument();
+  expect(screen.getByText(/历史版本保留，不会自动生成视频/)).toBeInTheDocument();
+  expect(post).not.toHaveBeenCalled();
+});
 it("keeps the selected sketch preview when render assets arrive while the dialog is open", async () => {
   get.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ ok: true, data: { ...data, stage: "sketch" } }))));
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });

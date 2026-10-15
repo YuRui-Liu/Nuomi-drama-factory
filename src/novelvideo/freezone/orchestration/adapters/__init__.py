@@ -66,7 +66,9 @@ class NodeAdapter:
                 from novelvideo.ports import get_task_backend
                 ctx, *_ = await freezone._resolve_freezone_project(run["project_id"], run["actor"])
                 queued = await get_task_backend().enqueue_project_task(ctx, task_type="freezone_canvas_plan", queue_kind="default",
-                    scope=attempt["id"], payload={"script": data["sourceText"], "duration": data["duration"], "aspect_ratio": data["aspectRatio"]})
+                    scope=attempt["id"], payload={"script": data["sourceText"], "duration": data["duration"], "aspect_ratio": data["aspectRatio"],
+                                               "director_brief": data.get('directorBrief', ''),
+                                               "base_design_bindings": data.get('baseDesignBindings', [])})
                 return {"plan": True, "task_id": queued.task_state.task_id, "job_id": attempt["id"], "task_type": "freezone_canvas_plan"}
             if kind == "videoDirectorNode":
                 from novelvideo.api.routes.freezone_video_director import create_attempt, CreateAttemptBody, _limits
@@ -153,7 +155,7 @@ class NodeAdapter:
                 return {"status": "running"}
             if task.status == "completed":
                 return {"status": "succeeded", "result": {"scriptResult": task.result, "scriptTitle": task.result["plan"]["title"]}}
-            return {"status": "failed" if task.status == "failed" else "running", "error": task.error}
+            return {"status": task.status if task.status in {'failed', 'cancelled'} else "running", "error": task.error}
         if submitted.get("director"):
             from novelvideo.api.routes.freezone_video_director import get_attempt
             response = await get_attempt(run["project_id"], submitted["attempt_id"], run["actor"])

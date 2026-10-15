@@ -766,8 +766,15 @@ def _apply_image_prompt_overrides(
     applied: list[dict[str, Any]] = []
     for beat in beats:
         override = str(overrides.get(str(beat.get("id") or "")) or "").strip()
-        applied.append({**beat, "visual_description": override,
-                        "image_prompt_override": override} if override else beat)
+        if override:
+            updated = {**beat, 'visual_description': override, 'image_prompt_override': override}
+            # Legacy full-image replacement must not retain a contradictory old
+            # opening state. Adopted creative contracts still require revision.
+            if beat.get('creative_contract_version') != 1:
+                updated['visible_start_state'] = override
+            applied.append(updated)
+        else:
+            applied.append(beat)
     return applied
 
 
@@ -1767,6 +1774,12 @@ def select_storyboard_source(
             if selection.get(source.batch_id) == source_id:
                 source.validate_files(Path(project_dir), project_id=source.project_id)
                 return group
+            # Director revisions change batch identities and may split shots.
+            # Retain those sources as history, but never merge obsolete batches
+            # into the selection for the current production plan.
+            current_batches = {str(batch["id"]) for batch in group.generation_batches}
+            selection = ({batch_id: selected_id for batch_id, selected_id in selection.items()
+                          if batch_id in current_batches} if current_batches else {})
             selection[source.batch_id] = source_id
             chosen = [next(item for item in sources if item.source_id == chosen_id)
                       for _, chosen_id in sorted(selection.items())]
@@ -1794,6 +1807,13 @@ def select_storyboard_source(
                 cell_assets=tuple(cells_by_shot[shot] for shot in group.production_beat_ids
                                   if shot in cells_by_shot),
             )
+            if (set(cells_by_shot) == set(group.production_beat_ids)
+                    and state.status == "failed"
+                    and state.error == "storyboard source must cover the complete group or declared batch"):
+                # Recovery of a previously registered, fully validated output
+                # must not require purchasing the same image again.
+                render = replace(render, status="completed", error="",
+                                 needs_regeneration=False, stale_reason="")
             video = replace(group.stages.get("video", GroupStageState()),
                             needs_regeneration=True, stale_reason="storyboard_source_changed")
             groups[index] = replace(group, stages={**group.stages, "render": render, "video": video})

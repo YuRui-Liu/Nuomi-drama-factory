@@ -54,7 +54,7 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
   const mode = resolveDirectorInputMode(data);
   const binding = resolveDirectorBindings(data.draft, nodes, edges.filter((edge) => edge.target === id), mode, data.storyboardPreparation);
   const preparationStale = sourceStale || !!data.storyboardPreparation && (data.storyboardPreparation.inputMode !==
-    (data.inputModeIntent === 'manual' && data.activeInputMode === 'frames' ? 'frames' : 'ref') || !!binding.errors.references);
+    mode || !!binding.errors.references);
   const effective = projectDirectorDraft(binding.draft, mode);
   const visible = effective.segments.find((item) => item.id === segment?.id);
   const durationSeconds = segments.reduce((total, segment) => total + segment.durationSeconds, 0);
@@ -62,7 +62,7 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
   const active = task.attempts.find((attempt) => attempt.id === data.activeAttemptId);
   const inputChanged = !!active && directorSubmissionFingerprint(active.snapshot) !== directorSubmissionFingerprint(effective);
   const frameTarget = (field: 'firstFrame' | 'lastFrame'): DirectorImageTarget => ({ kind: 'frame', segmentId: segment.id, field });
-  const frameIsBound = (field: 'firstFrame' | 'lastFrame') => mode === 'frames' && !!segment && edges.some((edge) => {
+  const frameIsBound = (field: 'firstFrame' | 'lastFrame') => !!segment && edges.some((edge) => {
     if (edge.target !== id) return false;
     const target = readDirectorBinding(edge);
     return target?.kind === field && target.segmentId === segment.id;
@@ -115,6 +115,8 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
         onTitleChange={(displayName) => updateNodeData(id, { displayName })} />
       <div onDragOver={(event) => event.preventDefault()} onDrop={dropCard}
         className={`flex h-full w-full flex-col gap-2 overflow-hidden rounded-[var(--node-radius)] border p-3 ${CANVAS_NODE_INPUT_SURFACE_CLASS} ${canvasNodeFrameClass({ selected })}`}>
+        {videoUrl && data.resultRevision != null && data.resultRevision !== data.draft.revision &&
+          <p className="px-3 text-xs text-amber-300">已有视频对应草稿版本 {data.resultRevision}；当前编辑为版本 {data.draft.revision}，修改尚未生成。</p>}
         {videoUrl && showResult ? <div className="min-h-0 flex-1">
           <video className="nodrag h-full w-full object-contain" src={videoUrl} controls playsInline preload="metadata" />
           {inputChanged && <p className="text-xs text-amber-300">{tr('inputChanged')}</p>}
@@ -132,7 +134,10 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
               <div key={image.imageId} className="w-28 shrink-0">{data.draft.references.some((manual) => manual.imageId === image.imageId)
                 ? slot(tr('reference'), image, { kind: 'reference', imageId: image.imageId })
                 : connectedSlot(tr('reference'), image)}</div>)}
-              <div className="w-28 shrink-0">{slot(tr('reference'), null, { kind: 'references' })}</div></div>
+              {mode === 'ref' && <div className="w-28 shrink-0">{slot(tr('reference'), null, { kind: 'references' })}</div>}</div>
+            <p className="mb-2 text-xs text-text-muted">{mode === 'ref'
+              ? 'Ref 使用人物基础形象；分镜裁图只作为下方首尾帧，不进入主体参考。'
+              : '首尾帧模式使用镜头配对；人物参考图用于上游分镜，不随本次视频提交。'}</p>
             {mode === 'frames' && data.draft.references.length > 0 && <p className="text-xs text-text-muted">{tr('retainedInactive')}</p>}
             {segments.length > 1 && <div className="mb-2 flex gap-2 overflow-auto">{segments.map((item, index) =>
               <button key={item.id} type="button" className="nodrag shrink-0 rounded border border-white/20 px-2 py-1 text-xs"
@@ -140,10 +145,9 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
                 {tr('segmentIndex', { index: index + 1 })}</button>)}</div>}
             {segment && <><div className="grid grid-cols-2 gap-2">
               {frameIsBound('firstFrame') ? connectedSlot(tr('firstFrame'), binding.errors[`segments[${segments.indexOf(segment)}].first_frame`] ? null : visible?.firstFrame ?? null)
-                : slot(tr('firstFrame'), mode === 'frames' ? visible?.firstFrame ?? null : segment.firstFrame, frameTarget('firstFrame'))}
+                : slot(tr('firstFrame'), visible?.firstFrame ?? null, frameTarget('firstFrame'))}
               {frameIsBound('lastFrame') ? connectedSlot(tr('lastFrame'), binding.errors[`segments[${segments.indexOf(segment)}].last_frame`] ? null : visible?.lastFrame ?? null)
-                : slot(tr('lastFrame'), mode === 'frames' ? visible?.lastFrame ?? null : segment.lastFrame, frameTarget('lastFrame'))}</div>
-              {mode === 'ref' && (segment.firstFrame || segment.lastFrame) && <p className="mt-1 text-xs text-text-muted">{tr('retainedInactive')}</p>}
+                : slot(tr('lastFrame'), visible?.lastFrame ?? null, frameTarget('lastFrame'))}</div>
               <label className="mt-2 block text-xs">{tr('currentPrompt')}
                 <textarea className="nodrag mt-1 w-full rounded border border-white/20 bg-black/20 p-2" value={segment.prompt}
                   onChange={(event) => updateNodeData(id, { draft: updateSegment(data.draft, segment.id, { prompt: event.target.value }) })} />

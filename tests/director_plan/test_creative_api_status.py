@@ -35,11 +35,12 @@ def test_api_clearance_requires_current_rules_and_valid_structure(rules, valid, 
         assert not dumped["production_ready"]
 
 
-def test_review_endpoint_queues_existing_candidate(monkeypatch):
+@pytest.mark.parametrize("status", ["review_required", "active"])
+def test_review_endpoint_queues_existing_candidate(monkeypatch, status):
     from types import SimpleNamespace
     from tests.test_api_director_plans import _client
     client, calls, ctx, module = _client(monkeypatch)
-    revision = make_revision(status="review_required", creative_contract_version=1,
+    revision = make_revision(status=status, creative_contract_version=1,
         groups=(make_group(creative_contract_version=1, shots=(creative_shot(duration=5),)),))
     monkeypatch.setattr(module, "_build_director_plan_store", lambda _: SimpleNamespace(
         load=lambda episode, revision_id: revision, require_current=lambda candidate: None))

@@ -35,6 +35,32 @@ def test_repair_input_missing_original_is_honest(tmp_path):
     assert data['adjacent_keyframe_context'] is None
 
 
+def test_repair_preview_identifies_only_dependent_video_segments(tmp_path):
+    from novelvideo.narrative_groups.storyboard_repair import repair_input
+    group = replace(fixture_group(tmp_path), video_segments=(
+        {'id': 'v1', 'shot_ids': ['s1']}, {'id': 'v2', 'shot_ids': ['s2']},
+    ))
+    impact = repair_input(tmp_path, group, 'render', 's1')['impact']
+    assert impact['affected_segment_ids'] == ['v1']
+    assert impact['preserved_shot_ids'] == ['s2']
+    assert impact['history_preserved'] is True
+    assert impact['scope'] == 'segments'
+
+
+def test_repair_preview_does_not_guess_when_segment_mapping_missing(tmp_path):
+    from novelvideo.narrative_groups.storyboard_repair import repair_input
+    group = replace(fixture_group(tmp_path), video_segments=({'id': 'legacy'},))
+    assert repair_input(tmp_path, group, 'render', 's1')['impact']['scope'] == 'group'
+
+
+def test_repair_preview_treats_an_unmapped_target_as_group_impact(tmp_path):
+    from novelvideo.narrative_groups.storyboard_repair import repair_input
+    group = replace(fixture_group(tmp_path), video_segments=({'id': 'v2', 'shot_ids': ['s2']},))
+    impact = repair_input(tmp_path, group, 'render', 's1')['impact']
+    assert impact['scope'] == 'group'
+    assert impact['affected_segment_ids'] == ['v2']
+
+
 def test_repair_input_exposes_only_saved_frozen_spatial_context(tmp_path):
     from novelvideo.narrative_groups.storyboard_repair import repair_input, save_prompt_snapshot
     group = fixture_group(tmp_path)
@@ -164,6 +190,13 @@ async def test_runner_requests_one_frame_and_passes_feedback(tmp_path, monkeypat
     from novelvideo.task_backend.runners import narrative_group as runner
     from novelvideo.task_backend.runners.storyboard_repair import execute_repair
     group = fixture_group(tmp_path)
+    from novelvideo.narrative_groups.storyboard_repair import save_prompt_snapshot
+    stale = tmp_path / 'stale-neighbour.png'
+    Image.new('RGB', (160, 90), 'yellow').save(stale)
+    save_prompt_snapshot(tmp_path, group.stages['render'].cell_assets[0]['path'], {
+        'references': [{'path': str(stale), 'sha256': sha256(stale.read_bytes()).hexdigest()}],
+        'reference_mappings': ['continuity frame s2: obsolete version'],
+    })
     data = repair_input(tmp_path, group, 'render', 's1')
     ticket = reserve_repair(tmp_path, 1, 'g1', 'render', 's1', source_revision=1,
         source_asset=data['source_asset'], prompt='edited', feedback='rain outside',
@@ -178,7 +211,11 @@ async def test_runner_requests_one_frame_and_passes_feedback(tmp_path, monkeypat
         actual = runner._generation_input(payload)
         assert 'edited' in actual.prompt and 'rain outside' in actual.prompt
         assert 'Panel 2' not in actual.prompt
-        assert len(actual.references) == 1
+        assert len(actual.references) == 2
+        assert str(stale) not in actual.references
+        assert group.stages['render'].cell_assets[1]['path'] in actual.references
+        assert 'continuity frame s2' in actual.prompt
+        assert 'ground elevation' in actual.prompt
         output = tmp_path / 'generated.png'
         Image.new('RGB', (160, 90), 'green').save(output)
         return {'grid_asset': str(output), 'prompt_snapshot': {'original_prompt': actual.prompt}}

@@ -18,7 +18,7 @@ export function useCanvasRun(project: string, canvas: string, enabled = true) {
         const current = runs[0] ?? null;
         setRun(current);
         if (current) {
-          const signature = JSON.stringify([current.id, current.status, current.attempts]);
+          const signature = JSON.stringify(runs.map(item => [item.id, item.status, item.attempts]));
           if (signature !== previous) {
             await refreshCanvasRunResults(project, canvas);
             previous = signature;

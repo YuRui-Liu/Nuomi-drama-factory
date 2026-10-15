@@ -1124,7 +1124,7 @@ async def run_freezone_audio_separate(
 
     output_dir = outputs_dir(project_dir, "freezone_audio_separate")
     output_dir.mkdir(parents=True, exist_ok=True)
-    audio_path = output_dir / f"{job_id}.m4a"
+    audio_path = output_dir / f"{job_id}.mp3"
     mute_video_path = output_dir / f"{job_id}_mute.mp4"
 
     has_audio = await _probe_has_audio(source_path)
@@ -1137,7 +1137,7 @@ async def run_freezone_audio_separate(
                 source_path,
                 "-vn",
                 "-c:a",
-                "aac",
+                "libmp3lame",
                 "-b:a",
                 "192k",
                 str(audio_path),

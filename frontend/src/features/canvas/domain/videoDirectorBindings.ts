@@ -65,7 +65,8 @@ export function resolveDirectorBindings(draft: DirectorDraft, nodes: CanvasNode[
         errors.references = '参考图来源已变化，请重新准备分镜';
       }
     }
-    if (directorIncomingEdges.some((edge) => readDirectorBinding(edge)?.kind === 'reference' && !sources.has(edge.source))) {
+    if (directorIncomingEdges.some((edge) => readDirectorBinding(edge)?.kind === 'reference' &&
+      nodes.find((node) => node.id === edge.source)?.type !== 'storyboardGenNode' && !sources.has(edge.source))) {
       errors.references = '参考图连线已变化，请重新准备分镜';
     }
     return { draft: projected, errors };
@@ -74,7 +75,8 @@ export function resolveDirectorBindings(draft: DirectorDraft, nodes: CanvasNode[
   const occupiedFrames = new Set<string>();
   for (const edge of directorIncomingEdges) {
     const slot = readDirectorBinding(edge);
-    if (!slot || (slot.kind === 'reference' ? mode !== 'ref' : mode !== 'frames')) continue;
+    if (!slot || (slot.kind === 'reference' && mode !== 'ref')) continue;
+    if (nodes.find((node) => node.id === edge.source)?.type === 'storyboardGenNode') continue;
     const imageAsset = images.get(edge.source);
     const image: DirectorImage | null = imageAsset ? { imageId: imageAsset.id, url: imageAsset.url } : null;
     if (slot.kind === 'reference') {

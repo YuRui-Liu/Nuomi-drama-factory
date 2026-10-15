@@ -54,6 +54,7 @@ class CreateRun(StrictBody):
     target: str = Field(min_length=1)
     request_id: str = Field(min_length=1, max_length=128)
     operation: str | None = None
+    expected_revision: int | None = Field(default=None, ge=1)
 
 
 class RetryRun(StrictBody):
@@ -65,6 +66,7 @@ class PlanBody(StrictBody):
     script: str = Field(min_length=1, max_length=100000)
     duration: float = Field(default=90, gt=0, le=1800)
     aspect_ratio: str = "16:9"
+    director_brief: str = Field(default='', max_length=20000)
     request_id: str = Field(min_length=1, max_length=128)
 
 
@@ -158,6 +160,42 @@ async def validate(project: str, canvas_id: str, user: dict = Depends(get_api_us
         return {"ok": True, "data": validate_graph(canvas["nodes"], canvas["edges"])}
 
 
+@router.get('/canvases/{canvas_id}/nodes/{node_id}/preview')
+async def preview_node(project: str, canvas_id: str, node_id: str,
+                       user: dict = Depends(get_api_user)):
+    from copy import deepcopy
+    from novelvideo.freezone.orchestration.adapters.requests import build_request, ordered_upstream
+    from novelvideo.freezone.orchestration.adapters.storyboard import compile_canvas_storyboard
+    from novelvideo.freezone.orchestration.verification import verify_media
+    _, _, _, root, media_root = await _resolve_freezone_project(project, user, required_role='viewer')
+    with errors():
+        canvas = read_canvas(root, canvas_id)
+        if canvas is None:
+            raise OrchestrationError('canvas_not_found', 'Canvas does not exist')
+        nodes = {n['id']: n for n in canvas['nodes']}
+        if node_id not in nodes:
+            raise OrchestrationError('node_not_found', 'Node does not exist')
+        node = nodes[node_id]
+        if node['type'] != 'storyboardGenNode':
+            raise OrchestrationError('preview_unavailable', 'Only storyboard request preview is supported')
+        upstream = []
+        for edge in canvas['edges']:
+            if edge['target'] != node_id or (edge.get('data') or {}).get('contextLink'):
+                continue
+            source = nodes[edge['source']]
+            result = deepcopy(source.get('data') or {})
+            if result.get('imageUrl'):
+                evidence = verify_media(Path(media_root), project, result['imageUrl'], 'image')
+                result['asset_sha256'] = evidence['sha256']
+            upstream.append({'node_id': source['id'], 'result': result})
+        route, request = build_request(node, 'generate', upstream, canvas_id=canvas_id, attempt_id='preview')
+        data = node.get('data') or {}
+        compiled = compile_canvas_storyboard(data, ordered_upstream(data, upstream))
+        return {'ok': True, 'data': {'canvas_revision': canvas['revision'], 'node_id': node_id,
+            'route': route, 'request': request, 'reference_manifest': compiled['references'],
+            'dependency_hash': compiled['dependency_hash'], 'compiler_version': compiled['version']}}
+
+
 @router.post("/runs", status_code=202)
 async def start_run(project: str, body: CreateRun, user: dict = Depends(get_api_user)):
     _, _, _, root, _ = await _resolve_freezone_project(project, user)
@@ -165,6 +203,8 @@ async def start_run(project: str, body: CreateRun, user: dict = Depends(get_api_
         canvas = read_canvas(root, body.canvas_id)
         if canvas is None:
             raise OrchestrationError("canvas_not_found", "Canvas does not exist")
+        if body.expected_revision is not None and canvas['revision'] != body.expected_revision:
+            raise OrchestrationError('input_conflict', 'Canvas changed after preview; inspect the new request')
         order = execution_order(canvas["nodes"], canvas["edges"], body.target)
         adapter = NodeAdapter(root)
         available = available_operations()
@@ -172,8 +212,31 @@ async def start_run(project: str, body: CreateRun, user: dict = Depends(get_api_
             if node["id"] not in order:
                 continue
             op = body.operation if node["id"] == body.target and body.operation else adapter.operation(node)
-            if (node["type"], op) not in available and not node.get("data", {}).get("referenceOnly"):
+            explicit_image = node['id'] == body.target and body.operation == 'generate' and node['type'] in {'imageGenNode', 'imageNode', 'storyboardGenNode'}
+            reuse_only = node.get('data', {}).get('referenceOnly') and not explicit_image
+            if (node["type"], op) not in available and not reuse_only:
                 raise OrchestrationError("operation_unavailable", "Node operation has no executable adapter", node_id=node["id"], operation=op)
+            if node['type'] in {'imageGenNode', 'imageNode', 'storyboardGenNode'} and not reuse_only:
+                # Validate model/size before admitting a run, using the same
+                # translator as execution. A dummy image supplies only the
+                # upstream-dependent edit input; it is never submitted.
+                from novelvideo.freezone.orchestration.adapters.requests import build_request
+                from novelvideo.freezone.jobs import _grsai_canvas_size
+                parameter_node = node
+                if node['type'] == 'storyboardGenNode' and (node.get('data', {}).get('storyboardMode') == 'narrative' or node.get('data', {}).get('group_id')):
+                    from novelvideo.storyboard_prompt import StaticPanel
+                    for frame in node.get('data', {}).get('frames', []):
+                        if not frame.get('static_panel'):
+                            raise OrchestrationError('static_contract_required', 'static panel required', frame_id=frame.get('id'))
+                        StaticPanel.model_validate(frame['static_panel'])
+                    # This admission pass checks model parameters only. Actual
+                    # references are verified by the adapter after dependencies
+                    # finish, including designs generated in this same run.
+                    parameter_node = {**node, 'type': 'imageGenNode'}
+                _, request = build_request(parameter_node, op, [{'node_id': 'preflight', 'result': {'imageUrl': 'preflight'}}],
+                                           canvas_id=body.canvas_id, attempt_id='preflight')
+                if request.get('provider') == 'grsai':
+                    _grsai_canvas_size(request.get('model'), request.get('aspect_ratio') or '1:1', request.get('image_size') or '2K')
         run = RunStore(root).create(canvas, target=body.target, request_id=body.request_id, project_id=project,
                                     settings=runtime_settings(), actor=user, operation=body.operation)
         launch(root, run)
@@ -204,7 +267,7 @@ async def plan_episode(project: str, body: PlanBody, user: dict = Depends(get_ap
         existing = store.find_request(body.canvas_id, body.request_id)
         if existing:
             original = next(n for n in existing["snapshot"]["nodes"] if n["id"] == "script")["data"]
-            if (original["sourceText"], original["duration"], original["aspectRatio"]) != (body.script, body.duration, body.aspect_ratio):
+            if (original["sourceText"], original["duration"], original["aspectRatio"], original.get('directorBrief', '')) != (body.script, body.duration, body.aspect_ratio, body.director_brief):
                 raise OrchestrationError("idempotency_conflict", "Plan request ID reused with different input")
             return {"ok": True, "data": {"plan_id": existing["id"], "run_id": existing["id"], "status": existing["status"]}}
         canvas = read_canvas(root, body.canvas_id)
@@ -217,6 +280,7 @@ async def plan_episode(project: str, body: PlanBody, user: dict = Depends(get_ap
                       "data": {"content": body.script, "displayName": "完整剧本", "referenceOnly": True}}
             planner = {"id": "script", "type": "scriptNode", "position": {"x": 430, "y": 0}, "data": {
                 "sourceText": body.script, "duration": body.duration, "aspectRatio": body.aspect_ratio,
+                "directorBrief": body.director_brief,
                 "operation": "plan_episode", "planRequestId": body.request_id, "displayName": "整集规划"}}
             canvas = patch_graph(root, body.canvas_id, base_revision=canvas["revision"], request_id="plan-"+body.request_id,
                 operations=[{"op": "add_node", "node": source}, {"op": "add_node", "node": planner},

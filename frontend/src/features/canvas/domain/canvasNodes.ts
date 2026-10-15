@@ -514,11 +514,25 @@ export interface StoryboardSplitNodeData {
   [key: string]: unknown;
 }
 
+export interface StaticStoryboardPanel {
+  id: string;
+  shot_id: string;
+  anchor: 'start' | 'end' | 'selected';
+  state: string;
+  framing: string;
+  subjects: Array<{ entity_id: string; appearance_reference: string; screen_position: string; pose: string; gaze: string }>;
+  setting: string;
+  lighting: string;
+  visible_text: string[];
+}
+
 export interface StoryboardGenFrameItem {
   id: string;
   description: string;
   referenceIndex: number | null;
   duration_seconds?: number;
+  static_panel?: StaticStoryboardPanel;
+  static_source_description?: string;
 }
 
 export type StoryboardRatioControlMode = 'overall' | 'cell';

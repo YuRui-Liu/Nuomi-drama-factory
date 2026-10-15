@@ -2641,7 +2641,8 @@ def test_group_video_keeps_generated_video_when_optional_demucs_is_unavailable(
     assert stage.ambience_stem_status == "unavailable"
 
 
-def test_group_video_all_h3_native_completes_without_stems(tmp_path, monkeypatch):
+@pytest.mark.parametrize("isolated", [False, True])
+def test_group_video_all_h3_native_completes_without_stems(tmp_path, monkeypatch, isolated):
     from novelvideo.task_backend.runners import narrative_group_video
 
     _seed_group(tmp_path)
@@ -2668,10 +2669,20 @@ def test_group_video_all_h3_native_completes_without_stems(tmp_path, monkeypatch
     ctx = SimpleNamespace(output_dir=str(tmp_path), runtime_dir=str(tmp_path), state_dir=tmp_path / "state", project_id="demo")
 
     result = narrative_group_video.run_narrative_group_video(
-        {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1}}, ctx
+        {"episode": 1, "payload": {"group_id": "ng-01", "revision": 1,
+          **({"segment_id": "segment-1"} if isolated else {})}}, ctx
     )
 
-    assert result["status"] == "completed"
+    assert result["status"] == ("review" if isolated else "completed")
+    if isolated:
+        from novelvideo.narrative_groups.service import load_groups
+        from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+        stage = load_groups(tmp_path, 1)[0].stages['video']
+        assert not stage.video_asset
+        assert stage.status == 'review'
+        assert result['requires_group_composition']
+        assert Path(result['segment_asset']).is_file()
+        assert load_h3_director_manifest(stage.manifest_asset).physical_video is None
 
 
 def test_group_video_never_overwrites_a_newer_revision(tmp_path, monkeypatch):
@@ -3294,7 +3305,9 @@ def test_episode_prompt_pack_ignores_sibling_groups_without_rendered_frames(
 
     class Optimizer:
         async def optimize(self, episode_input):
-            assert [item.segment_id for item in episode_input.segments] == ["shot-01-01"]
+            # Missing optional native voice direction must not exclude a rendered sibling.
+            expected = ["shot-01-01", "shot-02-01"] if sibling_missing_voice else ["shot-01-01"]
+            assert [item.segment_id for item in episode_input.segments] == expected
             return SimpleNamespace(
                 segments=tuple(
                     SimpleNamespace(

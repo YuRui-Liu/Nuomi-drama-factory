@@ -23,6 +23,7 @@ from ulid import ULID
 from .cinematography import ShotCinematography
 from .creative_contract import GroupCreativeContext, ShotCreativeDecisions, creative_shot_errors
 from .revision_feedback import FeedbackHistory
+from novelvideo.storyboard_prompt import StaticPanel
 
 
 class FrozenModel(BaseModel):
@@ -354,6 +355,7 @@ class ShotPlan(FrozenModel):
     intent: DirectorShotIntent | None = None
     cinematography: ShotCinematography | None = None
     creative: ShotCreativeDecisions | None = None
+    static_panel: StaticPanel | None = None
     asset_requirements: tuple[AssetRequirement, ...] = ()
     duration_seconds: float = Field(gt=0, allow_inf_nan=False)
 
@@ -438,6 +440,7 @@ class ReorderGroups(FrozenModel):
 class UpdateShot(FrozenModel):
     kind: Literal["update_shot"] = "update_shot"
     shot_id: str
+    static_panel: StaticPanel | None = None
     source_span_ids: tuple[str, ...] | None = None
     subject: str | None = None
     action: str | None = None

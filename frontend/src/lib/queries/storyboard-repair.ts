@@ -19,6 +19,14 @@ export interface StoryboardRepairContext {
   feedback: string;
   repair_status: "idle" | "queued" | "running" | "failed" | "completed";
   repair_error: string;
+  impact?: {
+    scope: "segments" | "group";
+    affected_segment_ids: string[];
+    preserved_shot_ids: string[];
+    downstream_stages: string[];
+    history_preserved: boolean;
+    automatic_video_generation: boolean;
+  };
 }
 export type StoryboardRepairInput = Pick<StoryboardRepairContext, "source_revision" | "source_asset" | "prompt" | "feedback">;
 

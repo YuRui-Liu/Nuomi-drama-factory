@@ -115,3 +115,8 @@ tests/.tmp-*/
 
 # 本地 agent 数据，勿提交
 .workbuddy/
+
+# Desktop build artifacts and isolated packaging environments
+/desktop-runtime/
+/dist-desktop/
+/.desktop-build/

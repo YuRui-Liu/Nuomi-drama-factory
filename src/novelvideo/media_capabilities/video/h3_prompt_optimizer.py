@@ -562,6 +562,9 @@ class H3PromptOptimizer:
                 plan = project_adopted_h3_fields(plan, context.director_context)
                 plan = normalize_h3_speaker_voices(plan, context)
                 plan = normalize_h3_action_timeline(normalize_h3_source_tones(plan, segment))
+                from .h3_derived_contract import normalize_derived_contract
+
+                plan = normalize_derived_contract(plan)
                 report = inspect_h3_plan(plan, segment=segment, context=context)
                 if report.passed:
                     try:

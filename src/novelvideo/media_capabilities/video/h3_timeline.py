@@ -293,6 +293,7 @@ class H3DirectorOutputManifest(BaseModel):
     reference_limit: int | None = Field(default=None, ge=1, le=10)
     global_references: tuple[H3ReferenceManifestEntry, ...] = ()
     workflow_parameters: dict[str, str] = Field(default_factory=dict)
+    execution_contract: dict[str, Any] | None = None
     provider_parameters: dict[str, object] = Field(default_factory=dict)
     transition_rules: tuple[H3TransitionRule, ...] = ()
     cinematography_reviews: tuple[dict[str, Any], ...] = ()

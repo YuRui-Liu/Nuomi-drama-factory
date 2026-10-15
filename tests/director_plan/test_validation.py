@@ -78,6 +78,29 @@ def issue_pairs(report: object) -> list[tuple[str, str]]:
     return [(issue.code, issue.location) for issue in report.issues]  # type: ignore[attr-defined]
 
 
+def test_overlong_shot_is_rejected_before_production():
+    from tests.director_plan.creative_fixtures import creative_shot
+    revision = make_revision((make_group(creative_contract_version=1,
+        shots=(creative_shot(duration=25),)),)).model_copy(update={"creative_contract_version": 1})
+    report = validate_director_plan(revision, (make_span("span-1", 1),))
+    assert not report.passed
+    assert ("video_shot_duration_out_of_range", "groups.0.shots.0.duration_seconds") in issue_pairs(report)
+
+
+def test_activation_rechecks_duration_despite_historic_pass(tmp_path):
+    from novelvideo.director_plan.store import DirectorPlanStore
+    from novelvideo.director_plan.models import ValidationReport
+    from tests.director_plan.creative_fixtures import creative_shot
+    revision = make_revision((make_group(creative_contract_version=1,
+        shots=(creative_shot(duration=25),)),)).model_copy(
+        update={"status": "review_required", "validation_report": ValidationReport(passed=True)})
+    store = DirectorPlanStore(tmp_path)
+    store.save(revision)
+    with pytest.raises(ValueError, match="duration"):
+        store.activate(1, revision.revision_id)
+    assert store.load_active(1) is None
+
+
 @pytest.mark.parametrize('version,required', [('director-plan-v3', True),
     ('director-plan-v3-keyframe-instant', True), ('director-plan-v2', False),
     ('director-plan-v3-unknown', False)])

@@ -314,7 +314,7 @@ class H3EpisodePackOptimizer:
                             decisions = {}
                             for batch in pack_storyboard_batches(tuple(storyboard_images)):
                                 decisions.update(await self._visual_decisions(
-                                    value, _episode_task(value), batch, replay_only=True))
+                                    value, _episode_task(value, expected_ids={image.segment_id for image in batch}), batch, replay_only=True))
                             decision = decisions[entry.segment_id]
                             images = tuple(image for image in storyboard_images
                                            if image.segment_id == entry.segment_id)
@@ -354,7 +354,8 @@ class H3EpisodePackOptimizer:
                     missing_ids = {entry.segment_id for entry in misses}
                     for batch in pack_storyboard_batches(tuple(image for image in storyboard_images
                                                               if image.segment_id in missing_ids)):
-                        decisions.update(await self._visual_decisions(value, _episode_task(value), batch))
+                        decisions.update(await self._visual_decisions(value,
+                            _episode_task(value, expected_ids={image.segment_id for image in batch}), batch))
                     plans = {key: decision.plan for key, decision in decisions.items()}
                 else:
                     response = await self._run_recorded(_episode_task(value))
@@ -436,7 +437,10 @@ class H3EpisodePackOptimizer:
             decision = None
             task = _repair_task(value, entry, current, current_failure)
             if images:
-                decision = (await self._visual_decisions(value, task, images,
+                repair_images = tuple(image for image in images if image.segment_id == entry.segment_id)
+                if not repair_images:
+                    raise ValueError(f"storyboard repair images missing for segment {entry.segment_id}")
+                decision = (await self._visual_decisions(value, task, repair_images,
                     replay_only=replay_only))[entry.segment_id]
                 candidate = decision.plan
             else:
@@ -475,7 +479,12 @@ class H3EpisodePackOptimizer:
             raise ValueError("storyboard decision episode/revision mismatch")
         ids = [item.segment_id for item in pack.segments]
         if len(ids) != len(set(ids)) or set(ids) != expected:
-            raise ValueError("storyboard decision segment coverage mismatch")
+            raise ValueError("storyboard decision segment coverage mismatch: " + json.dumps({
+                "expected": sorted(expected), "received": ids,
+                "missing": sorted(expected - set(ids)),
+                "unexpected": sorted(set(ids) - expected),
+                "duplicates": sorted({item for item in ids if ids.count(item) > 1}),
+            }, ensure_ascii=False))
         decisions = {}
         for item in pack.segments:
             segment_images = tuple(image for image in images if image.segment_id == item.segment_id)
@@ -695,10 +704,12 @@ def _untrusted_reference_data_block(
     )
 
 
-def _episode_task(value: H3EpisodeInput) -> str:
+def _episode_task(value: H3EpisodeInput, *, expected_ids: set[str] | None = None) -> str:
     items = []
     reference_facts = []
     for index, entry in enumerate(value.segments):
+        if expected_ids is not None and entry.segment_id not in expected_ids:
+            continue
         item, facts = _separate_reference_facts(
             _prompt_segment(value, index, entry)
         )

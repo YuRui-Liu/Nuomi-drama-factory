@@ -31,12 +31,20 @@ export function GroupStoryboardRepairDialog({ project, episode, groupId, stage, 
         {frame.url ? <img src={frame.url} alt={frame.label === "当前" ? "当前分镜图" : `${frame.label}分镜图`} className="h-48 w-full object-contain" /> : <div className="flex h-48 items-center justify-center text-xs text-muted-foreground">暂无分镜图</div>}
       </figure>)}</div> : imageUrl && <img src={imageUrl} alt="当前分镜图" className="max-h-56 w-full rounded-lg object-contain" />}
       <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+        <li>生成时会携带当前组的相邻分镜图作为空间参考。修改地面或台阶时可调整取景，不能靠抬高地面迁就旧构图。</li>
         <li>分别核对身体朝向和视线目标，确认人物看向正确的人或物。</li>
         <li>按世界位置、地标与轴线核对关系；正反打可改变画面左右，跨场不强求连续。</li>
         <li>远景若需要读清细微表情，应调整景别或增加近景，不能只靠“高清脸”要求。</li>
       </ul>
       {!source && context.isFetching && <p role="status">正在加载提示词…</p>}
       {source && draft && <>
+        {source.impact && <div aria-label="修改影响范围" className="space-y-1 rounded-lg border border-amber-300/40 bg-amber-300/10 p-3 text-sm">
+          <p>{source.impact.scope === "segments"
+            ? `需更新的视频片段：${source.impact.affected_segment_ids.join("、") || "无"}`
+            : "现有映射不足或草图约束改变，需重新核对本组下游结果。"}</p>
+          <p>保留其他分镜图：{source.impact.preserved_shot_ids.join("、") || "无"}</p>
+          <p>历史版本保留，不会自动生成视频。修复完成后请核对下游视频；局部片段生成后仍需完成整组合成。</p>
+        </div>}
         <label className="space-y-2">已保存的定帧空间描述<Textarea aria-label="已保存的定帧空间描述" readOnly value={source.keyframe_prompt || "未记录"} /></label>
         <label className="space-y-2">已保存的相邻镜头约束<Textarea aria-label="已保存的相邻镜头约束" readOnly value={source.adjacent_keyframe_context || "未记录"} /></label>
         <label className="space-y-2">原始提示词<Textarea aria-label="原始提示词" readOnly value={source.original_prompt ?? "原始提示词未记录"} /></label>

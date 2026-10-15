@@ -62,18 +62,27 @@ def _source_layout_changed(board, preparation):
 
 
 def _mode(data):
-    return 'frames' if data.get('activeInputMode') == 'frames' and data.get('inputModeIntent') == 'manual' else 'ref'
+    # The saved mode is the contract shared by the editor and CLI. A UI-only
+    # intent flag must never turn valid Ref inputs into missing frame pairs.
+    if data.get('activeInputMode') in {'ref', 'frames'}:
+        return data['activeInputMode']
+    draft = data.get('draft') or {}
+    if draft.get('references'):
+        return 'ref'
+    if any(s.get('firstFrame') or s.get('first_frame') for s in draft.get('segments', [])):
+        return 'frames'
+    return 'ref'
 
 
 def _references(ctx, canvas, node, board, draft, previous):
-    """Board first, stable connected identities next, then retained manual refs."""
+    """Only identity/asset references; storyboard cells belong to frame slots."""
     from .service import _image_path
     nodes = {n['id']: n for n in canvas['nodes']}
     connected = {e['source'] for e in canvas['edges'] if e['target'] == node['id'] and e['source'] != board['id']
                  and e.get('data', {}).get('slot', {}).get('kind', 'reference') == 'reference'}
     order = node['data'].get('referenceOrder', [])
     rank = {key: index for index, key in enumerate(order)}
-    ids = [board['id']] + sorted(connected, key=lambda key: (rank.get(key, len(rank)), key))
+    ids = sorted(connected, key=lambda key: (rank.get(key, len(rank)), key))
     refs, bindings = [], []
     for key in ids:
         source = nodes.get(key, {}).get('data', {})
@@ -91,6 +100,8 @@ def _references(ctx, canvas, node, board, draft, previous):
     managed = {b['imageId'] for b in previous.get('refBindings', []) if b.get('sourceNodeId')}
     connected_urls = {r['url'] for r in refs}
     for image in draft.get('references', []):
+        if image['image_id'] == board['id'] or image.get('asset_kind') == 'storyboard' or image['url'] == board['data'].get('imageUrl'):
+            continue
         if image['image_id'] not in managed and image['image_id'] not in ids and image['url'] not in connected_urls:
             refs.append(deepcopy(image))
     seen = set()
@@ -136,12 +147,21 @@ def prepare_storyboard(ctx, *, canvas_id: str, node_id: str, base_revision: int,
         descriptors = deepcopy(shots if shots is not None else existing_frames)
         for index, descriptor in enumerate(descriptors):
             previous_frame = existing_frames[index] if index < len(existing_frames) else {}
-            descriptor['id'] = previous_frame.get('id') or descriptor.get('id') or f'{board["id"]}-cell-{index + 1}'
+            descriptor['id'] = descriptor.get('id') or previous_frame.get('id') or f'{board["id"]}-cell-{index + 1}'
+            old_source = previous.get('sourceNodeId')
+            if old_source and old_source != board['id'] and descriptor['id'] == f'{old_source}-cell-{index + 1}':
+                descriptor['id'] = f'{board["id"]}-cell-{index + 1}'
             if 'referenceIndex' in previous_frame:
                 descriptor['referenceIndex'] = previous_frame['referenceIndex']
+            if 'static_panel' in previous_frame:
+                descriptor['static_panel'] = deepcopy(previous_frame['static_panel'])
+                descriptor['static_source_description'] = previous_frame.get('static_source_description')
         duration = previous.get('requestedDurationSeconds') or sum(s.get('duration_seconds', 0) for s in old.get('segments', []))
         references, bindings = _references(ctx, canvas, node, board, old, previous) if mode == 'ref' else ([], [])
-        settings_hash = fingerprint([board['id'], adapted['fingerprint'], descriptors, old.get('aspect_ratio'), old.get('resolution'), old.get('model_id'), mode, references, bindings])
+        frame_pairs = board['data'].get('videoFramePairs')
+        if any(s.get('static_panel') for s in descriptors) and not frame_pairs:
+            raise ValueError('尚未选择视频起始画格：请使用 AI 推荐或手动选择首帧；尾帧可选，不能将相邻镜头自动当作首尾帧')
+        settings_hash = fingerprint([board['id'], adapted['fingerprint'], descriptors, frame_pairs, old.get('aspect_ratio'), old.get('resolution'), old.get('model_id'), mode, references, bindings])
         if (not layout_changed and previous.get('settingsFingerprint') == settings_hash
                 and old.get('references', []) == references):
             validate_generation(DirectorDraft.model_validate(old), reference_limit=reference_limit)
@@ -170,15 +190,9 @@ def prepare_storyboard(ctx, *, canvas_id: str, node_id: str, base_revision: int,
                 stored[key] = make_static_url_for_context(ctx, rel)
             cells.append(stored)
         template = {k: old[k] for k in ('schema_version', 'revision', 'model_id', 'aspect_ratio', 'resolution') if k in old}
-        fresh = build_draft(board['id'], template, [c['imageUrl'] for c in cells], descriptors, duration)
+        fresh = build_draft(board['id'], template, [c['imageUrl'] for c in cells], descriptors, duration, frame_pairs=frame_pairs)
         if mode == 'ref':
             fresh['references'] = references
-            cols = board['data'].get('gridCols', 2)
-            for index, segment in enumerate(fresh['segments']):
-                segment.update(first_frame=None, last_frame=None)
-                segment['prompt'] = (f'以 <Picture 1> 分镜图第{index // cols + 1}行第{index % cols + 1}列为本镜头画面参考；'
-                                     '其它参考图保持角色与场景身份。输出单一全屏连续镜头，不生成拼图、分屏、边框或编号。\n'
-                                     + segment['prompt'])
         fresh['revision'] = old.get('revision', 0) + 1
         generated = deepcopy(fresh)
         if changed and resolution == 'keep_edits':
@@ -187,12 +201,10 @@ def prepare_storyboard(ctx, *, canvas_id: str, node_id: str, base_revision: int,
             if set(old_segments) != set(baseline_segments):
                 raise ValueError('manual segment structure changed; replace_generated is required')
             for segment in fresh['segments']:
-                for key in ('prompt', 'duration_seconds', 'last_frame', 'technique', 'case_reference'):
+                for key in ('prompt', 'duration_seconds', 'first_frame', 'last_frame', 'technique', 'case_reference'):
                     before = baseline_segments.get(segment['id'], {})
                     current = old_segments.get(segment['id'], {})
                     if current.get(key) != before.get(key):
-                        if mode == 'ref' and key == 'last_frame' and current.get(key) is not None:
-                            raise ValueError('Ref mode cannot preserve edited tail frames; choose replace_generated or Frames')
                         segment[key] = current.get(key)
         validated = DirectorDraft.model_validate(fresh)
         timing = validate_generation(validated, reference_limit=reference_limit)
@@ -259,6 +271,7 @@ def guard_prepared(ctx, canvas_id, node_id, draft):
     if supplied.get('references', []) != references:
         raise ValueError('stale storyboard reference bindings; prepare again before generation')
     settings_hash = fingerprint([board['id'], adapted['fingerprint'], board['data'].get('frames', []),
+                                 board['data'].get('videoFramePairs'),
                                  supplied.get('aspect_ratio'), supplied.get('resolution'), supplied.get('model_id'), mode, references, bindings])
     if (adapted['fingerprint'] != prepared.get('sourceFingerprint')
             or board['id'] != prepared.get('sourceNodeId')

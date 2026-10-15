@@ -92,6 +92,8 @@ class DirectorPlanStore:
         with self._guard(episode):
             target = self._load(episode, revision_id)
             self.require_current(target)
+            from .execution import require_executable_shots
+            require_executable_shots(target.groups)
             if target.creative_contract_version is not None:
                 from .creative_review import creative_clearance
                 if not creative_clearance(target):

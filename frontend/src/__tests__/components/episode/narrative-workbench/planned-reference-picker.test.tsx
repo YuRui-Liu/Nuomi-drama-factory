@@ -52,6 +52,14 @@ function ControlledPicker({
 }
 
 describe("PlannedReferencePicker", () => {
+  it("shows asset version and affected shots instead of raw diagnostic text", () => {
+    render(<ControlledPicker items={[{ ...bindings[0], shot_ids: ["s1", "s2"],
+      issue_message: "请确认角色造型", warning: "internal diagnostic" }]} />);
+    expect(screen.getByText("版本 character-v1")).toBeInTheDocument();
+    expect(screen.getByText("关联镜头：s1、s2")).toBeInTheDocument();
+    expect(screen.getByText("请确认角色造型")).toBeInTheDocument();
+    expect(screen.queryByText("internal diagnostic")).not.toBeInTheDocument();
+  });
   it("allows required ready bindings and optional bindings to be toggled", async () => {
     const user = userEvent.setup();
     render(<ControlledPicker initial={["character-1", "scene-variant-1"]} />);

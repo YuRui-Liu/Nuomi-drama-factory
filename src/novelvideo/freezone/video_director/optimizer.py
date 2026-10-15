@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Mapping
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 from novelvideo.knowledge_runtime.codex import StructuredImage, validate_structured_images
 from novelvideo.media_capabilities.video.h3_prompt_profile import (
@@ -18,6 +18,7 @@ from novelvideo.media_capabilities.video.h3_wire import compile_h3_wire
 from novelvideo.text_task_runtime.runtime import StructuredTextRuntime
 
 from .capabilities import validate_generation
+from .reference_plan import ReferencePlan, compile_reference_plan
 from .models import (
     CanvasBaseWire, CanvasReferenceWire, DirectorDraft, FrozenTechniqueProjection, OptimizedDirector,
     OptimizedSegment,
@@ -59,7 +60,7 @@ _EXPLICIT_DIALOGUE = re.compile(
     r"[^\W\d_][\w-]{0,39}))\s*"
     r"(?P<verb>(?:says?|said|asks?|asked|whispers?|whispered|shouts?|shouted|"
     r"replies|replied|说道|低声说|回答|说|问|喊|答)\s*[:：]?|[:：])\s*"
-    r"(?P<quote>\"[^\"\n]*\"|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』|'[^'\n]*')",
+    r"(?P<quote>\"[^\"\n]*\"|“[^”\n]*”|‘[^’\n]*’|「[^」\n]*」|『[^』\n]*』|'[^'\n]*')",
     flags=re.IGNORECASE,
 )
 _SUBJECT_TAG = re.compile(r"<Subject ([1-9][0-9]*)>")
@@ -69,9 +70,20 @@ _NON_SPEAKER_LABELS = frozenset({"camera", "shot", "style", "title", "music", "s
 
 def _locked_dialogue(prompt: str) -> list[dict[str, str]]:
     """Extract only source text with an explicit speaker plus quoted speech."""
-    return [{"speaker": _speaker_for_match(match), "quote": match.group("quote")}
+    names = re.findall(r'<Picture [1-9][0-9]*>是([^：:\n，,]{1,20})[：:]', prompt)
+    return [{"speaker": _bound_speaker(_speaker_for_match(match), names), "quote": match.group("quote")}
             for match in _EXPLICIT_DIALOGUE.finditer(prompt)
             if _speaker_for_match(match).casefold() not in _NON_SPEAKER_LABELS]
+
+
+def _bound_speaker(value, names):
+    for name in sorted(names, key=len, reverse=True):
+        if value == name:
+            return name
+        if value.startswith(name) and value[len(name):].startswith((
+                '画外', '看着', '坚定', '轻声', '低声', '大声', '高声', '平静', '温柔', '哭着', '笑着')):
+            return name
+    return value
 
 
 def _speaker_for_match(match: re.Match[str]) -> str:
@@ -91,7 +103,7 @@ def _check_dialogue_identity(wire: CanvasBaseWire | CanvasReferenceWire,
               if isinstance(wire, CanvasBaseWire) else
               (wire.detailed_description, wire.overall_soundscape))
     required = Counter((lock["speaker"], lock["quote"]) for lock in locks)
-    observed = Counter((_speaker_for_match(match), match.group("quote"))
+    observed = Counter((_bound_speaker(_speaker_for_match(match), [lock['speaker'] for lock in locks]), match.group("quote"))
                        for field in fields for match in _EXPLICIT_DIALOGUE.finditer(field))
     for (speaker, quote), occurrences in required.items():
         if observed[(speaker, quote)] < occurrences:
@@ -185,15 +197,14 @@ async def optimize(
     for source_index, (source, aligned) in enumerate(zip(
         draft.segments, validation.timeline, strict=True
     )):
-        image_ids = (reference_ids if validation.route == "h3_ref" else
-                     [source.first_frame.image_id] +
-                     ([source.last_frame.image_id] if source.last_frame else []))
+        frame_ids = [image.image_id for image in (source.first_frame, source.last_frame) if image]
+        image_ids = reference_ids + frame_ids if validation.route == 'h3_ref' else frame_ids
         try:
             images = [frozen_images[image_id] for image_id in image_ids]
         except KeyError as exc:
             raise ValueError(f"frozen image is missing: {exc.args[0]}") from exc
         validate_structured_images(images)
-        mode = {"i2v": "i2va", "fl2v": "fl2va", "ref_only": "ref2va"}[aligned.mode]
+        mode = 'ref2va' if validation.route == 'h3_ref' else {"i2v": "i2va", "fl2v": "fl2va"}[aligned.mode]
         source_data = {
             "segment_id": source.id,
             "mode": mode,
@@ -210,10 +221,17 @@ async def optimize(
             "aspect_ratio": draft.aspect_ratio,
             "resolution": draft.resolution,
             "references": reference_facts if reference_ids else [],
-            "frame_images": [] if reference_ids else [
-                {"picture_tag": f"<Picture {index + 1}>", "image_id": image_id,
+            "subject_definition_template": "\n".join(
+                subject + ": " + "; ".join(
+                    f"{fact.get('variant_label') or ''} {fact['picture_tag']}".strip()
+                    for fact in reference_facts if fact['subject_tag'] == subject)
+                for subject in dict.fromkeys(str(fact['subject_tag']) for fact in reference_facts)
+            ),
+            "frame_images": [
+                {"attachment_index": len(reference_ids) + index + 1,
+                 "picture_tag": f"<Picture {index + 1}>" if not reference_ids else None, "image_id": image_id,
                  "anchor": "first" if index == 0 else "last"}
-                for index, image_id in enumerate(image_ids)
+                for index, image_id in enumerate(frame_ids)
             ],
         }
         technique = projections.get(source.id)
@@ -246,8 +264,67 @@ async def optimize(
             )
         prompt += "INPUT_JSON:\n" + json.dumps(source_data, ensure_ascii=False)
         final_system_prompt = H3_CANVAS_WRITING_RULES
+        if reference_ids and frame_ids:
+            final_system_prompt += ('\nThe attachments after the declared reference images are the actual first/last frame anchors, '
+                'not extra reference Subjects or Pictures. Keep the supplied reference numbering unchanged. '
+                'Describe the initial and final compositions as first frame and last frame without inventing Picture tags. '
+                'Only supplied anchors exist; when no last frame is supplied, do not invent a locked ending frame. '
+                'Preserve these endpoint compositions, identity and actions. Interior motivated cuts are allowed only when the source directs them.')
         if system_prompt:
             final_system_prompt += "\nAdditional caller context (source facts only):\n" + system_prompt
+
+        # Explicit editor bindings can be compiled without asking AI to regenerate
+        # supplier numbering. Legacy drafts without named bindings retain their
+        # existing path; never guess a person's identity from an image or avatar.
+        bindings = dict(re.findall(r'<Picture ([1-9][0-9]*)>是([^：:\n，,]{1,20})[：:]', source.prompt))
+        named_refs = {fact['image_id']: bindings.get(str(index + 1))
+                      for index, fact in enumerate(reference_facts)}
+        if reference_ids and all(named_refs.values()) and technique is None:
+            plan_input = {**source_data, 'identity_bindings': named_refs}
+
+            @model_validator(mode='after')
+            def validate_plan(plan):
+                compile_reference_plan(plan, reference_facts, named_refs,
+                                       source_data['locked_dialogue'], aligned.duration_seconds)
+                return plan
+
+            plan_type = create_model('BoundReferencePlan', __base__=ReferencePlan,
+                                     __validators__={'validate_plan': validate_plan})
+            try:
+                plan = await runtime.run_structured(output_type=plan_type, images=images,
+                    system_prompt=('你是逐镜导演，只输出请求的导演计划结构，不输出供应商 wire。'
+                        'identity_bindings 是冻结身份；subjects 按 references 去重后的 subject 顺序返回，'
+                        'subject_id 使用该主体第一张图的 image_id。为每个主体明确 visible、offscreen 或 unused，'
+                        '由本镜原文和首帧决定，不能为了参考图齐全让所有角色入镜。'
+                        '只设计目标镜头的动作、机位、表演和环境声，不增加人物、剧情、对白。'
+                        '已给首帧即是起点；无尾帧不能编造锁定尾帧。邻镜仅供连续性参考。'
+                        '所有文本使用人物姓名，不写任何 Subject/Picture/Video/Audio 协议标签。'
+                        'locked_dialogue 由程序原样合成，不在 action、subjects、soundscape 重复或改写台词。'
+                        'music 无配乐时为 N/A。存在 technique 时遵守其兼容的导演要求，冲突时拒绝改写源事实。'),
+                    prompt=json.dumps(plan_input, ensure_ascii=False))
+                wire = compile_reference_plan(plan_type.model_validate(plan), reference_facts, named_refs,
+                                              source_data['locked_dialogue'], aligned.duration_seconds)
+            except Exception as exc:
+                exc.director_segment_id = source.id
+                raise
+            _check_dialogue_identity(wire, source_data['locked_dialogue'])
+            _check_reference_identity(wire, reference_facts)
+            result.append(OptimizedSegment(segment_id=source.id, mode=mode,
+                requested_duration_seconds=source.duration_seconds,
+                duration_seconds=aligned.duration_seconds, frames=aligned.frames,
+                wire=wire, prompt=compile_h3_wire(wire)))
+            continue
+
+        # Validate locked dialogue inside the runtime's bounded schema repair
+        # loop, rather than failing the entire multi-shot job after it returns.
+        @model_validator(mode='after')
+        def validate_dialogue(response):
+            if response.wire is not None:
+                _check_dialogue_identity(response.wire, source_data['locked_dialogue'])
+            return response
+
+        response_type = create_model('DialogueLocked' + response_type.__name__,
+            __base__=response_type, __validators__={'validate_dialogue': validate_dialogue})
         response = await runtime.run_structured(
             prompt=prompt, output_type=response_type,
             system_prompt=final_system_prompt, images=images,

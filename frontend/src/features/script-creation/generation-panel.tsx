@@ -35,17 +35,30 @@ export function GenerationPanel({ project, documents, manager, settings, selecte
   };
   let contiguous = 0;
   while (priorScripts.some((doc) => doc.episode_number === contiguous + 1 && authored(doc))) contiguous++;
+  const latestSource = priorScripts.find((doc) => doc.episode_number === contiguous && authored(doc));
   const source = selected?.kind === "episode_script"
-    ? (selected.episode_number != null && selected.episode_number <= contiguous && authored(selected) ? selected : undefined)
-    : priorScripts.find((doc) => doc.episode_number === contiguous && authored(doc));
+    ? (selected.episode_number != null && selected.episode_number <= contiguous && authored(selected)
+      ? selected
+      : selected.episode_number === contiguous + 1 && !authored(selected) ? latestSource : undefined)
+    : latestSource;
   const targetNumber = (source?.episode_number ?? 0) + 1;
+  const hasAuthoredEpisodes = priorScripts.some(authored);
+  const fillingSelectedEpisode = selected?.kind === "episode_script" &&
+    selected.episode_number === targetNumber && !authored(selected);
   const canStartFirst = settings.mode === "series" && !priorScripts.some(authored) &&
     (selected?.kind !== "episode_script" || selected.episode_number === 1) &&
     documents.some((doc) => doc.kind === "outline") && documents.some((doc) => doc.kind === "episode_synopsis");
   const canContinue = settings.mode === "series" && !!source && targetNumber <= settings.episodeCount &&
     documents.some((doc) => doc.kind === "outline") && documents.some((doc) => doc.kind === "episode_synopsis");
-  const blocked = !brief || unsaved || busy || active(run?.status);
   const status = taskFailure ? "failed" : run?.status;
+  const blocked = !brief || unsaved || busy || active(status);
+  const continuationBlockReason = !brief ? "请先保存创作简报。"
+    : unsaved ? "请先保存文档并解决冲突。"
+    : busy || active(status) ? "创作任务处理中，请等待完成后再续写。"
+    : !documents.some((doc) => doc.kind === "outline") || !documents.some((doc) => doc.kind === "episode_synopsis")
+      ? "请先准备故事大纲和分集梗概。"
+    : !source ? "前面的剧集尚未完成，请先完成第 " + (contiguous + 1) + " 集正文。"
+    : targetNumber > settings.episodeCount ? "已达到设定的总集数，请先调整集数。" : "";
   const completedCount = useMemo(() => run?.steps.filter((step) => step.status === "completed").length ?? 0, [run]);
 
   useEffect(() => {
@@ -71,6 +84,8 @@ export function GenerationPanel({ project, documents, manager, settings, selecte
           if (task?.status === "failed" || task?.status === "cancelled") {
             setTaskFailure(task.error || (task.status === "cancelled" ? "生成已暂停，可继续未完成步骤" :
               "生成任务失败，请检查模型配置后重试"));
+          } else if (task === null && latest.status === "running" && latest.task_id) {
+            setTaskFailure("执行任务已中断或记录已过期，已保存的内容保留，可继续未完成步骤。");
           }
         }
       } catch (cause) { if (alive) setError(textError(cause)); }
@@ -115,7 +130,9 @@ export function GenerationPanel({ project, documents, manager, settings, selecte
   };
 
   return <div className="flex min-h-0 flex-1 flex-col">
-    <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+    <div aria-label="创作上下文与设置" className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+      <GenerationPreflight project={project} />
+      <ProductionStyleBridge project={project} briefStyle={settings.style} />
       <div className="rounded-lg border border-white/10 bg-white/[0.025] p-3">
         <div className="text-[11px] uppercase tracking-wider text-white/35">当前引用</div>
         <div className="mt-2 text-sm">{selected?.title ?? "尚未选择文档"}</div>
@@ -144,12 +161,13 @@ export function GenerationPanel({ project, documents, manager, settings, selecte
       </div>}
       {candidate && <div className="rounded border border-[#E5FF5C]/25 p-3"><div className="text-xs text-[#E5FF5C]">候选正文 · 原文未覆盖 · {craftQualityLabel(candidate.craft_review)}</div><pre className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap text-xs leading-6 text-white/70">{candidate.markdown}</pre><button disabled={candidate.craft_review?.status === "needs_revision" || run?.status === "needs_review"} onClick={() => onReviewCandidate?.(candidate.id, candidate.target_document_id)} className="mt-2 rounded bg-[#E5FF5C] px-2 py-1.5 font-semibold text-black disabled:opacity-35">进入候选审阅</button></div>}
     </div>
-    <div className="space-y-2 border-t border-white/10 p-4">
-      <GenerationPreflight project={project} />
-      <ProductionStyleBridge project={project} briefStyle={settings.style} />
-      <button disabled={blocked} onClick={() => void start("bootstrap")} className="flex w-full items-center justify-center gap-2 rounded bg-[#E5FF5C] px-3 py-2 text-xs font-semibold text-black disabled:opacity-35"><Sparkles size={14} />生成故事框架与首集</button>
+    <div className="max-h-[45vh] shrink-0 space-y-2 overflow-y-auto border-t border-white/10 p-4">
+      {!hasAuthoredEpisodes && <button disabled={blocked} onClick={() => void start("bootstrap")} className="flex w-full items-center justify-center gap-2 rounded bg-[#E5FF5C] px-3 py-2 text-xs font-semibold text-black disabled:opacity-35"><Sparkles size={14} />生成故事框架与首集</button>}
       {canStartFirst && <button disabled={blocked} onClick={() => void start("continue")} className="w-full rounded border border-[#E5FF5C]/40 px-3 py-2 text-xs text-[#E5FF5C] disabled:opacity-35">沿用框架创作第 1 集</button>}
-      {settings.mode === "series" && !canStartFirst && <button disabled={blocked || !canContinue} onClick={() => void start("continue")} className="w-full rounded border border-[#E5FF5C]/40 px-3 py-2 text-xs text-[#E5FF5C] disabled:opacity-35">按此风格续下一集{source ? ` · 第 ${targetNumber} 集` : ""}</button>}
+      {settings.mode === "series" && !canStartFirst && <button disabled={blocked || !canContinue} onClick={() => void start("continue")} className="w-full rounded bg-[#E5FF5C] px-3 py-2 text-xs font-semibold text-black disabled:opacity-35">{fillingSelectedEpisode ? `生成第 ${targetNumber} 集正文` : `按此风格续下一集${source ? ` · 第 ${targetNumber} 集` : ""}`}</button>}
+      {canContinue && selected?.kind === "episode_script" && selected.id !== source?.id && <p className="text-xs leading-5 text-white/50">将参考第 {source?.episode_number} 集正文，创作第 {targetNumber} 集；空白模板不作为续写来源。</p>}
+      {settings.mode === "series" && !canStartFirst && continuationBlockReason && <p role="status" className="text-xs leading-5 text-amber-200">{continuationBlockReason}</p>}
+      {hasAuthoredEpisodes && <details className="text-xs text-white/50"><summary className="cursor-pointer">重新创作故事框架</summary><button disabled={blocked} onClick={() => void start("bootstrap")} className="mt-2 rounded border border-white/20 px-3 py-2 disabled:opacity-35">重新生成故事框架与首集</button></details>}
       <p className="text-[11px] leading-5 text-white/35">生成在后台运行。已有正文会保留为原文，新结果作为候选供审阅。</p>
     </div>
   </div>;

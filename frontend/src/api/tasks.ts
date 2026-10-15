@@ -164,6 +164,7 @@ interface ProjectPoller {
 const DEFAULT_POLL_INTERVAL_MS = 4000;
 const DEFAULT_MAX_POLL_MS = 20 * 60 * 1000;
 const pendingByTaskKey = new Map<string, PendingResolver>();
+const completionPromises = new Map<string, { projectId: string; promise: Promise<TaskState> }>();
 const sharedStreamsByProject = new Map<string, SseHandle>();
 const pollersByProject = new Map<string, ProjectPoller>();
 
@@ -320,6 +321,11 @@ function ensureProjectPoller(projectId: string): void {
 
 export function awaitTaskCompletion(taskKey: string, projectId: string): Promise<TaskState> {
   const resolved = resolveTaskProjectId(projectId);
+  const existing = completionPromises.get(taskKey);
+  if (existing) {
+    if (existing.projectId !== resolved) return Promise.reject(new Error('Task belongs to another project'));
+    return existing.promise;
+  }
   ensureSharedStream(resolved);
   ensureProjectPoller(resolved);
   const promise = new Promise<TaskState>((resolve, reject) => {
@@ -330,10 +336,13 @@ export function awaitTaskCompletion(taskKey: string, projectId: string): Promise
       expiresAt: Date.now() + DEFAULT_MAX_POLL_MS,
     });
   });
-  return promise.finally(() => {
+  const shared = promise.finally(() => {
+    completionPromises.delete(taskKey);
     pendingByTaskKey.delete(taskKey);
     maybeStopProjectMonitoring(resolved);
   });
+  completionPromises.set(taskKey, { projectId: resolved, promise: shared });
+  return shared;
 }
 
 if (import.meta.hot) {

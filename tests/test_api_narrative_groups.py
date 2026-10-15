@@ -101,6 +101,13 @@ class FakeStore:
 
 
 def test_voice_preflight_is_read_only_and_checks_only_requested_group(monkeypatch, tmp_path):
+    from novelvideo.media_capabilities.video import h3_speaker_voices
+    observed = []
+    native_preflight = h3_speaker_voices.speaker_voice_preflight
+    def observe(speakers, characters):
+        observed.extend(speakers)
+        return native_preflight(speakers, characters)
+    monkeypatch.setattr(h3_speaker_voices, "speaker_voice_preflight", observe)
     client, backend = make_client(monkeypatch, tmp_path)
     monkeypatch.setattr(narrative_group_service, "load_groups", lambda *_args: [SimpleNamespace(id="g1", beat_ids=["1"], production_beat_ids=["1"])])
     closed = []
@@ -119,14 +126,21 @@ def test_voice_preflight_is_read_only_and_checks_only_requested_group(monkeypatc
     response = client.get("/api/v1/projects/demo/episodes/1/narrative-groups/g1/video/voice-preflight")
     assert response.status_code == 200
     result = response.json()["data"]
-    assert result["ready"] is False
-    assert [issue["speaker"] for issue in result["issues"]] == ["闻禾"]
+    assert result == {"ready": True, "issues": []}  # Native H3 voice direction is optional.
+    assert set(observed) == {"阿岑", "闻禾"}
     assert backend.calls == []
     assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file() and path.suffix != ".lock"} == before
     assert closed == [True]
 
 
 def test_voice_preflight_uses_director_shot_ids_instead_of_source_spans(monkeypatch, tmp_path):
+    from novelvideo.media_capabilities.video import h3_speaker_voices
+    observed = []
+    native_preflight = h3_speaker_voices.speaker_voice_preflight
+    def observe(speakers, characters):
+        observed.extend(speakers)
+        return native_preflight(speakers, characters)
+    monkeypatch.setattr(h3_speaker_voices, "speaker_voice_preflight", observe)
     client, backend = make_client(monkeypatch, tmp_path)
     activate_director_plan(tmp_path)
     [group] = client.get("/api/v1/projects/demo/episodes/1/narrative-groups").json()["data"]
@@ -146,8 +160,8 @@ def test_voice_preflight_uses_director_shot_ids_instead_of_source_spans(monkeypa
     monkeypatch.setattr(narrative_groups, "make_sqlite_store_for_context", store)
     response = client.get("/api/v1/projects/demo/episodes/1/narrative-groups/director-group/video/voice-preflight")
     assert response.status_code == 200
-    assert response.json()["data"]["ready"] is False
-    assert [issue["speaker"] for issue in response.json()["data"]["issues"]] == ["闻禾"]
+    assert response.json()["data"] == {"ready": True, "issues": []}
+    assert observed == ["闻禾"]
     assert backend.calls == []
 
 
@@ -1788,7 +1802,7 @@ def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, t
     assert {
         key: value
         for key, value in payload.items()
-        if key not in {"reference_snapshot_id", "reference_snapshot_digest"}
+        if key not in {"reference_snapshot_id", "reference_snapshot_digest", "execution_contract", "requested_parameters", "workflow_definition"}
     } == {
         "episode": 1,
         "group_id": "ng-01",
@@ -1803,6 +1817,10 @@ def test_video_generate_enqueues_only_stable_director_identifiers(monkeypatch, t
     }
     assert len(payload["reference_snapshot_id"]) == 32
     assert len(payload["reference_snapshot_digest"]) == 64
+    from novelvideo.narrative_groups.execution_contract import validate_execution_contract
+    contract = validate_execution_contract(payload)
+    assert contract["effective"]["workflow_parameters"] == {"resolution": "720p"}
+    assert contract["effective"]["workflow_definition"]["id"] == "runninghub:minimax-h3"
 
 
 def test_video_generate_rejects_stale_revision_without_changing_sidecar(monkeypatch, tmp_path):

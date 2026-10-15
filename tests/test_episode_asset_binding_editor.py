@@ -35,3 +35,25 @@ async def test_binding_editor_preserves_selected_metadata_and_only_updates_targe
     result = await episodes.update_episode_asset_bindings("p", 2, {"identity_ids": [], "scene_ids": ["山门"], "prop_ids": []}, {})
     assert result["ok"] is True
     store.update_episode.assert_awaited_once_with(2, identity_ids=[], identity_default_map={}, scene_menu=[scene], prop_menu=[])
+
+
+@pytest.mark.asyncio
+async def test_binding_editor_republishes_active_references(monkeypatch, tmp_path):
+    from novelvideo.director_plan.store import DirectorPlanStore
+    from novelvideo.narrative_groups import reference_refresh
+    ep = SimpleNamespace(scene_menu=[], prop_menu=[], identity_default_map={})
+    ctx = SimpleNamespace(output_dir=tmp_path)
+    store = SimpleNamespace(get_episode=lambda n: ep, get_all_characters=lambda: [],
+        list_scenes=AsyncMock(return_value=[]), list_props=AsyncMock(return_value=[]),
+        update_episode=AsyncMock())
+    monkeypatch.setattr(episodes, 'resolve_project_scope', AsyncMock(return_value=SimpleNamespace(ctx=ctx)))
+    monkeypatch.setattr(episodes, 'make_sqlite_store_for_context', AsyncMock(return_value=store))
+    monkeypatch.setattr(episodes, '_episode_detail_payload', lambda ep, n: {'number': n})
+    monkeypatch.setattr(DirectorPlanStore, 'load_active', lambda self, n: SimpleNamespace(revision_id='r1'))
+    refresh = AsyncMock(return_value=3)
+    monkeypatch.setattr(reference_refresh, 'refresh_active_references', refresh)
+    result = await episodes.update_episode_asset_bindings('p', 2,
+        {'identity_ids': [], 'scene_ids': [], 'prop_ids': []}, {})
+    assert result['ok'] is True
+    refresh.assert_awaited_once()
+    assert refresh.call_args.args[-2:] == (2, 'r1')

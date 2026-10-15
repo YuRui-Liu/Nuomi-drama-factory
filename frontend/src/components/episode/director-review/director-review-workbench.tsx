@@ -196,7 +196,7 @@ export function DirectorReviewWorkbench({ project, episode, onClose, onActivated
               {unresolved?.slice(0, 3).map(({ issue }) => <p key={issue.issue_id} className="whitespace-pre-wrap text-sm">{[...(selected.creative_feedback?.qc_rounds ?? [])].reverse()
                 .flatMap((round) => round.dispositions).find((item) => item.issue_id === issue.issue_id)?.explanation ?? issue.description}</p>)}
               <Button size="sm" variant="outline" onClick={() => setTab("issues")}>查看全部审核问题</Button>
-              {selected.creative_contract_version === 1 && selected.creative_review_status !== "passed" && ["draft", "review_required", "failed"].includes(selected.status) && <Button disabled={pending || awaitingReviewId === selected.revision_id} onClick={() => review.mutate(selected.revision_id)}>提交独立 QC 复查</Button>}
+              {selected.creative_contract_version === 1 && selected.creative_review_status !== "passed" && ["draft", "review_required", "failed", "active"].includes(selected.status) && <Button disabled={pending || awaitingReviewId === selected.revision_id} onClick={() => review.mutate(selected.revision_id)}>提交独立 QC 复查</Button>}
               {selectedReview && review.isError && <p role="alert" className="text-sm text-destructive">复查提交失败：{String(review.error)}</p>}
               {reviewTask?.status === "failed" && <p role="alert" className="text-sm text-destructive">独立 QC 复查失败：{reviewTask.error || "请查看任务中心日志"}。本次没有获得通过结论。</p>}
               {reviewTask?.status === "cancelled" && <p role="status">独立 QC 复查已取消。</p>}

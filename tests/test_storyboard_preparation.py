@@ -44,6 +44,28 @@ def test_missing_description_and_stale_guard(ctx):
         guard_prepared(ctx, 'canvas', 'video', result['draft'])
 
 
+def test_preparation_persists_explicit_pair_and_guards_pair_edits(ctx):
+    from novelvideo.freezone.video_director.storyboard_preparation import prepare_storyboard, guard_prepared
+    canvas = read_canvas(ctx.output_dir, 'canvas')
+    board = canvas['nodes'][0]['data']
+    for i, frame in enumerate(board['frames']):
+        frame['id'] = f'cell-{i}'
+    board['videoFramePairs'] = [{'id': 'shot', 'first_frame_id': 'cell-0', 'last_frame_id': 'cell-3',
+                               'description': '抬手后停住', 'duration_seconds': 10}]
+    atomic_write_json(canvas_path(ctx.output_dir, 'canvas'), canvas)
+    result = prepare_storyboard(ctx, canvas_id='canvas', node_id='video', base_revision=1, request_id='pairs')
+    segment = result['draft']['segments'][0]
+    assert segment['first_frame']['url'] == result['preparation']['cells'][0]['imageUrl']
+    assert segment['last_frame']['url'] == result['preparation']['cells'][3]['imageUrl']
+    assert result['draft']['references'] == []
+    guard_prepared(ctx, 'canvas', 'video', result['draft'])
+    canvas = read_canvas(ctx.output_dir, 'canvas')
+    canvas['nodes'][0]['data']['videoFramePairs'][0]['last_frame_id'] = 'cell-2'
+    atomic_write_json(canvas_path(ctx.output_dir, 'canvas'), canvas)
+    with pytest.raises(ValueError, match='stale'):
+        guard_prepared(ctx, 'canvas', 'video', result['draft'])
+
+
 @pytest.mark.asyncio
 async def test_api_prepare_editor_contract(ctx, monkeypatch):
     from novelvideo.api.routes import freezone_video_director as api

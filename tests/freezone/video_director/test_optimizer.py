@@ -516,3 +516,12 @@ async def test_rejects_wrong_identity_or_mode(option):
         await optimize(FakeRuntime(**{option: True}), draft(segments=(
             DirectorSegment(id="one", prompt="A walks", duration_seconds=5, first_frame=image("f1")),
         )), frozen_images={"f1": StructuredImage(b"a", "image/png")})
+def test_chinese_single_quotes_are_locked_as_dialogue():
+    from novelvideo.freezone.video_director.optimizer import _locked_dialogue
+    assert _locked_dialogue('莉娅说：‘我们回去。’') == [{'speaker': '莉娅', 'quote': '‘我们回去。’'}]
+
+
+def test_bound_speaker_action_is_not_part_of_the_character_name():
+    from novelvideo.freezone.video_director.optimizer import _locked_dialogue
+    prompt = '<Picture 1>是莉娅：短发。<Picture 2>是诺尔：长发。莉娅看着诺尔说：‘我们回去。’'
+    assert _locked_dialogue(prompt) == [{'speaker': '莉娅', 'quote': '‘我们回去。’'}]

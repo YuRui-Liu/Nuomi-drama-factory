@@ -29,8 +29,8 @@ export function projectDirectorDraft(draft: DirectorDraft, mode: DirectorInputMo
     references: mode === 'ref' ? draft.references.map((image) => ({ ...image })) : [],
     segments: draft.segments.map((segment) => ({
       ...segment,
-      firstFrame: mode === 'frames' && segment.firstFrame ? { ...segment.firstFrame } : null,
-      lastFrame: mode === 'frames' && segment.lastFrame ? { ...segment.lastFrame } : null,
+      firstFrame: segment.firstFrame ? { ...segment.firstFrame } : null,
+      lastFrame: segment.lastFrame ? { ...segment.lastFrame } : null,
     })),
   };
 }

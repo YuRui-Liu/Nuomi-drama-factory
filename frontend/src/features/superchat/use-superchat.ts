@@ -554,11 +554,13 @@ export function useSuperChat({
   project,
   canvasId,
   displayName,
+  references,
   conversationId = 'default',
 }: {
   project?: string;
   canvasId?: string;
   displayName: string;
+  references?: import('./types').CanvasChatReference[];
   conversationId?: string;
 }) {
   const desiredScope = useMemo(() => scopeForProject(project), [project]);
@@ -835,6 +837,7 @@ export function useSuperChat({
         }
         break;
       case "chat.done":
+        window.dispatchEvent(new CustomEvent('nuomi:chat-canvas-updated', { detail: { project } }));
         if (
           typeof frame.turn_id === "string"
           && cancelledTurnIdsRef.current.has(frame.turn_id)
@@ -1015,7 +1018,7 @@ export function useSuperChat({
     };
   }, [connect, disconnect]);
 
-  const send = useCallback((text: string, attachments: ChatAttachment[] = [], transportText?: string) => {
+  const send = useCallback((text: string, attachments: ChatAttachment[] = [], transportText?: string, referenceSnapshot = references) => {
     if (!mounted.current || currentInstance.current !== instance || sessionEpochRef.current !== sessionEpoch) return false;
     const trimmed = text.trim();
     if (!trimmed || !connected) return false;
@@ -1033,9 +1036,10 @@ export function useSuperChat({
       turn_id: turnId,
       generation: sessionRef.current?.generation,
       attachments: attachments.length > 0 ? attachments : undefined,
+      references: referenceSnapshot,
     });
     return true;
-  }, [connected, desiredScope, displayName, markTurnActive, sendFrame, scopeKey, sessionEpoch, instance]);
+  }, [connected, desiredScope, displayName, markTurnActive, sendFrame, scopeKey, sessionEpoch, references, instance]);
 
   const appendNotification = useCallback(async (text: string): Promise<boolean> => {
     if (!mounted.current || currentInstance.current !== instance) return false;

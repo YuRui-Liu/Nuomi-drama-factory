@@ -188,6 +188,21 @@ describe("DirectorReviewWorkbench", () => {
     }
   });
 
+  it("lets an active plan that no longer passes validation enter independent repair", () => {
+    base.creative_contract_version = 1;
+    base.creative_review_status = "needs_revision";
+    try {
+      render(<DirectorReviewWorkbench project="demo" episode={1} onClose={vi.fn()} />);
+      fireEvent.click(screen.getByRole("button", { name: /版本 1/ }));
+      fireEvent.click(screen.getByRole("button", { name: "提交独立 QC 复查" }));
+      expect(mocks.review).toHaveBeenCalledWith("rev-1");
+      expect(mocks.create).not.toHaveBeenCalled();
+    } finally {
+      delete base.creative_contract_version;
+      delete base.creative_review_status;
+    }
+  });
+
   it("allows QC retry when an observed completed task later disappears", () => {
     mocks.reviewState = { isSuccess: true, variables: "rev-2" };
     candidate.creative_contract_version = 1;

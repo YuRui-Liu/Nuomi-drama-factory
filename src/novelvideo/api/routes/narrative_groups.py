@@ -881,7 +881,7 @@ async def save_group_video_quality_disposition(project: str, episode: int, group
     return {'ok': True, 'data': row}
 
 
-def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup]) -> list[dict]:
+def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup], episode: int = 0) -> list[dict]:
     result = []
     for group in groups:
         item = group.to_dict()
@@ -908,6 +908,7 @@ def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup]) ->
                 if manifest_name:
                     try:
                         from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+                        from novelvideo.utils.path_resolver import PathResolver
 
                         manifest = load_h3_director_manifest(manifest_name)
                         _serialize_video_quality(project, project_dir, state, manifest)
@@ -918,6 +919,11 @@ def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup]) ->
                                 "start_seconds": entry.start_seconds,
                                 "end_seconds": entry.end_seconds,
                                 "dialogue_source": entry.dialogue_source.value,
+                                "external_audio_ready": (
+                                    Path(entry.external_audio_path).is_file()
+                                    if entry.external_audio_path else
+                                    PathResolver(str(project_dir), episode).audio(entry.segment.beat_number).is_file()
+                                ),
                             }
                             for index, entry in enumerate(manifest.entries)
                         ]
@@ -929,6 +935,8 @@ def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup]) ->
                             state["dialogue_stem_path"] = manifest.dialogue_stem_path or ""
                         if not state.get("ambience_stem_path"):
                             state["ambience_stem_path"] = manifest.ambience_stem_path or ""
+                        state["dialogue_stem_status"] = manifest.dialogue_stem_status
+                        state["ambience_stem_status"] = manifest.ambience_stem_status
                     except (OSError, ValueError):
                         state["video_spans"] = []
                 else:
@@ -1519,7 +1527,7 @@ async def list_narrative_groups(
 ):
     resolved, groups, _ = await _resolve_groups(project, episode, user)
     groups = await asyncio.to_thread(_reconcile_orphan_stages, resolved, episode, groups)
-    return {"ok": True, "data": _serialize(project, resolved.project_dir, groups)}
+    return {"ok": True, "data": _serialize(project, resolved.project_dir, groups, episode)}
 
 
 @router.get(
@@ -1969,7 +1977,7 @@ async def rebuild_narrative_groups(
     user: dict = Depends(get_api_user),
 ):
     resolved, groups, _ = await _resolve_groups(project, episode, user, rebuild=True)
-    return {"ok": True, "data": _serialize(project, resolved.project_dir, groups)}
+    return {"ok": True, "data": _serialize(project, resolved.project_dir, groups, episode)}
 
 
 @router.get(
@@ -2012,6 +2020,7 @@ async def preview_group_references(
     except PlannedReferenceError as exc:
         raise _planned_reference_http_error(exc) from exc
     data = planned.model_dump(mode="json")
+    data["source_plan_revision_id"] = active_revision_id
     for binding in data["bindings"]:
         thumbnail = str(binding.get("thumbnail_url") or "")
         if thumbnail:
@@ -2020,9 +2029,6 @@ async def preview_group_references(
             )
         binding.pop("relative_path", None)
         binding.pop("sha256", None)
-        binding.pop("entity_id", None)
-        binding.pop("group_ids", None)
-        binding.pop("shot_ids", None)
     return {
         "ok": True,
         "data": data,
@@ -2156,7 +2162,7 @@ async def rollback_stage(
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Narrative group revision not found") from exc
-    return {"ok": True, "data": _serialize(project, resolved.project_dir, [group])[0]}
+    return {"ok": True, "data": _serialize(project, resolved.project_dir, [group], episode)[0]}
 
 
 async def _enqueue_group_action(
@@ -2173,6 +2179,17 @@ async def _enqueue_group_action(
     resolved, groups, beats = await _resolve_groups(project, episode, user)
     try:
         source_group, selected_beats = _group_beats(groups, beats, group_id)
+        if not split_only:
+            from novelvideo.director_plan.execution import require_executable_shots
+            plan = DirectorPlanStore(resolved.project_dir).load_active(episode)
+            if plan is not None:
+                try:
+                    require_executable_shots(tuple(g for g in plan.groups if g.id == group_id))
+                except ValueError as exc:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "director_plan_not_executable", "reason": str(exc),
+                        "action": "Repair and activate the director plan before buying new storyboard images.",
+                    }) from exc
         selected_beats = generation_beats_for_group(
             resolved.project_dir,
             episode,
@@ -2457,6 +2474,11 @@ async def _enqueue_group_video(
             "reason": source_group.stages["render"].stale_reason,
         })
     settings = source_group.video_settings
+    if settings.overrides and workflow.id != settings.workflow_id:
+        raise HTTPException(status_code=409, detail={
+            "code": "VIDEO_SETTINGS_WORKFLOW_MISMATCH",
+            "message": "本组覆盖参数属于另一视频模型，请先保存当前模型设置再生成。",
+        })
     if request.retry_planning and source_group.stages["video"].status != "failed":
         raise HTTPException(status_code=409, detail="Only failed planning can be explicitly retried")
     if request.settings_revision is not None:
@@ -2611,10 +2633,8 @@ async def _enqueue_group_video(
         parameter_overrides = dict(settings.overrides)
         if request.settings_revision is None and request.resolution is not None:
             parameter_overrides["resolution"] = request.resolution
-        workflow_parameters = resolve_workflow_parameters(
-            workflow,
-            {**project_defaults, **parameter_overrides},
-        )
+        from novelvideo.narrative_groups.execution_contract import resolve_execution_parameters
+        workflow_parameters = resolve_execution_parameters(workflow, project_defaults, parameter_overrides)
     except VideoWorkflowParameterError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
@@ -2707,6 +2727,13 @@ async def _enqueue_group_video(
                 "reference_limit": reference_limit,
             })
     try:
+        from novelvideo.narrative_groups.execution_contract import freeze_execution_contract, workflow_execution_definition
+        payload["requested_parameters"] = {
+            "project_defaults": dict(project_defaults),
+            "overrides": dict(parameter_overrides),
+        }
+        payload["workflow_definition"] = workflow_execution_definition(workflow)
+        payload["execution_contract"] = freeze_execution_contract(payload)
         queued = await get_task_backend().enqueue_project_task(
             resolved.ctx, task_type="narrative_group_video", queue_kind="video",
             episode=episode, scope=scope, payload=payload,
@@ -2753,7 +2780,8 @@ async def _enqueue_group_video(
     return {"ok": True, "data": {
         "task_id": queued.task_state.task_id, "scope": scope,
         "backend": queued.backend, "queue": queued.queue,
-        "metadata": {"group_id": group_id, "stage": "video", "revision": revision},
+        "metadata": {"group_id": group_id, "stage": "video", "revision": revision,
+                     "execution_contract": payload["execution_contract"]},
     }}
 @router.post(
     "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/sketch/generate",
@@ -2981,9 +3009,8 @@ async def put_group_video_settings(
             request.workflow_id, VideoWorkflowScene.NARRATIVE_GROUP
         )
         project_defaults = _project_video_workflow_defaults(resolved, workflow)
-        resolved_values = resolve_workflow_parameters(
-            workflow, {**project_defaults, **request.overrides}
-        )
+        from novelvideo.narrative_groups.execution_contract import resolve_execution_parameters
+        resolved_values = resolve_execution_parameters(workflow, project_defaults, request.overrides)
         normalized_overrides = {
             key: value
             for key, value in resolved_values.items()
@@ -3009,7 +3036,7 @@ async def put_group_video_settings(
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     return {
         "ok": True,
-        "data": _serialize(project, resolved.project_dir, [group])[0],
+        "data": _serialize(project, resolved.project_dir, [group], episode)[0],
     }
 
 
@@ -3046,7 +3073,7 @@ async def put_group_video_plan(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {
         "ok": True,
-        "data": _serialize(project, resolved.project_dir, [group])[0],
+        "data": _serialize(project, resolved.project_dir, [group], episode)[0],
     }
 
 

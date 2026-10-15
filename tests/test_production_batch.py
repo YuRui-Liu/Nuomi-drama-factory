@@ -82,6 +82,19 @@ def test_incomplete_active_directions_create_new_plan_instead_of_reusing_legacy(
     assert ("POST", "episodes/1/director-plans/new/activate") in calls
 
 
+def test_unexecutable_active_plan_is_not_silently_replaced_or_sent_to_production():
+    def request(method, path, body=None):
+        assert method == "GET" and path == "episodes/1/director-plans"
+        return {"ok": True, "data": [{"revision_id": "adopted", "status": "active",
+            "production_ready": False, "execution_errors": [{
+                "code": "video_shot_duration_out_of_range", "message": "Shot s1 is 25s"}]}]}
+    module = batch_module()
+    producer = module._Producer(request, lambda _: pytest.fail("Unexpected task"),
+        lambda _: None, max_submissions=3, aspect_ratio="9:16", retry_failed=True)
+    with pytest.raises(module.BatchFailure, match="director_plan_not_executable.*adopted.*25s"):
+        producer.prepare_plan(1)
+
+
 class ProductionAPI:
     def __init__(self):
         self.groups = {episode: [{

@@ -8,12 +8,21 @@ export type ClientFrame =
       turn_id?: string;
       generation?: number;
       attachments?: ChatAttachment[];
+      references?: CanvasChatReference[];
     }
   | { type: "scope.set"; scope: ChatScope };
 
 export type ChatScope = {
   kind: "home" | "project" | "asset" | "task";
   id?: string | null;
+};
+
+export type CanvasChatReference = { canvas_id: string; node_ids: string[]; asset_ids?: string[] };
+export type CanvasContextSnapshot = {
+  project_id: string;
+  turn_id?: string | null;
+  primary_target: { canvas_id: string; node_id: string; fingerprint: string } | null;
+  references: Array<{ canvas_id: string; revision?: number; nodes: Array<{ id: string; type: string; fingerprint: string; data: Record<string, unknown> }>; assets?: Array<Record<string, unknown>> }>;
 };
 
 export type RelayInstanceInfo = {
@@ -122,6 +131,7 @@ export type ChatMessage = {
   displayName?: string;
   attachments?: ChatAttachment[];
   timestamp: number;
+  canvasContext?: CanvasContextSnapshot;
   raw?: unknown;
 };
 

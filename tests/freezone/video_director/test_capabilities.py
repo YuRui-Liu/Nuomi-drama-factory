@@ -88,6 +88,8 @@ def test_route_rejects_negative_count():
         ((), True, False, "i2v", "h3"),
         ((), True, True, "fl2v", "h3"),
         ((image("ref"),), False, False, "ref_only", "h3_ref"),
+        ((image("ref"),), True, False, "ref_plus_first", "h3_ref"),
+        ((image("ref"),), True, True, "ref_plus_first_last", "h3_ref"),
     ],
 )
 def test_supported_input_modes(refs, first, last, mode, route):
@@ -104,8 +106,7 @@ def test_supported_input_modes(refs, first, last, mode, route):
 @pytest.mark.parametrize(
     "refs,first,last,field",
     [
-        ((image("ref"),), True, False, "segments[0].first_frame"),
-        ((image("ref"),), True, True, "segments[0].first_frame"),
+        ((image("ref"),), False, True, "segments[0].first_frame"),
         ((), False, False, "segments[0].first_frame"),
         ((), False, True, "segments[0].first_frame"),
     ],
@@ -201,5 +202,5 @@ def test_public_capabilities_have_verified_modes_sizes_and_configured_limit():
     assert info["models"][0]["adapter"] == "h3"
     assert info["params"]["resolution"] == ("720p", "1080p")
     assert info["params"]["aspect_ratio"] == ("9:16", "16:9")
-    assert {mode["id"] for mode in info["modes"] if mode["supported"]} == {"i2v", "fl2v", "ref_only"}
+    assert {mode["id"] for mode in info["modes"] if mode["supported"]} == {"i2v", "fl2v", "ref_only", "ref_plus_first", "ref_plus_first_last"}
     assert info["sizes"][0]["width"] > 0

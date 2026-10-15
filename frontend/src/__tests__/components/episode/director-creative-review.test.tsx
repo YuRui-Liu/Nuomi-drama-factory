@@ -6,8 +6,8 @@ import type { DirectorPlanRevision } from "@/lib/queries/director-plans";
 
 const revision = {
   revision_id: "r2", status: "review_required", creative_contract_version: 1,
-  creative_review_status: "needs_revision", validation_report: { passed: true },
-  groups: [{ id: "g", shots: [{ id: "s1", creative: {
+  creative_review_status: "needs_revision", validation_report: { passed: true, issues: [] },
+  groups: [{ id: "g", shots: [{ id: "s1", source_span_ids: ["line-1"], dialogue_source_ids: [], creative: {
     optics: { purpose: "让观众辨认门口的人", focal_length_mm: 35 },
     performance: { purpose: "先听到坏消息再停笔" },
   } }] }],

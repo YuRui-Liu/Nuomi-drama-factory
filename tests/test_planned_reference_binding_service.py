@@ -39,6 +39,30 @@ def _project(**overrides):
     return bindings_for_director_plan(**values)
 
 
+def test_character_alias_uses_canonical_identity_default():
+    bindings = _project(
+        shots=[_shot("shot-1", {"kind": "character_identity", "entity_key": "王后薇拉"})],
+        characters=[{"name": "薇拉", "aliases": ["王后薇拉"], "identities": [
+            {"identity_id": "vera-base", "identity_name": "基础造型"},
+            {"identity_id": "vera-young", "identity_name": "年轻造型"},
+        ]}],
+        episode_identity_ids=frozenset({"vera-base", "vera-young"}),
+        identity_default_map={"薇拉": "vera-base"},
+    )
+    assert bindings[0].status == "ready"
+    assert bindings[0].asset_slot_id == "character:薇拉:state:vera-base"
+
+
+def test_ambiguous_character_alias_requires_confirmation():
+    bindings = _project(
+        shots=[_shot("shot-1", {"kind": "character_identity", "entity_key": "王后"})],
+        characters=[{"name": name, "aliases": ["王后"], "identities": [
+            {"identity_id": name + "-base"},
+        ]} for name in ("薇拉", "安娜")],
+    )
+    assert bindings[0].status == "pending_confirmation"
+
+
 class _BindingStore:
     def __init__(self, binding: PlannedReferenceBinding) -> None:
         self.binding = binding

@@ -220,6 +220,7 @@ import {
 } from "@/components/credits/credit-visual";
 import { useGenerationCreditCost } from "@/lib/queries/generation-credit-cost";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { VideoProcessingPanel } from './VideoProcessingPanel';
 
 type VideoNodeProps = NodeProps & {
   id: string;
@@ -2756,6 +2757,7 @@ export const VideoNode = memo(
         onDragOver={handleDragOver}
       >
         {/* 叠卡画册的卡片边：从主视频右侧探出（与图片节点同款），点卡边也能展开画册。 */}
+        {selected && data.videoUrl && !isGenerating && <VideoProcessingPanel nodeId={id} sourceUrl={data.videoUrl} />}
         {hasAlbum && !albumExpanded && videoSource && (
           <>
             {Array.from({ length: Math.min(albumTotalSlots - 1, 3) }, (_, index) => {

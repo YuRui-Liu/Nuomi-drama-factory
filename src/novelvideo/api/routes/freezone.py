@@ -5453,7 +5453,8 @@ def _video_upscale_output_path(project_dir: Path, job_id: str) -> Path:
 
 
 def _audio_separate_audio_output_path(project_dir: Path, job_id: str) -> Path:
-    return outputs_dir(project_dir, "freezone_audio_separate") / f"{job_id}.m4a"
+    from novelvideo.freezone.video_processing import audio_result_path
+    return audio_result_path(project_dir, job_id)
 
 
 def _audio_separate_mute_video_output_path(project_dir: Path, job_id: str) -> Path:

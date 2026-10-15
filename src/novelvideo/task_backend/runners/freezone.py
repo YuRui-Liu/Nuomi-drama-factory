@@ -642,6 +642,14 @@ async def _run_freezone_video_upscale_async(
     project_dir = Path(str(payload.get("project_dir") or ctx.output_dir))
     ensure_freezone_dirs(project_dir)
     _update(ctx, "freezone_video_upscale", job_id, 0.1, "开始视频高清处理...")
+    if payload.get("processing"):
+        from novelvideo.freezone.video_processing import run_processing
+        output_path, meta = await run_processing(project_dir=project_dir, job_id=job_id, payload=payload["processing"])
+        from novelvideo.freezone.video_processing_projection import project_processing_result
+        output_url = make_static_url_for_context(ctx, output_path.relative_to(project_dir).as_posix())
+        projection = project_processing_result(project_dir, job_id, payload=payload["processing"], output_url=output_url, meta=meta)
+        return {"job_id": job_id, "output_format": "mp4", "output_path": str(output_path),
+                "output_url": output_url, "meta": meta, "projection": projection}
     output_path, meta = await run_freezone_video_upscale(
         project_dir=project_dir,
         job_id=job_id,

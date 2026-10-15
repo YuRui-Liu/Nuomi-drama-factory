@@ -307,6 +307,13 @@ def _grid_prompt(
 ) -> str:
     from novelvideo.narrative_groups.image_prompt import panel_description
 
+    if 'static_panels' in payload:
+        from novelvideo.narrative_groups.storyboard_prompt import compile_storyboard
+        layout = payload.get('layout') or {}
+        return compile_storyboard(payload['static_panels'], payload.get('static_references', []),
+            rows=layout.get('rows', 1), cols=layout.get('columns', 1),
+            aspect_ratio=payload.get('aspect_ratio'), style=style_prompt)['prompt']
+
     layout = payload.get("layout") or {}
     beats = list(payload.get("beats") or [])
     stage = str(payload.get("stage") or "render")
@@ -544,6 +551,15 @@ def _rebuild_normalized_grid(
             cell.close()
 
 
+def _validate_static_attachments(payload: Mapping[str, Any], references: tuple[str, ...]) -> None:
+    """Never submit a numbered manifest for a different actual attachment list."""
+    if 'static_panels' not in payload:
+        return
+    declared = tuple(str(item.get('url') or '') for item in payload.get('static_references', []))
+    if declared != tuple(str(item) for item in references):
+        raise ValueError('static reference manifest differs from actual attachments; rebuild the static contract')
+
+
 async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dict[str, Any]:
     """Generate exactly one group grid through the configured GRSAI account."""
     from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
@@ -560,6 +576,7 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
         provider_id=provider_id,
     )
     generation_input = _generation_input(payload)
+    _validate_static_attachments(payload, generation_input.references)
     model = str(payload.get("model") or runtime.model)
     requested_tier = str(payload.get("image_size") or "1K")
     resolution = None
@@ -987,6 +1004,12 @@ async def _execute_single(envelope: dict[str, Any], ctx: ProjectContext, *, spli
         error="",
     )
     try:
+        if not split_only:
+            from novelvideo.director_plan.store import DirectorPlanStore
+            from novelvideo.director_plan.execution import require_executable_shots
+            active = DirectorPlanStore(project_dir).load_active(episode)
+            if active is not None:
+                require_executable_shots(tuple(g for g in active.groups if g.id == group_id))
         if payload.get("storyboard_contract_version") == 1 and split_only:
             from novelvideo.narrative_groups.storyboard_sources import StoryboardSplitInput
 

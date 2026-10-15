@@ -110,7 +110,7 @@ describe('video director image bindings', () => {
     expect(useCanvasStore.getState().edges).toHaveLength(1);
     const resolved = resolveDirectorBindings(createDirectorDraft('s1'), [board], [link], 'ref');
     expect(resolved.errors).toEqual({});
-    expect(resolved.draft.references[0].url).toContain('/storyboard.png');
+    expect(resolved.draft.references).toEqual([]);
   });
 
   it('allows the same image node to bind first and last frames across segments', () => {

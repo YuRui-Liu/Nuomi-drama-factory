@@ -53,10 +53,14 @@ async def test_changed_brief_prevents_stale_commit(store):
     assert result['status'] == 'needs_rebase'
     assert [doc.kind for doc in await store.list()] == ['brief']
 
-async def test_continue_uses_prior_script_and_existing_target_becomes_candidate(store):
+@pytest.mark.parametrize('synopsis', [
+    '# 分集梗概\n\n第二集计划：两人前往码头。',
+    '# 分集梗概\n01 寻找钥匙：主角在码头找到线索。\n02 没有影子的孩子：莉娅与诺尔潜回停车场，救出尚未签约的孩子。\n03 追踪：追兵出现在钟楼门口。',
+])
+async def test_continue_uses_prior_script_and_existing_target_becomes_candidate(store, synopsis):
     brief = await store.create(kind='brief', title='简报', markdown='三集短剧', client_mutation_id='brief')
     await store.create(kind='outline', title='大纲', markdown='# 大纲\n\n姐妹在旧城寻找失踪父亲。', client_mutation_id='outline')
-    await store.create(kind='episode_synopsis', title='分集梗概', markdown='# 分集梗概\n\n第二集计划：两人前往码头。', client_mutation_id='synopsis')
+    await store.create(kind='episode_synopsis', title='分集梗概', markdown=synopsis, client_mutation_id='synopsis')
     await store.create(kind='episode_script', title='第一集', episode_number=1, markdown='# 第一集\n\n主角在码头找到钥匙。', client_mutation_id='first')
     target = await store.create(kind='episode_script', title='第二集', episode_number=2, markdown='# 第二集\n\n作者已写正文。', client_mutation_id='second')
     service = GenerationService(store)
@@ -259,6 +263,23 @@ def test_target_synopsis_accepts_chinese_episode_numbers_through_100(number, chi
     assert result is not None
     assert '姐妹在码头找到父亲留下的证人' in result
     assert '后续剧情' not in result
+
+
+@pytest.mark.parametrize('marker', ['02 ', '2. ', '2、', '## 02 '])
+def test_numbered_synopsis_reads_only_target_episode(marker):
+    from novelvideo.script_creation.prompts import target_synopsis
+    markdown = ('# 分集梗概\n01 火柴：女孩发现慈善马车中孩子没有影子。\n'
+                + marker + '没有影子的孩子：莉娅与诺尔潜回停车场，救出尚未签约的孩子。\n'
+                '03 未来：火光暴露藏身处，追兵出现。')
+    result = target_synopsis(markdown, 2)
+    assert result and '莉娅与诺尔潜回停车场' in result
+    assert '慈善马车' not in result and '追兵出现' not in result
+
+
+def test_numbered_synopsis_does_not_treat_inline_numbers_as_episode_headings():
+    from novelvideo.script_creation.prompts import target_synopsis
+    assert target_synopsis('全季 24 集，目标 02 人逃出：故事尚未分集。', 2) is None
+    assert target_synopsis('01 第一集：女孩逃离钟楼获得第一条线索。\n02 第二集：待写', 2) is None
 
 
 async def test_generated_candidate_enters_review_and_adopts_with_cas(store):

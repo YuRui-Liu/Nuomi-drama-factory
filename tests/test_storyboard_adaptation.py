@@ -44,7 +44,15 @@ def test_descriptions_required_and_stable_segments():
     assert draft['segments'][0]['last_frame'] is None
 
 
-def test_planning_new_shots_bind_automatic_frames():
+def test_director_shot_identity_survives_reordering_panels():
+    from novelvideo.freezone.video_director.storyboard_adaptation import build_draft
+    shots = [{'id': 'reaction', 'description': '反应', 'duration_seconds': 4},
+             {'id': 'action', 'description': '动作', 'duration_seconds': 6}]
+    draft = build_draft('board', {}, ['b', 'a'], shots, 10)
+    assert [s['id'] for s in draft['segments']] == ['reaction', 'action']
+
+
+def test_planning_selected_panels_use_ref_until_endpoints_are_designed():
     from novelvideo.freezone.orchestration.planning import compile_plan
     plan = compile_plan('第一场 房间\n动作\n【本集完】', {
         'title': 't', 'assets': [{'id': 'a', 'name': 'a', 'kind': 'scene', 'prompt': 'room'}],
@@ -56,6 +64,40 @@ def test_planning_new_shots_bind_automatic_frames():
     assert len(board['data']['frames']) == 4
     assert director['data']['autoStoryboard'] == {'sourceNodeId': 'board-g'}
     assert director['data']['activeInputMode'] == 'ref'
+
+
+def test_explicit_frame_pairs_bind_endpoints_without_adjacent_shot_guessing():
+    from novelvideo.freezone.video_director.storyboard_adaptation import build_draft
+    cells = [{'id': 'a', 'description': '手放下'}, {'id': 'b', 'description': '另一镜'},
+             {'id': 'c', 'description': '手举起'}]
+    draft = build_draft('board', {}, ['a.png', 'b.png', 'c.png'], cells, 4,
+        frame_pairs=[{'id': 'raise-hand', 'first_frame_id': 'a', 'last_frame_id': 'c',
+                      'description': '抬起手', 'duration_seconds': 4}])
+    assert draft['segments'][0]['first_frame']['url'] == 'a.png'
+    assert draft['segments'][0]['last_frame']['url'] == 'c.png'
+    with pytest.raises(ValueError, match='endpoint'):
+        build_draft('board', {}, ['a.png', 'b.png', 'c.png'], cells, 4,
+            frame_pairs=[{'id': 'bad', 'first_frame_id': 'a', 'last_frame_id': 'missing',
+                          'description': 'move', 'duration_seconds': 4}])
+
+
+def test_saved_mode_is_preserved_without_a_ui_intent_flag():
+    from novelvideo.freezone.video_director.storyboard_preparation import _mode
+    assert _mode({'activeInputMode': 'ref'}) == 'ref'
+    assert _mode({'activeInputMode': 'ref', 'inputModeIntent': 'manual'}) == 'ref'
+    assert _mode({'activeInputMode': 'frames'}) == 'frames'
+    assert _mode({}) == 'ref'
+
+
+def test_explicit_first_only_does_not_require_or_invent_a_tail():
+    from novelvideo.freezone.video_director.storyboard_adaptation import build_draft
+    cells = [{'id': 'a', 'description': '起点', 'static_panel': {'anchor': 'selected'}},
+             {'id': 'b', 'description': '另一镜'}]
+    draft = build_draft('board', {}, ['a.png', 'b.png'], cells, 5,
+        frame_pairs=[{'id': 'g1', 'first_frame_id': 'a', 'last_frame_id': '',
+                      'description': '向前行走', 'duration_seconds': 5}])
+    assert draft['segments'][0]['first_frame']['url'] == 'a.png'
+    assert draft['segments'][0]['last_frame'] is None
 
 
 def test_director_slots_are_mode_specific():
@@ -70,18 +112,19 @@ def test_director_slots_are_mode_specific():
     node['data']['draft'] = draft
     edge['data']['slot'] = {'kind': 'reference'}
     draft = project_director_inputs(node, inputs, [edge])
-    assert draft['segments'][0]['first_frame'] is None
+    assert draft['segments'][0]['first_frame']['url'] == '/a.png'
     assert len(draft['references']) == 1
 
 
 @pytest.mark.asyncio
-async def test_new_blueprint_requires_four_shots(monkeypatch):
+async def test_new_blueprint_requires_shared_director_contract(monkeypatch):
     from types import SimpleNamespace
     from novelvideo.freezone.orchestration.planning import generate_blueprint, Blueprint
     from novelvideo.freezone.orchestration.models import OrchestrationError
     import novelvideo.text_task_runtime as runtime
     import novelvideo.api.deps as deps
     import novelvideo.media_capabilities.image.catalog as catalog
+    import novelvideo.freezone.orchestration.director_bridge as bridge
     blueprint = Blueprint.model_validate({'title': 't', 'assets': [{'id': 'a', 'name': 'a', 'kind': 'scene', 'prompt': 'room'}],
         'groups': [{'id': 'g', 'scene_id': 'scene-1', 'start_line': 1, 'end_line': 3, 'duration': 10,
                     'prompt': 'group', 'asset_ids': ['a']}]})
@@ -89,11 +132,15 @@ async def test_new_blueprint_requires_four_shots(monkeypatch):
     async def structured(**kwargs):
         calls.append(kwargs)
         return blueprint
+    async def direct(*args, **kwargs):
+        calls.append(kwargs)
+        return blueprint.model_dump()
+    monkeypatch.setattr(bridge, 'direct_canvas', direct)
     monkeypatch.setattr(runtime, 'current_text_task_runtime', lambda: SimpleNamespace(run_structured=structured,
         snapshot=SimpleNamespace(model_dump=lambda **kwargs: {})))
     monkeypatch.setattr(deps, 'get_media_capability_store', lambda: None)
     monkeypatch.setattr(deps, 'get_media_credential_resolver', lambda: None)
     monkeypatch.setattr(catalog, 'list_image_models', lambda *args: [SimpleNamespace(provider='p', id='m')])
-    with pytest.raises(OrchestrationError, match='four'):
+    with pytest.raises(OrchestrationError, match='director'):
         await generate_blueprint('第一场 房间\n动作\n【本集完】', duration=10, aspect_ratio='16:9')
     assert len(calls) == 3

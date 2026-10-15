@@ -502,4 +502,10 @@ async def adopt(project: str, name: str, candidate_id: str, body: CastingAdoptio
             raise HTTPException(409, {'code': 'asset_media_pending', 'message': str(exc)}) from exc
         except ValueError as exc:
             raise HTTPException(503 if 'service unavailable' in str(exc) else 409, str(exc)) from exc
+        # Adoption is already committed. Repair failures are recoverable independently.
+        from novelvideo.api.routes.character_reference_repair import bind_after_adoption
+        try:
+            result['character_reference_repairs'] = await bind_after_adoption(ctx, sql, name, identity_id, candidate_id)
+        except Exception as exc:
+            result['character_reference_repair_error'] = str(exc)
         return {'ok': True, 'data': result}

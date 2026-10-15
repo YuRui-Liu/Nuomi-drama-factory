@@ -1433,6 +1433,23 @@ class FreezoneVideoEraseRequest(BaseModel):
     )
 
 
+class FreezoneVideoProcessingRequest(BaseModel):
+    request_id: str = Field(min_length=1, max_length=128)
+    source_url: str
+    operation: Literal["extend", "enhance", "retake", "adopt"]
+    source_fingerprint: str = Field(min_length=64, max_length=64)
+    prompt: str = Field(default="", max_length=10000)
+    additional_seconds: float = Field(default=5, gt=0, le=120, allow_inf_nan=False)
+    resolution: Optional[str] = None
+    fps: Optional[int] = Field(default=None, ge=1, le=240)
+    start: float = Field(default=0, ge=0, allow_inf_nan=False)
+    end: float = Field(default=0, ge=0, allow_inf_nan=False)
+    candidate_url: Optional[str] = None
+    candidate_fingerprint: Optional[str] = None
+    canvas_id: str = Field(default="default", pattern=r'^[a-zA-Z0-9_-]{1,64}$')
+    node_id: str = Field(min_length=1, max_length=200)
+
+
 class FreezoneVideoUpscaleRequest(BaseModel):
     """视频高清请求。
 

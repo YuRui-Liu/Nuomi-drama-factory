@@ -88,7 +88,10 @@ export function normalizeMessage(message: unknown, fallbackRole: ChatRole = "ass
   const turnId = normalizeTurnId(value);
   const displayName = typeof value.displayName === "string" ? value.displayName : undefined;
   const attachments = extractAttachments(value);
-  return { id, role, text, turnId, displayName, attachments, timestamp, raw: message };
+  const snapshot = value.canvas_context;
+  const canvasContext = snapshot && typeof snapshot === 'object' && Array.isArray((snapshot as Record<string, unknown>).references)
+    ? snapshot as import('./types').CanvasContextSnapshot : undefined;
+  return { id, role, text, turnId, displayName, attachments, timestamp, canvasContext, raw: message };
 }
 
 function extractAttachments(value: Record<string, unknown>): ChatAttachment[] {

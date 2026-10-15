@@ -55,7 +55,10 @@ class RunStore:
         order = execution_order(canvas["nodes"], canvas["edges"], target)
         snapshot = deepcopy(canvas)
         if operation:
-            next(n for n in snapshot["nodes"] if n["id"] == target)["data"]["operation"] = operation
+            target_node = next(n for n in snapshot["nodes"] if n["id"] == target)
+            target_node["data"]["operation"] = operation
+            if operation == 'generate' and target_node['type'] in {'imageGenNode', 'imageNode', 'storyboardGenNode'}:
+                target_node['data']['referenceOnly'] = False
         request_hash = fingerprint([snapshot, target, settings, operation, actor.get("id")])
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -65,10 +68,11 @@ class RunStore:
                 if existing["request_hash"] != request_hash:
                     raise OrchestrationError("idempotency_conflict", "Request ID reused for a different snapshot")
                 return json.loads(existing["payload"])
-            active = db.execute("SELECT id FROM runs WHERE canvas_id=? AND status NOT IN ('succeeded','failed','cancelled')",
-                                (canvas["canvas_id"],)).fetchone()
-            if active:
-                raise OrchestrationError("canvas_busy", "Canvas has an active run", run_id=active["id"])
+            active = db.execute("SELECT id,payload FROM runs WHERE canvas_id=? AND status NOT IN ('succeeded','failed','cancelled')",
+                                (canvas["canvas_id"],)).fetchall()
+            for running in active:
+                if set(order).intersection(json.loads(running['payload'])['order']):
+                    raise OrchestrationError("canvas_busy", "These nodes have an active run", run_id=running["id"])
             run = {"schema_version": 1, "id": uuid4().hex, "project_id": project_id,
                    "canvas_id": canvas["canvas_id"], "target": target, "request_id": request_id,
                    "snapshot": snapshot, "settings": deepcopy(settings),

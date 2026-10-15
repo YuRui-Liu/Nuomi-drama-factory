@@ -62,7 +62,7 @@ def compile_director_payload(
     for index, (source, result, aligned) in enumerate(zip(
         draft.segments, optimized.segments, validation.timeline, strict=True
     )):
-        expected_mode = {"i2v": "i2va", "fl2v": "fl2va", "ref_only": "ref2va"}[aligned.mode]
+        expected_mode = 'ref2va' if validation.route == 'h3_ref' else {"i2v": "i2va", "fl2v": "fl2va"}[aligned.mode]
         if result.segment_id != source.id or result.mode != expected_mode or result.wire.mode != expected_mode:
             raise ValueError(f"optimized identity or mode mismatch at segment {index}")
         if (result.frames != aligned.frames or
@@ -106,7 +106,7 @@ def compile_director_payload(
         data["global"]["commonCollapsed"] = True
         data["timelineMode"] = H3_REFERENCE_TIMELINE_MODE
         for segment in data["segments"]:
-            segment["taskType"] = H3_REFERENCE_TASK_TYPE
+            segment["taskType"] = 'fl2v' if segment.get('endImage') else 'i2v' if segment.get('genImage') else 'r2v'
         timeline_data = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     semantic_values = _director_semantic_values(timeline_data)
     if validation.route == "h3_ref":

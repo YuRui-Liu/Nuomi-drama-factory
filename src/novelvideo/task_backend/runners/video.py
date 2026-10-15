@@ -844,6 +844,40 @@ def _publish_episode_outputs(candidate: Path, output: Path, caption_path: Path, 
         staged.unlink(missing_ok=True)
 
 
+async def _prepare_composition_stems(project_dir: str, episode: int) -> None:
+    """Repair missing stems on retained videos after a separator is installed."""
+    from novelvideo.media_capabilities.audio.stem_separator import DemucsStemSeparator
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        DialogueSource, load_h3_director_manifest, save_h3_director_manifest,
+    )
+    from novelvideo.narrative_groups.service import _sidecar_guard
+
+    root = Path(project_dir)
+    for group in load_materialized_groups(root, episode):
+        stage = group.stages.get("video")
+        if getattr(stage, "status", "") != "completed":
+            continue
+        path = Path(stage.manifest_asset)
+        original = path.read_bytes()
+        manifest = load_h3_director_manifest(path)
+        if not any(entry.dialogue_source is DialogueSource.EXTERNAL_TTS for entry in manifest.entries):
+            continue
+        if manifest.ambience_stem_status == "succeeded" and Path(manifest.ambience_stem_path or "").is_file():
+            continue
+        result = await DemucsStemSeparator().separate(
+            manifest.physical_video, path.parent / "stems" / path.stem,
+        )
+        with _sidecar_guard(root, episode):
+            if path.read_bytes() != original:
+                raise RuntimeError("音轨分离期间视频清单已改变，请重新合成；已保留分离结果")
+            save_h3_director_manifest(path, manifest.model_copy(update={
+                "dialogue_stem_path": str(result.vocals),
+                "ambience_stem_path": str(result.no_vocals),
+                "dialogue_stem_status": "succeeded",
+                "ambience_stem_status": "succeeded",
+            }))
+
+
 def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
     import os
     import stat
@@ -903,6 +937,10 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
     caption_track = None
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
+        asyncio.run(await_envelope_with_cancel_watch(
+            _prepare_composition_stems(output_dir, episode), envelope,
+            task_type="compose_episode",
+        ))
         sources = resolve_episode_composition_sources(output_dir, episode, beats)
         expected_beats = {
             int(beat.get("beat_number") or index)

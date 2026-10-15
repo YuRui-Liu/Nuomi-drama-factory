@@ -19,6 +19,12 @@ export NOVELVIDEO_DATA_ROOT="${NOVELVIDEO_DATA_ROOT:-$parent_dir/nuomi-drama-dat
 export NOVELVIDEO_STATE_DIR="${NOVELVIDEO_STATE_DIR:-$NOVELVIDEO_DATA_ROOT/state}"
 export VITE_API_URL="http://127.0.0.1:${api_port}"
 
+# 项目内的可选音轨分离环境，模型缓存随项目保存。
+if [[ -x "$root_dir/runtime/audio-separation/venv/bin/demucs" ]]; then
+  export DRAMACLAW_DEMUCS_BIN="${DRAMACLAW_DEMUCS_BIN:-$root_dir/runtime/audio-separation/venv/bin/demucs}"
+  export TORCH_HOME="${TORCH_HOME:-$root_dir/runtime/audio-separation/models}"
+fi
+
 has_lsof=1
 command -v lsof >/dev/null 2>&1 || has_lsof=0
 has_ps=1

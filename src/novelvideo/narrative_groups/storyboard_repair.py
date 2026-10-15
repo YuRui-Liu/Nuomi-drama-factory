@@ -54,6 +54,23 @@ def load_prompt_snapshot(root, asset):
     return {}
 
 
+def repair_impact(group, stage, shot_id):
+    """Report declared dependencies, conservatively falling back for legacy data."""
+    segments = group.video_segments
+    known = bool(segments) and all(s.get('shot_ids') or s.get('beat_ids') for s in segments)
+    known = known and any(shot_id in (s.get('shot_ids') or s.get('beat_ids') or []) for s in segments)
+    affected = [str(s['id']) for s in segments
+                if s.get('id') and (not known or shot_id in (s.get('shot_ids') or s.get('beat_ids') or []))]
+    return {
+        'scope': 'segments' if known and stage == 'render' else 'group',
+        'affected_segment_ids': affected,
+        'preserved_shot_ids': [s for s in group.production_beat_ids if s != shot_id],
+        'downstream_stages': ['video'] if stage == 'render' else ['render', 'video'],
+        'history_preserved': True,
+        'automatic_video_generation': False,
+    }
+
+
 def repair_input(root, group, stage, shot_id, *, synthesized=''):
     cell = _cell(group, stage, shot_id)
     state = group.stages[stage]
@@ -72,6 +89,7 @@ def repair_input(root, group, stage, shot_id, *, synthesized=''):
         'repair_status': pending.get('status', 'idle') if same else (
             pending.get('status') if pending.get('status') in {'queued', 'running'} else 'idle'),
         'repair_error': pending.get('error', '') if same else '',
+        'impact': repair_impact(group, stage, shot_id),
     }
 
 
@@ -96,6 +114,7 @@ def reserve_repair(root, episode, group_id, stage, shot_id, *, source_revision,
                 'source_revision': source_revision, 'source_asset': source_asset,
                 'source_path': cell['path'], 'prompt': prompt.strip(), 'feedback': feedback.strip(),
                 'generation': generation or {}, 'created_at': datetime.now(timezone.utc).isoformat(),
+                'impact': repair_impact(group, stage, shot_id),
             }
             if (previous.get('status') == 'failed' and previous.get('generation_result')
                 and all(previous.get(key) == ticket[key] for key in (
@@ -232,7 +251,9 @@ def publish_repair(root, episode, group_id, stage, repair_id, generated, *, snap
         stages = {**group.stages, stage: new_state}
         for downstream in (('video',) if stage == 'render' else ('render', 'video')):
             stages[downstream] = replace(stages[downstream], needs_regeneration=True,
-                                        stale_reason=f'{stage}_revision_changed')
+                stale_reason=f'{stage}_revision_changed',
+                provider_parameters={**stages[downstream].provider_parameters,
+                    'repair_impact': ticket.get('impact', repair_impact(group, stage, ticket['shot_id']))})
         updated = replace(group, stages=stages)
         groups = service.load_materialized_groups(root, episode)
         service.save_groups(root, episode, [updated if g.id == group_id else g for g in groups])

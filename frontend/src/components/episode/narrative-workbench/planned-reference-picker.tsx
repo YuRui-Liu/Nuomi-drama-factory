@@ -13,6 +13,7 @@ export interface PlannedReferencePickerProps {
   temporaryCount: number;
   onChange: (ids: string[]) => void;
   onResolvePlanning: () => void;
+  onRepairCharacter?: (binding: PlannedReferenceBinding, mode: "create" | "existing") => void;
 }
 
 type BindingGroup = {
@@ -97,6 +98,7 @@ export function PlannedReferencePicker({
   temporaryCount,
   onChange,
   onResolvePlanning,
+  onRepairCharacter,
 }: PlannedReferencePickerProps) {
   const headingIdPrefix = useId();
   const visibleBindings = uniqueBindingsById(bindings);
@@ -176,11 +178,10 @@ export function PlannedReferencePicker({
             const available = isPlannedReferenceAvailable(binding);
             const isSelected = available && selectedSet.has(binding.binding_id);
             const disabled = !available || (!isSelected && atLimit);
-            const warning = binding.warning || (binding.status === "ready" && !binding.version_id?.trim()
+            const warning = binding.issue_message || binding.warning || (binding.status === "ready" && !binding.version_id?.trim()
               ? "缺少有效资产版本"
               : unavailableReason(binding.status));
-            return <button
-              key={binding.binding_id}
+            return <div key={binding.binding_id} className="space-y-2"><button
               type="button"
               aria-pressed={isSelected}
               data-selection-state={isSelected ? "selected" : "unselected"}
@@ -206,6 +207,8 @@ export function PlannedReferencePicker({
                 <span>
                   <span className="block font-semibold">{binding.display_label}</span>
                   {binding.variant_id ? <span className="mt-0.5 block text-xs text-zinc-300">变体 {binding.variant_id}</span> : null}
+                  {binding.version_id ? <span className="mt-0.5 block break-all text-xs text-zinc-300">版本 {binding.version_id}</span> : null}
+                  {binding.shot_ids?.length ? <span className="mt-0.5 block text-xs text-zinc-300">关联镜头：{binding.shot_ids.join("、")}</span> : null}
                 </span>
                 <span aria-hidden="true" className={cn(
                   "flex size-6 shrink-0 items-center justify-center rounded border-2",
@@ -218,7 +221,12 @@ export function PlannedReferencePicker({
               {available && binding.required ? <span className="mt-1 block text-xs font-semibold text-lime-200">必需引用</span> : null}
               {warning ? <span className="mt-2 flex gap-1.5 text-xs text-amber-200"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />{warning}</span> : null}
               {!available && binding.required ? <span className="mt-2 block text-xs font-semibold text-amber-100">必需引用</span> : null}
-            </button>;
+            </button>
+              {onRepairCharacter && binding.asset_kind === "character_identity" && (binding.status === "missing_asset" || binding.status === "missing_image") ? <div className="flex flex-wrap gap-2">
+                <Button type="button" size="sm" onClick={() => onRepairCharacter(binding, "create")}>生成角色形象</Button>
+                {binding.status === "missing_asset" ? <Button type="button" size="sm" variant="outline" onClick={() => onRepairCharacter(binding, "existing")}>绑定已有角色</Button> : null}
+              </div> : null}
+            </div>;
           })}
         </div>
       </section>;

@@ -48,12 +48,67 @@ def new_run(tmp_path, canvas=None):
     return store, run
 
 
+def test_explicit_image_generation_overrides_reuse_only_for_target(tmp_path):
+    from novelvideo.freezone.orchestration.store import RunStore
+    canvas = graph()
+    for node in canvas['nodes']:
+        node['type'] = 'storyboardGenNode'
+        node['data']['referenceOnly'] = True
+    run = RunStore(tmp_path).create(canvas, target='c', request_id='regenerate', project_id='p',
+        settings={}, actor={'id':'u'}, operation='generate')
+    assert [n['data']['referenceOnly'] for n in run['snapshot']['nodes']] == [True, True, False]
+    assert all(n['data']['referenceOnly'] for n in canvas['nodes'])
+
+
+@pytest.mark.asyncio
+async def test_cancel_releases_verified_output_conflict_without_overwriting_canvas(tmp_path):
+    from novelvideo.freezone.orchestration.scheduler import Scheduler
+    store, run = new_run(tmp_path)
+    adapter = Adapter()
+    adapter.conflict = True
+    scheduler = Scheduler(store, adapter)
+    await scheduler.tick(run['id'])
+    blocked = await scheduler.tick(run['id'])
+    assert blocked['attempts']['a'][-1]['status'] == 'verifying'
+    blocked['cancel_requested'] = True
+    store.save(blocked, 'cancel_requested')
+    result = await scheduler.tick(run['id'])
+    assert result['status'] == 'cancelled'
+    assert result['attempts']['a'][-1]['artifacts']
+    assert adapter.projections == []
+    assert adapter.submits == ['a']
+
+
 def test_run_create_is_idempotent_and_rejects_other_live_run(tmp_path):
     from novelvideo.freezone.orchestration.models import OrchestrationError
     store, run = new_run(tmp_path)
     assert new_run(tmp_path)[1]["id"] == run["id"]
     with pytest.raises(OrchestrationError, match="active"):
         store.create(graph(), target="c", request_id="other", project_id="p", settings={}, actor={"id": "u"})
+
+
+@pytest.mark.asyncio
+async def test_independent_runs_on_one_canvas_can_submit_concurrently(tmp_path):
+    import asyncio
+    from novelvideo.freezone.orchestration.store import RunStore
+    from novelvideo.freezone.orchestration.scheduler import Scheduler
+    board = graph()
+    board['edges'] = []
+    store = RunStore(tmp_path)
+    runs = [store.create(board, target=target, request_id=target, project_id='p', settings={}, actor={'id':'u'}) for target in ('a','b')]
+    both = asyncio.Event()
+    entered = []
+    class SlowAdapter(Adapter):
+        async def submit(self, run, attempt, upstream):
+            entered.append(attempt['node_id'])
+            if len(entered) == 2:
+                both.set()
+            await asyncio.wait_for(both.wait(), 1)
+            return {'task_id':attempt['id']}
+    scheduler = Scheduler(store, SlowAdapter())
+    results = await asyncio.gather(*(scheduler.tick(run['id']) for run in runs))
+    assert sorted(entered) == ['a', 'b']
+    assert all(run['status'] == 'running' for run in results)
 
 
 @pytest.mark.asyncio

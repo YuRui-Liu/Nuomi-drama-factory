@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import traceback
 from io import BytesIO
 from itertools import islice
@@ -113,6 +114,13 @@ def _diagnostic_schema_names() -> frozenset[str]:
 
 
 _DIAGNOSTIC_SCHEMA_NAMES = _diagnostic_schema_names()
+_REFERENCE_ISSUES = frozenset({
+    "reference_definitions_need_newlines",
+    "reference_definition_invalid", "reference_subject_mismatch",
+    "reference_subject_inactive", "reference_label_invalid",
+    "reference_picture_out_of_range", "reference_label_undefined",
+    "reference_relation_invalid",
+})
 
 
 def _validation_locations(exc: BaseException) -> list[dict]:
@@ -121,11 +129,30 @@ def _validation_locations(exc: BaseException) -> list[dict]:
     for _ in range(8):
         if isinstance(exc, ValidationError):
             # Unknown field names and dictionary keys can themselves be private input.
-            errors.extend({"loc": [part if isinstance(part, int) or part in _DIAGNOSTIC_SCHEMA_NAMES
+            records = [{"loc": [part if isinstance(part, int) or part in _DIAGNOSTIC_SCHEMA_NAMES
                                    else "<redacted>" for part in error["loc"]],
                            "type": error["type"]}
                           for error in exc.errors(include_input=False, include_context=False,
-                                                  include_url=False)[:32])
+                                                  include_url=False)[:32]]
+            for item, error in zip(records, exc.errors(include_url=False)[:32]):
+                reason = str(error.get("ctx", {}).get("error", ""))
+                codes = reason.split(", ")
+                if codes and all(code in _REFERENCE_ISSUES for code in codes):
+                    item["codes"] = codes
+                    wire = error.get('input')
+                    if isinstance(wire, dict):
+                        # Only protocol tags, never user descriptions or unknown keys.
+                        tags = lambda value: re.findall(r'<(?:Subject|Picture|Video|Audio) [1-9][0-9]*>', str(value))[:20]
+                        item['definition_tags'] = [tags(line) for line in str(wire.get('subject_definitions', '')).splitlines()[:10]]
+                        item['active_tags'] = tags(wire.get('detailed_description', ''))
+                        defined = {tag for line in item['definition_tags'] for tag in line if tag.startswith('<Subject ')}
+                        active = {tag for tag in item['active_tags'] if tag.startswith('<Subject ')}
+                        item['missing_tags'] = sorted(defined - active)
+                        item['unexpected_tags'] = sorted(active - defined)
+                        retention = wire.get('retention_analysis')
+                        if isinstance(retention, list):
+                            item['retention_tags'] = [tags(entry.get('subject', '')) for entry in retention[:10] if isinstance(entry, dict)]
+            errors.extend(records)
         if exc.__cause__ is None:
             break
         exc = exc.__cause__
@@ -313,6 +340,9 @@ class DirectorService:
                         error = "Selected technique conflicts with source facts; change or remove the card."
                     return self.store.update(attempt_id, stage="failed", failed_stage="optimizing",
                                              error=error,
+                                             optimization_segment_id=(getattr(exc, 'director_segment_id', None)
+                                                 if getattr(exc, 'director_segment_id', None) in {s.id for s in draft.segments}
+                                                 else None),
                                              optimization_validation_errors=_validation_locations(exc),
                                              optimization_error_type=type(exc).__name__,
                                              optimization_error_code=("TECHNIQUE_CONFLICT"

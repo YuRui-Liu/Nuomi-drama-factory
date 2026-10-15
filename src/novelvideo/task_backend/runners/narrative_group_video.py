@@ -2270,6 +2270,8 @@ async def _execute_inner(
     envelope: dict[str, Any], ctx: ProjectContext
 ) -> dict[str, Any]:
     payload = dict(envelope.get("payload") or {})
+    from novelvideo.narrative_groups.execution_contract import validate_execution_contract
+    validate_execution_contract(payload)
     episode = int(envelope.get("episode") or payload.get("episode") or 0)
     project_dir = _project_dir(payload, ctx)
     group_id = str(payload["group_id"])
@@ -2296,6 +2298,8 @@ async def _execute_inner(
     ):
         return {"status": "stale", "group_id": group_id, "revision": revision}
     workflow = _workflow_definition_for_payload(payload)
+    from novelvideo.narrative_groups.execution_contract import validate_workflow_definition
+    validate_workflow_definition(payload, workflow)
     materialized_group = next(
         group for group in load_materialized_groups(project_dir, episode)
         if group.id == group_id
@@ -2823,6 +2827,7 @@ async def _execute_inner(
         manifest = H3DirectorOutputManifest(
             physical_video=None,
             entries=evidenced_entries,
+            execution_contract=payload.get("execution_contract"),
             workflow_id=workflow.id,
             workflow_parameters=workflow_parameters,
             status="submitted",
@@ -3356,8 +3361,13 @@ async def _execute_inner(
             ambience_stem_path=stems.get("ambience_stem_path"),
             ambience_stem_status=stems.get("ambience_stem_status", "not_requested"),
         )
-        save_h3_director_manifest(manifest_path, manifest)
         terminal_status = "partial_failure" if segment_errors else "completed"
+        from novelvideo.narrative_groups.execution_contract import group_output_is_complete
+        complete_group = group_output_is_complete(requested_segment_id, materialized_group.video_segments)
+        if not complete_group and not segment_errors:
+            terminal_status = "review"
+            manifest = manifest.model_copy(update={"physical_video": None, "status": "generated"})
+        save_h3_director_manifest(manifest_path, manifest)
         _assert_stage_revision(
             project_dir, episode, group_id, revision, plan_revision
         )
@@ -3365,7 +3375,7 @@ async def _execute_inner(
             project_dir, episode, group_id, "video", expected_revision=revision,
             status=terminal_status,
             error=(json.dumps(segment_errors, ensure_ascii=False) if segment_errors else ""),
-            video_asset=str(generated.output_path), manifest_asset=str(manifest_path),
+            video_asset=str(generated.output_path) if complete_group else "", manifest_asset=str(manifest_path),
             actual_provider=workflow.provider, actual_model=workflow.id,
             actual_mode=generated.actual_mode,
             workflow_parameters=workflow_parameters,
@@ -3374,7 +3384,10 @@ async def _execute_inner(
             **stems,
         )
         return {"status": terminal_status, "group_id": group_id, "revision": revision,
-                "video_asset": str(generated.output_path), "manifest_asset": str(manifest_path),
+                "video_asset": str(generated.output_path) if complete_group else "",
+                "segment_asset": str(generated.output_path) if requested_segment_id else None,
+                "requires_group_composition": not complete_group,
+                "manifest_asset": str(manifest_path),
                 "provider_task_id": generated.provider_task_id, "logical_shots": len(segments)}
     except H3StaleStageError:
         return {"status": "stale", "group_id": group_id, "revision": revision}

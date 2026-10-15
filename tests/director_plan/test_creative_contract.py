@@ -26,7 +26,7 @@ def test_2d_optics_requires_explicit_reason():
     assert OpticsDecision.model_validate({**data, "not_applicable_reason": "Drawn 2D layers"}).focal_length_mm is None
 
 
-def test_new_contract_accepts_five_long_static_shots_and_roundtrips():
+def test_new_contract_accepts_five_executable_static_shots_and_roundtrips():
     shots = tuple(creative_shot(f"shot-{i}", f"shot-{i+1}" if i < 4 else None) for i in range(5))
     group = make_group(creative_contract_version=1, shots=shots)
     revision = make_revision(creative_contract_version=1, groups=(group,))

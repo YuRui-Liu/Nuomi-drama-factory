@@ -14,7 +14,7 @@ export function CraftDetails({ records, quality, stale = false }: { records: Cra
     {records.some(record => record.session_mode) && <p>{records.some(record => record.session_mode === "native") ? "原生持续创作会话" : "历史重放创作会话"}</p>}
     {quality?.summary && <p>{quality.summary}</p>}
     {stale && <p className="text-amber-200">引用或正文已变化，需要重新审查。</p>}
-    {drafts.length > 0 && <details><summary className="cursor-pointer">查看最后草稿</summary><pre className="max-h-72 overflow-auto whitespace-pre-wrap">{drafts[drafts.length - 1].output.markdown}</pre></details>}
+    {drafts.length > 0 && <details open={quality?.status === "needs_revision"}><summary className="cursor-pointer">查看最后草稿</summary><pre className="max-h-72 overflow-auto whitespace-pre-wrap">{drafts[drafts.length - 1].output.markdown}</pre></details>}
     {records.filter(record => record.output.repair_notes?.length).map((record, index) => <details key={`repair-${index}`}><summary className="cursor-pointer">作者修订策略与证据 · 第 {index + 1} 轮</summary>{record.output.repair_notes?.map((note, noteIndex) => <article key={noteIndex} className="my-2 border-l border-white/20 pl-2"><p>作者诊断：{note.diagnosis}</p><p>修订策略：{note.strategy}</p><blockquote className="whitespace-pre-wrap">修改证据：{note.changed_quote}</blockquote></article>)}</details>)}
     {records.filter(record => record.output.issues).map((record, index) => <details key={`${record.stage}-${index}`}>
       <summary className="cursor-pointer">{craftStageLabel(record.stage)} · {record.output.summary}</summary>

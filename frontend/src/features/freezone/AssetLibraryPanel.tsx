@@ -870,6 +870,7 @@ export function AssetLibraryPanel({
                       index={index}
                       cacheToken={assetImageCacheToken}
                       onAdd={() => addAssetToCanvas(asset, index)}
+                      onReference={() => window.dispatchEvent(new CustomEvent('nuomi:chat-reference', {detail: {id: asset.id, label: asset.label, kind: 'asset', canvas: currentCanvasId}}))}
                     />
                   ))}
                 </div>
@@ -989,11 +990,13 @@ function AssetCard({
   index,
   onAdd,
   cacheToken,
+  onReference,
 }: {
   asset: LibraryAsset;
   index: number;
   cacheToken: string;
   onAdd: () => void;
+  onReference?: () => void;
 }) {
   const isThreeD = isThreeDAsset(asset);
   const isAudio = asset.mediaType === "audio";
@@ -1048,6 +1051,7 @@ function AssetCard({
       } ${isDropHover ? "opacity-70" : ""}`}
       onClick={disabled ? undefined : onAdd}
     >
+      {onReference && <button type="button" aria-label={`引用到对话 ${asset.label}`} className="absolute right-1 top-1 z-10 rounded bg-zinc-900/90 px-1.5 py-1 text-xs" onClick={event => { event.stopPropagation(); onReference(); }}>@ 引用</button>}
       <div
         data-drag-thumb
         className="relative h-[80px] w-[60px] shrink-0 overflow-hidden rounded-[6px] bg-black/30 border border-white/[0.06] flex items-center justify-center transition-colors duration-200 group-hover:border-white/[0.14]"

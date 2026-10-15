@@ -45,6 +45,14 @@ def _chinese_episode_number(number: int) -> str:
 
 
 def target_synopsis(markdown: str, episode_number: int) -> str | None:
+    # Imported season outlines also use "02 Title: synopsis" rows. Normalize
+    # only standalone entries, never numbers mentioned inside story prose.
+    if not re.search(r'第\s*(?:\d+|[一二三四五六七八九十百]+)\s*集', markdown):
+        numbered = re.compile(
+            r'(?m)^[ \t]*(?:#{1,6}[ \t]+)?0*(\d{1,3})'
+            r'(?:[.、）)][ \t]*|[ \t]+)([^\n]*[：:][^\n]*)$'
+        )
+        markdown = numbered.sub(lambda match: f'第 {int(match[1])} 集：{match[2]}', markdown)
     names = [str(episode_number)]
     if 1 <= episode_number <= 100:
         names.append(_chinese_episode_number(episode_number))

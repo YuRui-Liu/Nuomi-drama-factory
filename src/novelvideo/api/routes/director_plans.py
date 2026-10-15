@@ -63,6 +63,7 @@ async def _resolve_source_revision(ctx: Any, episode: int) -> int:
 def _dump_revision(revision: Any) -> dict[str, Any]:
     from novelvideo.director_plan.cinematography import production_direction_errors
     from novelvideo.director_plan.creative_review import creative_clearance
+    from novelvideo.director_plan.execution import video_duration_issues
 
     dumped = dict(revision.model_dump(mode="json"))
     if hasattr(revision, "groups"):
@@ -71,7 +72,8 @@ def _dump_revision(revision: Any) -> dict[str, Any]:
             for group in revision.groups for shot in group.shots
             for code in production_direction_errors(shot)
         ]
-        dumped["production_ready"] = bool(revision.groups) and not dumped["direction_errors"]
+        dumped["execution_errors"] = [issue.model_dump(mode="json") for issue in video_duration_issues(revision.groups)]
+        dumped["production_ready"] = bool(revision.groups) and not dumped["direction_errors"] and not dumped["execution_errors"]
         status = "legacy_unreviewed"
         if revision.creative_contract_version == 1:
             feedback = revision.creative_feedback
@@ -80,7 +82,7 @@ def _dump_revision(revision: Any) -> dict[str, Any]:
                 status = "needs_revision"
                 if any(issue.status == "needs_human" for issue in feedback.open_issues):
                     status = "needs_human"
-                if revision.validation_report.passed and creative_clearance(revision):
+                if revision.validation_report.passed and not dumped["execution_errors"] and creative_clearance(revision):
                     status = "passed"
             if any(issue.code in {"creative_qc_unavailable", "creative_repair_invalid"}
                    for issue in revision.validation_report.issues):
@@ -90,6 +92,12 @@ def _dump_revision(revision: Any) -> dict[str, Any]:
     report = dumped.get("validation_report")
     if not isinstance(report, Mapping):
         return dumped
+    if dumped.get("execution_errors"):
+        issues = list(report.get("issues") or [])
+        known = {(issue.get("code"), issue.get("location")) for issue in issues}
+        issues.extend(issue for issue in dumped["execution_errors"]
+                      if (issue["code"], issue["location"]) not in known)
+        report = {**report, "passed": False, "issues": issues}
     dumped["validation_report"] = _dump_validation_report(report)
     return dumped
 
@@ -219,7 +227,7 @@ async def review_director_plan(project: str, episode: int, revision_id: str,
     ctx = await _resolve(project, user, role="editor")
     store = _build_director_plan_store(ctx)
     candidate = _load_revision(store, episode, revision_id)
-    if candidate.creative_contract_version != 1 or candidate.status not in {"draft", "review_required", "failed"}:
+    if candidate.creative_contract_version != 1 or candidate.status not in {"draft", "review_required", "failed", "active"}:
         raise HTTPException(status_code=409, detail={"code": "CREATIVE_REVIEW_NOT_AVAILABLE"})
     store.require_current(candidate)
     source_revision = await _resolve_source_revision(ctx, episode)

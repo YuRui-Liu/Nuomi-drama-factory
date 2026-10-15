@@ -112,6 +112,22 @@ def test_mismatched_optimized_revision_is_rejected():
         compile_director_payload(draft.model_copy(update={"revision": 2}), result, {"f": {"imageFile": "up"}})
 
 
+def test_reference_identities_and_storyboard_endpoints_are_separate_inputs():
+    draft = DirectorDraft(revision=1, aspect_ratio='16:9', resolution='720p',
+        references=(image('character'),), segments=(DirectorSegment(id='group', prompt='action',
+            duration_seconds=15, first_frame=image('start-cell'), last_frame=image('end-cell')),))
+    from novelvideo.freezone.video_director.capabilities import validate_generation
+    actual = validate_generation(draft).actual_duration_seconds
+    result = compile_director_payload(draft, optimized(draft, (ref_wire(actual),), 'h3_ref'),
+        {'character': 'identity.png', 'start-cell': 'start.png', 'end-cell': 'end.png'})
+    data = json.loads(result.timeline_data)
+    assert [r['imageFile'] for r in data['global']['refs']] == ['identity.png']
+    assert data['segments'][0]['taskType'] == 'fl2v'
+    assert data['segments'][0]['genImage']['imageFile'] == 'start.png'
+    assert data['segments'][0]['endImage']['imageFile'] == 'end.png'
+    assert data['segments'][0]['isStartFrame'] and data['segments'][0]['isEndFrame']
+
+
 @pytest.mark.parametrize("change", [
     {"profile_id": "other-director"},
     {"profile_version": 14},

@@ -141,8 +141,8 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
             lastFrame: binding.errors[`segments[${index}].last_frame`] ? null : effective.segments[index]?.lastFrame ?? null,
           }}
           boundFrames={{
-            firstFrame: mode === 'frames' && incoming.some((edge) => { const slot = readDirectorBinding(edge); return slot?.kind === 'firstFrame' && slot.segmentId === segment.id; }),
-            lastFrame: mode === 'frames' && incoming.some((edge) => { const slot = readDirectorBinding(edge); return slot?.kind === 'lastFrame' && slot.segmentId === segment.id; }),
+            firstFrame: incoming.some((edge) => { const slot = readDirectorBinding(edge); return slot?.kind === 'firstFrame' && slot.segmentId === segment.id; }),
+            lastFrame: incoming.some((edge) => { const slot = readDirectorBinding(edge); return slot?.kind === 'lastFrame' && slot.segmentId === segment.id; }),
           }}
           onPatch={(patch) => setDraft(updateSegment(draft, segment.id, patch))}
           onPick={(field) => images.openPicker({ kind: 'frame', segmentId: segment.id, field })}
@@ -152,8 +152,6 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
           onCopy={() => setDraft(copySegment(draft, segment.id, crypto.randomUUID()))}
           onDelete={() => setDraft(deleteSegment(draft, segment.id))}
           onMove={(offset) => setDraft(reorderSegments(draft, index, index + offset))} />)}</div>
-        {mode === 'ref' && draft.segments.some((segment) => segment.firstFrame || segment.lastFrame) &&
-          <p className="text-xs text-text-muted">{t('node.videoDirector.editor.retainedInactive')}</p>}
         {errors.segments && <p className="text-xs text-red-300">{errors.segments}</p>}
         <button type="button" className="mt-3 rounded border border-white/10 px-3 py-2 text-sm" onClick={() => setDraft(addSegment(draft, crypto.randomUUID()))}>{tr('addSegment', '添加分段')}</button>
         <DirectorHistory attempts={task.attempts} activeId={data.activeAttemptId} onRetry={task.retry} onRefresh={() => void task.refresh()} />

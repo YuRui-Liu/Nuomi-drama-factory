@@ -144,6 +144,13 @@ class ReadOnlyPlannedBindingStore:
             for row in rows
         ]
 
+    async def list_characters(self) -> list[dict]:
+        if not self.database_path.is_file():
+            return []
+        with sqlite3.connect(f"{self.database_path.as_uri()}?mode=ro", uri=True) as connection:
+            rows = connection.execute("SELECT name, aliases_json FROM characters ORDER BY name").fetchall()
+        return [{"name": name, "aliases": _scene_aliases(aliases)} for name, aliases in rows]
+
 
 class ResolvedPlannedReference(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -163,6 +170,9 @@ class ResolvedPlannedReference(BaseModel):
     adoption_status: str = ""
     thumbnail_url: str = ""
     warning: str = ""
+    issue_code: str = ""
+    issue_message: str = ""
+    repair_action: str = ""
     relative_path: str = ""
     sha256: str = ""
     group_ids: tuple[str, ...] = ()
@@ -279,6 +289,12 @@ def _character_identity_candidates(
         for character in characters
         if _text(_get(character, "name")) == entity_key
     ]
+    if not named_characters:
+        named_characters = [character for character in characters
+                            if entity_key in _scene_aliases(_get(character, "aliases"))]
+        if len(named_characters) > 1:
+            return [], True
+    canonical_name = _text(_get(named_characters[0], "name")) if named_characters else entity_key
     if named_characters:
         episode_candidates = [
             (character, identity)
@@ -286,8 +302,8 @@ def _character_identity_candidates(
             for identity in _identities(character)
             if _text(_get(identity, "identity_id")) in episode_identity_ids
         ]
-        if entity_key in identity_default_map:
-            default_id = _text(identity_default_map[entity_key])
+        if canonical_name in identity_default_map:
+            default_id = _text(identity_default_map[canonical_name])
             default_candidates = [
                 candidate
                 for candidate in episode_candidates
@@ -529,6 +545,8 @@ def required_binding_keys_for_director_group(
 def _binding_requirement_key(
     binding: PlannedReferenceBinding,
 ) -> BindingRequirementKey:
+    if binding.asset_kind == 'character_identity' and binding.resolution == 'manually_confirmed' and binding.base_entity_id:
+        return binding.asset_kind, binding.base_entity_id, ''
     if binding.asset_kind == "scene_variant":
         if binding.base_entity_id and binding.variant_id:
             return binding.asset_kind, binding.base_entity_id, binding.variant_id
@@ -569,6 +587,7 @@ def _required_binding_is_published(
     bindings: Sequence[PlannedReferenceBinding],
     *,
     scene_aliases: Mapping[str, str] | None = None,
+    character_aliases: Mapping[str, str] | None = None,
 ) -> bool:
     published_required = {
         _binding_requirement_key(item) for item in bindings if item.required
@@ -585,6 +604,7 @@ def _required_binding_is_published(
         return True
     kind, base_entity_id, raw_entity_id = required_key
     if kind == "character_identity" and base_entity_id and not raw_entity_id:
+        base_entity_id = (character_aliases or {}).get(base_entity_id, base_entity_id)
         # Director requirements may name a character; published bindings resolve
         # that name to one concrete identity. Match the authoritative slot owner,
         # never infer ownership by splitting an identity ID on underscores.
@@ -1206,6 +1226,16 @@ def _unavailable(
     *,
     status: BindingStatus | None = None,
 ) -> ResolvedPlannedReference:
+    resolved_status = status or binding.status
+    code, message, action = {
+        "missing_asset": ("asset_not_bound", "尚未绑定可用资产，请选择已有资产或刷新绑定。", "resolve_binding"),
+        "pending_confirmation": ("binding_confirmation_required", "引用或造型需要确认，请核对后选择。", "resolve_binding"),
+        "missing_image": ("media_version_missing", "资产已绑定，但尚无可用图片版本。", "repair_media"),
+    }.get(resolved_status, ("reference_unavailable", "引用暂不可用，请刷新后核对。", "resolve_binding"))
+    if warning == "current version is not a safe valid image":
+        code, message = "media_unavailable", "资产已绑定，但图片不可访问或格式无效，请修复图片。"
+    if warning.startswith("asset slot kind") or "identity" in warning and "invalid" in warning:
+        code, message = "binding_type_mismatch", "绑定的资产类型或身份不匹配，请重新选择。"
     return ResolvedPlannedReference(
         binding_id=binding.binding_id,
         asset_kind=binding.asset_kind,
@@ -1218,7 +1248,10 @@ def _unavailable(
         resolution=binding.resolution,
         selected_by_default=False,
         asset_slot_id=binding.asset_slot_id,
-        warning=warning,
+        warning=message if warning.startswith("planned binding status") else warning,
+        issue_code=code,
+        issue_message=message,
+        repair_action=action,
         group_ids=binding.group_ids,
         shot_ids=binding.shot_ids,
     )
@@ -1230,7 +1263,7 @@ def _resolve_binding(
     project_dir: Path,
     scenes: Sequence[Any] = (),
 ) -> ResolvedPlannedReference:
-    if binding.status != "ready":
+    if binding.status not in {"ready", "missing_image"}:
         return _unavailable(binding, f"planned binding status is {binding.status}")
     try:
         slot, versions = workflow_store.get_slot(binding.asset_slot_id)
@@ -1373,7 +1406,7 @@ def _resolve_binding(
         variant_id=binding.variant_id,
         beat_ids=binding.beat_ids,
         required=binding.required,
-        status=binding.status,
+        status="ready",
         resolution=binding.resolution,
         selected_by_default=True,
         asset_slot_id=binding.asset_slot_id,
@@ -1419,15 +1452,25 @@ async def _read_planned_reference_catalog(
     *,
     episode_number: int,
     group_id: str,
-) -> tuple[tuple[PlannedReferenceBinding, ...], tuple[Any, ...]]:
+    project_id: str,
+    active_plan_revision_id: str | None,
+) -> tuple[tuple[PlannedReferenceBinding, ...], tuple[Any, ...], tuple[Any, ...]]:
     bindings = tuple(
         await store.list_planned_reference_bindings(
             episode_number, group_id=group_id
         )
     )
+    database_path = getattr(store, 'db_path', None) or getattr(store, 'database_path', None)
+    if database_path:
+        from .character_reference_repair import apply_repairs
+        bindings = apply_repairs(database_path, bindings, project_id=project_id, episode_number=episode_number, group_id=group_id, active_plan_revision_id=active_plan_revision_id)
     list_scenes = getattr(store, "list_scenes", None)
     scenes = tuple(await list_scenes()) if callable(list_scenes) else ()
-    return bindings, scenes
+    list_characters = getattr(store, "list_characters", None)
+    get_characters = getattr(store, "get_all_characters", None)
+    characters = (tuple(await list_characters()) if callable(list_characters)
+                  else tuple(get_characters()) if callable(get_characters) else ())
+    return bindings, scenes, characters
 
 
 async def resolve_planned_reference_preview(
@@ -1445,10 +1488,11 @@ async def resolve_planned_reference_preview(
     """Resolve only persisted bindings and current versions without mutation."""
     if isinstance(max_images, bool) or not isinstance(max_images, int) or max_images < 1:
         raise InvalidPlannedReference("max_images must be a positive integer")
-    bindings, scenes = await _read_planned_reference_catalog(
+    bindings, scenes, characters = await _read_planned_reference_catalog(
         store,
         episode_number=episode_number,
         group_id=group_id,
+        project_id=project_id, active_plan_revision_id=active_plan_revision_id,
     )
     # Async binding/catalog reads above may yield while another publisher advances
     # workflow state. Reload under the project lock and resolve synchronously so a
@@ -1463,6 +1507,7 @@ async def resolve_planned_reference_preview(
             group_id=group_id,
             project_dir=project_dir,
             scenes=scenes,
+            characters=characters,
             max_images=max_images,
             active_plan_revision_id=active_plan_revision_id,
             required_binding_keys=required_binding_keys,
@@ -1479,6 +1524,7 @@ def _preview_from_bindings(
     project_dir: Path,
     max_images: int,
     scenes: Sequence[Any] = (),
+    characters: Sequence[Any] = (),
     active_plan_revision_id: str | None = None,
     required_binding_keys: frozenset[BindingRequirementKey] | None = None,
 ) -> PlannedReferencePreview:
@@ -1502,11 +1548,18 @@ def _preview_from_bindings(
     missing: list[BindingRequirementKey] = []
     if required_binding_keys is not None:
         scene_aliases = _scene_alias_map(scenes)
+        character_aliases = {
+            alias: _text(_get(character, "name"))
+            for character in characters
+            for alias in _scene_aliases(_get(character, "aliases"))
+            if sum(alias in _scene_aliases(_get(other, "aliases")) for other in characters) == 1
+            and not any(_text(_get(other, "name")) == alias for other in characters)
+        }
         missing = sorted(
             key
             for key in required_binding_keys
             if not _required_binding_is_published(
-                key, bindings, scene_aliases=scene_aliases
+                key, bindings, scene_aliases=scene_aliases, character_aliases=character_aliases
             )
         )
         if missing:
@@ -1530,7 +1583,9 @@ def _preview_from_bindings(
             variant_id=key[2] if key[0] == "scene_variant" else "",
             required=True, status="missing_asset", resolution="auto_matched",
             selected_by_default=False, asset_slot_id="", group_ids=(group_id,),
-            warning="必需引用尚未发布，请重新规划并生成对应素材。",
+            warning="必需引用尚未绑定，请先选择已有资产或刷新绑定。",
+            issue_code="asset_not_bound", issue_message="必需引用尚未绑定，请先选择已有资产或刷新绑定。",
+            repair_action="resolve_binding",
         )
         for key in missing
     )
@@ -1635,10 +1690,11 @@ async def build_planned_reference_snapshot(
         raise InvalidPlannedReference("duplicate selected binding IDs")
     if len(set(upload_ids)) != len(upload_ids):
         raise InvalidPlannedReference("duplicate upload IDs")
-    bindings, scenes = await _read_planned_reference_catalog(
+    bindings, scenes, characters = await _read_planned_reference_catalog(
         store,
         episode_number=episode_number,
         group_id=group_id,
+        project_id=project_id, active_plan_revision_id=active_plan_revision_id,
     )
     with production_workflow_project_lock(workflow_store.state_path.parent):
         current_workflow = ProductionWorkflowStore(workflow_store.state_path)
@@ -1650,16 +1706,18 @@ async def build_planned_reference_snapshot(
             group_id=group_id,
             project_dir=project_dir,
             scenes=scenes,
+            characters=characters,
             max_images=max_images,
             active_plan_revision_id=active_plan_revision_id,
             required_binding_keys=required_binding_keys,
         )
-    current_bindings, current_scenes = await _read_planned_reference_catalog(
+    current_bindings, current_scenes, current_characters = await _read_planned_reference_catalog(
         store,
         episode_number=episode_number,
         group_id=group_id,
+        project_id=project_id, active_plan_revision_id=active_plan_revision_id,
     )
-    if current_bindings != bindings or current_scenes != scenes:
+    if current_bindings != bindings or current_scenes != scenes or current_characters != characters:
         raise StaleReferenceBinding("planned reference catalog changed during snapshot")
     if preview.reference_revision != reference_revision:
         raise StaleReferenceBinding("planned reference binding revision changed")

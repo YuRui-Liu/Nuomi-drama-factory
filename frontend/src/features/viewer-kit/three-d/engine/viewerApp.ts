@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import * as pc from 'playcanvas';
+import { emptyTimeline, sampleKeys, validateTimeline, type SceneTimeline } from '../sceneTimeline';
 
 import { createFlyCameraController, type FlyCameraController } from './flyCamera';
 import { createAxesGridDrawer, type AxesGridDrawer } from './axesGrid';
@@ -220,6 +221,7 @@ export interface SelectionState {
 
 // 单个 marker 的可序列化快照；写入 ThreeDWorldNodeData.scene。
 export interface ThreeDMarkerSnapshot {
+  id?: string;
   label: string;
   color: string;                                  // hex like #ff3344
   placement?: DirectorPlacement;                  // preferred placement; legacy fields below remain for old saves
@@ -234,6 +236,7 @@ export interface ThreeDMarkerSnapshot {
 }
 
 export interface ThreeDSceneSnapshot {
+  timeline?: SceneTimeline;
   schemaVersion: 1;
   savedAt: number;                                // unix ms
   actors: ThreeDMarkerSnapshot[];
@@ -370,6 +373,9 @@ export interface ViewerApp {
   // 场景持久化：导出当前 actor/prop/staging + 相机的可序列化快照；调 loadSceneSnapshot
   // 把快照应用回当前 viewer（先清空 markers，再依次重建并恢复 pose / camera）。
   exportSceneSnapshot: () => ThreeDSceneSnapshot;
+  getTimeline: () => SceneTimeline;
+  setTimeline: (timeline: SceneTimeline) => void;
+  seekTimeline: (time: number, rotationOnly?: boolean) => void;
   loadSceneSnapshot: (snap: ThreeDSceneSnapshot) => void;
   // Shape hint：运行时 marker blocking proxy。UI 只暴露给 staging，prop 保持默认 box。
   // setSelectedShapeHint 返回是否生效（选中不是 staging 时返回 false）。
@@ -1110,6 +1116,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
   const actorAnimationEntities = new WeakMap<pc.Entity, pc.Entity>();
   const actorAnimationTracks = new WeakMap<pc.Entity, Map<string, unknown>>();
   const actorAnimationTrackLibrary = new Map<string, unknown>();
+  const fallbackActors = new WeakSet<pc.Entity>();
 
   async function loadActorProxyModel(): Promise<void> {
     if (actorProxyLoadStarted || actorProxyAsset) return;
@@ -1150,7 +1157,15 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
   function instantiateActorProxyModel(color: pc.Color): pc.Entity {
     const resource = actorProxyAsset?.resource as ContainerAssetResource | null | undefined;
     const model = resource?.instantiateRenderEntity?.({ castShadows: false });
-    if (!model) throw new Error('Quaternius actor proxy asset is not loaded.');
+    if (!model) {
+      const root = new pc.Entity('actor_proxy_fallback');
+      const body = new pc.Entity('blocking_body');
+      body.addComponent('render', { type: 'capsule', material: makeFlatMaterial(color), castShadows: false });
+      body.setLocalScale(0.45, 1.4, 0.45); body.setLocalPosition(0, 0.9, 0);
+      root.addChild(body); root.addChild(makeBone('anchor_seat', [0, 0.8, 0]));
+      fallbackActors.add(root);
+      return root;
+    }
     const root = new pc.Entity('actor_proxy_quaternius');
     model.name = 'quaternius_mannequin';
     model.setLocalPosition(0, 0, 0);
@@ -1188,6 +1203,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
   }
 
   function setActorAnimationPlayback(actor: pc.Entity, playing: boolean): void {
+    if (fallbackActors.has(actor)) { actorActionPlaying.set(actor, false); setStatus('动作库缺失：使用静态替身，路径和机位预演仍可用'); return; }
     const animEntity = actorAnimationEntities.get(actor);
     const anim = animEntity?.anim;
     if (!anim) throw new Error(`3GS actor "${actor.name}" has no animation component.`);
@@ -1202,6 +1218,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
   }
 
   function sampleActorAnimationPose(actor: pc.Entity, pose: PoseName): void {
+    if (fallbackActors.has(actor)) { setStatus('动作库缺失：使用静态替身，路径和机位预演仍可用'); return; }
     const animEntity = actorAnimationEntities.get(actor);
     const tracks = actorAnimationTracks.get(actor);
     const anim = animEntity?.anim;
@@ -2254,6 +2271,47 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
   }
 
   // ---------- Scene snapshot：保存 / 恢复 ----------
+  let timeline = emptyTimeline();
+  const markerIds = new WeakMap<pc.Entity, string>();
+  const timelineBasePoses = new WeakMap<pc.Entity, PoseName>();
+  function markerId(entity: pc.Entity): string {
+    let id = markerIds.get(entity);
+    if (!id) { id = crypto.randomUUID(); markerIds.set(entity, id); }
+    return id;
+  }
+  function seekTimeline(time: number, rotationOnly = false): void {
+    if (!Number.isFinite(time)) return;
+    time = Math.max(0, Math.min(timeline.duration, time));
+    for (const kind of ['actor', 'prop', 'staging'] as const) for (const entity of markers[kind]) {
+      const track = timeline.tracks[markerId(entity)];
+      if (!track) continue;
+      const key = sampleKeys(track.keys, time);
+      if (key) {
+        entity.setPosition(...key.position); entity.setEulerAngles(0, key.yawDeg, 0);
+        entity.setLocalScale(...key.scale); markerYaws.set(entity, key.yawDeg);
+      }
+      if (kind === 'actor') {
+        if (!timelineBasePoses.has(entity)) timelineBasePoses.set(entity, actorPoses.get(entity) ?? 'standing');
+        const clip = track.clips.find(c => time >= c.start && time < c.end);
+        const pose = clip?.pose ?? timelineBasePoses.get(entity) ?? 'standing';
+        if (actorPoses.get(entity) !== pose) { actorPoses.set(entity, pose); applyActorPose(entity, pose); }
+        const anim = actorAnimationEntities.get(entity)?.anim;
+        if (anim?.baseLayer) {
+          anim.playing = false;
+          const duration = anim.baseLayer.activeStateDuration || 1;
+          anim.baseLayer.activeStateCurrentTime = clip ? ((time - clip.start) * clip.speed) % duration : 0;
+          anim.update(0);
+        }
+      }
+    }
+    const cameraKey = sampleKeys(timeline.camera, time);
+    if (cameraKey) {
+      const current = fly.getCameraState();
+      fly.setCameraState(rotationOnly ? { ...cameraKey, distance: current.distance, focalPoint: current.focalPoint } : cameraKey);
+      if (camera.camera) camera.camera.fov = cameraKey.fov;
+    }
+    emitSelection();
+  }
   function snapshotMarker(entity: pc.Entity, kind: MarkerKind): ThreeDMarkerSnapshot {
     const pos = entity.getPosition();
     const eul = entity.getEulerAngles();
@@ -2261,6 +2319,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     const position: [number, number, number] = [pos.x, pos.y, pos.z];
     const yawDeg = markerYaws.get(entity) ?? eul.y;
     const snap: ThreeDMarkerSnapshot = {
+      id: markerId(entity),
       label: entity.name,
       color: markerColors.get(entity) ?? (kind === 'actor' ? '#ff3344' : kind === 'staging' ? '#4587ff' : '#ffd34d'),
       placement: { space: 'world', position, yawDeg },
@@ -2287,6 +2346,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
   function exportSceneSnapshot(): ThreeDSceneSnapshot {
     return {
       schemaVersion: 1,
+      timeline: structuredClone(timeline),
       savedAt: Date.now(),
       actors: markers.actor.map((e) => snapshotMarker(e, 'actor')),
       props: markers.prop.map((e) => snapshotMarker(e, 'prop')),
@@ -2337,6 +2397,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
       rebuildShapeHintProxy(entity, hint, snap.color);
     }
     markerColors.set(entity, snap.color);
+    markerIds.set(entity, snap.id || crypto.randomUUID());
     app.root.addChild(entity);
     markers[kind].push(entity);
     return entity;
@@ -2347,6 +2408,11 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
       console.warn('[viewer] loadSceneSnapshot: unsupported schema', snap?.schemaVersion);
       return;
     }
+    const nextTimeline = snap.timeline ?? emptyTimeline();
+    validateTimeline(nextTimeline);
+    const ids = [...snap.actors, ...snap.props, ...snap.stagings].map(s => s.id).filter(Boolean);
+    if (new Set(ids).size !== ids.length) throw new Error('场景包含重复物体标识');
+    timeline = structuredClone(nextTimeline);
     // 清场：destroy 现有 markers + 解除选中 + 清 pose/color WeakMaps（GC 自动）。
     clearMarkers();
     if (snap.world?.sourceTransform) {
@@ -2370,6 +2436,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
       }
     }
     if (snap.camera) fly.setCameraState(snap.camera);
+    seekTimeline(0);
     emitMarkers();
     emitSelection();
   }
@@ -2534,7 +2601,12 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     selection = null;
   }
 
-  await loadActorProxyModel();
+  try { await loadActorProxyModel(); }
+  catch (error) {
+    actorProxyAsset = null;
+    console.warn('[viewer] actor animation assets unavailable; using blocking proxies', error);
+    setStatus('动作库未能加载：静态替身、物体路径和机位预演可用，骨骼动作不可用');
+  }
 
   return {
     app,
@@ -2627,6 +2699,9 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     setSourceTransform,
     resetSourceTransform,
     exportSceneSnapshot,
+    getTimeline: () => structuredClone(timeline),
+    setTimeline: (next) => { validateTimeline(next); timeline = structuredClone(next); },
+    seekTimeline,
     loadSceneSnapshot,
     fitView,
     cameraBehindSelected,

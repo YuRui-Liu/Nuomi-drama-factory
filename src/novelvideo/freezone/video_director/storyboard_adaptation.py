@@ -60,9 +60,34 @@ def adapt_image(data: bytes, rows: int, cols: int, aspect_ratio: str, rects=None
             'width': image.width, 'height': image.height}
 
 
-def build_draft(source_id: str, template: dict, urls: list[str], shots: list[dict], duration: float) -> dict:
+def build_draft(source_id: str, template: dict, urls: list[str], shots: list[dict], duration: float, *, frame_pairs=None) -> dict:
     if len(shots) != len(urls) or not urls or any(not str(s.get('description') or '').strip() for s in shots):
         raise ValueError('one nonempty shot description is required per storyboard cell')
+    if frame_pairs is not None:
+        cells = {s.get('id'): (i, url) for i, (s, url) in enumerate(zip(shots, urls))}
+        if len(cells) != len(shots) or None in cells or not frame_pairs:
+            raise ValueError('unique cell IDs and explicit endpoint pairs are required')
+        pairs = []
+        for pair in frame_pairs:
+            start, end = pair.get('first_frame_id'), pair.get('last_frame_id')
+            if pair.get('mode') == 'first_last' and not end:
+                raise ValueError('first/last mode requires an explicitly selected tail')
+            if pair.get('mode') == 'first' and end:
+                raise ValueError('first-only mode cannot include a tail')
+            if start not in cells or (end and (end not in cells or start == end)):
+                raise ValueError('each endpoint must identify a distinct existing cell')
+            for endpoint, anchor in ((start, 'start'), (end, 'end')):
+                if not end:
+                    continue
+                panel = shots[cells[endpoint][0]].get('static_panel')
+                if panel and panel.get('anchor') != anchor:
+                    raise ValueError(f'endpoint {endpoint} must be designed as {anchor}, not a selected instant')
+            pairs.append((cells[start], cells[end] if end else None))
+        draft = build_draft(source_id, template, [p[0][1] for p in pairs], frame_pairs, duration)
+        for segment, (start, end) in zip(draft['segments'], pairs):
+            segment['first_frame'] = {'image_id': f'{source_id}-cell-{start[0] + 1}', 'url': start[1]}
+            segment['last_frame'] = {'image_id': f'{source_id}-cell-{end[0] + 1}', 'url': end[1]} if end else None
+        return draft
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError('group duration must be positive and finite')
     total = round(duration * H3_FPS)
@@ -79,7 +104,7 @@ def build_draft(source_id: str, template: dict, urls: list[str], shots: list[dic
         raise ValueError('group duration is too short for its cells')
     draft = deepcopy(template)
     draft.update(references=[], segments=[{
-        'id': f'{source_id}-cell-{i + 1}', 'prompt': shot['description'].strip(),
+        'id': shot.get('id') or f'{source_id}-cell-{i + 1}', 'prompt': shot['description'].strip(),
         'duration_seconds': frames[i] / H3_FPS,
         'first_frame': {'image_id': f'{source_id}-cell-{i + 1}', 'url': urls[i]},
         'last_frame': None,

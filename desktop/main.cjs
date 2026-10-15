@@ -74,7 +74,7 @@ async function launch() {
 }
 
 app.whenReady().then(launch).catch((error) => {
-  dialog.showErrorBox('DramaClaw failed to start', String(error.stack || error));
+  dialog.showErrorBox(`${app.getName()} failed to start`, String(error.stack || error));
   app.quit();
 });
 app.on('window-all-closed', () => app.quit());

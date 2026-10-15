@@ -79,6 +79,14 @@ class _Producer:
         root = f"episodes/{episode}/director-plans"
         plans = [plan for plan in _records(self.read(root), "director plans")
                  if not plan.get("source_stale")]
+        for plan in plans:
+            if plan.get("status") == "active" and plan.get("execution_errors"):
+                reasons = "; ".join(str(issue.get("message", issue.get("code", "")))
+                                    for issue in plan["execution_errors"])
+                raise BatchFailure(
+                    f"director_plan_not_executable: {plan['revision_id']}: {reasons}. "
+                    "Repair and review the adopted director plan, then activate its successor; "
+                    "do not replace it with a fresh plan or truncate shot durations.")
         incomplete = [plan for plan in plans if plan.get("production_ready") is False]
         plans = [plan for plan in plans if plan.get("production_ready") is not False]
         if any(plan.get("status") == "active" for plan in plans):

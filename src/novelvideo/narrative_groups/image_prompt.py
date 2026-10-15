@@ -54,12 +54,27 @@ def panel_description(beat: Mapping[str, Any]) -> str:
         from novelvideo.director_plan.keyframes import project_keyframe
 
         projection = project_keyframe(beat)
+        # These two fields describe what must read across the whole video,
+        # including later inserts. They are not a still-image shot list.
+        facts = dict(projection.facts)
+        facts["framing"] = {key: value for key, value in facts["framing"].items()
+                            if key != "must_read"}
+        facts.pop("exposure_priority", None)
         return "\n".join((
             f"Freeze the explicitly selected {projection.anchor} instant only. Do not depict other instants, motion paths, or cut instructions.",
-            "Authoritative director keyframe facts: " + json.dumps(projection.facts, ensure_ascii=False),
+            "The selected state and framing.frame govern which events and light sources exist NOW. "
+            "Supporting lighting and optics notes may describe requirements across the whole video: "
+            "do not advance the action to satisfy them. An unlit opening has NO flame, smoke or match light, "
+            "even if lighting notes describe a later flame. Do not show subsequent contact, falls, aftermath or inserts. "
+            "Each cell is ONE uninterrupted camera image with NO internal panels, montage, close-up boxes or before/after views.",
+            "Director keyframe facts (supporting notes apply only when consistent with the selected instant): "
+            + json.dumps(facts, ensure_ascii=False),
             SPATIAL_KEYFRAME_RULE,
             "Preserve the mapped identity and wardrobe references. Reference composition must not override these director decisions. "
             "Do not turn dialogue into writing; render only writing explicitly present in the selected visible state.",
+            "Final composition: exactly ONE continuous camera view inside this cell. "
+            "No inset frames, split screens, montage, reaction close-ups, or later consequences. "
+            "Freeze this state, without advancing it: " + str(facts["state"]),
         ))
     override = str(beat.get("image_prompt_override") or "").strip()
     start = str(beat.get("visible_start_state") or "").strip()
@@ -72,6 +87,8 @@ def panel_description(beat: Mapping[str, Any]) -> str:
 
     lines = [
         "Freeze the opening instant only. Do not depict later actions or their results.",
+        "Each cell contains exactly one continuous camera view. No internal panels, "
+        "inset close-ups, before/after comparisons, montage, or illustrated action sequences.",
         f"Opening state (authoritative): {start}",
         SPATIAL_KEYFRAME_RULE,
     ]

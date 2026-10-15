@@ -709,6 +709,8 @@ def save_canvas(
                 metadata[receipt_key] = previous_receipts
             elif isinstance(metadata, dict):
                 metadata.pop(receipt_key, None)
+        from novelvideo.freezone.storyboard_invalidation import invalidate_static_outputs
+        invalidate_static_outputs(existing, payload)
         # Strip reserved (`__`-prefixed) metadata keys before persisting.
         # Clients must not be able to shadow / forge system fields by
         # injecting metadata like ``__save_log`` or ``__system``.

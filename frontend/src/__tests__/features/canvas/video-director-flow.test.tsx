@@ -49,7 +49,8 @@ const capabilities = { models: [{ id: 'minimax-h3', label: 'MiniMax H3', adapter
   reference_limit: 5, effective_reference_limit: 5, configured_reference_limit: 5,
   fps: 24, frame_step: 17, frame_offset: 5,
   params: { resolution: ['720p'], aspect_ratio: ['9:16'] }, sizes: [],
-  modes: [{ id: 'ref_only', supported: true }] };
+  modes: [{ id: 'ref_only', supported: true }, { id: 'ref_plus_first', supported: true },
+    { id: 'ref_plus_first_last', supported: true }] };
 
 function CurrentNode() {
   const data = useCanvasStore((state) => state.nodes[0].data as VideoDirectorNodeData);
@@ -124,7 +125,7 @@ describe('Director real component flow', () => {
     expect(await screen.findByText('没有参考图时必须选择首帧')).toBeInTheDocument();
   });
 
-  it('posts bound references in wire JSON while omitting the inactive saved frame', async () => {
+  it('posts identity references together with the saved first frame', async () => {
     const draft = createDirectorDraft('opening');
     draft.references = [{ imageId: 'manual', url: '/manual.png' }];
     draft.segments[0].prompt = 'Opening shot';
@@ -160,7 +161,7 @@ describe('Director real component flow', () => {
       expect.objectContaining({ image_id: 'manual', url: '/manual.png' }),
       expect.objectContaining({ image_id: expect.stringContaining('source'), url: expect.stringContaining('connected.png') }),
     ]);
-    expect(posted!.draft.segments[0].first_frame).toBeNull();
+    expect(posted!.draft.segments[0].first_frame).toEqual(expect.objectContaining({ image_id: 'saved-frame' }));
     expect(posted!.draft.segments[0].last_frame).toBeNull();
     await waitFor(() => expect(nodeData().activeAttemptId).toBe('wire-attempt'));
   });
@@ -185,7 +186,7 @@ describe('Director real component flow', () => {
     expect(nodeData().activeInputMode).toBe('ref');
     expect(nodeData().inputModeIntent).toBe('manual');
     expect(nodeData().draft.segments[0].firstFrame?.imageId).toBe('frame');
-    expect(screen.getByText('已保留，当前不参与生成')).toBeInTheDocument();
+    expect(screen.queryByText('已保留，当前不参与生成')).not.toBeInTheDocument();
   });
 
   it('records an explicit Ref opt-out even when Ref was already selected', () => {

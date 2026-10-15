@@ -6,7 +6,7 @@ import { defaultSettings } from "./settings";
 import type { ScriptDocument } from "./types";
 
 const api = vi.hoisted(() => ({ listGenerations: vi.fn(), startGeneration: vi.fn(),
-  getGeneration: vi.fn(), retryGeneration: vi.fn(), rebaseGeneration: vi.fn(), getCandidate: vi.fn() }));
+  getGeneration: vi.fn(), getGenerationTask: vi.fn(), retryGeneration: vi.fn(), rebaseGeneration: vi.fn(), getCandidate: vi.fn() }));
 vi.mock("./api", () => ({ scriptCreationApi: api }));
 vi.mock("./generation-preflight", () => ({ GenerationPreflight: () => null }));
 vi.mock("./production-style-bridge", () => ({ ProductionStyleBridge: () => null }));
@@ -22,6 +22,35 @@ function doc(id: string, kind: ScriptDocument["kind"], markdown: string, episode
 beforeEach(() => { vi.clearAllMocks(); api.listGenerations.mockResolvedValue([]); });
 
 describe("GenerationPanel", () => {
+  it("unblocks continuation when the task failed but the run still says running", async () => {
+    const brief = doc("brief", "brief", "故事想法已保存");
+    const documents = [brief, doc("outline", "outline", "大纲"), doc("synopsis", "episode_synopsis", "梗概"),
+      doc("ep1", "episode_script", "第一集完整正文", 1), doc("ep2", "episode_script", "第二集完整正文", 2)];
+    const manager = new DraftManager(vi.fn()); manager.load(brief);
+    const run = { id: "orphan-run", status: "running", steps: [] };
+    api.listGenerations.mockResolvedValue([run]);
+    api.getGeneration.mockResolvedValue(run);
+    api.getGenerationTask.mockResolvedValue({ status: "failed", error: "TASK_LEASE_EXPIRED" });
+    render(<GenerationPanel project="demo" documents={documents} manager={manager} settings={defaultSettings()}
+      selected={brief} instruction="" onSelect={vi.fn()} onRefresh={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: "继续未完成步骤" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "按此风格续下一集 · 第 3 集" })).toBeEnabled();
+    expect(screen.queryByText("创作任务处理中，请等待完成后再续写。")).not.toBeInTheDocument();
+    manager.dispose();
+  });
+  it("offers recovery when a running generation's task has expired from task history", async () => {
+    const brief = doc("brief", "brief", "故事想法已保存");
+    const manager = new DraftManager(vi.fn()); manager.load(brief);
+    const run = { id: "expired-run", task_id: "expired-task", status: "running", steps: [] };
+    api.listGenerations.mockResolvedValue([run]);
+    api.getGeneration.mockResolvedValue(run);
+    api.getGenerationTask.mockResolvedValue(null);
+    render(<GenerationPanel project="demo" documents={[brief]} manager={manager} settings={defaultSettings()}
+      selected={brief} instruction="" onSelect={vi.fn()} onRefresh={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: "继续未完成步骤" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "暂停生成" })).not.toBeInTheDocument();
+    manager.dispose();
+  });
   it("keeps a needs-review draft readable without retry or candidate adoption", async () => {
     const brief = doc("brief", "brief", "故事想法已保存");
     const manager = new DraftManager(vi.fn()); manager.load(brief);
@@ -135,17 +164,24 @@ describe("GenerationPanel continuation target", () => {
     manager.dispose();
   });
 
-  it("does not continue from a selected blank episode or skip an unfinished earlier episode", async () => {
+  it("fills a selected next-episode template using the previous completed episode without skipping gaps", async () => {
+    const user = userEvent.setup();
     const { brief, outline, synopsis, first, blankSecond, manager } = base();
     const third = doc("third", "episode_script", "# 第三集\n\n结局已写。", 3);
     manager.load(third);
     const docs = [brief, outline, synopsis, first, blankSecond, third];
+    api.startGeneration.mockResolvedValue({ run: { id: "run", status: "completed", steps: [] }, task_id: "task" });
     const view = render(<GenerationPanel project="demo" documents={docs} manager={manager}
       settings={{ ...defaultSettings(), episodeCount: 4 }} selected={blankSecond} instruction="" onSelect={vi.fn()} onRefresh={vi.fn()} />);
-    expect(await screen.findByRole("button", { name: /按此风格续下一集/ })).toBeDisabled();
+    const button = await screen.findByRole("button", { name: "生成第 2 集正文" });
+    expect(screen.queryByRole("button", { name: "生成故事框架与首集" })).not.toBeInTheDocument();
+    expect(button).toBeEnabled();
+    await user.click(button);
+    expect(api.startGeneration).toHaveBeenCalledWith("demo", expect.objectContaining({ mode: "continue", episode_number: 2 }));
     view.rerender(<GenerationPanel project="demo" documents={docs} manager={manager}
       settings={{ ...defaultSettings(), episodeCount: 4 }} selected={third} instruction="" onSelect={vi.fn()} onRefresh={vi.fn()} />);
     expect(screen.getByRole("button", { name: /按此风格续下一集/ })).toBeDisabled();
+    expect(screen.getByText(/前面的剧集尚未完成/)).toBeInTheDocument();
     manager.dispose();
   });
 });

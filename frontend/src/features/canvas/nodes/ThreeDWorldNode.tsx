@@ -24,6 +24,7 @@ import { ArrowRight, Loader2, Orbit } from 'lucide-react';
 
 import {
   uploadFreezoneImage,
+  uploadFreezoneVideo,
   submitFreezoneImageTo3GS,
   type FreezoneImageTo3GSKind,
   type FreezoneGenerationHistoryRecord,
@@ -1464,6 +1465,27 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
         maxHeight={900}
       />
       <ThreeDDirectorDialog
+        onExportPreviz={async (blob, snapshot, size) => {
+          const destination = readUrl();
+          if (!destination.project) throw new Error('请先打开项目画布');
+          const source = useCanvasStore.getState().nodes.find(node => node.id === id);
+          if (!source) throw new Error('来源节点已删除');
+          const extension = blob.type.includes('mp4') ? 'mp4' : 'webm';
+          const filename = `previz-${id}-${snapshot.savedAt}.${extension}`;
+          const uploaded = await uploadFreezoneVideo(destination.project, blob, filename);
+          if (JSON.stringify(readUrl()) !== JSON.stringify(destination) || !useCanvasStore.getState().nodes.some(node => node.id === id)) {
+            throw new Error(`画布已切换或来源已删除；动态参考已保留：${uploaded.url}`);
+          }
+          const store = useCanvasStore.getState();
+          const resultId = store.addNode(CANVAS_NODE_TYPES.video, store.findNodePosition(id, 360, 240), {
+            videoUrl: uploaded.url, referenceOnly: true, sourceFileName: filename,
+            durationMs: (snapshot.timeline?.duration ?? 0) * 1000,
+            displayName: '3D 动态参考', aspectRatio: `${size.width}:${size.height}`, widthPx: size.width, heightPx: size.height,
+            prompt: `动态预演参考；来源 ${id}；场景版本 ${snapshot.savedAt}；30 fps`,
+          });
+          store.addEdgeWithData(id, resultId, { kind: 'dynamic_reference', sceneVersion: snapshot.savedAt, fps: 30, duration: snapshot.timeline?.duration, snapshot });
+          toast.success('动态参考视频已加入画布');
+        }}
         open={directorDialogOpen}
         onOpenChange={setDirectorDialogOpen}
         manifest={directorManifest}
