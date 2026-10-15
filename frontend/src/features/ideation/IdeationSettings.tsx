@@ -58,27 +58,51 @@ export async function persistAgentSettings(
     throw new Error("Agent 节点已更改，请重新打开设定");
   }
 
-  useCanvasStore.getState().updateNodeData(session.nodeId, {
-    settings: structuredClone(settings),
-  });
+  const originalSettings = structuredClone(beforeData.settings);
+  const attemptedSettings = structuredClone(settings);
+  const hasExpectedNode = (node: typeof before | undefined) => {
+    const nodeData = node?.data as AgentNodeData | undefined;
+    return Boolean(
+      node
+      && node.type === CANVAS_NODE_TYPES.agent
+      && nodeData?.agentRef?.id === session.agentRef.id
+      && nodeData.agentRef.revision === session.agentRef.revision,
+    );
+  };
 
-  const flushed = await flushFreezoneCanvasRuntime(session.project, session.canvasId);
-  if (!session.isCurrent()) {
-    throw new Error("当前画布已切换，设定尚未确认保存");
-  }
-  const after = findNode();
-  const afterData = after?.data as AgentNodeData | undefined;
-  if (
-    !after
-    || after.type !== CANVAS_NODE_TYPES.agent
-    || !afterData?.agentRef
-    || afterData.agentRef.id !== session.agentRef.id
-    || afterData.agentRef.revision !== session.agentRef.revision
-  ) {
-    throw new Error("Agent 节点已更改，设定尚未确认保存");
-  }
-  if (flushed !== true) {
-    throw new Error("画布设置保存失败，请检查连接后重试");
+  const rollbackIfStillOptimistic = () => {
+    if (!session.isCurrent()) return;
+    useCanvasStore.setState((state) => {
+      if (!session.isCurrent()) return state;
+      const current = state.nodes.find((node) => node.id === session.nodeId);
+      if (!current || !hasExpectedNode(current)) return state;
+      const currentData = current.data as AgentNodeData;
+      if (JSON.stringify(currentData.settings) !== JSON.stringify(attemptedSettings)) return state;
+      return {
+        nodes: state.nodes.map((node) => node.id === session.nodeId
+          ? { ...node, data: { ...node.data, settings: structuredClone(originalSettings) } }
+          : node),
+      };
+    });
+  };
+
+  useCanvasStore.getState().updateNodeData(session.nodeId, { settings: attemptedSettings });
+
+  try {
+    const flushed = await flushFreezoneCanvasRuntime(session.project, session.canvasId);
+    if (!session.isCurrent()) {
+      throw new Error("当前画布已切换，设定尚未确认保存");
+    }
+    const after = findNode();
+    if (!hasExpectedNode(after)) {
+      throw new Error("Agent 节点已更改，设定尚未确认保存");
+    }
+    if (flushed !== true) {
+      throw new Error("画布设置保存失败，请检查连接后重试");
+    }
+  } catch (error) {
+    rollbackIfStillOptimistic();
+    throw error;
   }
 }
 
@@ -87,6 +111,7 @@ interface IdeationSettingsProps {
   agentRef: AgentNodeData["agentRef"];
   initial: ScriptSettings;
   session: AgentCanvasSaveSession | null;
+  onSaved: (settings: ScriptSettings) => void;
   onClose: () => void;
 }
 
@@ -95,10 +120,12 @@ export function IdeationSettings({
   agentRef,
   initial,
   session,
+  onSaved,
   onClose,
 }: IdeationSettingsProps) {
   const save = async (settings: ScriptSettings) => {
     await persistAgentSettings(session, settings);
+    onSaved(structuredClone(settings));
     onClose();
   };
 

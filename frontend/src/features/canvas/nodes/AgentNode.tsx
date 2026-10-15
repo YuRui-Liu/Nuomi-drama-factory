@@ -66,13 +66,19 @@ export const AgentNode = memo(function AgentNode({
   const emptySettings = useMemo(defaultSettings, []);
   const committedSettings = currentData.settings ?? emptySettings;
   const [draftSettings, setDraftSettings] = useState(() => structuredClone(committedSettings));
+  const [confirmedSettings, setConfirmedSettings] = useState(() => structuredClone(committedSettings));
+  const hydrationEpoch = useCanvasStore((state) => state.canvasHydrationEpoch);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSession, setSettingsSession] = useState<AgentCanvasSaveSession | null>(null);
   const [saveError, setSaveError] = useState("");
 
   useEffect(() => {
-    setDraftSettings(structuredClone(committedSettings));
-  }, [committedSettings]);
+    const hydratedNode = useCanvasStore.getState().nodes.find((node) => node.id === id && node.type === CANVAS_NODE_TYPES.agent);
+    const hydratedSettings = (hydratedNode?.data as AgentNodeData | undefined)?.settings ?? defaultSettings();
+    const snapshot = structuredClone(hydratedSettings);
+    setConfirmedSettings(snapshot);
+    setDraftSettings(snapshot);
+  }, [hydrationEpoch, id]);
 
   const agentRef = currentData.agentRef ?? { id: "builtin:ideation", revision: 1 };
   const role = ROLE_TRANSLATION_KEYS[agentRef.id] ?? ROLE_TRANSLATION_KEYS["builtin:ideation"];
@@ -86,15 +92,17 @@ export const AgentNode = memo(function AgentNode({
   }, []);
 
   const saveInlineSettings = useCallback(async () => {
-    if (JSON.stringify(draftSettings) === JSON.stringify(committedSettings)) return;
+    if (JSON.stringify(draftSettings) === JSON.stringify(confirmedSettings)) return;
     const session = captureAgentCanvasSaveSession(id, agentRef);
+    const attemptedSettings = structuredClone(draftSettings);
     try {
-      await persistAgentSettings(session, draftSettings);
+      await persistAgentSettings(session, attemptedSettings);
+      setConfirmedSettings(attemptedSettings);
       setSaveError("");
     } catch (error) {
       setSaveError(getMessage(error, t("canvas.agentNode.saveFailure")));
     }
-  }, [agentRef, committedSettings, draftSettings, id, t]);
+  }, [agentRef, confirmedSettings, draftSettings, id, t]);
 
   const openSettings = () => {
     setSettingsSession(captureAgentCanvasSaveSession(id, agentRef));
@@ -107,9 +115,16 @@ export const AgentNode = memo(function AgentNode({
     setSettingsSession(null);
   };
 
-  const secondarySummary = committedSettings.genreSecondary === "不融合"
+  const confirmModalSettings = (settings: AgentNodeData["settings"]) => {
+    const snapshot = structuredClone(settings);
+    setConfirmedSettings(snapshot);
+    setDraftSettings(snapshot);
+    setSaveError("");
+  };
+
+  const secondarySummary = confirmedSettings.genreSecondary === "不融合"
     ? t("canvas.agentNode.noFusion")
-    : committedSettings.genreSecondary || t("canvas.agentNode.unspecified");
+    : confirmedSettings.genreSecondary || t("canvas.agentNode.unspecified");
 
   return (
     <div
@@ -185,10 +200,10 @@ export const AgentNode = memo(function AgentNode({
         <div className="agent-node-summary" data-testid="agent-settings-summary">
           <span className="agent-node-summary-label">{t("canvas.agentNode.summary")}</span>
           <div className="agent-node-summary-genres">
-            <strong>{committedSettings.genrePrimary || t("canvas.agentNode.unspecified")}</strong>
+            <strong>{confirmedSettings.genrePrimary || t("canvas.agentNode.unspecified")}</strong>
             <span>{secondarySummary}</span>
           </div>
-          <p>{committedSettings.idea || t("canvas.agentNode.storySeedPlaceholder")}</p>
+          <p>{confirmedSettings.idea || t("canvas.agentNode.storySeedPlaceholder")}</p>
         </div>
 
         {saveError && <p className="agent-node-error" role="alert">{saveError}</p>}
@@ -214,6 +229,7 @@ export const AgentNode = memo(function AgentNode({
           agentRef={agentRef}
           initial={structuredClone(draftSettings)}
           session={settingsSession}
+          onSaved={confirmModalSettings}
           onClose={closeSettings}
         />
       )}

@@ -207,6 +207,33 @@ describe("Agent canvas node", () => {
     expect(screen.getByTestId("agent-settings-summary")).toHaveTextContent("悬疑推理");
   });
 
+  it("keeps an inline draft retryable and the summary confirmed after flush failure", async () => {
+    const flush = vi.fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const { data } = renderAgent(flush);
+    const genre = screen.getByRole("combobox", { name: "主题材" });
+
+    fireEvent.change(genre, { target: { value: "悬疑推理" } });
+    fireEvent.blur(genre);
+    await waitFor(() => expect(flush).toHaveBeenCalledTimes(1));
+
+    expect(genre).toHaveValue("悬疑推理");
+    expect(screen.getByTestId("agent-settings-summary")).toHaveTextContent("都市现实");
+    expect(useCanvasStore.getState().nodes[0].data).toEqual(
+      expect.objectContaining({ settings: data.settings }),
+    );
+
+    fireEvent.focus(genre);
+    fireEvent.blur(genre);
+    await waitFor(() => expect(flush).toHaveBeenCalledTimes(2));
+
+    expect(useCanvasStore.getState().nodes[0].data).toEqual(
+      expect.objectContaining({ settings: expect.objectContaining({ genrePrimary: "悬疑推理" }) }),
+    );
+    expect(screen.getByTestId("agent-settings-summary")).toHaveTextContent("悬疑推理");
+  });
+
   it("updates node fields and saved summary from the shared full settings form", async () => {
     const flush = vi.fn().mockResolvedValue(true);
     renderAgent(flush);
@@ -252,7 +279,7 @@ describe("Agent canvas node", () => {
 
   it("keeps the full settings draft open with an error when canvas flush fails", async () => {
     const flush = vi.fn().mockResolvedValue(false);
-    renderAgent(flush);
+    const { data } = renderAgent(flush);
     const user = userEvent.setup();
 
     await user.click(screen.getByRole("button", { name: "编辑完整设定" }));
@@ -264,5 +291,9 @@ describe("Agent canvas node", () => {
     expect(screen.getByRole("textbox", { name: "故事想法" })).toHaveValue("保留这段创意");
     expect(screen.getByRole("dialog", { name: "剧本设定器" })).toBeInTheDocument();
     expect(flush).toHaveBeenCalledTimes(1);
+    expect(useCanvasStore.getState().nodes[0].data).toEqual(
+      expect.objectContaining({ settings: data.settings }),
+    );
+    expect(screen.getByTestId("agent-settings-summary")).toHaveTextContent("都市现实");
   });
 });
