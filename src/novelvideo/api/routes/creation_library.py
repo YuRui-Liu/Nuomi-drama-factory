@@ -3,7 +3,7 @@ import asyncio
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from novelvideo.api.auth import get_api_user
 from novelvideo.creation.ontology import Ontology
@@ -14,6 +14,80 @@ from novelvideo.creation.personal_library import PersonalLibrary
 from .creation import context_for, errors
 
 router = APIRouter(prefix='/projects/{project}/creation', tags=['creation-library'])
+
+
+async def agent_runs_service(project, user, canvas_id, conversation_id, role='viewer'):
+    from copy import deepcopy
+    from novelvideo.creation.agent_runs import AgentRuns
+    principal = deepcopy(user)
+    if principal.get('credential_kind') == 'agent_session':
+        raise HTTPException(403, '运行须由用户明确启动')
+
+    async def resolve(required_role):
+        return await context_for(project, principal, required_role)
+
+    ctx = await resolve(role)
+    return AgentRuns(ctx, username=principal['username'], canvas_id=canvas_id,
+                     conversation_id=conversation_id, resolve_context=resolve)
+
+
+@router.get('/agent-runtime')
+async def agent_runtime(project: str, user: dict = Depends(get_api_user)):
+    from novelvideo.creation.agent_model import availability
+    with errors():
+        ctx = await context_for(project, user, 'viewer')
+        return {'ok': True, 'data': await asyncio.to_thread(availability, ctx)}
+
+
+@router.post('/delegations/{identifier}/runs')
+async def start_agent_run(project: str, identifier: str, canvas_id: str, conversation_id: str,
+                          body: dict, background: BackgroundTasks, user: dict = Depends(get_api_user)):
+    from novelvideo.creation.ontology import exact
+    with errors():
+        exact(body, {'request_id', 'contract_hash', 'max_model_calls', 'specialist_ids'})
+        service = await agent_runs_service(project, user, canvas_id, conversation_id, 'editor')
+        result = await service.start({**body, 'delegation_id': identifier})
+        background.add_task(service.drive, result['run']['id'])
+        return {'ok': True, 'data': result}
+
+
+@router.get('/delegations/{identifier}/runs')
+async def agent_run_history(project: str, identifier: str, canvas_id: str, conversation_id: str,
+                            user: dict = Depends(get_api_user)):
+    with errors():
+        service = await agent_runs_service(project, user, canvas_id, conversation_id)
+        return {'ok': True, 'data': await service.catalog(identifier)}
+
+
+@router.get('/agent-runs/{identifier}')
+async def get_agent_run(project: str, identifier: str, canvas_id: str, conversation_id: str,
+                        user: dict = Depends(get_api_user)):
+    with errors():
+        service = await agent_runs_service(project, user, canvas_id, conversation_id)
+        return {'ok': True, 'data': await service.get(identifier)}
+
+
+@router.get('/agent-run-requests/{request_id}')
+async def get_agent_run_receipt(project: str, request_id: str, canvas_id: str, conversation_id: str,
+                                user: dict = Depends(get_api_user)):
+    with errors():
+        service = await agent_runs_service(project, user, canvas_id, conversation_id)
+        result = await service.receipt(request_id)
+        if result is None:
+            raise HTTPException(404, '运行请求尚无已提交回执')
+        return {'ok': True, 'data': result}
+
+
+@router.post('/agent-runs/{identifier}/{action}')
+async def control_agent_run(project: str, identifier: str, action: Literal['stop', 'resume'],
+                            canvas_id: str, conversation_id: str, body: dict,
+                            background: BackgroundTasks, user: dict = Depends(get_api_user)):
+    with errors():
+        service = await agent_runs_service(project, user, canvas_id, conversation_id, 'editor')
+        result = await service.control(identifier, action, body)
+        if action == 'resume':
+            background.add_task(service.drive, identifier)
+        return {'ok': True, 'data': result}
 
 
 async def agent_tools_service(project, user, canvas_id, conversation_id, delegation_id, role='viewer'):

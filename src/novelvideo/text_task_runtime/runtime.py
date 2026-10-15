@@ -137,12 +137,18 @@ class ModelApiStructuredRuntime:
         snapshot: AgentTaskRouteSnapshot,
         *,
         agent_factory: Callable[..., Any] = _default_model_api_agent_factory,
+        strict_single_request: bool = False,
+        result_observer: Callable[[Any], None] | None = None,
     ) -> None:
         if snapshot.runtime != "model_api":
             raise ValueError("ModelApiStructuredRuntime requires a model_api route")
         _reject_unsupported_skill(snapshot)
+        if strict_single_request and agent_factory is not _default_model_api_agent_factory:
+            raise ValueError('Strict Decision runtime cannot inject an Agent factory')
         self.snapshot = snapshot
         self._agent_factory = agent_factory
+        self._strict_single_request = strict_single_request
+        self._result_observer = result_observer
 
     async def run_structured(
         self,
@@ -163,12 +169,15 @@ class ModelApiStructuredRuntime:
                 "TEXT_TASK_RUNTIME_MODEL",
                 self.snapshot.model,
                 model_name_override=self.snapshot.model,
+                **({'max_retries_override': 0} if self._strict_single_request else {}),
             ),
             # DeepSeek thinking models reject native tool output because it adds
             # tool_choice. PromptedOutput validates typed JSON without tools.
             "output_type": PromptedOutput(output_type),
             "system_prompt": system_prompt,
         }
+        if self._strict_single_request:
+            agent_kwargs.update(retries=0, output_retries=0)
         if self.snapshot.reasoning_effort:
             # "max" is a WorkBuddy-only level with no OpenAI-compatible
             # equivalent; drop it rather than sending an invalid value.
@@ -184,7 +193,26 @@ class ModelApiStructuredRuntime:
         if images:
             validate_structured_images(images)
             user_prompt = [prompt, *[BinaryContent(data=image.data, media_type=image.media_type) for image in images]]
-        result = await agent.run(user_prompt)
+        run_kwargs = {}
+        if self._strict_single_request:
+            from pydantic_ai.usage import UsageLimits, RunUsage
+            run_kwargs['usage_limits'] = UsageLimits(request_limit=1)
+            run_kwargs['usage'] = RunUsage()
+        if self._strict_single_request:
+            from pydantic_ai import capture_run_messages
+            from pydantic_ai.messages import ModelResponse
+            with capture_run_messages() as messages:
+                try:
+                    result = await agent.run(user_prompt, **run_kwargs)
+                except Exception:
+                    response = next((m for m in reversed(messages) if isinstance(m, ModelResponse)), None)
+                    if response is not None and self._result_observer is not None:
+                        self._result_observer(SimpleNamespace(usage=run_kwargs['usage'], response=response))
+                    raise
+        else:
+            result = await agent.run(user_prompt, **run_kwargs)
+        if self._result_observer is not None:
+            self._result_observer(result)
         output = getattr(result, "output", result)
         if isinstance(output, output_type):
             return output

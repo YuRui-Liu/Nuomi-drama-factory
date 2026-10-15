@@ -171,3 +171,38 @@ def text_runtime_status(settings: TextRuntimeSettings | None = None) -> dict[str
         "apiKeyConfigured": key_configured,
         "apiKeyPreview": mask_secret(effective.api_key),
     }
+
+
+def readonly_text_runtime_metadata() -> dict[str, object]:
+    """Configuration evidence only: no secret resolution, migration, or probe."""
+    from hashlib import sha256
+    if not is_self_hosted():
+        provider = os.environ.get('TEXT_MODEL_PROVIDER', DEFAULT_PROVIDER)
+        endpoint = os.environ.get('TEXT_MODEL_BASE_URL', DEFAULT_BASE_URL)
+        model = os.environ.get('TEXT_MODEL_NAME', DEFAULT_MODEL)
+        configured = bool(os.environ.get('TEXT_MODEL_API_KEY', '').strip())
+        revision = 'environment'
+    else:
+        path = _settings_db_path()
+        if not path.is_file():
+            return {'configured': False, 'fingerprint': 'missing'}
+        if path.is_symlink() or path.parent.is_symlink():
+            raise ValueError('Invalid runtime metadata path')
+        with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True) as conn:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_settings'").fetchone():
+                return {'configured': False, 'fingerprint': 'missing'}
+            row = conn.execute('''SELECT json_extract(value,'$.provider'), json_extract(value,'$.base_url'),
+                json_extract(value,'$.model'),
+                COALESCE(length(trim(json_extract(value,'$.api_key_ref'))),0)>0
+                  OR COALESCE(length(trim(json_extract(value,'$.api_key'))),0)>0,
+                updated_at FROM runtime_settings WHERE key=?''', (SETTINGS_KEY,)).fetchone()
+        if row is None:
+            return {'configured': False, 'fingerprint': 'missing'}
+        provider, endpoint, model, configured, revision = row
+        provider = provider or DEFAULT_PROVIDER
+        endpoint = endpoint or DEFAULT_BASE_URL
+        model = model or DEFAULT_MODEL
+    provider, endpoint, model = _normalize(provider, endpoint, model)
+    # Endpoint is part of server comparison evidence, never returned to callers.
+    fingerprint = sha256(json.dumps([provider, endpoint, model, bool(configured), revision]).encode()).hexdigest()
+    return {'configured': bool(configured), 'fingerprint': fingerprint}

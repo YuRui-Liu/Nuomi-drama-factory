@@ -103,7 +103,20 @@ def _parse_routing_config(value: Any) -> AgentTaskRoutingConfig:
     return AgentTaskRoutingConfig.model_validate(value)
 
 
-def load_global_routes() -> AgentTaskRoutingConfig:
+def load_global_routes(*, readonly: bool = False) -> AgentTaskRoutingConfig:
+    if readonly:
+        import sqlite3
+        from novelvideo.model_gateway_settings import _settings_db_path
+        path = _settings_db_path()
+        if not path.is_file():
+            return AgentTaskRoutingConfig()
+        if path.is_symlink() or path.parent.is_symlink():
+            raise ValueError('Invalid routing metadata path')
+        with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True) as conn:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_settings'").fetchone():
+                return AgentTaskRoutingConfig()
+            row = conn.execute('SELECT value FROM runtime_settings WHERE key=?', (TEXT_TASK_ROUTING_KEY,)).fetchone()
+        return _parse_routing_config(row[0] if row else None)
     from novelvideo.model_gateway_settings import get_model_gateway_settings
 
     settings = get_model_gateway_settings()
@@ -204,10 +217,11 @@ def resolve_configured_agent_task_route(
     ctx: Any,
     task_role: str,
     task_override: AgentTaskRouteOverride | dict[str, Any] | None = None,
+    readonly: bool = False,
 ) -> AgentTaskRouteSnapshot:
     """Resolve persisted routes once, at enqueue time."""
 
-    global_config = load_global_routes()
+    global_config = load_global_routes(readonly=True) if readonly else load_global_routes()
     # Keep the global route unclamped here: project/task overrides are layered
     # on top first, and only the fully resolved snapshot is clamped below.
     global_route = _unclamped_global_task_route(task_role, global_config)

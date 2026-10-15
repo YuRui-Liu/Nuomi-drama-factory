@@ -176,6 +176,7 @@ def _newapi_text_openai_provider(
     api_key: str,
     base_url: str,
     timeout_seconds: float,
+    max_retries: int = 1,
 ):
     from openai import AsyncOpenAI
     from pydantic_ai.providers.openai import OpenAIProvider
@@ -191,7 +192,7 @@ def _newapi_text_openai_provider(
                     api_key=api_key,
                     base_url=base_url,
                     timeout=timeout_seconds,
-                    max_retries=1,
+                    max_retries=max_retries,
                     http_client=http_client,
                 ),
             )
@@ -208,6 +209,7 @@ def _newapi_text_openai_model(
     base_url: str,
     timeout_seconds: float,
     profile: Any,
+    max_retries: int = 1,
 ):
     from contextlib import asynccontextmanager
 
@@ -230,6 +232,7 @@ def _newapi_text_openai_model(
             api_key=api_key,
             base_url=base_url,
             timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
         ),
         profile=profile,
     )
@@ -241,6 +244,7 @@ def get_newapi_text_pydantic_model(
     *,
     model_name_override: str | None = None,
     timeout_seconds_override: float | None = None,
+    max_retries_override: int | None = None,
 ):
     """Create a PydanticAI OpenAI-compatible model that routes through newAPI."""
     runtime = load_text_runtime_settings()
@@ -263,6 +267,7 @@ def get_newapi_text_pydantic_model(
         base_url=base_url,
         timeout_seconds=timeout_seconds,
         profile=_get_newapi_text_model_profile(model_name),
+        max_retries=1 if max_retries_override is None else max_retries_override,
     )
 
 

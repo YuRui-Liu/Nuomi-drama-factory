@@ -9,9 +9,33 @@ from __future__ import annotations
 import contextvars
 import logging
 import os
+from contextlib import contextmanager
 from typing import Any, Optional
 
 logger = logging.getLogger("novelvideo.llm_instrumentation")
+
+_ACCOUNTING_OBSERVER = contextvars.ContextVar('creation_accounting_observer', default=None)
+
+
+@contextmanager
+def observe_agent_accounting():
+    """Opt-in lifecycle evidence; never changes metering or carries secrets."""
+    evidence = {'status': 'unknown', 'events': []}
+    token = _ACCOUNTING_OBSERVER.set(evidence)
+    try:
+        yield evidence
+    finally:
+        _ACCOUNTING_OBSERVER.reset(token)
+
+
+def _accounting_event(stage, status):
+    evidence = _ACCOUNTING_OBSERVER.get()
+    if evidence is None:
+        return
+    evidence['events'].append({'stage': stage, 'status': status})
+    evidence['status'] = ('recorded' if stage == 'usage' and status == 'succeeded'
+        and not any(e['status'] in {'failed', 'unknown'} or e['stage'] == 'refund'
+                    for e in evidence['events']) else 'unknown')
 
 _PROJECT_CTX: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "novelvideo_project_id", default=None
@@ -370,6 +394,7 @@ async def _forward_agent_usage(
 ) -> None:
     user_id = _USER_CTX.get()
     if not user_id:
+        _accounting_event('usage', 'unknown')
         return
     project_id = _PROJECT_CTX.get()
     resource_kind = _RESOURCE_KIND_CTX.get()
@@ -393,6 +418,7 @@ async def _forward_agent_usage(
         usage_fn = getattr(result, "usage", None)
         usage = usage_fn() if callable(usage_fn) else None
         if usage is None:
+            _accounting_event('tokens', 'unknown')
             return
         in_tok = getattr(usage, "input_tokens", None) or getattr(usage, "request_tokens", None) or 0
         out_tok = (
@@ -407,6 +433,7 @@ async def _forward_agent_usage(
             resource_kind=resource_kind,
         )
     except Exception as e:
+        _accounting_event('tokens', 'failed')
         logger.debug("forward_agent_usage failed: %s", e)
 
 
@@ -477,25 +504,37 @@ def _install_agent_run_patch() -> None:
     original_run = Agent.run
 
     async def _tracked_run(self, *args, **kwargs):
-        reservation_id = await _meter_reserve(
-            model=_extract_model_name(self),
-            billing_kind="text",
-            billing_params=_text_billing_params_from_model_settings(
-                self, kwargs.get("model_settings")
-            ),
-            metadata={"source": "pydantic_ai_agent_run"},
-        )
+        try:
+            reservation_id = await _meter_reserve(
+                model=_extract_model_name(self),
+                billing_kind="text",
+                billing_params=_text_billing_params_from_model_settings(
+                    self, kwargs.get("model_settings")
+                ),
+                metadata={"source": "pydantic_ai_agent_run"},
+            )
+        except BaseException:
+            _accounting_event('reserve', 'failed')
+            raise
+        _accounting_event('reserve', 'succeeded' if reservation_id else 'skipped')
         token = _AGENT_CREDIT_RESERVATION_ACTIVE.set(bool(reservation_id))
         try:
             result = await original_run(self, *args, **kwargs)
         except BaseException:
-            await _meter_refund(reservation_id)
+            try:
+                await _meter_refund(reservation_id)
+            except BaseException:
+                _accounting_event('refund', 'failed')
+                raise
+            _accounting_event('refund', 'succeeded' if reservation_id else 'skipped')
             raise
         finally:
             _AGENT_CREDIT_RESERVATION_ACTIVE.reset(token)
         try:
             await _forward_agent_usage(self, result, credit_reservation_id=reservation_id)
+            _accounting_event('usage', 'succeeded')
         except Exception:
+            _accounting_event('usage', 'failed')
             pass
         return result
 
