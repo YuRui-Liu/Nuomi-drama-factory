@@ -69,6 +69,8 @@ function show(isCurrent = () => true) {
   );
 }
 beforeEach(() => {
+  const held = new Set<string>();
+  Object.defineProperty(navigator, 'locks', {configurable:true,value:{request:async(name:string,_options:unknown,callback:(lock:unknown)=>unknown)=>{if(held.has(name))return callback(null);held.add(name);try{return await callback({name});}finally{held.delete(name);}}}});
   localStorage.clear();
   vi.clearAllMocks();
   useAuthStore.setState({ username: 'alice' });
@@ -502,5 +504,129 @@ describe('Agent configuration management', () => {
     await screen.findByText('保存中的配置 · 已保存个人 v3');
     expect(api.postAgentOperation).toHaveBeenCalledTimes(1);
     expect(api.getAgentReceipt).toHaveBeenLastCalledWith('p', 'personal', 'recover-ui');
+  });
+});
+
+describe('cross-tab Agent recovery', () => {
+  const installLocks = () => {
+    const held = new Set<string>();
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      value: {
+        request: async (name: string, _options: unknown, callback: (lock: unknown) => unknown) => {
+          if (held.has(name)) return callback(null);
+          held.add(name);
+          try {
+            return await callback({ name });
+          } finally {
+            held.delete(name);
+          }
+        },
+      },
+    });
+  };
+  beforeEach(installLocks);
+  const request = {
+    channel: 'personal' as const,
+    label: '原请求',
+    request: { request_id: 'A', action: 'save', payload: {} },
+  };
+  it('serializes independent modules and rejects finish while the request lock is held', async () => {
+    vi.resetModules();
+    const a = await import('@/features/agent-configuration/agentOperation');
+    vi.resetModules();
+    const b = await import('@/features/agent-configuration/agentOperation');
+    let release!: (v: any) => void;
+    vi.mocked(api.postAgentOperation).mockReturnValue(
+      new Promise((r) => {
+        release = r;
+      }),
+    );
+    const first = a.createAgentOperation(owner, () => true).run(request);
+    await waitFor(() => expect(api.postAgentOperation).toHaveBeenCalledTimes(1));
+    const second = b.createAgentOperation(owner, () => true).run(request);
+    const finish = Promise.resolve().then(() =>
+      Reflect.apply(b.finishAgentIntent, null, [owner, 'A', () => true]),
+    );
+    await expect(finish).rejects.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    const calls = vi.mocked(api.postAgentOperation).mock.calls.length;
+    release({ id: 'a', revision: 1 });
+    expect((await second).status).toBe('busy');
+    expect(calls).toBe(1);
+    await first;
+  });
+  it('refuses stale finish A against terminal B and preserves its full receipt', async () => {
+    const m = await import('@/features/agent-configuration/agentOperation');
+    vi.mocked(api.postAgentOperation).mockResolvedValue({ id: 'a', revision: 1 });
+    await m.createAgentOperation(owner, () => true).run(request);
+    await Reflect.apply(m.finishAgentIntent, null, [owner, 'A', () => true]);
+    await m
+      .createAgentOperation(owner, () => true)
+      .run({ ...request, request: { ...request.request, request_id: 'B' } });
+    const before = m.readAgentIntent(owner);
+    await expect(
+      Promise.resolve().then(() =>
+        Reflect.apply(m.finishAgentIntent, null, [owner, 'A', () => true]),
+      ),
+    ).rejects.toThrow();
+    expect(m.readAgentIntent(owner)).toEqual(before);
+    expect(before?.result).toEqual({ id: 'a', revision: 1 });
+  });
+  it('fails closed without Web Locks and rechecks active identity after acquisition', async () => {
+    const m = await import('@/features/agent-configuration/agentOperation');
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined });
+    expect((await m.createAgentOperation(owner, () => true).run(request)).status).toBe('failed');
+    await expect(
+      Promise.resolve().then(() =>
+        Reflect.apply(m.finishAgentIntent, null, [owner, 'A', () => true]),
+      ),
+    ).rejects.toThrow();
+    expect(api.postAgentOperation).not.toHaveBeenCalled();
+    let active = true;
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      value: {
+        request: async (_n: string, _o: unknown, callback: (lock: unknown) => unknown) => {
+          active = false;
+          return callback({ name: 'lock' });
+        },
+      },
+    });
+    expect((await m.createAgentOperation(owner, () => active).run(request)).status).toBe(
+      'detached',
+    );
+    expect(api.postAgentOperation).not.toHaveBeenCalled();
+  });
+});
+
+describe('Agent unknown journal protection', () => {
+  it('preserves unknown B against stale A finish and recovers its original receipt', async () => {
+    const m = await import('@/features/agent-configuration/agentOperation');
+    const input = {
+      channel: 'personal' as const,
+      label: '原请求',
+      request: { request_id: 'A', action: 'save', payload: {} },
+    };
+    vi.mocked(api.postAgentOperation).mockResolvedValue({ id: 'a', revision: 1 });
+    await m.createAgentOperation(owner, () => true).run(input);
+    await m.finishAgentIntent(owner, 'A', () => true);
+    vi.mocked(api.postAgentOperation).mockRejectedValue(new Error('lost'));
+    vi.mocked(api.getAgentReceipt).mockRejectedValue(new Error('offline'));
+    const b = { ...input, request: { ...input.request, request_id: 'B' } };
+    expect((await m.createAgentOperation(owner, () => true).run(b)).status).toBe('pending');
+    await expect(m.finishAgentIntent(owner, 'A', () => true)).rejects.toThrow();
+    expect(m.readAgentIntent(owner)?.request).toEqual(b.request);
+    const calls = vi.mocked(api.postAgentOperation).mock.calls.length;
+    vi.mocked(api.getAgentReceipt).mockResolvedValue({ id: 'a', revision: 1 });
+    await m.createAgentOperation(owner, () => true).run();
+    expect(api.postAgentOperation).toHaveBeenCalledTimes(calls);
+    expect(m.readAgentIntent(owner)?.result).toEqual({ id: 'a', revision: 1 });
+    const before = m.readAgentIntent(owner);
+    await expect(m.finishAgentIntent(owner, 'B', () => false)).rejects.toThrow();
+    expect(m.readAgentIntent(owner)).toEqual(before);
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined });
+    await expect(m.finishAgentIntent(owner, 'B', () => true)).rejects.toThrow();
+    expect(m.readAgentIntent(owner)).toEqual(before);
   });
 });

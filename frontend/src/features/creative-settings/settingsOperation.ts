@@ -34,15 +34,37 @@ export function readSettingsIntent(owner: SettingsOwner): SettingsIntent | null 
     throw new Error('恢复记录损坏，请保留后处理');
   return value;
 }
-export function finishSettingsIntent(owner: SettingsOwner) {
-  const intent = readSettingsIntent(owner);
-  if (intent?.phase === 'pending') throw new Error('结果未知，请恢复原请求');
-  if (intent) localStorage.setItem(`${key(owner)}:last`, JSON.stringify(intent));
-  localStorage.removeItem(key(owner));
+class SettingsLockBusy extends Error {}
+async function withSettingsLock<T>(owner: SettingsOwner, work: () => Promise<T>): Promise<T> {
+  if (typeof navigator === 'undefined' || !navigator.locks?.request)
+    throw new Error('浏览器不支持安全的跨标签保存，请使用支持 Web Locks 的浏览器');
+  return navigator.locks.request(
+    key(owner),
+    { mode: 'exclusive', ifAvailable: true },
+    async (lock) => {
+      if (!lock) throw new SettingsLockBusy('另一标签正在处理此工作区的请求，请稍后恢复');
+      return work();
+    },
+  );
+}
+export async function finishSettingsIntent(
+  owner: SettingsOwner,
+  expectedRequestId: string,
+  isCurrent: () => boolean,
+) {
+  return withSettingsLock(owner, async () => {
+    if (!isCurrent()) throw new Error('工作区已切换，未清理原请求');
+    const intent = readSettingsIntent(owner);
+    if (!intent || intent.request.request_id !== expectedRequestId)
+      throw new Error('请求已由另一标签更新，请重新读取原请求');
+    if (intent.phase === 'pending') throw new Error('结果未知，请恢复原请求');
+    localStorage.setItem(`${key(owner)}:last`, JSON.stringify(intent));
+    localStorage.removeItem(key(owner));
+  });
 }
 const flights = new Set<string>();
 export function createSettingsOperation(owner: SettingsOwner, isCurrent: () => boolean) {
-  return {
+  const operation = {
     async run(
       input?: Pick<SettingsIntent, 'domain' | 'request' | 'label'>,
     ): Promise<{ status: SettingsIntent['phase'] | 'busy' | 'detached'; message?: string }> {
@@ -130,6 +152,23 @@ export function createSettingsOperation(owner: SettingsOwner, isCurrent: () => b
         );
       } finally {
         flights.delete(storageKey);
+      }
+    },
+  };
+  return {
+    async run(input?: Pick<SettingsIntent, 'domain' | 'request' | 'label'>) {
+      if (!isCurrent()) return { status: 'detached' as const };
+      try {
+        return await withSettingsLock(owner, () => operation.run(input));
+      } catch (error) {
+        return {
+          status: !isCurrent()
+            ? ('detached' as const)
+            : error instanceof SettingsLockBusy
+              ? ('busy' as const)
+              : ('failed' as const),
+          message: error instanceof Error ? error.message : String(error),
+        };
       }
     },
   };

@@ -396,14 +396,20 @@ export function CreativeSettingsPanel(props: Props) {
       setError(errorText(e));
     }
   }
-  function finish() {
+  async function finish() {
+    if (!current() || busy || !intent) return;
+    const expectedRequestId = intent.request.request_id;
+    setBusy(true);
     try {
-      finishSettingsIntent(owner);
+      await finishSettingsIntent(owner, expectedRequestId, current);
+      if (!current()) return;
       setIntent(null);
       setError('');
       setReload((v) => v + 1);
     } catch (e) {
-      setStorageError(errorText(e));
+      if (current()) setError(errorText(e));
+    } finally {
+      if (current()) setBusy(false);
     }
   }
   const blocked = busy || !!intent || !!storageError || !ready;
@@ -504,7 +510,7 @@ export function CreativeSettingsPanel(props: Props) {
               恢复原请求
             </Button>
           ) : (
-            <Button onClick={finish}>保留草稿，继续编辑</Button>
+            <Button disabled={busy} onClick={() => void finish()}>保留草稿，继续编辑</Button>
           )}
         </section>
       ) : (

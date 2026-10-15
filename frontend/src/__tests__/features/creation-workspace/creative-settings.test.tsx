@@ -74,6 +74,8 @@ const agreement = {
   scope_status: 'valid' as const,
 };
 beforeEach(() => {
+  const held = new Set<string>();
+  Object.defineProperty(navigator, 'locks', {configurable:true,value:{request:async(name:string,_options:unknown,callback:(lock:unknown)=>unknown)=>{if(held.has(name))return callback(null);held.add(name);try{return await callback({name});}finally{held.delete(name);}}}});
   localStorage.clear();
   vi.clearAllMocks();
   runtime.flush.mockResolvedValue(true);
@@ -578,5 +580,158 @@ describe('creative settings', () => {
     await screen.findByRole('alert');
     expect(api.listDefinitions).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: '新建对象定义' })).toBeDisabled();
+  });
+});
+
+describe('cross-tab Settings recovery', () => {
+  const installLocks = () => {
+    const held = new Set<string>();
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      value: {
+        request: async (name: string, _options: unknown, callback: (lock: unknown) => unknown) => {
+          if (held.has(name)) return callback(null);
+          held.add(name);
+          try {
+            return await callback({ name });
+          } finally {
+            held.delete(name);
+          }
+        },
+      },
+    });
+  };
+  beforeEach(installLocks);
+  const request = {
+    domain: 'constraints' as const,
+    label: '原请求',
+    request: { request_id: 'A', action: 'save', payload: {} },
+  };
+  it('serializes independent modules and rejects finish while the request lock is held', async () => {
+    vi.resetModules();
+    const a = await import('@/features/creative-settings/settingsOperation');
+    vi.resetModules();
+    const b = await import('@/features/creative-settings/settingsOperation');
+    let release!: (v: any) => void;
+    vi.mocked(api.postSettingsOperation).mockReturnValue(
+      new Promise((r) => {
+        release = r;
+      }),
+    );
+    const first = a.createSettingsOperation(owner, () => true).run(request);
+    await waitFor(() => expect(api.postSettingsOperation).toHaveBeenCalledTimes(1));
+    const second = b.createSettingsOperation(owner, () => true).run(request);
+    const finish = Promise.resolve().then(() =>
+      Reflect.apply(b.finishSettingsIntent, null, [owner, 'A', () => true]),
+    );
+    await expect(finish).rejects.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    const calls = vi.mocked(api.postSettingsOperation).mock.calls.length;
+    release({
+      status: 'conflict' as const,
+      request_id: 'A',
+      exception_proposal: { proposal_id: 'proposal', approval_available: false },
+    });
+    expect((await second).status).toBe('busy');
+    expect(calls).toBe(1);
+    await first;
+  });
+  it('refuses stale finish A against terminal B and preserves its full receipt', async () => {
+    const m = await import('@/features/creative-settings/settingsOperation');
+    vi.mocked(api.postSettingsOperation).mockResolvedValue({
+      status: 'conflict' as const,
+      request_id: 'A',
+      exception_proposal: { proposal_id: 'proposal', approval_available: false },
+    });
+    await m.createSettingsOperation(owner, () => true).run(request);
+    await Reflect.apply(m.finishSettingsIntent, null, [owner, 'A', () => true]);
+    vi.mocked(api.postSettingsOperation).mockResolvedValue({
+      status: 'conflict' as const,
+      request_id: 'B',
+      exception_proposal: { proposal_id: 'proposal', approval_available: false },
+    });
+    await m
+      .createSettingsOperation(owner, () => true)
+      .run({ ...request, request: { ...request.request, request_id: 'B' } });
+    const before = m.readSettingsIntent(owner);
+    await expect(
+      Promise.resolve().then(() =>
+        Reflect.apply(m.finishSettingsIntent, null, [owner, 'A', () => true]),
+      ),
+    ).rejects.toThrow();
+    expect(m.readSettingsIntent(owner)).toEqual(before);
+    expect(before?.result).toEqual({
+      status: 'conflict' as const,
+      request_id: 'B',
+      exception_proposal: { proposal_id: 'proposal', approval_available: false },
+    });
+  });
+  it('fails closed without Web Locks and rechecks active identity after acquisition', async () => {
+    const m = await import('@/features/creative-settings/settingsOperation');
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined });
+    expect((await m.createSettingsOperation(owner, () => true).run(request)).status).toBe('failed');
+    await expect(
+      Promise.resolve().then(() =>
+        Reflect.apply(m.finishSettingsIntent, null, [owner, 'A', () => true]),
+      ),
+    ).rejects.toThrow();
+    expect(api.postSettingsOperation).not.toHaveBeenCalled();
+    let active = true;
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      value: {
+        request: async (_n: string, _o: unknown, callback: (lock: unknown) => unknown) => {
+          active = false;
+          return callback({ name: 'lock' });
+        },
+      },
+    });
+    expect((await m.createSettingsOperation(owner, () => active).run(request)).status).toBe(
+      'detached',
+    );
+    expect(api.postSettingsOperation).not.toHaveBeenCalled();
+  });
+});
+
+describe('Settings unknown journal protection', () => {
+  it('preserves unknown B against stale A finish and recovers its original receipt', async () => {
+    const m = await import('@/features/creative-settings/settingsOperation');
+    const input = {
+      domain: 'constraints' as const,
+      label: '原请求',
+      request: { request_id: 'A', action: 'save', payload: {} },
+    };
+    vi.mocked(api.postSettingsOperation).mockResolvedValue({
+      status: 'conflict' as const,
+      request_id: 'A',
+      exception_proposal: { proposal_id: 'P', approval_available: false },
+    });
+    await m.createSettingsOperation(owner, () => true).run(input);
+    await m.finishSettingsIntent(owner, 'A', () => true);
+    vi.mocked(api.postSettingsOperation).mockRejectedValue(new Error('lost'));
+    vi.mocked(api.getSettingsReceipt).mockRejectedValue(new Error('offline'));
+    const b = { ...input, request: { ...input.request, request_id: 'B' } };
+    expect((await m.createSettingsOperation(owner, () => true).run(b)).status).toBe('pending');
+    await expect(m.finishSettingsIntent(owner, 'A', () => true)).rejects.toThrow();
+    expect(m.readSettingsIntent(owner)?.request).toEqual(b.request);
+    const calls = vi.mocked(api.postSettingsOperation).mock.calls.length;
+    vi.mocked(api.getSettingsReceipt).mockResolvedValue({
+      status: 'conflict' as const,
+      request_id: 'B',
+      exception_proposal: { proposal_id: 'P', approval_available: false },
+    });
+    await m.createSettingsOperation(owner, () => true).run();
+    expect(api.postSettingsOperation).toHaveBeenCalledTimes(calls);
+    expect(m.readSettingsIntent(owner)?.result).toEqual({
+      status: 'conflict' as const,
+      request_id: 'B',
+      exception_proposal: { proposal_id: 'P', approval_available: false },
+    });
+    const before = m.readSettingsIntent(owner);
+    await expect(m.finishSettingsIntent(owner, 'B', () => false)).rejects.toThrow();
+    expect(m.readSettingsIntent(owner)).toEqual(before);
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined });
+    await expect(m.finishSettingsIntent(owner, 'B', () => true)).rejects.toThrow();
+    expect(m.readSettingsIntent(owner)).toEqual(before);
   });
 });

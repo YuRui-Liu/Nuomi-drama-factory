@@ -40,11 +40,33 @@ export function readAgentIntent(owner: AgentOwner): AgentIntent | null {
     throw new Error('Agent配置恢复记录损坏，请保留记录后处理');
   return value;
 }
-export function finishAgentIntent(owner: AgentOwner) {
-  const intent = readAgentIntent(owner);
-  if (intent?.phase === 'pending') throw new Error('结果未知，请恢复原请求');
-  if (intent) localStorage.setItem(`${key(owner)}:last`, JSON.stringify(intent));
-  localStorage.removeItem(key(owner));
+class AgentLockBusy extends Error {}
+async function withAgentLock<T>(owner: AgentOwner, work: () => Promise<T>): Promise<T> {
+  if (typeof navigator === 'undefined' || !navigator.locks?.request)
+    throw new Error('浏览器不支持安全的跨标签保存，请使用支持 Web Locks 的浏览器');
+  return navigator.locks.request(
+    key(owner),
+    { mode: 'exclusive', ifAvailable: true },
+    async (lock) => {
+      if (!lock) throw new AgentLockBusy('另一标签正在处理此工作区的请求，请稍后恢复');
+      return work();
+    },
+  );
+}
+export async function finishAgentIntent(
+  owner: AgentOwner,
+  expectedRequestId: string,
+  isCurrent: () => boolean,
+) {
+  return withAgentLock(owner, async () => {
+    if (!isCurrent()) throw new Error('工作区已切换，未清理原请求');
+    const intent = readAgentIntent(owner);
+    if (!intent || intent.request.request_id !== expectedRequestId)
+      throw new Error('请求已由另一标签更新，请重新读取原请求');
+    if (intent.phase === 'pending') throw new Error('结果未知，请恢复原请求');
+    localStorage.setItem(`${key(owner)}:last`, JSON.stringify(intent));
+    localStorage.removeItem(key(owner));
+  });
 }
 const flights = new Set<string>();
 const code = (error: unknown) => {
@@ -59,7 +81,7 @@ const complete = (
     ? 'id' in result && Number.isInteger(result.revision)
     : 'status' in result && result.status === 'applied';
 export function createAgentOperation(owner: AgentOwner, isCurrent: () => boolean) {
-  return {
+  const operation = {
     async run(input?: {
       channel: AgentChannel;
       request: AgentCommand;
@@ -156,6 +178,23 @@ export function createAgentOperation(owner: AgentOwner, isCurrent: () => boolean
         });
       } finally {
         flights.delete(k);
+      }
+    },
+  };
+  return {
+    async run(input?: Pick<AgentIntent, 'channel' | 'request' | 'label'>) {
+      if (!isCurrent()) return { status: 'detached' as const };
+      try {
+        return await withAgentLock(owner, () => operation.run(input));
+      } catch (error) {
+        return {
+          status: !isCurrent()
+            ? ('detached' as const)
+            : error instanceof AgentLockBusy
+              ? ('busy' as const)
+              : ('failed' as const),
+          message: error instanceof Error ? error.message : String(error),
+        };
       }
     },
   };

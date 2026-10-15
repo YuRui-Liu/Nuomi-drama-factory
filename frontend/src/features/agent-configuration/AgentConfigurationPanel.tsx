@@ -246,9 +246,13 @@ export function AgentConfigurationPanel({
       if (current()) setBusy(false);
     }
   }
-  function finish() {
+  async function finish() {
+    if (!current() || busy || !intent) return;
+    const expectedRequestId = intent.request.request_id;
+    setBusy(true);
     try {
-      finishAgentIntent(owner);
+      await finishAgentIntent(owner, expectedRequestId, current);
+      if (!current()) return;
       setIntent(null);
       setPrepared(null);
       setUpgrade(null);
@@ -256,7 +260,9 @@ export function AgentConfigurationPanel({
       setError('');
       refresh();
     } catch (e) {
-      setError(message(e));
+      if (current()) setError(message(e));
+    } finally {
+      if (current()) setBusy(false);
     }
   }
   function adopt(fixed: PersonalAgent) {
@@ -427,7 +433,7 @@ export function AgentConfigurationPanel({
               恢复原请求
             </Button>
           ) : (
-            <Button onClick={finish}>完成，继续配置</Button>
+            <Button disabled={busy} onClick={() => void finish()}>完成，继续配置</Button>
           )}
         </section>
       ) : (
