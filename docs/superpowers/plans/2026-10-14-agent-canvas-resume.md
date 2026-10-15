@@ -238,6 +238,10 @@ A2b 分两批串行交付：**A2b-1** 可信媒体内容快照、可恢复发布
 
 材料 `/tmp/task08b2b2-contract.md`、`/tmp/task08b2b2-independent.log`、`/tmp/task08b2b2-spec-review.md`、`/tmp/task08b2b2-quality-review.md`、`/tmp/task08b2b2-live-qa.json`。8B2c UI 接点地图 `/tmp/task08b2c-ui-map.md`：多选取 nodes.selected；使用固定 canvas/conversation，不能用客户端 sessionEpoch 代服务端 generation；委派 outputs 独立读取，不冒充 canvas Run 卡片。Shell／superchat-panel／use-superchat 仍含原 dirty，接线须捕获 baseline、仅提交必要增量。下一步实际零工具 model_api Decision 适配器与现有侧栏／节点委派 UI，仍须完成真实产出、停止与恢复验收；整体 PRD、旧流程删除及任务9–13仍未完成。
 
+### 8B2c 实施决定
+
+用户“下一步”后继续 c1 真实运行服务 → c2 现有侧栏 UI，不以纯后端代替纵向闭环。实施契约 `/tmp/task08b2c-proposed-contract.md`；运行配置图 `/tmp/task08b2c-runtime-config-map.md`。采用持久 run lease 加有界 BackgroundTasks；默认1、最多3次明确模型调用（root/child合计），Decision最多4个领域动作，SDK/输出自动重试为0。GET不驱动任务，未知提交不自动重发；停止与实际效果在同事务核对 fence。现有可信计量保留，金额不明显示unknown，不冒称任务9严格货币预算。可用性只读元数据，不触发配置迁移或凭据解密。c1冻结审查后立即接c2主创首用、多选委派、真实结果、定位、停止与恢复。模型真实验收仍须有可用配置与明确调用范围；mock不得冒称真实模型通过。运行时独立基线50passed／8warnings，网络阻断、86模块来自快照。
+
 ## 覆盖与执行记录
 
 | PRD | 任务 |
