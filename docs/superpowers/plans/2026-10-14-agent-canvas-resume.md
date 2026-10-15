@@ -242,6 +242,14 @@ A2b 分两批串行交付：**A2b-1** 可信媒体内容快照、可恢复发布
 
 用户“下一步”后继续 c1 真实运行服务 → c2 现有侧栏 UI，不以纯后端代替纵向闭环。实施契约 `/tmp/task08b2c-proposed-contract.md`；运行配置图 `/tmp/task08b2c-runtime-config-map.md`。采用持久 run lease 加有界 BackgroundTasks；默认1、最多3次明确模型调用（root/child合计），Decision最多4个领域动作，SDK/输出自动重试为0。GET不驱动任务，未知提交不自动重发；停止与实际效果在同事务核对 fence。现有可信计量保留，金额不明显示unknown，不冒称任务9严格货币预算。可用性只读元数据，不触发配置迁移或凭据解密。c1冻结审查后立即接c2主创首用、多选委派、真实结果、定位、停止与恢复。模型真实验收仍须有可用配置与明确调用范围；mock不得冒称真实模型通过。运行时独立基线50passed／8warnings，网络阻断、86模块来自快照。
 
+### 8B2c1 受限模型运行交付记录（2026-10-15）
+
+双审提交 `a303756`，11 个 owned 文件。真实 model_api 结构化 Decision 路径，原生工具为空、SDK／输出重试为 0，root／child 共用 1–3 次调用额度。持久 lease、发送前 admission、固定动作回执与停止 fence；未知提交不自动重发，已保存 Decision 可恢复。文本候选保留固定内容与来源，读取上下文不计交付；各委派未完成项分别汇总，子任务不清除主创事项。计量 observer 为 opt-in，真实 token 与账本状态分开，金额仍 unknown。
+
+规格审查修复停止发送间隙、计量异常未记录、只读回执误报交付后 PASS；质量审查修复子委派覆盖主创未完成项后 APPROVE。隔离快照回归 185 passed／24 warnings；最后两文件窄修后独立 20 passed／10 warnings，未合并计数。最终 11/11 index 文件与独立验证快照哈希一致。真实 PydanticAI FunctionModel、HTTP BackgroundTasks、broker、故障恢复与计量 wrapper 已验证；没有外部模型调用，不宣称供应商实测通过。
+
+材料 `/tmp/task08b2c1-contract.md`、`/tmp/task08b2c1-independent.log`、`/tmp/task08b2c1-independent-final.log`、`/tmp/task08b2c1-spec-review.md`、`/tmp/task08b2c1-quality-review.md`。c2 已继续实施：managed 侧栏沿用唯一主输入，禁止旧队列／附件 ingest／工具审批旁路；保留旧历史和 legacy 行为。接线核查 `/tmp/task08b2c2-send-entry-map.md`，原 dirty 两文件基线 `/tmp/task08b2c2-ui-before.json`。真实页面基线 `/tmp/canvas-agent-c2-before.png`，运行时尚未配置。整体 PRD 与任务9–13仍未完成。
+
 ## 覆盖与执行记录
 
 | PRD | 任务 |
