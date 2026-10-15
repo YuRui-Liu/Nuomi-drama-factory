@@ -171,6 +171,8 @@ A2b 分两批串行交付：**A2b-1** 可信媒体内容快照、可恢复发布
 - [ ] 任务展示实际满足／未满足项，不以 supplier success 或用户未采用决定无限运行；达到目标交付并停止。
 - [ ] 测试切画布、选择变化、跨画布过期请求、专业代理扩权与伪造结果拒绝，运行原任务 8 测试和 conversation 隔离测试，双审提交。
 
+8B2按三批完成纵向链：a 项目主创指派与固定委托服务/API；b 受限领域工具及内置Agent首用；c 实际支持的运行适配器与现有侧栏/节点委托UI。a当前实施，契约`/tmp/task08b2a-proposed-contract.md`，相关独立HEAD后端基线129passed。主创只引用项目adoption身份，新任务冻结当时revision/effective；用户明确改项目覆盖/主动升级后新任务直接消费，旧任务与恢复不变，不加第二次主创升级。scope明确canvas/nodes/group，冻结真实成员和内容指纹，纯布局变化不使输入失效；单root写域一张host画布，跨画布输入显式只读，child只能缩小固定输入/写集合/操作能力。a包含revoke元数据阻断后续授权，不虚报provider取消；读取/预览不初始化库，客户端不能自报authority或完成状态。固定事实、草案与未评估来源分开，调用既有受控领域服务，禁止通用HTTP/shell冒充用户确认。内置或已有个人Agent必须可直接选用，空个人库不阻塞首次创作。a仅保存prepared契约，不声称模型/节点运行已完成；8B2最终必须有真实可用草案或提案、任务状态及恢复，后续预算/19节点执行/完整候选仍属9/10/11。
+
 ## 任务 9：操作授权与严格预算
 
 文件：原 approvals.py 和 ApprovalCard；新增 `creation/budgets.py`、`tests/creation/test_budgets.py`。
