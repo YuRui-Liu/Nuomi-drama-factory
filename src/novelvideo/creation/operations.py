@@ -70,6 +70,24 @@ def _layout(value):
             _number(size, minimum=0.01, maximum=65536)
 
 
+def validate_text_data(data):
+    """Shared text-only schema; this helper grants no scope or write authority."""
+    _contract(isinstance(data, dict) and bool(data) and set(data) <= {'title', 'text', 'description', 'notes', 'prompt'})
+    _contract(all(isinstance(value, str) and len(value) <= 100000 for value in data.values()), '对象文本字段无效')
+
+
+def create_text_object(conn, actor, *, kind, data, canvas_id, episode_id):
+    """Create a validated text candidate in the caller's authorized transaction."""
+    _contract(kind in {'story_fragment', 'storyboard'})
+    validate_text_data(data)
+    object_id = uuid4().hex
+    payload = {**data, 'episode_id': episode_id, 'canvas_id': canvas_id}
+    conn.execute('INSERT INTO objects (id, kind, current_revision) VALUES (?, ?, 1)', (object_id, kind))
+    conn.execute('INSERT INTO object_versions VALUES (?, 1, ?, ?, ?)',
+                 (object_id, json.dumps(payload, ensure_ascii=False), actor, datetime.now(timezone.utc).isoformat()))
+    return {'id': object_id, 'revision': 1}
+
+
 class OperationService:
     def __init__(self, objects: ObjectStore, *, project_id: str, authorize, output_dir=None):
         self.objects, self.project_id, self.authorize = objects, project_id, authorize
@@ -222,16 +240,12 @@ class OperationService:
                 _contract(type(request.expected_revisions.get(obj['id'])) is int, '必须提供对象版本')
         if kind not in {'story_fragment', 'storyboard'}:
             raise OperationError('capability_unavailable', '此类对象须使用专用领域服务', kind=kind)
-        data = payload['data']
-        _contract(isinstance(data, dict) and bool(data) and set(data) <= {'title', 'text', 'description', 'notes', 'prompt'})
-        _contract(all(isinstance(value, str) and len(value) <= 100000 for value in data.values()), '对象文本字段无效')
+        validate_text_data(payload['data'])
 
     def _write_object(self, conn, actor, request):
         if request.kind == 'object.create':
-            object_id, revision = uuid4().hex, 1
-            payload = {**request.payload['data'], 'episode_id': request.scope.episode_id, 'canvas_id': request.scope.canvas_id}
-            conn.execute('INSERT INTO objects (id, kind, current_revision) VALUES (?, ?, ?)',
-                         (object_id, request.payload['kind'], revision))
+            return create_text_object(conn, actor, kind=request.payload['kind'], data=request.payload['data'],
+                                      canvas_id=request.scope.canvas_id, episode_id=request.scope.episode_id)
         else:
             object_id = request.payload['object_id']
             old = ObjectStore._read(conn, object_id, None)

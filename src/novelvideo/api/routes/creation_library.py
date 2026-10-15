@@ -16,6 +16,49 @@ from .creation import context_for, errors
 router = APIRouter(prefix='/projects/{project}/creation', tags=['creation-library'])
 
 
+async def agent_tools_service(project, user, canvas_id, conversation_id, delegation_id, role='viewer'):
+    """Trusted factory shared with the future host; never a model-facing resolver."""
+    from copy import deepcopy
+    from novelvideo.creation.agent_tools import AgentTools
+    principal = deepcopy(user)
+    if principal.get('credential_kind') == 'agent_session':
+        raise HTTPException(403, 'Agent 动作须由可信宿主调用受限服务')
+
+    async def resolve(required_role):
+        return await context_for(project, principal, required_role)
+
+    ctx = await resolve(role)
+    return AgentTools(ctx, username=principal['username'], canvas_id=canvas_id,
+                      conversation_id=conversation_id, delegation_id=delegation_id, resolve_context=resolve)
+
+
+@router.post('/delegations/{identifier}/actions')
+async def execute_agent_action(project: str, identifier: str, canvas_id: str, conversation_id: str,
+                               body: dict, user: dict = Depends(get_api_user)):
+    with errors():
+        service = await agent_tools_service(project, user, canvas_id, conversation_id, identifier, 'editor')
+        return {'ok': True, 'data': await service.execute(body)}
+
+
+@router.get('/delegations/{identifier}/outputs')
+async def agent_action_outputs(project: str, identifier: str, canvas_id: str, conversation_id: str,
+                               user: dict = Depends(get_api_user)):
+    with errors():
+        service = await agent_tools_service(project, user, canvas_id, conversation_id, identifier)
+        return {'ok': True, 'data': await service.outputs()}
+
+
+@router.get('/delegations/{identifier}/action-requests/{request_id}')
+async def agent_action_receipt(project: str, identifier: str, request_id: str, canvas_id: str,
+                               conversation_id: str, user: dict = Depends(get_api_user)):
+    with errors():
+        service = await agent_tools_service(project, user, canvas_id, conversation_id, identifier)
+        result = await service.receipt(request_id)
+        if result is None:
+            raise HTTPException(404, '此委托动作尚无已提交回执')
+        return {'ok': True, 'data': result}
+
+
 async def delegation_service(project, user, role='viewer'):
     from novelvideo.creation.delegations import Delegations
     # These are interactive grants, never a generic HTTP tool for an Agent.
