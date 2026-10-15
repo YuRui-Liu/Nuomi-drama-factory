@@ -230,6 +230,14 @@ A2b 分两批串行交付：**A2b-1** 可信媒体内容快照、可恢复发布
 
 材料 `/tmp/task08b2b1-contract.md`、`/tmp/task08b2b1-independent.log`、`/tmp/task08b2b1-independent-frontend.log`、`/tmp/task08b2b1-independent-tsc.log`、`/tmp/task08b2b1-spec-review.md`、`/tmp/task08b2b1-quality-review.md`。下一步 8B2b2 受限领域 broker，契约 `/tmp/task08b2b-proposed-contract.md` 第2–6节；采用真实 story_fragment 文本候选加 delegation_outputs 关联，不能将授权 proposals 表混作创作成果。其后 8B2c 接实际 adapter 与现有侧栏／节点委托 UI。整个 PRD 仍未完成。
 
+### 8B2b2 受限领域工具交付记录（2026-10-15）
+
+双审提交 `1f929aa`，5 个 owned 文件。四个真实动作：固定上下文读取、独立 story_fragment 文本候选、新对象定义草案、媒体文字方案；原节点／资产不改，不开放通用 HTTP、shell、用户确认或付费生成。当前 ACL 在项目锁取得后复核，新动作检查会话代次／祖先撤销／输入语义／硬约定变化；产物、outputs 关联、操作和回执同事务。自然语言符合度明确 not_evaluated，不把工具成功当任务完成。
+
+独立 HEAD 加 owned 快照六文件 **154 passed**，10 个弃用警告，447 个模块全部来自快照；5/5 index 一致。spec PASS、quality APPROVE。真实 API：builtin 项目采用→委派 `a0fc3e37406b468da924965990f74082`→人工验收候选对象 `5eaf1be4ea82484e9da545bd078092f5` v1→固定文本读取→撤销→原请求重放同结果；原节点预览 proof 不变，结果仅一个。没有模型调用。此委派已撤销，历史保留。API8781当前 session74020，日志 `/tmp/task08b2b2-api.log`。
+
+材料 `/tmp/task08b2b2-contract.md`、`/tmp/task08b2b2-independent.log`、`/tmp/task08b2b2-spec-review.md`、`/tmp/task08b2b2-quality-review.md`、`/tmp/task08b2b2-live-qa.json`。8B2c UI 接点地图 `/tmp/task08b2c-ui-map.md`：多选取 nodes.selected；使用固定 canvas/conversation，不能用客户端 sessionEpoch 代服务端 generation；委派 outputs 独立读取，不冒充 canvas Run 卡片。Shell／superchat-panel／use-superchat 仍含原 dirty，接线须捕获 baseline、仅提交必要增量。下一步实际零工具 model_api Decision 适配器与现有侧栏／节点委派 UI，仍须完成真实产出、停止与恢复验收；整体 PRD、旧流程删除及任务9–13仍未完成。
+
 ## 覆盖与执行记录
 
 | PRD | 任务 |
