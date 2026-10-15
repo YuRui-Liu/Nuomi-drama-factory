@@ -184,6 +184,7 @@ it("loads and saves the supported RunningHub workflow IDs", async () => {
     video_minimax_h3_ref_max_images: 5,
     tts_qwen3_voice_design: "3003",
     tts_indextts2_voice_clone: "4004",
+    music_acestep: "5005",
   };
   server.use(
     http.get(

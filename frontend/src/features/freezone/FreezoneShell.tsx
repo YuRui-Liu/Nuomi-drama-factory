@@ -27,17 +27,9 @@ import {
   type FreezonePresetCanvasRequest,
 } from "@/api/canvas";
 import { Button } from "@/components/ui/button";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { currentCanvasParam } from "@/lib/app-router";
 import { rememberLastCanvas, writeUrl } from "@/lib/url-params";
-import { isCeRuntime } from "@/lib/runtime-config";
 import { cn } from "@/lib/utils";
 import { promoteToAsset } from "./commit/promoteToAsset";
 import { commitDirectorRenderFromCanvasSource } from "./commit/directorRenderCommit";
@@ -432,7 +424,6 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
   const [assetPanelCollapsed, setAssetPanelCollapsed] = useState(true);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
-  const showChatDock = !isCeRuntime();
   // Re-entrancy guard for in-flight projection sync/remove lives in the refs;
   // there is no UI bound to a syncing/removing value, so no state is kept.
   const syncingProjectionRef = useRef<string | null>(null);
@@ -488,12 +479,6 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
 
   // Warm the shared image-model store the moment we enter a project, so the
   // request is in-flight before any picker / panel mounts.
-  useEffect(() => {
-    if (!showChatDock) {
-      setChatOpen(false);
-    }
-  }, [showChatDock]);
-
   useEffect(() => {
     prefetchFreezoneImageModels(projectId);
     prefetchFreezoneVideoModels(projectId);
@@ -946,16 +931,16 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
             }}
           />
         </main>
-        {showChatDock && (
-          <FreezoneChatDock
-            open={chatOpen}
+        <FreezoneChatDock
+            managedWorkspace={managedWorkspace}
             agentConfiguration={managedWorkspace ? <AgentConfigurationEntry project={projectId} canvasId={canvasId} compact/> : undefined}
+            canvasId={canvasId}
+            open={chatOpen}
             onOpenChange={setChatOpen}
             title={t("freezone.chat.title")}
             description={t("freezone.chat.description")}
             toggleLabel={t("freezone.chat.toggle")}
-          />
-        )}
+        />
       </div>
       <NodeReplaceDragPreview />
       {managedWorkspace&&sharedSave&&sharedSave.scope.project===projectId&&sharedSave.scope.canvas===canvasId&&sharedSave.scope.user===username&&<SharedAssetSaveDialog
@@ -1039,18 +1024,22 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
 }
 
 function FreezoneChatDock({
+  managedWorkspace,
+  agentConfiguration,
+  canvasId,
   open,
   onOpenChange,
-  agentConfiguration,
   title,
   description,
   toggleLabel,
 }: {
+  managedWorkspace?: boolean;
+  agentConfiguration?: React.ReactNode;
+  canvasId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
   description: string;
-  agentConfiguration?: React.ReactNode;
   toggleLabel: string;
 }) {
   const isDesktop = useMediaQuery("(min-width: 1024px)");
@@ -1069,36 +1058,8 @@ function FreezoneChatDock({
       return () => window.cancelAnimationFrame(frame);
     }
     setPanelVisible(false);
-    const timeout = window.setTimeout(() => setShouldRenderPanel(false), 320);
-    return () => window.clearTimeout(timeout);
+    // Keep sockets and their independent turns alive while the dock is closed.
   }, [isDesktop, open]);
-
-  if (!isDesktop) {
-    return (
-      <>
-        <FreezoneChatToggleButton
-          label={toggleLabel}
-          expanded={open}
-          onClick={() => onOpenChange(true)}
-        />
-        <Sheet open={open} onOpenChange={onOpenChange}>
-          <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:!max-w-[560px]">
-            <SheetHeader className="sr-only">
-              <SheetTitle>{title}</SheetTitle>
-              <SheetDescription>{description}</SheetDescription>
-            </SheetHeader>
-            {shouldRenderPanel && (
-              <Suspense
-                fallback={<div role="status" aria-live="polite" className="p-4 text-sm text-muted-foreground">正在加载糯米助手…</div>}
-              >
-                <LazySuperChatPanel variant="freezone" onRequestClose={() => onOpenChange(false)} />
-              </Suspense>
-            )}
-          </SheetContent>
-        </Sheet>
-      </>
-    );
-  }
 
   if (!shouldRenderPanel) {
     return (
@@ -1110,7 +1071,6 @@ function FreezoneChatDock({
     );
   }
 
-        {agentConfiguration && <div className="shrink-0 border-b border-white/10 px-3 py-2">{agentConfiguration}</div>}
   return (
     <>
       {!open && (
@@ -1122,19 +1082,22 @@ function FreezoneChatDock({
       )}
       <aside
         className={cn(
-          "absolute bottom-4 right-4 top-4 z-40 hidden origin-right flex-col overflow-hidden rounded-[14px] border border-white/[0.12] bg-zinc-950/55 shadow-none backdrop-blur-2xl transition-[opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] lg:flex",
-          panelVisible ? "translate-x-0 scale-100 opacity-100" : "translate-x-10 scale-[0.985] opacity-0",
+          "absolute bottom-4 right-4 top-4 z-40 flex origin-right flex-col overflow-hidden rounded-[14px] border border-white/[0.12] bg-zinc-950/95 shadow-none backdrop-blur-2xl transition-[opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+          panelVisible ? "translate-x-0 scale-100 opacity-100" : "invisible pointer-events-none translate-x-10 scale-[0.985] opacity-0",
         )}
         style={{
-          width: FREEZONE_CHAT_WIDTH,
-          maxWidth: "calc(100vw - 360px)",
+          width: isDesktop ? FREEZONE_CHAT_WIDTH : 'calc(100vw - 32px)',
+          maxWidth: isDesktop ? "calc(100vw - 360px)" : '560px',
         }}
         aria-label={title}
+        aria-hidden={!open}
+        title={description}
       >
+        {agentConfiguration && <div className="shrink-0 border-b border-white/10 px-3 py-2">{agentConfiguration}</div>}
         <Suspense
           fallback={<div role="status" aria-live="polite" className="p-4 text-sm text-muted-foreground">正在加载糯米助手…</div>}
         >
-          <LazySuperChatPanel variant="freezone" onRequestClose={() => onOpenChange(false)} />
+          <LazySuperChatPanel managedWorkspace={managedWorkspace} canvasId={canvasId} variant="freezone" onRequestClose={() => onOpenChange(false)} />
         </Suspense>
       </aside>
     </>

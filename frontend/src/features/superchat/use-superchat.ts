@@ -19,6 +19,8 @@ import {
 } from "@/features/superchat/message";
 import { hasStructuredContent } from "@/features/superchat/spec-extract";
 import { api } from "@/lib/api";
+import { useAuthStore } from '@/stores/auth-store';
+import { conversationEvidence, conversationSessionKey } from './conversation-scope';
 import { belongsToSession, loadSessionIdentity, type AssistantSession } from './session-identity';
 import {
   isStaleByTtl,
@@ -64,12 +66,12 @@ function loadSettings(): SuperChatSettings {
   }
 }
 
-function resolveChatWsUrl(): string {
+function resolveChatWsUrl(evidence: Record<string, string>): string {
   const explicit = import.meta.env.VITE_SUPERCHAT_WS_URL;
-  if (explicit) return explicit;
-
-  const url = new URL("/api/v1/chat/ws", window.location.origin);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  const url = new URL(explicit || "/api/v1/chat/ws", window.location.origin);
+  for (const [key, value] of Object.entries(evidence)) url.searchParams.set(key, value);
+  if (url.protocol === 'https:') url.protocol = 'wss:';
+  else if (url.protocol === 'http:') url.protocol = 'ws:';
   return url.toString();
 }
 
@@ -77,11 +79,6 @@ function scopeForProject(project?: string): ChatScope {
   const name = project?.trim();
   if (name) return { kind: "project", id: name };
   return { kind: "home", id: null };
-}
-
-function scopeSessionKey(scope: ChatScope): string {
-  if (scope.kind === "project" && scope.id) return `supertale:project:${scope.id}:main`;
-  return "supertale:home:main";
 }
 
 function messageCacheKey(scopeKey: string): string {
@@ -555,13 +552,25 @@ function upsertToolMessage(messages: ChatMessage[], kind: string, payload: unkno
 
 export function useSuperChat({
   project,
+  canvasId,
   displayName,
+  conversationId = 'default',
 }: {
   project?: string;
+  canvasId?: string;
   displayName: string;
+  conversationId?: string;
 }) {
   const desiredScope = useMemo(() => scopeForProject(project), [project]);
-  const scopeKey = useMemo(() => scopeSessionKey(desiredScope), [desiredScope]);
+  const username = useAuthStore(state => state.username) || '';
+  const owner = useMemo(() => ({ user: username, project, canvas: canvasId }), [username, project, canvasId]);
+  const scopeKey = conversationSessionKey(owner, conversationId);
+  const evidence = useMemo(() => conversationEvidence(owner, conversationId), [owner, conversationId]);
+  const instance = useMemo(() => Symbol(scopeKey), [scopeKey]);
+  const currentInstance = useRef(instance);
+  currentInstance.current = instance;
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const initialScopeSnapshot = useMemo(() => {
     const cachedMessages = loadCachedMessages(scopeKey);
     const activeTurn = loadPendingActiveTurn(scopeKey, cachedMessages);
@@ -595,8 +604,6 @@ export function useSuperChat({
   const streamTextRef = useRef("");
   const messagesRef = useRef<ChatMessage[]>(initialScopeSnapshot.cachedMessages);
   const sessionRef = useRef<AssistantSession | null>(loadSessionIdentity(scopeKey));
-  const currentScopeKeyRef = useRef(scopeKey);
-  currentScopeKeyRef.current = scopeKey;
   const clearRequestRef = useRef<{ generation: number; request_id: string } | null>(null);
   const activeTurnIdRef = useRef<string | null>(initialScopeSnapshot.activeTurnId);
   const pendingClientTurnIdRef = useRef<string | null>(null);
@@ -861,6 +868,7 @@ export function useSuperChat({
   }, [desiredScope, finalizeStream, markTurnActive, markTurnInactive, settings.showToolEvents]);
 
   const connect = useCallback(() => {
+    if (!mounted.current || currentInstance.current !== instance) return;
     closedRef.current = false;
     authRejectedRef.current = false;
     const connectionId = connectionIdRef.current + 1;
@@ -877,14 +885,19 @@ export function useSuperChat({
       previous.close();
     }
 
-    const ws = new WebSocket(resolveChatWsUrl());
+    if (canvasId && (!project || conversationId === 'default')) {
+      setConnecting(false);
+      setError('请先选择此画布的会话。');
+      return;
+    }
+    const ws = new WebSocket(resolveChatWsUrl(evidence));
     wsRef.current = ws;
     ws.onopen = () => {
-      if (connectionIdRef.current !== connectionId || wsRef.current !== ws) return;
+      if (!mounted.current || currentInstance.current !== instance || connectionIdRef.current !== connectionId || wsRef.current !== ws) return;
       sendFrame({ type: "scope.set", scope: desiredScope });
     };
     ws.onmessage = (event) => {
-      if (connectionIdRef.current !== connectionId || wsRef.current !== ws) return;
+      if (!mounted.current || currentInstance.current !== instance || connectionIdRef.current !== connectionId || wsRef.current !== ws) return;
       try {
         handleFrame(JSON.parse(String(event.data)) as ServerFrame);
       } catch {
@@ -892,12 +905,12 @@ export function useSuperChat({
       }
     };
     ws.onerror = () => {
-      if (connectionIdRef.current !== connectionId || wsRef.current !== ws) return;
+      if (!mounted.current || currentInstance.current !== instance || connectionIdRef.current !== connectionId || wsRef.current !== ws) return;
       setError("WebSocket connection failed");
       setConnecting(false);
     };
     ws.onclose = (event) => {
-      if (connectionIdRef.current !== connectionId || wsRef.current !== ws) return;
+      if (!mounted.current || currentInstance.current !== instance || connectionIdRef.current !== connectionId || wsRef.current !== ws) return;
       wsRef.current = null;
       setConnected(false);
       const hasActiveTurn = Boolean(activeTurnIdRef.current ?? pendingClientTurnIdRef.current);
@@ -914,7 +927,7 @@ export function useSuperChat({
         reconnectRef.current = window.setTimeout(connect, 1200);
       }
     };
-  }, [desiredScope, handleFrame, sendFrame]);
+  }, [desiredScope, handleFrame, sendFrame, conversationId, evidence, canvasId, project, instance]);
 
   const disconnect = useCallback(() => {
     closedRef.current = true;
@@ -964,12 +977,15 @@ export function useSuperChat({
     pruneOldMessageCaches();
   }, []);
 
+  const cachedScopeRef = useRef(scopeKey);
   useEffect(() => {
+    if (cachedScopeRef.current !== scopeKey) { cachedScopeRef.current = scopeKey; return; }
     messagesRef.current = messages;
     saveCachedMessages(scopeKey, messages);
   }, [messages, scopeKey]);
 
   useEffect(() => {
+    if (messages !== messagesRef.current) return;
     const activeTurnId = activeTurnIdRef.current;
     if (!activeTurnId || busy || activeTurnIsPending(messages, activeTurnId)) return;
     clearActiveTurn(scopeKey, activeTurnId);
@@ -1000,7 +1016,7 @@ export function useSuperChat({
   }, [connect, disconnect]);
 
   const send = useCallback((text: string, attachments: ChatAttachment[] = [], transportText?: string) => {
-    if (currentScopeKeyRef.current !== scopeKey || sessionEpochRef.current !== sessionEpoch) return false;
+    if (!mounted.current || currentInstance.current !== instance || sessionEpochRef.current !== sessionEpoch) return false;
     const trimmed = text.trim();
     if (!trimmed || !connected) return false;
     const outboundText = transportText?.trim() || trimmed;
@@ -1019,9 +1035,10 @@ export function useSuperChat({
       attachments: attachments.length > 0 ? attachments : undefined,
     });
     return true;
-  }, [connected, desiredScope, displayName, markTurnActive, sendFrame, scopeKey, sessionEpoch]);
+  }, [connected, desiredScope, displayName, markTurnActive, sendFrame, scopeKey, sessionEpoch, instance]);
 
   const appendNotification = useCallback(async (text: string): Promise<boolean> => {
+    if (!mounted.current || currentInstance.current !== instance) return false;
     const trimmed = text.trim();
     if (!trimmed) return false;
     const identity = sessionRef.current;
@@ -1029,6 +1046,7 @@ export function useSuperChat({
     try {
       const response = await api
         .post("api/v1/chat/notifications", {
+          searchParams: evidence,
           json: {
             scope: desiredScope,
             text: trimmed,
@@ -1038,7 +1056,7 @@ export function useSuperChat({
         })
         .json<ChatNotificationResponse>();
       const message = normalizeMessage(response.data, "assistant");
-      if (message && currentScopeKeyRef.current === scopeKey && sessionRef.current?.session_id === identity.session_id) {
+      if (message && mounted.current && currentInstance.current === instance && sessionRef.current?.session_id === identity.session_id) {
         setMessages((current) => sortMessages([...current, message]));
       }
       return true;
@@ -1046,20 +1064,21 @@ export function useSuperChat({
       console.error("[superchat] append notification failed", error);
       return false;
     }
-  }, [desiredScope, scopeKey]);
+  }, [desiredScope, scopeKey, evidence, instance]);
 
   const abort = useCallback(() => {
+    if (!mounted.current || currentInstance.current !== instance) return;
     const turnId = activeTurnIdRef.current ?? pendingClientTurnIdRef.current;
     if (turnId) {
       cancelledTurnIdsRef.current.add(turnId);
     }
     markTurnInactive(turnId);
-    void api.post("api/v1/chat/cancel", { json: { scope: desiredScope, generation: sessionRef.current?.generation } }).catch(() => undefined);
+    void api.post("api/v1/chat/cancel", { searchParams: evidence, json: { scope: desiredScope, generation: sessionRef.current?.generation } }).catch(() => undefined);
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.close(4000, "client abort");
     }
-  }, [markTurnInactive, desiredScope]);
+  }, [markTurnInactive, desiredScope, evidence, instance]);
 
   const resolveApproval = useCallback((_approval: ApprovalRequest, _decision: "allow-once" | "allow-always" | "deny") => {
     setApprovals([]);
@@ -1084,26 +1103,29 @@ export function useSuperChat({
   }, []);
 
   const clearSession = useCallback(async () => {
+    if (!mounted.current || currentInstance.current !== instance) return;
     try {
       if (!clearRequestRef.current) {
         const response = await api.get('api/v1/chat/session', { searchParams: {
-          scope_kind: desiredScope.kind, ...(desiredScope.id ? { project_id: desiredScope.id } : {}),
+          ...evidence, scope_kind: desiredScope.kind,
         } }).json<{ ok: boolean; data: AssistantSession }>();
         const state = response.data;
-        if (currentScopeKeyRef.current !== scopeKey) return;
+        if (!mounted.current || currentInstance.current !== instance) return;
         clearRequestRef.current = { generation: state.generation, request_id: crypto.randomUUID() };
       }
-      const result = await api.post('api/v1/chat/session/clear', { json: {
+      const result = await api.post('api/v1/chat/session/clear', { searchParams: evidence, json: {
         scope: desiredScope, expected_generation: clearRequestRef.current.generation,
         request_id: clearRequestRef.current.request_id,
       } }).json<{ ok: boolean; data: AssistantSession }>();
       if (!result.ok) throw new Error('清除会话失败');
+      // A remounted instance may already have this generation and a new turn.
+      // Receipt arrival must not erase that instance's current recovery cache.
+      if (!mounted.current || currentInstance.current !== instance) return;
       const latest = loadSessionIdentity(scopeKey);
       if (latest && latest.generation > result.data.generation) return;
       safeLocalStorageSet(`superchat:session:${scopeKey}`, JSON.stringify(result.data));
       localStorage.removeItem(`${MESSAGE_CACHE_PREFIX}${scopeKey}`);
       clearActiveTurn(scopeKey);
-      if (currentScopeKeyRef.current !== scopeKey) return;
       sessionRef.current = result.data;
       setSessionMode(result.data.mode);
       advanceSessionEpoch();
@@ -1117,13 +1139,13 @@ export function useSuperChat({
       localStorage.removeItem(`${MESSAGE_CACHE_PREFIX}${scopeKey}`);
       sendFrame({ type: 'scope.set', scope: desiredScope });
     } catch (error) {
-      if (currentScopeKeyRef.current === scopeKey && (error as { response?: { status?: number } })?.response?.status === 409) {
+      if (mounted.current && currentInstance.current === instance && (error as { response?: { status?: number } })?.response?.status === 409) {
         clearRequestRef.current = null;
         sendFrame({ type: 'scope.set', scope: desiredScope });
       }
-      if (currentScopeKeyRef.current === scopeKey) setError(error instanceof Error ? error.message : '清除会话失败');
+      if (mounted.current && currentInstance.current === instance) setError(error instanceof Error ? error.message : '清除会话失败');
     }
-  }, [desiredScope, scopeKey, markTurnInactive, sendFrame]);
+  }, [desiredScope, scopeKey, markTurnInactive, sendFrame, evidence, instance]);
 
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
@@ -1152,6 +1174,7 @@ export function useSuperChat({
   }, [scopeKey]);
 
   const togglePin = useCallback((id: string) => {
+    if (!mounted.current || currentInstance.current !== instance) return;
     setPinnedIds((current) => {
       const next = new Set(current);
       if (next.has(id)) next.delete(id);
@@ -1159,9 +1182,10 @@ export function useSuperChat({
       persistMessageSet("pinned", next);
       return next;
     });
-  }, [persistMessageSet]);
+  }, [persistMessageSet, instance]);
 
   const deleteMessage = useCallback((id: string) => {
+    if (!mounted.current || currentInstance.current !== instance) return;
     setDeletedIds((current) => {
       const next = new Set(current);
       next.add(id);
@@ -1175,7 +1199,7 @@ export function useSuperChat({
       persistMessageSet("pinned", next);
       return next;
     });
-  }, [persistMessageSet]);
+  }, [persistMessageSet, instance]);
 
   const clearPinned = useCallback(() => {
     const next = new Set<string>();

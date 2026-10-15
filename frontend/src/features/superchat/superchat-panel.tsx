@@ -56,6 +56,7 @@ import { api } from "@/lib/api";
 import { backendErrorToastMessage, jsonWithBackendError } from "@/lib/api-errors";
 import { p } from "@/lib/api-path";
 import { useSuperChat } from "@/features/superchat/use-superchat";
+import { ConversationPicker } from './conversation-picker';
 import { useAiAvatarUrl } from "@/features/superchat/ai-avatar";
 import { buildChatTaskLabel } from "@/features/superchat/task-notification-label";
 import { ComposerWaitingStatus } from "@/features/superchat/composer-waiting-status";
@@ -2433,11 +2434,43 @@ function appendAttachmentAnalysisContext(text: string, context: string): string 
 type SuperChatPanelVariant = "default" | "freezone";
 
 interface SuperChatPanelProps {
+  managedWorkspace?: boolean;
+  conversationId?: string;
+  active?: boolean;
+  canvasId?: string;
   variant?: SuperChatPanelVariant;
   onRequestClose?: () => void;
 }
 
-export function SuperChatPanel({
+export function SuperChatPanel(props: SuperChatPanelProps = {}) {
+  const params = useParams({strict: false}) as {project?: string};
+  const username = useAuthStore(s => s.username);
+  return <ConversationWorkspace key={JSON.stringify([username, params.project, Boolean(props.managedWorkspace), props.managedWorkspace ? props.canvasId : null])} {...props} project={params.project} />;
+}
+
+function ConversationWorkspace({project, ...props}: SuperChatPanelProps & {project?: string}) {
+  const { t } = useTranslation();
+  const user = useAuthStore(state => state.username);
+  const identityReady = Boolean(user && project && props.canvasId);
+  const [active, setActive] = useState(props.managedWorkspace ? '' : 'default');
+  const [opened, setOpened] = useState<string[]>(props.managedWorkspace ? [] : ['default']);
+  const [available, setAvailable] = useState<string[]>([]);
+  return <div className="flex h-full min-h-0 flex-col">
+    <ConversationPicker project={project} canvasId={props.canvasId} managedWorkspace={props.managedWorkspace} value={active} onAvailable={setAvailable} onChange={id => { if (id) setOpened(ids => ids.includes(id) ? ids : [...ids, id]); setActive(id); }} />
+    {props.managedWorkspace && (!identityReady || !active || !available.includes(active)) && <div className="space-y-3 p-4 text-sm text-muted-foreground">
+      <p>请选择或创建此画布的会话。</p>
+      {props.onRequestClose && <Button variant="outline" size="sm" onClick={props.onRequestClose} aria-label={t('freezone.chat.close')}>{t('freezone.chat.close')}</Button>}
+    </div>}
+    {opened.filter(id => !props.managedWorkspace || (identityReady && id !== 'default' && available.includes(id))).map(id => <div key={id} className={id === active ? 'min-h-0 flex-1' : 'hidden'} aria-hidden={id !== active}>
+      <ConversationPanel {...props} conversationId={id} active={id === active} />
+    </div>)}
+  </div>;
+}
+
+function ConversationPanel({
+  managedWorkspace = false,
+  conversationId = 'default',
+  canvasId,
   variant = "default",
   onRequestClose,
 }: SuperChatPanelProps = {}) {
@@ -2482,7 +2515,9 @@ export function SuperChatPanel({
   const taskEventBus = useEventBus();
   const chat = useSuperChat({
     project: params.project,
+    canvasId: managedWorkspace ? canvasId : undefined,
     displayName: username || "Nuomi Drama Factory",
+    conversationId,
   });
   const isChatInitializing = !chat.historyReady && chat.messages.length === 0 && (chat.connecting || chat.connected);
 
@@ -2521,6 +2556,10 @@ export function SuperChatPanel({
       if (event.type !== "task_complete" && event.type !== "task_failed") return;
       const taskProject = (event.task.project_id ?? event.task.project).trim();
       if (taskProject !== project) return;
+      // Only task identities returned in this conversation may enter its history.
+      const ids = [event.task.task_id, event.task.task_key].filter((id): id is string => Boolean(id));
+      const history = JSON.stringify(chat.messages);
+      if (!ids.some(id => history.includes(id))) return;
 
       const dedupeKey = `${event.type}:${event.task.task_key || event.task.task_id}`;
       if (notifiedTaskKeysRef.current.has(dedupeKey)) return;
@@ -2533,7 +2572,7 @@ export function SuperChatPanel({
           : `${label}失败：${event.task.error || event.task.current_task || "未提供具体错误原因"}\n请根据错误处理前置条件后再继续。`;
       void chat.appendNotification(text);
     });
-  }, [chat.appendNotification, params.project, t, taskEventBus]);
+  }, [chat.appendNotification, chat.messages, params.project, t, taskEventBus]);
 
   const searchQuery = search.trim().toLowerCase();
   const visibleMessages = useMemo(
