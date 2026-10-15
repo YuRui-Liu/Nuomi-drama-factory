@@ -36,7 +36,17 @@ from novelvideo.shared.billing_errors import (
     insufficient_credits_payload,
 )
 
-router = APIRouter()
+async def _conversation_context(conversation_id: str = 'default', canvas_id: str | None = None, project_id: str | None = None):
+    from novelvideo.chat.session_store import conversation_scope
+    from novelvideo.chat.conversation_binding import canvas_evidence
+    try:
+        with conversation_scope(conversation_id), canvas_evidence(project_id, canvas_id):
+            yield
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+router = APIRouter(dependencies=[Depends(_conversation_context)])
 
 AI_ASSISTANT_CHAT_FEATURE_KEY = "ai_assistant_chat"
 _TEAM_AUTH_CHECK_INTERVAL = 10.0
@@ -72,6 +82,8 @@ async def _run_authorized_chat_turn(turn, websocket, username, scope, *, turn_id
             now = asyncio.get_running_loop().time()
             if edition() == 'team' and now - last_auth >= _TEAM_AUTH_CHECK_INTERVAL:
                 user = await _authenticate_ws(websocket)
+                if str(user['username']) != username:
+                    raise HTTPException(403, '会话用户已变化，请重新连接')
                 await _require_chat_scope_access(user=user, scope=scope, write=True, delegate=True)
                 last_auth = now
 
@@ -394,7 +406,7 @@ async def _requester_user_id_for_chat(user: dict[str, Any], scope: ChatScope) ->
     return str(user.get("username") or "").strip()
 
 
-async def _require_chat_scope_access(
+async def _authorize_chat_scope(
     user: dict[str, Any], scope: ChatScope, *, write: bool = False, delegate: bool = False,
 ) -> ProjectContext | None:
     # Asset/task chat is not implemented. Its IDs must never reach chat_store's
@@ -425,13 +437,21 @@ async def _require_chat_scope_access(
         )
     else:
         ctx = await _project_context_for_scope(user, scope)
+    return ctx
+
+
+async def _require_chat_scope_access(user, scope, *, write=False, delegate=False):
+    ctx = await _authorize_chat_scope(user, scope, write=write, delegate=delegate)
+    from novelvideo.chat.conversation_binding import validate_conversation
+    validate_conversation(user, scope, ctx)
     # Registry ownership proves this old project directory belongs to the
     # caller. Shared-project collaborators must never inherit the owner's chat.
-    if getattr(ctx, 'owner_username', None) == user['username']:
+    if ctx is not None and getattr(ctx, 'owner_username', None) == user['username']:
         from novelvideo.chat.session_store import for_scope
         legacy = ctx.state_dir / 'chat.db'
         store = for_scope(str(user['username']), 'project', scope.id)
-        if legacy.is_file():
+        from novelvideo.chat.session_store import current_conversation_id
+        if current_conversation_id() == 'default' and legacy.is_file():
             store.legacy_history = legacy
         store.get_or_create()
     return ctx
@@ -489,7 +509,8 @@ async def _send_scope_changed(
     try:
         project_ctx = await _require_chat_scope_access(user, scope)
     except HTTPException as exc:
-        if scope.kind != "project" or exc.status_code != 404:
+        from novelvideo.chat.conversation_binding import requested_binding
+        if requested_binding() != (None, None) or scope.kind != "project" or exc.status_code != 404:
             raise
         if user.get("credential_kind") == "agent_session":
             raise
@@ -893,6 +914,14 @@ async def chat_ws(websocket: WebSocket) -> None:
 
     username = str(user["username"])
     current_scope = ChatScope(kind="home")
+    from novelvideo.chat.conversation_binding import requested_binding
+    bound_project, bound_canvas = requested_binding()
+    if bound_canvas and not bound_project:
+        await websocket.send_json({'type': 'error', 'message': '画布会话必须提供项目编号'})
+        await websocket.close(code=1008)
+        return
+    if bound_project:
+        current_scope = ChatScope(kind='project', id=bound_project)
     if user.get("credential_kind") == "agent_session":
         current_scope = ChatScope(
             kind=user.get("current_scope_kind") or "home",
@@ -924,6 +953,8 @@ async def chat_ws(websocket: WebSocket) -> None:
             # while this socket remains open.
             try:
                 user = await _authenticate_ws(websocket)
+                if str(user['username']) != username:
+                    raise HTTPException(403, '会话用户已变化，请重新连接')
             except Exception:
                 await _send_json_best_effort(websocket, {"type": "error", "message": "unauthorized"})
                 await websocket.close(code=1008)

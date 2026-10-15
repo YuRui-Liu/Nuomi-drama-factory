@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from novelvideo.chat.hermes_sdk import HermesSdkClient, HermesSdkThread
+from novelvideo.chat.session_store import current_conversation_id, for_scope
 from novelvideo.chat.hermes_workspace import (
     effective_gateway_credentials,
     effective_gateway_fingerprint,
@@ -105,6 +106,7 @@ class _WorkerSlot:
     scope_kind: str = "home"
     project_id: str | None = None
     generation: int = 1
+    conversation_id: str = 'default'
     gateway_fingerprint: str = ""
     last_used: float = field(default_factory=time.time)
 
@@ -124,8 +126,8 @@ class HermesPool:
         token_ttl_secs: int = DEFAULT_TOKEN_TTL_SECS,
         token_renew_skew_secs: int = DEFAULT_TOKEN_RENEW_SKEW_SECS,
     ) -> None:
-        self._slots: dict[tuple[str, str, str | None], _WorkerSlot] = {}
-        self._session_ids: dict[str, dict[tuple[str, str | None], str]] = {}
+        self._slots: dict[tuple, _WorkerSlot] = {}
+        self._session_ids: dict[str, dict[tuple, str]] = {}
         self._lock = asyncio.Lock()
         self._idle_kill_secs = idle_kill_secs
         self._max_workers = max_workers
@@ -149,7 +151,7 @@ class HermesPool:
         ``await thread.stream(prompt)`` to send messages.
         """
         async with self._lock:
-            key = (username, scope_kind, project_id)
+            key = self._worker_key(username, scope_kind, project_id)
             slot = self._slots.get(key)
             from .session_store import for_scope
             state = for_scope(username, scope_kind, project_id).get_or_create()
@@ -246,6 +248,7 @@ class HermesPool:
         project_env = await self._project_env(username, project_id)
         env = self._build_env(home, username, token, project_id=project_id, project_env=project_env)
         env.update(NUOMI_ASSISTANT_DB_PATH=str(store.db_path),
+                   NUOMI_ASSISTANT_CONVERSATION_ID=current_conversation_id(),
                    NUOMI_ASSISTANT_SESSION_ID=state.session_id,
                    NUOMI_ASSISTANT_GENERATION=str(state.generation))
         client = HermesSdkClient(
@@ -277,6 +280,7 @@ class HermesPool:
             project_id=project_id,
             gateway_fingerprint=effective_gateway_fingerprint(),
             generation=state.generation,
+            conversation_id=current_conversation_id(),
         )
 
     def _token_needs_renewal(self, slot: _WorkerSlot) -> bool:
@@ -284,9 +288,20 @@ class HermesPool:
         return slot.token.exp <= renew_at
 
     @staticmethod
-    def _scope_key(scope_kind: str, project_id: str | None) -> tuple[str, str | None]:
+    def _scope_key(scope_kind: str, project_id: str | None, conversation_id=None) -> tuple:
         kind = (scope_kind or "home").strip() or "home"
-        return kind, project_id if kind != "home" else None
+        key = (kind, project_id if kind != "home" else None)
+        conversation_id = conversation_id or current_conversation_id()
+        return key if conversation_id == 'default' else (*key, conversation_id)
+
+    @classmethod
+    def _worker_key(cls, username, scope_kind, project_id, conversation_id=None):
+        return (username, *cls._scope_key(scope_kind, project_id, conversation_id))
+
+    @staticmethod
+    def _running(slot):
+        return for_scope(slot.username, slot.scope_kind, slot.project_id,
+                         conversation_id=slot.conversation_id).has_running_turn(slot.generation)
 
     def _session_id_for(
         self,
@@ -301,7 +316,7 @@ class HermesPool:
         if not session_id:
             return
         self._session_ids.setdefault(slot.username, {})[
-            self._scope_key(slot.scope_kind, slot.project_id)
+            self._scope_key(slot.scope_kind, slot.project_id, slot.conversation_id)
         ] = session_id
 
     async def _rotate_slot_locked(
@@ -322,7 +337,7 @@ class HermesPool:
         cannot leave the fresh token unmanaged.
         """
         self._remember_session(slot)
-        same_scope = self._scope_key(slot.scope_kind, slot.project_id) == self._scope_key(
+        same_scope = self._scope_key(slot.scope_kind, slot.project_id, slot.conversation_id) == self._scope_key(
             scope_kind,
             project_id,
         )
@@ -341,7 +356,7 @@ class HermesPool:
             replacement.token.session_id,
             reason,
         )
-        self._slots[(slot.username, slot.scope_kind, slot.project_id)] = replacement
+        self._slots[self._worker_key(slot.username, slot.scope_kind, slot.project_id, slot.conversation_id)] = replacement
         await asyncio.shield(self._close_slot(slot))
         return replacement
 
@@ -435,10 +450,13 @@ class HermesPool:
         if len(self._slots) < self._max_workers:
             return
         # Evict least-recently-used
-        victim = min(self._slots.values(), key=lambda s: s.last_used)
+        candidates = [slot for slot in self._slots.values() if not self._running(slot)]
+        if not candidates:
+            raise RuntimeError('助手会话并发已满，请等待一个会话完成后重试。')
+        victim = min(candidates, key=lambda s: s.last_used)
         _log.info("hermes pool full (%d); evicting LRU user=%s", self._max_workers, victim.username)
         await self._close_slot(victim)
-        self._slots.pop((victim.username, victim.scope_kind, victim.project_id), None)
+        self._slots.pop(self._worker_key(victim.username, victim.scope_kind, victim.project_id, victim.conversation_id), None)
 
     async def _close_slot(self, slot: _WorkerSlot) -> None:
         self._remember_session(slot)
@@ -462,11 +480,11 @@ class HermesPool:
                 await asyncio.sleep(60)
                 cutoff = time.time() - self._idle_kill_secs
                 async with self._lock:
-                    victims = [s for s in self._slots.values() if s.last_used < cutoff]
+                    victims = [s for s in self._slots.values() if s.last_used < cutoff and not self._running(s)]
                     for v in victims:
                         _log.info("hermes worker idle-killed: user=%s", v.username)
                         await self._close_slot(v)
-                        self._slots.pop((v.username, v.scope_kind, v.project_id), None)
+                        self._slots.pop(self._worker_key(v.username, v.scope_kind, v.project_id, v.conversation_id), None)
                     if not self._slots:
                         # Pool empty — exit reaper; next spawn will restart it
                         return
@@ -483,7 +501,7 @@ class HermesPool:
 
     async def close_scope(self, username, scope_kind, project_id, generation=None):
         async with self._lock:
-            key = (username, scope_kind, project_id)
+            key = self._worker_key(username, scope_kind, project_id)
             slot = self._slots.get(key)
             if slot and generation is not None and slot.generation != generation:
                 return False
@@ -528,7 +546,7 @@ class HermesPool:
     ) -> bool:
         """Update an already-running worker's server-side active scope."""
         async with self._lock:
-            slot = self._slots.get((username, scope_kind, project_id))
+            slot = self._slots.get(self._worker_key(username, scope_kind, project_id))
             if slot is None:
                 return False
             await self._update_scope_locked(slot, scope_kind, project_id)

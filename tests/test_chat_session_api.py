@@ -15,7 +15,7 @@ def client(monkeypatch, tmp_path):
     async def authorize(user, scope, **kwargs):
         if scope.id == 'forbidden':
             raise HTTPException(403, 'forbidden')
-        return SimpleNamespace(state_dir=tmp_path)
+        return SimpleNamespace(state_dir=tmp_path, output_dir=tmp_path)
     monkeypatch.setattr(chat, '_require_chat_scope_access', authorize)
     from novelvideo.chat.hermes_pool import pool
     monkeypatch.setattr(pool, 'close_scope', AsyncMock(return_value=False))
@@ -69,3 +69,22 @@ def test_ui_event_requires_current_turn(client):
     assert client.post('/chat/ui-events', json=body).status_code == 409
     for_scope('alice').begin_turn('turn', state['generation'])
     assert client.post('/chat/ui-events', json=body).status_code == 200
+
+
+def test_query_parameter_isolates_history_and_clear_in_same_project(client):
+    from novelvideo.chat.session_store import conversation_scope
+    scope = {'kind':'project','id':'p'}
+    identities = {}
+    for conversation in ('one', 'two'):
+        state = client.get(f'/chat/session?scope_kind=project&project_id=p&conversation_id={conversation}').json()['data']
+        identities[conversation] = state
+        assert client.post(f'/chat/notifications?conversation_id={conversation}', json={
+            'scope':scope,'text':conversation,'session_id':state['session_id'],'generation':state['generation']}).status_code == 200
+    assert identities['one']['session_id'] != identities['two']['session_id']
+    assert client.post('/chat/session/clear?conversation_id=one', json={
+        'scope':scope,'expected_generation':identities['one']['generation'],'request_id':'clear-one'}).status_code == 200
+    with conversation_scope('one'):
+        assert chat_store.list_messages('alice', ChatScope('project','p')) == []
+    with conversation_scope('two'):
+        assert chat_store.list_messages('alice', ChatScope('project','p'))[0]['content'] == 'two'
+    assert client.get('/chat/session?conversation_id=../invalid').status_code == 422

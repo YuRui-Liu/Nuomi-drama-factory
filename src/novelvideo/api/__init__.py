@@ -47,6 +47,7 @@ from novelvideo.api.routes import (  # noqa: E402
     characters,
     character_casting,
     chat,
+    chat_conversations,
     config,
     creative_studios,
     studio_director,
@@ -125,6 +126,7 @@ if not runtime_env.is_self_hosted():
         ep.load()(api_router)
 api_router.include_router(config.router, tags=["config"])
 api_router.include_router(chat.router, tags=["chat"])
+api_router.include_router(chat_conversations.router)
 api_router.include_router(projects.router, tags=["projects"])
 from .routes import agent_teams
 from .routes import agent_team_trials
@@ -171,6 +173,7 @@ api_router.include_router(freezone.router)
 api_router.include_router(freezone_video_director.router)
 api_router.include_router(freezone_orchestration.router)
 api_router.include_router(creation.router)
+api_router.include_router(creation_library.router)
 api_router.include_router(technique_library.router)
 api_router.include_router(case_reference.router)
 api_router.include_router(release_notifications.router, tags=["release-notifications"])
@@ -183,7 +186,6 @@ def register_verification_routes():
     if _verification_routes_registered:
         return
     from novelvideo.verification.routes import router as verification_router
-api_router.include_router(creation_library.router)
 
     api_router.include_router(verification_router, tags=["verification"])
     _verification_routes_registered = True

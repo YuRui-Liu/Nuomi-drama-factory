@@ -666,7 +666,10 @@ def _chat_run_lock_is_stale(
 
 
 def _chat_run_lock_key(project: str) -> str:
-    return _CHAT_RUN_LOCK_KEY + ':' + project
+    from .session_store import current_conversation_id
+    conversation_id = current_conversation_id()
+    key = _CHAT_RUN_LOCK_KEY + ':' + project
+    return key if conversation_id == 'default' else key + ':conversation:' + conversation_id
 
 
 def _chat_run_lock_path(username: str, project: str) -> Path:
@@ -2907,6 +2910,8 @@ def _build_claude_env(username: str, project: str, agent_token: str = "") -> dic
     env["DRAMACLAW_AGENT_TOKEN"] = agent_token
     env["SUPERTALE_AGENT_TOKEN"] = agent_token
     from .session_manager import current_session, current_turn
+    from .session_store import current_conversation_id
+    env['NUOMI_ASSISTANT_CONVERSATION_ID'] = current_conversation_id()
     if active := current_session.get():
         env['NUOMI_ASSISTANT_SESSION_ID'] = active[1].session_id
         env['NUOMI_ASSISTANT_GENERATION'] = str(active[1].generation)

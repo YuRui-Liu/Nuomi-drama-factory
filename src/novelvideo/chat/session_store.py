@@ -1,5 +1,6 @@
 """Persistent assistant identity and generation fencing, independent of models."""
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from pathlib import Path
 import hashlib
@@ -7,6 +8,29 @@ import json
 import os
 import sqlite3
 import uuid
+import re
+
+_conversation = ContextVar('assistant_conversation', default=None)
+
+
+def current_conversation_id():
+    value = _conversation.get()
+    return validate_conversation_id(value if value is not None else os.environ.get('NUOMI_ASSISTANT_CONVERSATION_ID', 'default'))
+
+
+def validate_conversation_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', value):
+        raise ValueError('invalid conversation ID')
+    return value
+
+
+@contextmanager
+def conversation_scope(conversation_id='default'):
+    token = _conversation.set(validate_conversation_id(conversation_id))
+    try:
+        yield
+    finally:
+        _conversation.reset(token)
 
 
 class SessionConflict(RuntimeError):
@@ -28,6 +52,22 @@ class SessionStore:
         self.db_path = Path(db_path)
         self.migration_required = migration_required
         self.legacy_history = legacy_history
+
+    def peek(self):
+        """Read identity and turn status without initialization or migration."""
+        if not self.db_path.is_file():
+            return None, False
+        db = sqlite3.connect(self.db_path.resolve().as_uri() + '?mode=ro', uri=True)
+        try:
+            tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            row = db.execute('SELECT data FROM assistant_session WHERE id=1').fetchone() if 'assistant_session' in tables else None
+            state = SessionState(**json.loads(row[0])) if row else None
+            running = bool(state and 'assistant_turns' in tables and db.execute(
+                "SELECT 1 FROM assistant_turns WHERE generation=? AND status IN ('running','cancel_requested')",
+                (state.generation,)).fetchone())
+            return state, running
+        finally:
+            db.close()
 
     @contextmanager
     def transaction(self):
@@ -148,6 +188,10 @@ class SessionStore:
         with self.transaction() as db:
             return bool(db.execute("UPDATE assistant_turns SET status='cancel_requested' WHERE generation=? AND status='running'", (generation,)).rowcount)
 
+    def has_running_turn(self, generation):
+        with self.transaction() as db:
+            return bool(db.execute("SELECT 1 FROM assistant_turns WHERE generation=? AND status IN ('running','cancel_requested')", (generation,)).fetchone())
+
     def turn_cancelled(self, turn_id):
         with self.transaction() as db:
             return bool(db.execute("SELECT 1 FROM assistant_turns WHERE turn_id=? AND status='cancel_requested'", (turn_id,)).fetchone())
@@ -192,14 +236,18 @@ class SessionStore:
             return new
 
 
-def for_scope(username, scope_kind='home', project_id=None):
+def for_scope(username, scope_kind='home', project_id=None, *, conversation_id=None):
     if not username or username in {'.', '..'} or '/' in username or '\\' in username:
         raise ValueError('invalid username')
     if scope_kind not in {'home', 'project'} or (scope_kind == 'project' and not project_id):
         raise ValueError('invalid assistant scope')
     root = Path(os.environ.get('NOVELVIDEO_STATE_DIR') or Path(__file__).resolve().parents[3] / 'state')
     key = hashlib.sha256(json.dumps([scope_kind, project_id if scope_kind == 'project' else None]).encode()).hexdigest()
+    conversation_id = validate_conversation_id(conversation_id) if conversation_id is not None else current_conversation_id()
+    directory = root / username / '.assistant-sessions' / key
+    if conversation_id != 'default':
+        return SessionStore(directory / 'conversations' / conversation_id / 'chat.db')
     from .session_migration import needs_confirmation, scoped_history
-    return SessionStore(root / username / '.assistant-sessions' / key / 'chat.db',
+    return SessionStore(directory / 'chat.db',
                         migration_required=needs_confirmation(root / username, scope_kind, project_id),
                         legacy_history=scoped_history(root / username, scope_kind, project_id))
