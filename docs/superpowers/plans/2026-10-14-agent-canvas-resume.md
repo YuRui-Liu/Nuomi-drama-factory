@@ -163,6 +163,8 @@ A2b 分两批串行交付：**A2b-1** 可信媒体内容快照、可恢复发布
 
 文件：原任务 8 的 agent_context/tools、chat/canvas_context、superchat；新增 `creation/delegations.py`，复用现有 chat conversation 持久化。
 
+**8B1b 已双审提交 `e4b0fad`**：真实画布入口传递固定身份，当前画布可信列表确认后才挂载会话；创建请求持久恢复、跨标签互斥、用户／项目／画布／会话缓存隔离与旧实例回调拦截已接入。实际 index 快照8文件41 passed，最后恢复提示窄修独立8 passed，强制tsc通过。修复旧abort回调、旧clear响应删除新实例缓存、空态侧栏不能关闭及成功回执误提示恢复。真实同项目分集／自由画布分别创建和恢复历史，清理自由画布仅其generation变为2，分集保持1且历史完整；空构思画布列表仍为空，关闭正常。1280／1440截图已检查，未调用模型。提交纳入必要会话与Dock基础及一行既有测试fixture修复，保留其他脏改。当前进入8B2固定项目主创配置、持久委托和受限领域工具；运行接线图`/tmp/task08b2-runtime-map.md`，不能把现有通用HTTP工具直接当作新Agent授权边界。
+
 - [ ] 保存项目主创配置，每画布独立 conversation 与任务；切换恢复对应讨论，共享已确认项目事实。
 - [ ] 发送时持久化 scope、input_refs、allowed_operations、acceptance；后续选中内容不改变已发委托。子代理只能缩小范围，读相关依赖不等于获得写权限。
 - [ ] 真实 Agent 运行时调用公开领域操作和能力目录，写入结果检查对象存在，禁止旧 batch 引擎或直接文件写入。
