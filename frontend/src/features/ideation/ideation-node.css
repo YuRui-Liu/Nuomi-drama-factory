@@ -1,0 +1,235 @@
+.agent-node-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 360px;
+  padding: 16px;
+  border: 1px solid #2A2F37;
+  border-radius: 14px;
+  background: #14161A;
+  color: #F2F4F7;
+  box-shadow: 0 14px 34px rgb(0 0 0 / 18%);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.agent-node-shell[data-selected="true"] {
+  border-color: #E5FF5C;
+  box-shadow: 0 0 0 1px rgb(229 255 92 / 18%), 0 14px 34px rgb(0 0 0 / 24%);
+}
+
+.agent-node-header {
+  min-height: 25px;
+  padding: 0 1px 9px;
+  border-bottom: 1px solid #2A2F37;
+}
+
+.agent-node-header-icon {
+  color: #E5FF5C !important;
+}
+
+.agent-node-header-title {
+  max-width: 58%;
+  color: #F2F4F7 !important;
+}
+
+.agent-node-header-meta {
+  max-width: 40%;
+  overflow: hidden;
+  color: #9299A5 !important;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-node-content {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  min-width: 0;
+}
+
+.agent-node-role {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: #E5FF5C;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.agent-node-role-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 23px;
+  height: 23px;
+  flex: 0 0 23px;
+  border: 1px solid #4e5a32;
+  border-radius: 50%;
+  background: #20261a;
+}
+
+.agent-node-purpose {
+  min-width: 0;
+  overflow: hidden;
+  margin-left: auto;
+  color: #9299A5;
+  font-size: 10px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-node-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.agent-node-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  color: #A7B196;
+  font-size: 11px;
+}
+
+.agent-node-fields input,
+.agent-node-fields select,
+.agent-node-fields textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #2A2F37;
+  border-radius: 7px;
+  outline: none;
+  background: #111317;
+  color: #E6E8EC;
+  color-scheme: dark;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.65;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.agent-node-fields input {
+  height: 34px;
+  padding: 0 10px;
+}
+
+.agent-node-fields select {
+  height: 34px;
+  cursor: pointer;
+  padding: 0 8px;
+}
+
+.agent-node-fields textarea {
+  min-height: 73px;
+  resize: vertical;
+  padding: 8px 10px;
+}
+
+.agent-node-fields input:focus,
+.agent-node-fields select:focus,
+.agent-node-fields textarea:focus {
+  border-color: #738342;
+  box-shadow: 0 0 0 2px rgb(229 255 92 / 9%);
+}
+
+.agent-node-fields input::placeholder,
+.agent-node-fields textarea::placeholder {
+  color: #68717E;
+}
+
+.agent-node-seed {
+  grid-column: 1 / -1;
+}
+
+.agent-node-summary {
+  padding: 11px 12px;
+  border: 1px solid #2A2F37;
+  border-radius: 9px;
+  background: #111317;
+}
+
+.agent-node-summary-label {
+  color: #9299A5;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.agent-node-summary-genres {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 7px;
+  color: #DCE8B8;
+  font-size: 11px;
+}
+
+.agent-node-summary-genres span {
+  color: #9299A5;
+}
+
+.agent-node-summary p {
+  overflow: hidden;
+  margin: 6px 0 0;
+  color: #C5CBD2;
+  font-size: 11px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agent-node-settings-button {
+  align-self: flex-start;
+  border: 1px solid #3B4430;
+  border-radius: 7px;
+  background: #1A1D22;
+  color: #D5E5A7;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 7px 10px;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.agent-node-settings-button:hover {
+  border-color: #758446;
+  background: #20251A;
+}
+
+.agent-node-settings-button:focus-visible {
+  outline: 2px solid #E5FF5C;
+  outline-offset: 2px;
+}
+
+.agent-node-error {
+  margin: -5px 0 0;
+  color: #FDA4AF;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .agent-node-shell {
+    min-width: 300px;
+    padding: 13px;
+  }
+
+  .agent-node-purpose {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-node-shell,
+  .agent-node-fields input,
+  .agent-node-fields select,
+  .agent-node-fields textarea,
+  .agent-node-settings-button {
+    transition: none;
+  }
+}

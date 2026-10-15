@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Sparkles } from 'lucide-react';
 
-import type { CanvasNodeType } from '@/features/canvas/domain/canvasNodes';
+import type { CanvasNodeData, CanvasNodeType } from '@/features/canvas/domain/canvasNodes';
 import type { SkillDefinition, SkillProvider } from '@/features/freezone/context/skillRoles';
 import {
   translateSkillDescription,
@@ -29,7 +29,7 @@ const SKILL_PANEL_CLOSE_DELAY_MS = 40;
 
 interface CanvasAddNodePanelProps {
   skillItems: SkillDefinition[];
-  onSelectNode: (type: CanvasNodeType) => void;
+  onSelectNode: (type: CanvasNodeType, initialData?: Partial<CanvasNodeData>) => void;
   onSelectSkill: (skill: SkillDefinition) => void;
   onClose: () => void;
 }
@@ -73,8 +73,9 @@ export function CanvasAddNodePanel({
     return skillGroups.find((group) => group.provider === activeSkillProvider) ?? null;
   }, [activeSkillProvider, skillGroups]);
 
-  const handlePickNode = (type: CanvasNodeType) => {
-    onSelectNode(type);
+  const handlePickNode = (type: CanvasNodeType, initialData?: Partial<CanvasNodeData>) => {
+    if (initialData === undefined) onSelectNode(type);
+    else onSelectNode(type, initialData);
     onClose();
   };
 

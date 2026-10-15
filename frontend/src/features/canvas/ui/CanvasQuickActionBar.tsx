@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Clock, HelpCircle, Keyboard, Plus } from 'lucide-react';
 import { PRODUCT_MANUAL_URL } from '@/lib/product-manual';
 
-import type { CanvasNodeType } from '@/features/canvas/domain/canvasNodes';
+import type { CanvasNodeData, CanvasNodeType } from '@/features/canvas/domain/canvasNodes';
 import type { CanvasAsset } from '@/features/canvas/domain/canvasAssets';
 import type { SkillDefinition } from '@/features/freezone/context/skillRoles';
 
@@ -25,7 +25,7 @@ interface CanvasQuickActionBarProps {
   selectedNodeId?: string | null;
   placement?: 'bottom-right' | 'top-right';
   skillItems: SkillDefinition[];
-  onAddNode: (type: CanvasNodeType) => void;
+  onAddNode: (type: CanvasNodeType, initialData?: Partial<CanvasNodeData>) => void;
   onAddSkill: (skill: SkillDefinition) => void;
   onUseAsset: (asset: CanvasAsset) => void;
   onDeleteNode: (nodeId: string) => void;

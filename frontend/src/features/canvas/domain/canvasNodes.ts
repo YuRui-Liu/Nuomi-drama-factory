@@ -6,6 +6,7 @@ import type {
   DirectorObjectLayer,
   DirectorWorldSource,
 } from '@/features/viewer-kit/three-d/directorManifest';
+import type { ScriptSettings } from '@/features/script-creation/types';
 
 export const CANVAS_NODE_TYPES = {
   upload: 'uploadNode',
@@ -27,6 +28,7 @@ export const CANVAS_NODE_TYPES = {
   pano360Viewer: 'pano360ViewerNode',
   threeDWorld: 'threeDWorldNode',
   skill: 'skillNode',
+  agent: 'agentNode',
 } as const;
 
 export type CanvasNodeType = (typeof CANVAS_NODE_TYPES)[keyof typeof CANVAS_NODE_TYPES];
@@ -790,6 +792,38 @@ export interface SkillNodeData extends NodeDisplayData {
   [key: string]: unknown;
 }
 
+export interface BuiltinAgentRef {
+  id: string;
+  revision: number;
+}
+
+/** A pointer to a runtime run. Canvas data intentionally stores no run output. */
+export interface AgentRunRef {
+  id: string;
+  revision: number;
+  state: string;
+}
+
+/** A stable pointer to a selected ideation candidate; the candidate body lives remotely. */
+export interface AgentIdeationSelectionRef {
+  kind: 'ideation_selection';
+  request_id: string;
+  canvas_id: string;
+  conversation_id: string;
+  node_id: string;
+  object_id: string;
+  revision: number;
+  candidate_id: string;
+}
+
+export interface AgentNodeData extends NodeDisplayData {
+  agentRef: BuiltinAgentRef;
+  settings: ScriptSettings;
+  conversationId?: string | null;
+  runRefs?: AgentRunRef[];
+  adoptedRef?: AgentIdeationSelectionRef | null;
+}
+
 export type CanvasNodeData =
   | UploadImageNodeData
   | ExportImageNodeData
@@ -809,7 +843,8 @@ export type CanvasNodeData =
   | ScriptNodeData
   | Pano360ViewerNodeData
   | ThreeDWorldNodeData
-  | SkillNodeData;
+  | SkillNodeData
+  | AgentNodeData;
 
 export type CanvasNode = Node<CanvasNodeData, CanvasNodeType>;
 export type CanvasEdge = Edge;

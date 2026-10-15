@@ -3216,6 +3216,17 @@
       "keys": {
         "space": "空格"
       }
+    },
+    "agentNode": {
+      "primaryGenre": "主题材",
+      "fusionGenre": "融合题材",
+      "storySeed": "故事种子",
+      "storySeedPlaceholder": "一句话，或一段自由的想象",
+      "summary": "当前设定",
+      "editSettings": "编辑完整设定",
+      "noFusion": "不融合",
+      "unspecified": "暂未指定",
+      "saveFailure": "保存失败，请重试"
     }
   },
   "tool": {
@@ -3539,7 +3550,15 @@
       "betaTag": "Beta",
       "videoCompose": "视频合成",
       "musicDesk": "配乐台",
-      "videoDirector": "视频导演"
+      "videoDirector": "视频导演",
+      "agent": "Agent",
+      "agentOptions": "选择 Agent",
+      "agentCreativeLead": "创意主创",
+      "agentCreativeLeadDescription": "统筹故事方向与创作方案",
+      "agentTextWriter": "文本编剧",
+      "agentTextWriterDescription": "撰写与完善剧本文本",
+      "agentIdeation": "立意",
+      "agentIdeationDescription": "确定主题材并形成故事种子"
     },
     "videoDirector": {
       "techniques": { "label": "手法卡片", "none": "不使用卡片", "clear": "清除卡片", "unavailable": "当前不可用", "catalogUnavailable": "卡片目录暂不可用", "limits": "适用", "field_mode": "模式", "field_duration_seconds": "时长", "field_status": "状态", "lastFrame_required": "需要尾帧", "lastFrame_allowed": "允许尾帧", "lastFrame_forbidden": "不支持尾帧", "techniqueCatalogUnavailable": "卡片目录暂不可用，请清除已选卡片后生成", "techniqueUnknown": "所选卡片版本已失效，请换卡或清除", "techniqueRetired": "卡片已停用", "techniqueModeUnsupported": "卡片不支持当前模式", "techniqueDurationShort": "对齐后时长短于卡片下限", "techniqueDurationLong": "对齐后时长超过卡片上限", "techniqueLastFrameRequired": "卡片需要尾帧", "techniqueLastFrameForbidden": "卡片不支持尾帧" },

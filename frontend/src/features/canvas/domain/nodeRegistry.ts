@@ -6,6 +6,7 @@ import {
   DEFAULT_ASPECT_RATIO,
   type BeatContextNodeData,
   type AudioNodeData,
+  type AgentNodeData,
   type ImageSize,
   type CanvasNodeData,
   type CanvasNodeType,
@@ -35,6 +36,7 @@ import {
 } from '../ui/ProviderModelPicker';
 import { readLastVideoModel } from './lastVideoModel';
 import { createDirectorDraft } from './videoDirectorDraft';
+import { defaultSettings } from '@/features/script-creation/settings';
 
 export type MenuIconKey = 'upload' | 'sparkles' | 'layout' | 'text' | 'video' | 'audio' | 'script' | 'pano360' | 'threeDWorld' | 'videoCompose';
 
@@ -639,6 +641,24 @@ const skillNodeDefinition: CanvasNodeDefinition<SkillNodeData> = {
   }),
 };
 
+const agentNodeDefinition: CanvasNodeDefinition<AgentNodeData> = {
+  type: CANVAS_NODE_TYPES.agent,
+  menuLabelKey: 'node.menu.agent',
+  menuIcon: 'sparkles',
+  visibleInMenu: true,
+  capabilities: { toolbar: false, promptInput: false },
+  connectivity: {
+    sourceHandle: true,
+    targetHandle: true,
+    connectMenu: { fromSource: true, fromTarget: true },
+  },
+  createDefaultData: () => ({
+    displayName: DEFAULT_NODE_DISPLAY_NAME[CANVAS_NODE_TYPES.agent],
+    agentRef: { id: 'builtin:ideation', revision: 1 },
+    settings: defaultSettings(),
+  }),
+};
+
 export const canvasNodeDefinitions: Record<CanvasNodeType, CanvasNodeDefinition> = {
   [CANVAS_NODE_TYPES.musicDesk]: {
     type: CANVAS_NODE_TYPES.musicDesk, menuLabelKey: 'node.menu.musicDesk', menuIcon: 'audio', visibleInMenu: true,
@@ -664,6 +684,7 @@ export const canvasNodeDefinitions: Record<CanvasNodeType, CanvasNodeDefinition>
   [CANVAS_NODE_TYPES.pano360Viewer]: pano360ViewerNodeDefinition,
   [CANVAS_NODE_TYPES.threeDWorld]: threeDWorldNodeDefinition,
   [CANVAS_NODE_TYPES.skill]: skillNodeDefinition,
+  [CANVAS_NODE_TYPES.agent]: agentNodeDefinition,
 };
 
 export function getNodeDefinition(type: CanvasNodeType): CanvasNodeDefinition {

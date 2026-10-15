@@ -3216,6 +3216,17 @@
       "keys": {
         "space": "Space"
       }
+    },
+    "agentNode": {
+      "primaryGenre": "Primary genre",
+      "fusionGenre": "Fusion genre",
+      "storySeed": "Story seed",
+      "storySeedPlaceholder": "A sentence or a free-form idea",
+      "summary": "Current settings",
+      "editSettings": "Edit full settings",
+      "noFusion": "No fusion",
+      "unspecified": "Not specified",
+      "saveFailure": "Could not save settings. Please retry."
     }
   },
   "tool": {
@@ -3539,7 +3550,15 @@
       "betaTag": "Beta",
       "videoCompose": "Video Compose",
       "musicDesk": "Music Desk",
-      "videoDirector": "Video Director"
+      "videoDirector": "Video Director",
+      "agent": "Agent",
+      "agentOptions": "Choose an Agent",
+      "agentCreativeLead": "Creative Lead",
+      "agentCreativeLeadDescription": "Shape the story direction and creative plan",
+      "agentTextWriter": "Text Writer",
+      "agentTextWriterDescription": "Draft and refine script text",
+      "agentIdeation": "Ideation",
+      "agentIdeationDescription": "Choose the genre and form a story seed"
     },
     "videoDirector": {
       "techniques": { "label": "Technique card", "none": "No card", "clear": "Clear card", "unavailable": "Unavailable", "catalogUnavailable": "Card catalog unavailable", "limits": "Applies to", "field_mode": "Mode", "field_duration_seconds": "Duration", "field_status": "Status", "lastFrame_required": "Last frame required", "lastFrame_allowed": "Last frame allowed", "lastFrame_forbidden": "No last frame", "techniqueCatalogUnavailable": "Card catalog unavailable; clear the selected card to generate", "techniqueUnknown": "Selected card version is unavailable; change or clear it", "techniqueRetired": "Card is retired", "techniqueModeUnsupported": "Card does not support this mode", "techniqueDurationShort": "Aligned duration is below the card minimum", "techniqueDurationLong": "Aligned duration exceeds the card maximum", "techniqueLastFrameRequired": "Card requires a last frame", "techniqueLastFrameForbidden": "Card does not support a last frame" },

@@ -17,6 +17,7 @@ import { UI_POPOVER_TRANSITION_MS } from '@/components/ui/motion';
 
 import {
   CANVAS_NODE_TYPES,
+  type CanvasNodeData,
   type CanvasNodeType,
 } from '@/features/canvas/domain/canvasNodes';
 import type { SkillDefinition, SkillProvider } from '@/features/freezone/context/skillRoles';
@@ -34,7 +35,11 @@ import {
 interface NodeSelectionMenuProps {
   position: { x: number; y: number };
   allowedTypes?: CanvasNodeType[];
-  onSelect: (type: CanvasNodeType, clientPosition?: { x: number; y: number }) => void;
+  onSelect: (
+    type: CanvasNodeType,
+    clientPosition?: { x: number; y: number },
+    initialData?: Partial<CanvasNodeData>,
+  ) => void;
   skillItems?: SkillDefinition[];
   onSelectSkill?: (skill: SkillDefinition) => void;
   onClose: () => void;
@@ -396,9 +401,9 @@ export function NodeSelectionMenu({
               <CanvasAddNodeGrid
                 onItemPointerEnter={scheduleSkillPanelClose}
                 transitionDelayForIndex={(index) => (isVisible ? `${index * 30}ms` : '0ms')}
-                onSelectNode={(type, clientPosition) => {
+                onSelectNode={(type, initialData, clientPosition) => {
                   handleClose();
-                  setTimeout(() => onSelect(type, clientPosition), UI_POPOVER_TRANSITION_MS + 10);
+                  setTimeout(() => onSelect(type, clientPosition, initialData), UI_POPOVER_TRANSITION_MS + 10);
                 }}
               />
               {onSelectSkill && skillGroups.length > 0 && (

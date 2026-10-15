@@ -3046,13 +3046,17 @@ export function Canvas({
   );
 
   const handleNodeSelect = useCallback(
-    (type: CanvasNodeType, selectionClientPosition?: { x: number; y: number }) => {
+    (
+      type: CanvasNodeType,
+      selectionClientPosition?: { x: number; y: number },
+      menuInitialData?: Partial<CanvasNodeData>,
+    ) => {
       // 「上传资源」改成直接在画布生成一个空的上传节点；选择具体文件
       // （图片 / 视频）由节点内部 UI 负责，并根据文件类型自行 morph 成
       // video 节点。这样画布菜单的所有入口都保持一致：点选即生成节点。
-      let initialData: Partial<Record<string, unknown>> | undefined;
+      let initialData: Partial<CanvasNodeData> | undefined = menuInitialData;
       if (pendingConnectStart && type === CANVAS_NODE_TYPES.imageEdit) {
-        initialData = { generationMode: 'image_reference', requestAspectRatio: 'auto' };
+        initialData = { ...initialData, generationMode: 'image_reference', requestAspectRatio: 'auto' };
       } else if (
         pendingConnectStart
         && pendingConnectStart.handleType === 'target'
@@ -3063,7 +3067,7 @@ export function Canvas({
         // 按钮：拒视频）。
         const originNode = nodes.find((node) => node.id === pendingConnectStart.nodeId);
         if (originNode?.type === CANVAS_NODE_TYPES.imageGen) {
-          initialData = { imageOnly: true };
+          initialData = { ...initialData, imageOnly: true };
         }
       }
 
@@ -3154,8 +3158,8 @@ export function Canvas({
   }, [reactFlowInstance]);
 
   const handleQuickAddNode = useCallback(
-    (type: CanvasNodeType) => {
-      const newNodeId = addNode(type, spawnAtViewportCenter());
+    (type: CanvasNodeType, initialData?: Partial<CanvasNodeData>) => {
+      const newNodeId = addNode(type, spawnAtViewportCenter(), initialData);
       setSelectedNode(newNodeId);
       scheduleCanvasPersist(0);
     },
