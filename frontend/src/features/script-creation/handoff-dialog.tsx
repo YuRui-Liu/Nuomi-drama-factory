@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getSupertaleProject } from "@/api/projects";
+import { getAppRouter } from "@/lib/app-router";
 import { scriptCreationApi } from "./api";
 import type { ConsistencyIssue, ConsistencyRun, HandoffPrepareRequest, HandoffScope, NarrativeEntity, ScriptDocument, ScriptHandoff } from "./types";
 
@@ -49,6 +51,60 @@ function currentRun(run: ConsistencyRun, revisions: Record<string, string>) {
     Object.entries(run.context_revisions).every(([id, revision]) => revisions[id] === revision);
 }
 
+function OpenHandoffCanvasButton({ project, handoff }: { project: string; handoff: ScriptHandoff }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [href, setHref] = useState("");
+  const inFlight = useRef(false);
+  const mounted = useRef(false);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  async function open() {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    const router = getAppRouter();
+    const originLocation = router?.state.location;
+    const originHref = typeof window === "undefined" ? null : window.location.href;
+    const isCurrentScope = () => mounted.current && (router
+      ? router.state.location === originLocation
+      : typeof window !== "undefined" && window.location.href === originHref);
+    setBusy(true);
+    setError("");
+    setHref("");
+    try {
+      const result = await scriptCreationApi.openHandoffCanvas(project, handoff.id);
+      if (!isCurrentScope()) return;
+      if (result.status !== "applied") {
+        setError(`画布尚未就绪（状态：${result.status}），请重试。`);
+        return;
+      }
+      setHref(`/projects/${encodeURIComponent(project)}/freezone?workspace=${encodeURIComponent(result.canvas_id)}`);
+    } catch (cause) {
+      if (isCurrentScope()) setError(message(cause));
+    } finally {
+      inFlight.current = false;
+      if (mounted.current) setBusy(false);
+    }
+  }
+
+  return <span className="inline-flex items-center gap-2">
+    {href ? <a className="text-[#E5FF5C] underline" href={href}>进入分集画布</a>
+      : <button disabled={busy} onClick={() => void open()} className="text-[#E5FF5C] disabled:opacity-50">
+        {busy ? "正在准备分集画布…" : error ? "重试打开分集画布" : "打开分集画布"}
+      </button>}
+    {error && <span role="alert" className="text-amber-200">{error}</span>}
+  </span>;
+}
+
+function hasConfirmedSource(handoff: ScriptHandoff) {
+  const revision = handoff.source_revision;
+  return typeof revision === "number" ? Number.isFinite(revision) && revision > 0 : !!revision?.trim();
+}
+
 export function HandoffDialog({ project, document, documents, allSaved, onClose, onRefresh }: {
   project: string; document: ScriptDocument; documents: ScriptDocument[]; allSaved: boolean;
   onClose: () => void; onRefresh: () => Promise<unknown> | void;
@@ -72,6 +128,7 @@ export function HandoffDialog({ project, document, documents, allSaved, onClose,
   const [prepared, setPrepared] = useState<ScriptHandoff | null>(null);
   const [preparedKey, setPreparedKey] = useState("");
   const [historyView, setHistoryView] = useState(false);
+  const [canvasEnabled, setCanvasEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -136,6 +193,17 @@ export function HandoffDialog({ project, document, documents, allSaved, onClose,
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; mounted.current = false; requestSequence.current++; };
   }, [project, document.id, document.episode_number]);
+
+  useEffect(() => {
+    let alive = true;
+    setCanvasEnabled(false);
+    void getSupertaleProject(project).then((info) => {
+      if (alive) setCanvasEnabled(info.creation_mode === "agent_canvas_v1");
+    }).catch(() => {
+      if (alive) setCanvasEnabled(false);
+    });
+    return () => { alive = false; };
+  }, [project]);
 
   useEffect(() => {
     if (prepared && !historyView && preparedKey !== requestKey) setPrepared(null);
@@ -325,6 +393,7 @@ export function HandoffDialog({ project, document, documents, allSaved, onClose,
             {activePreview.status === "needs_rebase" && <p className="text-amber-200">源版本已变化，请返回新交接，重新预览当前版本。</p>}
             {extractionFailure(activePreview) && <p className="text-amber-200">校对失败：{extractionFailure(activePreview)}。可在交接记录中恢复原交接。</p>}
             {activePreview.error && <p className="text-amber-200">{activePreview.error}</p>}
+            {canvasEnabled && hasConfirmedSource(activePreview) && <OpenHandoffCanvasButton key={`${project}:${activePreview.id}`} project={project} handoff={activePreview} />}
             {activePreview.status === "completed" && !extractionFailure(activePreview) && <a className="text-[#E5FF5C] underline" href={`/projects/${encodeURIComponent(project)}/episodes/${activePreview.episode_number}/script?creationDocument=${encodeURIComponent(document.id)}`}>{activePreview.task_result?.status === "review_required" ? "查看校对结果" : "前往本集制作剧本"}</a>}
           </section>}
           <section className="mt-6 border-t border-white/10 pt-4"><h3 className="mb-2 font-semibold">本集交接记录</h3>
@@ -334,6 +403,7 @@ export function HandoffDialog({ project, document, documents, allSaved, onClose,
               {canRetry(record) && <button disabled={busy} onClick={() => void retry(record)} className="text-[#E5FF5C]">恢复/重试交接</button>}
               {record.status === "needs_rebase" && <span className="text-amber-200">请根据当前版本重新准备</span>}
               {(record.error || extractionFailure(record)) && <span className="text-amber-200">{record.error || extractionFailure(record)}</span>}
+              {canvasEnabled && hasConfirmedSource(record) && record.id !== activePreview?.id && <OpenHandoffCanvasButton key={`${project}:${record.id}`} project={project} handoff={record} />}
               {record.status === "completed" && !extractionFailure(record) && <a className="text-[#E5FF5C] underline" href={`/projects/${encodeURIComponent(project)}/episodes/${record.episode_number}/script?creationDocument=${encodeURIComponent(document.id)}`}>{record.task_result?.status === "review_required" ? "查看校对结果" : "前往本集制作剧本"}</a>}
             </div>)}
           </section>

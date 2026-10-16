@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScriptDocument } from "./types";
@@ -6,8 +6,13 @@ import type { ScriptDocument } from "./types";
 const api = vi.hoisted(() => ({
   listEntities: vi.fn(), listConsistencyRuns: vi.fn(), listHandoffs: vi.fn(),
   prepareHandoff: vi.fn(), confirmHandoff: vi.fn(), getHandoff: vi.fn(), retryHandoff: vi.fn(),
+  openHandoffCanvas: vi.fn(),
 }));
+const projectApi = vi.hoisted(() => ({ getSupertaleProject: vi.fn() }));
+const navigation = vi.hoisted(() => ({ router: null as any }));
 vi.mock("./api", () => ({ scriptCreationApi: api }));
+vi.mock("@/api/projects", () => projectApi);
+vi.mock("@/lib/app-router", () => ({ getAppRouter: () => navigation.router }));
 import { HandoffDialog } from "./handoff-dialog";
 
 const script: ScriptDocument = {
@@ -41,11 +46,14 @@ function renderDialog(onRefresh = vi.fn()) {
 }
 beforeEach(() => {
   vi.clearAllMocks();
+  navigation.router = null;
+  projectApi.getSupertaleProject.mockResolvedValue({ creation_mode: "agent_canvas_v1" });
   api.listEntities.mockResolvedValue([]);
   api.listConsistencyRuns.mockResolvedValue([]);
   api.listHandoffs.mockResolvedValue([]);
   api.prepareHandoff.mockResolvedValue(prepared);
-  api.confirmHandoff.mockResolvedValue({ ...prepared, status: "completed", source_revision: "source-1" });
+  api.confirmHandoff.mockResolvedValue({ ...prepared, status: "completed", source_revision: 42 });
+  api.openHandoffCanvas.mockResolvedValue({ episode_id: "managed-ep-1", canvas_id: "canvas-1", status: "applied", operation_id: "op-1" });
 });
 
 describe("production handoff", () => {
@@ -68,6 +76,143 @@ describe("production handoff", () => {
     await waitFor(() => expect(api.confirmHandoff).toHaveBeenCalledWith("demo", "h1", {
       expected_source_project_revision: 3, client_mutation_id: expect.any(String),
     }));
+    expect(await screen.findByRole("button", { name: "打开分集画布" })).toBeInTheDocument();
+  });
+
+  it("shows a canvas entry for confirmed history only in agent_canvas_v1 projects", async () => {
+    api.listHandoffs.mockResolvedValue([{ ...prepared, status: "dispatched", source_revision: 42 }]);
+    const view = renderDialog();
+    expect(await screen.findByRole("button", { name: "打开分集画布" })).toBeInTheDocument();
+
+    view.unmount();
+    projectApi.getSupertaleProject.mockResolvedValue({ creation_mode: "legacy" });
+    renderDialog();
+    await screen.findByText("选择交接范围");
+    expect(screen.queryByRole("button", { name: "打开分集画布" })).not.toBeInTheDocument();
+  });
+
+  it("does not offer a canvas entry for a completed legacy handoff without a confirmed source", async () => {
+    api.listHandoffs.mockResolvedValue([{ ...prepared, status: "completed", source_revision: null }]);
+    renderDialog();
+    await screen.findByText("选择交接范围");
+    expect(screen.queryByRole("button", { name: "打开分集画布" })).not.toBeInTheDocument();
+  });
+
+  it("does not treat a zero numeric source revision as confirmed", async () => {
+    api.listHandoffs.mockResolvedValue([{ ...prepared, status: "dispatched", source_revision: 0 }]);
+    renderDialog();
+    await screen.findByText("选择交接范围");
+    expect(screen.queryByRole("button", { name: "打开分集画布" })).not.toBeInTheDocument();
+  });
+
+  it("opens the returned canvas link using the confirmed handoff ID", async () => {
+    const user = userEvent.setup();
+    api.listHandoffs.mockResolvedValue([{ ...prepared, status: "dispatched", source_revision: 42 }]);
+    renderDialog();
+    await user.click(await screen.findByRole("button", { name: "打开分集画布" }));
+    expect(await screen.findByRole("link", { name: "进入分集画布" })).toHaveAttribute(
+      "href", "/projects/demo/freezone?workspace=canvas-1",
+    );
+    expect(api.openHandoffCanvas).toHaveBeenCalledWith("demo", "h1");
+  });
+
+  it("shows bridge conflicts and allows retrying the same confirmed handoff", async () => {
+    const user = userEvent.setup();
+    api.listHandoffs.mockResolvedValue([{ ...prepared, status: "dispatched", source_revision: "source-1" }]);
+    api.openHandoffCanvas.mockRejectedValueOnce(Object.assign(new Error("同号分集已绑定其他来源"), { status: 409 }));
+    renderDialog();
+    await user.click(await screen.findByRole("button", { name: "打开分集画布" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("同号分集已绑定其他来源");
+    await user.click(screen.getByRole("button", { name: "重试打开分集画布" }));
+    expect(await screen.findByRole("link", { name: "进入分集画布" })).toHaveAttribute(
+      "href", "/projects/demo/freezone?workspace=canvas-1",
+    );
+    expect(api.openHandoffCanvas).toHaveBeenNthCalledWith(1, "demo", "h1");
+    expect(api.openHandoffCanvas).toHaveBeenNthCalledWith(2, "demo", "h1");
+  });
+
+  it("does not navigate for a non-applied bridge result and prevents duplicate requests", async () => {
+    const user = userEvent.setup();
+    let resolveBridge!: (value: { episode_id: string; canvas_id: string; status: string; operation_id: string }) => void;
+    api.openHandoffCanvas.mockReturnValueOnce(new Promise(resolve => { resolveBridge = resolve; }));
+    api.listHandoffs.mockResolvedValue([{ ...prepared, status: "dispatched", source_revision: "source-1" }]);
+    renderDialog();
+    const openButton = await screen.findByRole("button", { name: "打开分集画布" });
+    await user.click(openButton);
+    await user.click(openButton);
+    expect(api.openHandoffCanvas).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "正在准备分集画布…" })).toBeDisabled();
+    resolveBridge({ episode_id: "managed-ep-1", canvas_id: "canvas-1", status: "running", operation_id: "op-1" });
+    expect(await screen.findByRole("alert")).toHaveTextContent("画布尚未就绪");
+    expect(screen.queryByRole("link", { name: "进入分集画布" })).not.toBeInTheDocument();
+  });
+
+  it("ignores a late canvas response after navigation leaves the source project", async () => {
+    const user = userEvent.setup();
+    const origin = { pathname: "/projects/demo/creation", search: {}, href: "/projects/demo/creation" };
+    const destination = { pathname: "/projects/other/creation", search: {}, href: "/projects/other/creation" };
+    navigation.router = { state: { location: origin }, navigate: vi.fn() };
+    let resolveBridge!: (value: { episode_id: string; canvas_id: string; status: string; operation_id: string }) => void;
+    api.openHandoffCanvas.mockReturnValueOnce(new Promise(resolve => { resolveBridge = resolve; }));
+    api.listHandoffs.mockResolvedValue([{ ...prepared, status: "dispatched", source_revision: "source-1" }]);
+    renderDialog();
+    await user.click(await screen.findByRole("button", { name: "打开分集画布" }));
+    navigation.router.state.location = destination;
+    resolveBridge({ episode_id: "managed-ep-1", canvas_id: "canvas-1", status: "applied", operation_id: "op-1" });
+    await waitFor(() => expect(api.openHandoffCanvas).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("link", { name: "进入分集画布" })).not.toBeInTheDocument();
+    expect(navigation.router.navigate).not.toHaveBeenCalled();
+  });
+
+  it("resets canvas state when the active history preview changes on the same route", async () => {
+    const user = userEvent.setup();
+    const earlier = { ...prepared, id: "h1", status: "dispatched", source_revision: "source-1" };
+    const later = { ...prepared, id: "h2", revision_id: "r2", status: "dispatched", source_revision: "source-2",
+      snapshot: { ...prepared.snapshot, revision_id: "r2" } };
+    api.listHandoffs.mockResolvedValue([later, earlier]);
+    let resolveBridge!: (value: { episode_id: string; canvas_id: string; status: string; operation_id: string }) => void;
+    api.openHandoffCanvas.mockReturnValueOnce(new Promise(resolve => { resolveBridge = resolve; }));
+    renderDialog();
+
+    const earlierRow = (await screen.findByText(/^r1 ·/)).parentElement!;
+    await user.click(within(earlierRow).getByRole("button", { name: "查看快照" }));
+    const earlierPreview = screen.getByText(/正文版本 r1/).closest("section")!;
+    await user.click(within(earlierPreview).getByRole("button", { name: "打开分集画布" }));
+    expect(screen.getByRole("button", { name: "正在准备分集画布…" })).toBeDisabled();
+
+    const laterRow = screen.getByText(/^r2 ·/).parentElement!;
+    await user.click(within(laterRow).getByRole("button", { name: "查看快照" }));
+    const laterPreview = screen.getByText(/正文版本 r2/).closest("section")!;
+    expect(within(laterPreview).getByRole("button", { name: "打开分集画布" })).toBeEnabled();
+    expect(screen.queryByRole("link", { name: "进入分集画布" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveBridge({ episode_id: "managed-ep-1", canvas_id: "canvas-1", status: "applied", operation_id: "op-1" });
+    });
+    expect(screen.queryByRole("link", { name: "进入分集画布" })).not.toBeInTheDocument();
+  });
+
+  it("clears the prior canvas link when switching to another confirmed history preview", async () => {
+    const user = userEvent.setup();
+    const earlier = { ...prepared, id: "h1", status: "dispatched", source_revision: "source-1" };
+    const later = { ...prepared, id: "h2", revision_id: "r2", status: "dispatched", source_revision: "source-2",
+      snapshot: { ...prepared.snapshot, revision_id: "r2" } };
+    api.listHandoffs.mockResolvedValue([later, earlier]);
+    renderDialog();
+
+    const earlierRow = (await screen.findByText(/^r1 ·/)).parentElement!;
+    await user.click(within(earlierRow).getByRole("button", { name: "查看快照" }));
+    const earlierPreview = screen.getByText(/正文版本 r1/).closest("section")!;
+    await user.click(within(earlierPreview).getByRole("button", { name: "打开分集画布" }));
+    expect(await screen.findByRole("link", { name: "进入分集画布" })).toHaveAttribute(
+      "href", "/projects/demo/freezone?workspace=canvas-1",
+    );
+
+    const laterRow = screen.getByText(/^r2 ·/).parentElement!;
+    await user.click(within(laterRow).getByRole("button", { name: "查看快照" }));
+    const laterPreview = screen.getByText(/正文版本 r2/).closest("section")!;
+    expect(screen.queryByRole("link", { name: "进入分集画布" })).not.toBeInTheDocument();
+    expect(within(laterPreview).getByRole("button", { name: "打开分集画布" })).toBeEnabled();
   });
 
   it("invalidates preview when selected scope changes and only submits parser scene IDs", async () => {

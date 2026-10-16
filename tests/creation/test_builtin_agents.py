@@ -12,6 +12,62 @@ from .test_ontology import ctx, command
 from .test_agent_profiles import configuration, save
 
 
+_LEGACY_CAPABILITY_POLICY = {
+    'items': [
+        {'id':'context.read','title':'读取已授权创作上下文','runtime_permission':'requires_scoped_read'},
+        {'id':'proposal.create','title':'提出创作修改建议','runtime_permission':'proposal_only'},
+        {'id':'ontology.draft','title':'提出对象定义草案','runtime_permission':'draft_only'},
+        {'id':'media.propose','title':'提出媒体生成方案','runtime_permission':'requires_separate_execution_authorization'},
+    ],
+    'execution_enabled':False,
+    'notice':'技能说明不授予工具权限；执行须由后续运行时核验范围和授权',
+}
+
+
+def _legacy_fixed(id_, configuration_, content_hash, proof):
+    return {
+        'id':id_, 'revision':1,
+        'configuration':{**configuration_, 'capability_policy':deepcopy(_LEGACY_CAPABILITY_POLICY)},
+        'kind':'agent',
+        'source':{'kind':'builtin','ref':{'id':id_,'revision':1},'content_hash':content_hash},
+        'content_hash':content_hash, 'proof':proof,
+    }
+
+
+_LEGACY_FIXED_BASELINE = (
+    _legacy_fixed('builtin:creative-lead', {
+        'name':'通用主创',
+        'responsibilities':'理解用户创作目标，协调局部创作建议，维护人物、场景与叙事一致性。',
+        'methods':'依据用户题材、已确认约定和当前授权范围组织工作。先明确意图与已有素材，再提出可比较的局部方案；不强制线性制作阶段，不将草案视为已确认事实。',
+        'references':[],
+        'skill_notes':['把修改建议与事实确认分开；媒体方案须另行授权执行。'],
+        'capabilities':['context.read','proposal.create','ontology.draft','media.propose'],
+        'defaults':{},'studio_refs':[],
+    }, '9be4a11a550be54ea47a37ef9614d6aaa28cfba957d4988d73c7cb543163a2ef',
+       'f7f18851f9c5499ee10ed0cc0bca77d2f7fa01f6e48709d4ee171556aac8505c'),
+    _legacy_fixed('builtin:text-writer', {
+        'name':'文本编剧',
+        'responsibilities':'在明确授权的片段中提出情节、人物行动与对白建议。',
+        'methods':'遵循用户题材、人物动机和已确认约定，以可修改的文本候选呈现方案。保留未决问题，不擅自扩展范围或改变已确认事实。',
+        'references':[],
+        'skill_notes':['文本建议不代表用户已接受，不自动生成媒体。'],
+        'capabilities':['context.read','proposal.create'],
+        'defaults':{},'studio_refs':[],
+    }, '41fc1dd0ce70fc50e141012da1d5ab7b3e7e74ca3d2e0697464689622e6b42f2',
+       '53f6bd5a0db6fcf013478645a8b69e1dea6c8a928ae6ca2d28da081317ccd808'),
+    _legacy_fixed('builtin:ideation', {
+        'name':'立意策划',
+        'responsibilities':'依据用户给定的题材、受众、角色、时代、看点、画风、篇幅与故事种子，生成三个可比较的原创故事方向。',
+        'methods':'整理用户提供的创作要素，围绕不同核心冲突和叙事钩子提出三个有区分度的方向。调用 proposal.create 时，text 必须是无 Markdown 代码围栏的纯 JSON，根对象仅含 schema_version 和 candidates，严格符合 {"schema_version":1,"candidates":[...]}；schema_version 必须是整数 1，candidates 恰好三条。每条候选仅含 id、title、premise、protagonist_goal、conflict、hook、expansion；id 是非空字符串，且在三条候选之间唯一，其余六项均为非空字符串。候选始终作为建议交由用户选择或修改，不自动采纳，也不执行媒体制作。',
+        'references':[],
+        'skill_notes':['proposal.create 的 text 必须严格遵循 methods 中的 JSON 契约。立意候选只供比较与用户确认，不自动采纳或执行媒体制作。'],
+        'capabilities':['context.read','proposal.create'],
+        'defaults':{},'studio_refs':[],
+    }, '083c6f98ee77a1eba6e2d497edf3aebde34cbe74562cb89793eda4ef5915a23a',
+       '8211f43b4ce661c667d33a78eb4e65beb6ea34ce63a9e9b5d6bbe14263c98c7f'),
+)
+
+
 @pytest.fixture
 def service(ctx, tmp_path):
     return AgentProfiles(ctx, PersonalLibrary(tmp_path/'personal', ctx.requester_user_id))
@@ -38,9 +94,13 @@ def add_version(monkeypatch):
 
 def test_catalog_and_preview_do_not_initialize_personal_or_project(service, ctx):
     entries = service.builtin_catalog()
-    assert len(entries) == 3
-    assert len({entry['id'] for entry in entries}) == 3
+    assert len(entries) == 35
+    assert len({entry['id'] for entry in entries}) == 35
     by_id = {entry['id']:entry for entry in entries}
+    expected_professional_ids = {
+        'builtin:' + role['slug'] for role in builtin_agents.role_catalog()
+    }
+    assert set(by_id) == expected_professional_ids | {'builtin:text-writer'}
     assert {'builtin:creative-lead','builtin:text-writer','builtin:ideation'} <= by_id.keys()
     ideation = by_id['builtin:ideation']
     assert ideation['revision'] == 1
@@ -59,8 +119,41 @@ def test_catalog_and_preview_do_not_initialize_personal_or_project(service, ctx)
         assert entry['configuration']['defaults'] == {}
         assert entry['configuration']['studio_refs'] == []
         assert set(entry['configuration']['capabilities']) <= {c['id'] for c in service.capabilities()['items']}
+        if entry['id'] not in {'builtin:creative-lead'}:
+            assert entry['configuration']['capabilities'] == ['context.read','proposal.create']
+        if entry['id'].startswith('builtin:') and entry['id'] not in {
+            'builtin:creative-lead','builtin:text-writer','builtin:ideation',
+        }:
+            assert any('当前仅提供方案' in note for note in entry['configuration']['skill_notes'])
         assert service.adoption_preview({'id':entry['id'],'revision':entry['revision']}, source='builtin') == entry
     assert not ctx.state_dir.exists() and not service.library.root.exists()
+
+
+def test_legacy_builtin_revision_1_objects_match_full_baseline():
+    resolved = tuple(
+        builtin_agents.resolve({'id':entry['id'],'revision':entry['revision']})
+        for entry in _LEGACY_FIXED_BASELINE
+    )
+    listed = tuple(
+        entry for entry in builtin_agents.catalog()
+        if entry['id'] in {baseline['id'] for baseline in _LEGACY_FIXED_BASELINE}
+    )
+    assert resolved == _LEGACY_FIXED_BASELINE
+    assert listed == _LEGACY_FIXED_BASELINE
+
+
+async def test_professional_adoption_is_frozen(service, monkeypatch):
+    entry = next(x for x in service.builtin_catalog()
+                 if x['id'] == 'builtin:lighting-designer')
+    ref = {'id':entry['id'],'revision':entry['revision']}
+    result = await service.apply(command('adopt', {
+        'source':'builtin','ref':ref,'proof':entry['proof']
+    }, 'adopt-lighting'))
+    snapshot = service.adoption(result['adoption_id'])
+    assert snapshot['effective']['capabilities'] == ['context.read','proposal.create']
+    assert snapshot['effective']['skill_notes'] == entry['configuration']['skill_notes']
+    monkeypatch.setattr(builtin_agents, 'BUILTIN_AGENTS', ())
+    assert service.adoption(result['adoption_id']) == snapshot
 
 
 async def test_explicit_adoption_freezes_builtin_source_without_personal_seed(service, monkeypatch):
@@ -190,7 +283,9 @@ async def test_real_builtin_api_and_agent_token_rejection(ctx, tmp_path, monkeyp
         prefix = '/projects/p/creation/reusable/agent'
         catalog = await client.get(prefix+'/builtins')
         assert catalog.status_code == 200, catalog.text
-        entry = catalog.json()['data'][0]
+        entries = catalog.json()['data']
+        assert len(entries) == 35
+        entry = next(item for item in entries if item['id'] == 'builtin:lighting-designer')
         ref = {'id':entry['id'],'revision':entry['revision']}
         preview = await client.post(prefix+'/adoption-preview', json={'source':'builtin','ref':ref})
         assert preview.json()['data'] == entry

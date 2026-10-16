@@ -1,4 +1,5 @@
 """Creative document endpoints scoped to a project."""
+import asyncio
 from dataclasses import asdict
 import json
 import re
@@ -803,9 +804,18 @@ class HandoffConfirmBody(Strict):
     client_mutation_id: str = Field(min_length=1, max_length=128)
 
 
-async def _handoff_service(project, user, role):
+class HandoffCanvasBody(Strict):
+    """The server accepts only a handoff identity, never caller-supplied script text."""
+    pass
+
+
+async def _handoff_service(project, user, role, *, resolved=None):
     from novelvideo.script_creation.handoff import HandoffService
-    store, resolved = await _store(project, user, role)
+    if resolved is None:
+        store, resolved = await _store(project, user, role)
+    else:
+        store = DocumentStore(Path(resolved.state_dir) / "data.db")
+        await store.initialize()
     if resolved.ctx is None:
         raise HTTPException(409, detail={"code": "project_context_required"})
     sqlite = await make_sqlite_store_for_context(resolved.ctx)
@@ -874,5 +884,81 @@ async def retry_handoff(project: str, handoff_id: str,
         return {"ok": True, "data": await service.retry(handoff_id, resolved.ctx)}
     except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
         raise _error(exc) from exc
+    finally:
+        await sqlite.close()
+
+
+@router.post(PREFIX + "/handoffs/{handoff_id}/canvas")
+async def handoff_to_canvas(project: str, handoff_id: str, body: HandoffCanvasBody | None = None,
+                            user: dict = Depends(require_scope("tasks:submit"))):
+    from novelvideo.creation.operations import OperationError
+    from novelvideo.creation.project_mode import require_canvas_project
+    from novelvideo.creation.projection import ProjectionService
+    from novelvideo.creation.script_handoff import ScriptHandoffCanvas
+    from novelvideo.creation.store import ObjectStore
+    from novelvideo.project_context import require_project_home_node
+    from novelvideo.project_config import load_project_config_file_from_state_dir
+
+    # Check project authorization, home-node ownership, and explicit canvas mode
+    # before initializing either script handoff or creation storage.
+    try:
+        resolved = await resolve_project_scope(project, user, required_role="editor")
+        if resolved.ctx is None:
+            raise HTTPException(409, detail={"code": "project_context_required"})
+        require_project_home_node(resolved.ctx, operation="剧本交接到创作画布")
+        require_canvas_project(
+            resolved.state_dir,
+            resolved.ctx.project_id,
+            config=load_project_config_file_from_state_dir(resolved.state_dir),
+        )
+    except OperationError as exc:
+        status_code = 403 if exc.code == "scope_violation" else 422 if exc.code == "invalid_contract" else 409
+        raise HTTPException(status_code, detail=exc.as_dict()) from exc
+
+    service, resolved, sqlite = await _handoff_service(project, user, "editor", resolved=resolved)
+    objects = None
+    try:
+        async with service.canvas_source_guard(handoff_id) as guarded:
+            # Replay lookup precedes source freshness checks. Once bound, the
+            # immutable handoff always returns its original episode and canvas.
+            mapping = ScriptHandoffCanvas.lookup_existing(resolved.state_dir, handoff_id)
+            if mapping is None:
+                if not guarded["source_is_current"]:
+                    raise OperationError(
+                        "handoff_source_changed",
+                        "已确认的集数来源已变化；请重新检查当前剧本并确认后再创建画布",
+                        handoff_id=handoff_id,
+                        episode_number=guarded["item"].get("episode_number"),
+                    )
+                objects = ObjectStore(resolved.state_dir)
+                mapping = ScriptHandoffCanvas(objects, project_id=resolved.ctx.project_id).create(
+                    guarded["item"], actor=resolved.ctx.requester_user_id,
+                )
+            else:
+                # ObjectStore schema and projection ledger are already present
+                # for a bridge, but initialize through the supported boundary.
+                objects = ObjectStore(resolved.state_dir)
+
+        operation = await asyncio.to_thread(
+            ProjectionService(objects).apply,
+            mapping["operation_id"],
+        )
+        if operation.status == "conflict":
+            raise OperationError(
+                "canvas_projection_conflict",
+                "剧集身份已保存，但画布投影遇到冲突；原交接不会覆盖现有画布",
+                episode_id=mapping["episode_id"],
+                canvas_id=mapping["canvas_id"],
+                operation_id=mapping["operation_id"],
+            )
+        return {
+            "ok": True,
+            "data": ScriptHandoffCanvas.response(mapping, operation),
+        }
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+    except OperationError as exc:
+        status_code = 403 if exc.code == "scope_violation" else 422 if exc.code == "invalid_contract" else 409
+        raise HTTPException(status_code, detail=exc.as_dict()) from exc
     finally:
         await sqlite.close()

@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
-from typing import Any
 
 from novelvideo.episode_sources import EpisodeCandidate, content_sha256
 from novelvideo.episode_source_store import EpisodeSourceRevisionConflict
@@ -83,6 +83,36 @@ class HandoffService:
     async def get(self, handoff_id):
         async with self.documents._db() as db:
             return self._decode(await self._row(db, handoff_id))
+
+    @asynccontextmanager
+    async def canvas_source_guard(self, handoff_id):
+        """Hold the project source DB's writer lock while a first canvas bridge commits.
+
+        Handoff confirmation and episode source writes use this same SQLite
+        database. BEGIN IMMEDIATE therefore closes the gap between checking the
+        confirmed source revision and committing its mapping in creation DB.
+        Existing bridge replay is intentionally allowed to skip the current
+        source check while still requiring a real confirmation marker.
+        """
+        async with self.documents._db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                row = await self._row(db, handoff_id)
+                if not row["confirm_mutation_id"]:
+                    raise DocumentConflict("请先确认此剧本交接")
+                item = self._decode(row)
+                source = await self._source(db, item["episode_number"])
+                source_is_current = bool(
+                    source
+                    and source["source_revision"] == item.get("source_revision")
+                    and source["content_hash"] == item.get("source_hash")
+                    and item.get("source_hash") == item.get("snapshot", {}).get("content_hash")
+                )
+                yield {"item": item, "source_is_current": source_is_current}
+            finally:
+                # This operation only reads the source database. Roll back to
+                # release the writer lock without adding a spurious commit.
+                await db.rollback()
 
     async def list(self, episode_number=None):
         async with self.documents._db() as db:

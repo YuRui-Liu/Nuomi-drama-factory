@@ -195,6 +195,12 @@ export interface HandoffDiff {
 export interface ScriptHandoff {
   id: string; status: HandoffStatus; episode_number: number; document_id: string; revision_id: string;
   snapshot: HandoffSnapshot; diff: HandoffDiff; expected_source_project_revision: number;
-  source_revision: string | null; source_hash: string | null; task_id: string | null;
+  source_revision: number | string | null; source_hash: string | null; task_id: string | null;
   task_result: Record<string, unknown> | null; error: string | null; created_at: string; updated_at: string;
+}
+export interface HandoffCanvasResult {
+  episode_id: string;
+  canvas_id: string;
+  status: string;
+  operation_id: string;
 }

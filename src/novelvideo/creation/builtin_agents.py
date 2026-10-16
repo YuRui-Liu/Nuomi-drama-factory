@@ -3,6 +3,7 @@ from copy import deepcopy
 
 from .library_references import digest
 from .ontology import exact, integer, require, text
+from .professional_roles import role_catalog, role_configuration
 
 
 BUILTIN_AGENTS=(
@@ -23,6 +24,14 @@ BUILTIN_AGENTS=(
         'references':[],'skill_notes':['proposal.create 的 text 必须严格遵循 methods 中的 JSON 契约。立意候选只供比较与用户确认，不自动采纳或执行媒体制作。'],
         'capabilities':['context.read','proposal.create'],'defaults':{},'studio_refs':[]}},
 )
+
+
+BUILTIN_AGENTS = (*BUILTIN_AGENTS, *(
+    {'id':'builtin:' + role['slug'], 'revision':1,
+     'configuration':role_configuration(role['slug'])}
+    for role in role_catalog()
+    if role['slug'] not in {'creative-lead','ideation'}
+))
 
 
 def _fixed(entry):

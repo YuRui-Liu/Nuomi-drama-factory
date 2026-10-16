@@ -1,6 +1,6 @@
 import { apiCall } from "@/api/client";
 import type { PropExtractionRun, AssetExtractionRun, CraftReport, CraftMemoryEntry } from "./types";
-import type { NarrativeEntity, NarrativeAsset, NarrativeAssetType, EntityInput, ScriptDocument, ScriptDocumentKind, ScriptRevision, GenerationRun, GenerationQueued, GenerationCandidate, ScriptProposal, RewriteJob, ConsistencyRun, ConsistencyIssue, HandoffPrepareRequest, ScriptHandoff } from "./types";
+import type { NarrativeEntity, NarrativeAsset, NarrativeAssetType, EntityInput, ScriptDocument, ScriptDocumentKind, ScriptRevision, GenerationRun, GenerationQueued, GenerationCandidate, ScriptProposal, RewriteJob, ConsistencyRun, ConsistencyIssue, HandoffPrepareRequest, HandoffCanvasResult, ScriptHandoff } from "./types";
 
 const root = (project: string) => `projects/${encodeURIComponent(project)}/script-creation`;
 const docPath = (project: string, id: string) => `${root(project)}/documents/${encodeURIComponent(id)}`;
@@ -101,6 +101,9 @@ export const scriptCreationApi = {
       { method: "post", retry: { limit: 0 }, json: body }),
   retryHandoff: (project: string, handoffId: string) =>
     apiCall<ScriptHandoff>(`${root(project)}/handoffs/${encodeURIComponent(handoffId)}/retry`,
+      { method: "post", retry: { limit: 0 } }),
+  openHandoffCanvas: (project: string, handoffId: string) =>
+    apiCall<HandoffCanvasResult>(`${root(project)}/handoffs/${encodeURIComponent(handoffId)}/canvas`,
       { method: "post", retry: { limit: 0 } }),
   importEpisode: (project: string, episode_number: number) =>
     apiCall<ScriptDocument>(`${root(project)}/imports`, { method: "post", json: { episode_number } }),

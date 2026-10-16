@@ -44,6 +44,15 @@ _SCHEMA = (
     '''CREATE TABLE IF NOT EXISTS projection_outbox (
         operation_id TEXT PRIMARY KEY REFERENCES operations(id), canvas_id TEXT NOT NULL,
         patch TEXT NOT NULL, applied_revision INTEGER)''',
+    '''CREATE TABLE IF NOT EXISTS script_handoff_bridges (
+        handoff_id TEXT PRIMARY KEY, episode_number INTEGER NOT NULL UNIQUE,
+        document_id TEXT NOT NULL, revision_id TEXT NOT NULL,
+        source_revision INTEGER NOT NULL, source_hash TEXT NOT NULL,
+        snapshot_hash TEXT NOT NULL, title TEXT NOT NULL,
+        episode_id TEXT NOT NULL UNIQUE REFERENCES objects(id),
+        canvas_id TEXT NOT NULL UNIQUE, story_fragment_id TEXT NOT NULL UNIQUE REFERENCES objects(id),
+        node_id TEXT NOT NULL, operation_id TEXT NOT NULL UNIQUE REFERENCES operations(id),
+        created_at TEXT NOT NULL)''',
     '''CREATE TABLE IF NOT EXISTS proposals (
         id TEXT PRIMARY KEY, scope TEXT NOT NULL, input_hash TEXT NOT NULL,
         authorized_operations TEXT NOT NULL, decision TEXT, actor_id TEXT)''',
