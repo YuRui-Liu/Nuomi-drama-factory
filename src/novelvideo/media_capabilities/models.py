@@ -50,6 +50,8 @@ GRSAI_IMAGE_MODELS = frozenset(
 
 
 class MediaCapability(StrEnum):
+    WORKFLOW_EXECUTE = "workflow.execute"
+    MUSIC_GENERATE = "music.generate"
     IMAGE_STORYBOARD_GRID = "image.storyboard_grid"
     IMAGE_SINGLE = "image.single"
     IMAGE_GRID_UPSCALE_SPLIT = "image.grid_upscale_split"
@@ -282,6 +284,8 @@ class CapabilityProfile(_ExternalModel):
 
 
 class WorkflowProfile(_ExternalModel):
+    manifest: dict[str, JsonValue] | None = None
+    source_graph: dict[str, JsonValue] | None = None
     id: str
     version: int = Field(ge=1)
     provider: str = ""

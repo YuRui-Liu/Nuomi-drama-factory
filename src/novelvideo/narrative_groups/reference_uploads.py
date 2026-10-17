@@ -97,11 +97,17 @@ def _reject_symlinks(root: Path, path: Path) -> None:
             continue
 
 
-_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+_DIRECTORY_FLAGS = (
+    os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    if hasattr(os, "O_DIRECTORY")
+    else None
+)
 
 
 def _open_dir_chain(anchor: Path, parts: Sequence[str], *, create: bool) -> int:
     """Open every directory relative to the previous fd without following symlinks."""
+    if _DIRECTORY_FLAGS is None:
+        raise InvalidReferenceUpload("secure reference uploads are unsupported on this platform")
     try:
         current_fd = os.open(anchor, _DIRECTORY_FLAGS)
     except OSError:

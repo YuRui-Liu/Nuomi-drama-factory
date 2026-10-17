@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
+import portalocker
 import hashlib
 import json
 import os
@@ -279,11 +279,11 @@ class DirectorService:
         self.get(attempt_id)
         lock_path = self.store.root / f"{attempt_id}.lock"
         with lock_path.open("a+b") as lock:
-            await asyncio.to_thread(fcntl.flock, lock.fileno(), fcntl.LOCK_EX)
+            await asyncio.to_thread(portalocker.lock, lock, portalocker.LOCK_EX)
             try:
                 return await self._resume_locked(attempt_id)
             finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                portalocker.unlock(lock)
 
     async def _resume_locked(self, attempt_id: str):
         item = self.get(attempt_id)
