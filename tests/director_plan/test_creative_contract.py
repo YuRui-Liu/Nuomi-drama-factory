@@ -58,6 +58,20 @@ def test_handoff_to_wrong_next_shot_blocks_validation():
     assert "creative_handoff_mismatch" in {issue.code for issue in validate_director_plan(revision, ()).issues}
 
 
+def test_source_mismatch_identifies_decision_and_missing_reference_for_model_repair():
+    payload = creative_shot().model_dump(mode="json")
+    payload["creative"]["framing"]["source"] = {
+        "kind": "script_fact", "reference_ids": ["unrelated-line"]}
+    with pytest.raises(ValidationError, match=r"creative_source_mismatch.*framing.*unrelated-line"):
+        ShotPlan.model_validate(payload)
+
+
+def test_output_schema_explains_end_snapshot_dependency():
+    from novelvideo.director_plan.creative_contract import ShotCreativeDecisions
+    fields = ShotCreativeDecisions.model_json_schema()["properties"]
+    assert "required when keyframe_anchor=end" in fields["end_cinematography"]["description"]
+
+
 @pytest.mark.parametrize("duration", [float("inf"), float("nan"), 0])
 def test_new_contract_still_requires_positive_finite_duration(duration):
     with pytest.raises(ValidationError):

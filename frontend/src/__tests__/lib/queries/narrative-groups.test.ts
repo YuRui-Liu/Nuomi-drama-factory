@@ -78,6 +78,11 @@ describe("narrative group query contract", () => {
       .toEqual({ revision: 3 });
   });
 
+  it("pins a director revision on narrative-group render requests", () => {
+    expect(narrativeGroupActionPayload({ revision: 4, directorRevisionId: "director-r7" }))
+      .toEqual({ revision: 4, director_revision_id: "director-r7" });
+  });
+
   it("builds one director-video request with configurable aspect and resolution", () => {
     expect(narrativeGroupVideoPath("demo project", 2, "ng-01"))
       .toBe("api/v1/projects/demo%20project/episodes/2/narrative-groups/ng-01/video/generate");
@@ -503,8 +508,10 @@ describe("narrative group reference hooks", () => {
     server.use(http.post(
       "http://localhost:3000/api/v1/projects/demo/episodes/2/narrative-groups/ng-1/render/references/upload",
       async ({ request }) => {
-        const form = await request.formData();
-        fields.push(...form.keys());
+        // Inspect the multipart wire format without mixing jsdom File with
+        // Node's undici File brand checks.
+        const body = await request.text();
+        fields.push(...Array.from(body.matchAll(/Content-Disposition: form-data; name="([^"]+)"/gi), match => match[1]));
         return HttpResponse.json({ ok: true, data: { upload_id: "upload-1", temporary: true, persisted: false, url: "/upload-1" } });
       },
     ));

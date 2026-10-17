@@ -96,7 +96,7 @@ class RunningHubRuntimeConfiguration:
             self.api_key,
             account_id=self.account.id,
             workflow_media={
-                value: ('image' if key == 'image_upscale' else 'audio' if key.startswith('tts_') else 'video')
+                value: ('image' if key == 'image_upscale' else 'audio' if key.startswith(('tts_', 'music_')) else 'video')
                 for key, value in self.workflows.model_dump().items()
                 if isinstance(value, str) and value
             },

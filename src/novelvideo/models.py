@@ -982,6 +982,10 @@ class CharacterIdentity(BaseModel):
         default="",
         description="身份级参考音频内容 SHA256，用于 IndexTTS2 voice provenance 校验",
     )
+    voice_samples_by_age_group_json: str = Field(
+        default="{}",
+        description="身份按年龄槽保存的参考音频元数据 JSON",
+    )
 
     # 身份级 portrait（用户上传或 AI 生成）
     portrait_image: str = Field(
@@ -1022,6 +1026,22 @@ class CharacterIdentity(BaseModel):
             value = ""
         super().__setattr__(name, value)
 
+    @property
+    def voice_samples_by_age_group(self) -> dict[str, dict]:
+        import json
+
+        try:
+            value = json.loads(self.voice_samples_by_age_group_json or "{}")
+            return value if isinstance(value, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    @voice_samples_by_age_group.setter
+    def voice_samples_by_age_group(self, value: dict[str, dict]) -> None:
+        import json
+
+        self.voice_samples_by_age_group_json = json.dumps(value or {}, ensure_ascii=False)
+
 
 class NovelCharacter(BaseModel):
     """小说角色实体。
@@ -1045,6 +1065,7 @@ class NovelCharacter(BaseModel):
     """
 
     name: str = Field(..., description="角色全名")
+    character_id: str = Field(default="", description="角色的稳定 UUID，角色重命名时保持不变")
     aliases: List[str] = Field(default_factory=list, description="别名列表")
     role: str = Field(default="", description="角色定位（主角/配角/反派）")
     is_main: bool = Field(default=False, description="是否为主角/核心角色")

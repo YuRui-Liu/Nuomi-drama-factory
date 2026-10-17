@@ -1648,6 +1648,57 @@ async def design_character_voice_sample(
     }
 
 
+@router.post("/projects/{project}/characters/{name}/voice-samples/{slot}/prepare")
+async def prepare_character_voice_sample(
+    project: str,
+    name: str,
+    slot: str,
+    body: CharacterVoiceDesignRequest,
+    user: dict = Depends(get_api_user),
+):
+    """Compile an accepted structured voice design without enqueuing generation."""
+    if slot not in VOICE_SAMPLE_SLOTS:
+        return JSONResponse(
+            status_code=422,
+            content={"ok": False, "error": f"不支持的声线槽位: {slot}"},
+        )
+    ctx, _username, _project_name, _project_dir, _output_dir, store = (
+        await _resolve_character_project(project, user)
+    )
+    if ctx is None:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "项目不存在"})
+    character = store.get_character(name)
+    if character is None:
+        return JSONResponse(status_code=404, content={"ok": False, "error": f"角色不存在: {name}"})
+
+    from novelvideo.media_capabilities.tts.character_voice import prepare_character_voice_request
+
+    try:
+        payload = prepare_character_voice_request(
+            character,
+            slot=slot,
+            voice_description=body.voice_description,
+            audition_text=body.audition_text,
+            language=body.language,
+            voice_spec=body.voice_spec,
+            db_path=getattr(store, "db_path", None),
+            design=body.design,
+            perceived_age=body.perceived_age,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"ok": False, "error": str(exc)})
+    return {
+        "ok": True,
+        "data": {
+            "design": payload.get("design"),
+            "voice_description": payload["voice_description"],
+            "audition_text": payload["audition_text"],
+            "voice_spec": payload["voice_spec"],
+            "compiler_version": payload["compiler_version"],
+        },
+    }
+
+
 @router.post("/projects/{project}/characters/{name}/voice-samples/{slot}/trim")
 async def trim_character_voice_sample(
     project: str,

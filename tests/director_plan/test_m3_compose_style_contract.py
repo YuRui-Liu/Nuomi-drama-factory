@@ -105,6 +105,78 @@ async def test_director_input_uses_redirect_style_payload(monkeypatch) -> None:
     assert value.style_director["projection"] == "selected-director"
 
 
+@pytest.mark.asyncio
+async def test_queued_director_plan_rejects_semantic_revision_switch(monkeypatch, tmp_path):
+    from novelvideo.task_backend.runners import director_plan
+    from novelvideo.screenplay_semantics import parse_screenplay_document
+
+    parsed = parse_screenplay_document("1-1 房间 日 内\n△Hero leaves.")
+    candidate_a = SimpleNamespace(
+        revision_id="semantic-a", source_revision=7, source_hash="source",
+        scenes=parsed.scenes, beats=(),
+    )
+    active_b = SimpleNamespace(
+        revision_id="semantic-b", source_revision=7, source_hash="source",
+        scenes=parsed.scenes, beats=(),
+    )
+    source = SimpleNamespace(
+        episode_number=1, source_revision=7, content_hash="source",
+        content="1-1 房间 日 内\n△Hero leaves.",
+    )
+
+    class Repository:
+        async def list_sources(self):
+            return [source]
+
+    class SemanticStore:
+        def __init__(self, _root):
+            pass
+
+        def load(self, _episode, revision_id):
+            assert revision_id == "semantic-a"
+            return candidate_a
+
+        def load_active(self, _episode):
+            return active_b
+
+    async def build_source_store(_ctx):
+        return Repository()
+
+    monkeypatch.setattr(director_plan, "ScreenplaySemanticStore", SemanticStore)
+    monkeypatch.setattr(director_plan, "_build_episode_source_store", build_source_store)
+    selected = StyleSnapshot(
+        snapshot_id="selected-snapshot", style_id="selected-style", style_version="2",
+        catalog_hash="catalog", style_hash="selected-hash",
+        projections=StyleProjections(
+            director="selected-director", image="image", video="video", panel_tag="tag"
+        ),
+    )
+    monkeypatch.setattr(
+        "novelvideo.project_config.load_project_config_file_from_state_dir",
+        lambda _state_dir: {"visual_style": "project-default"},
+    )
+    monkeypatch.setattr(
+        "novelvideo.services.style_service.StyleService.resolve_style_snapshot",
+        lambda *_args, **_kwargs: selected,
+    )
+
+    with pytest.raises(director_plan.DirectorPlanTaskError) as error:
+        await director_plan._build_director_plan_input(
+            {
+                "project_id": "project-1",
+                "episode": 1,
+                "source_revision": 7,
+                "semantic_revision_id": "semantic-a",
+            },
+            SimpleNamespace(
+                project_id="project-1", state_dir=tmp_path, output_dir=tmp_path,
+                owner_username="owner", project_name="project",
+            ),
+        )
+
+    assert error.value.error_code == "SCREENPLAY_SEMANTICS_REVISION_STALE"
+
+
 def _active_plan(project_dir) -> None:
     snapshot = StyleSnapshot(
         snapshot_id="old-snapshot", style_id="anime", style_version="1",

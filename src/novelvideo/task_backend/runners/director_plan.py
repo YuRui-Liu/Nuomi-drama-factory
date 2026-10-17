@@ -120,11 +120,21 @@ async def _build_director_plan_input(
         raise DirectorPlanTaskError("EPISODE_SOURCE_NOT_FOUND")
     if int(source.source_revision) != source_revision:
         raise DirectorPlanTaskError("SOURCE_REVISION_CONFLICT")
-    semantic = _load_active_semantic_revision(ctx, episode)
+    pinned_semantic_revision_id = str(payload.get("semantic_revision_id") or "").strip()
+    semantic = (
+        _load_pinned_semantic_revision(ctx, episode, pinned_semantic_revision_id)
+        if pinned_semantic_revision_id
+        else _load_active_semantic_revision(ctx, episode)
+    )
     if semantic is None:
         raise DirectorPlanTaskError("SCREENPLAY_SEMANTICS_REQUIRED")
     if semantic.source_revision != source_revision:
         raise DirectorPlanTaskError("SCREENPLAY_SEMANTICS_SOURCE_CONFLICT")
+    if pinned_semantic_revision_id:
+        if semantic.source_hash != source.content_hash:
+            raise DirectorPlanTaskError("SCREENPLAY_SEMANTICS_SOURCE_CONFLICT")
+        if not semantic.validation_report.passed or not semantic.scenes or not semantic.beats:
+            raise DirectorPlanTaskError("SCREENPLAY_SEMANTICS_NOT_VALIDATED")
     from novelvideo.project_config import load_project_config_file_from_state_dir
     from novelvideo.services.style_service import StyleService
 
@@ -173,6 +183,19 @@ async def _build_director_plan_input(
 
 def _load_active_semantic_revision(ctx: ProjectContext, episode: int):
     return ScreenplaySemanticStore(ctx.output_dir).load_active(episode)
+
+
+def _load_pinned_semantic_revision(
+    ctx: ProjectContext, episode: int, revision_id: str
+):
+    store = ScreenplaySemanticStore(ctx.output_dir)
+    revision = store.load(episode, revision_id)
+    if revision is None:
+        raise DirectorPlanTaskError("SCREENPLAY_SEMANTICS_REVISION_NOT_FOUND")
+    active = store.load_active(episode)
+    if active is None or active.revision_id != revision_id:
+        raise DirectorPlanTaskError("SCREENPLAY_SEMANTICS_REVISION_STALE")
+    return revision
 
 
 def _semantic_source_spans(semantic) -> tuple[SourceSpan, ...]:

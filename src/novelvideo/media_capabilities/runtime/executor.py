@@ -79,7 +79,14 @@ class RunningHubExecutor:
         if task is None or not attempts:
             raise TaskNotFoundError(f'task {task_id} has no attempt')
         kind = task.capability.value.split('.')[0]
-        media = 'audio' if kind == 'tts' else kind
+        media = 'audio' if kind in {'tts', 'music'} else kind
+        if profile.manifest:
+            from novelvideo.media_capabilities.workflows.models import WorkflowManifest
+            definition = WorkflowManifest.model_validate(profile.manifest)
+            kinds = {o.kind for o in definition.outputs.values()}
+            media = definition.media_type or (next(iter(kinds)) if len(kinds) == 1 else 'text')
+            if media not in {'image', 'video', 'audio', 'text'}:
+                media = 'text'
         with requested_cost_context(media, attempt_id=attempts[-1].id):
             return await self._step(task_id, profile=profile, semantic_values=semantic_values,
                                     on_provider_submitted=on_provider_submitted)
@@ -177,6 +184,18 @@ class RunningHubExecutor:
                     self._store.record_provider_status(attempt.id, snapshot.status)
                     return self._current_task(task_id)
 
+                if profile.manifest:
+                    from novelvideo.media_capabilities.runtime.output_collection import collect_outputs
+                    from novelvideo.media_capabilities.workflows.models import WorkflowManifest, WorkflowError
+                    phase = "download"
+                    try:
+                        await collect_outputs(self._store, attempt, self._client, self._artifacts,
+                                              WorkflowManifest.model_validate(profile.manifest), snapshot.results)
+                    except WorkflowError as exc:
+                        self._store.fail_attempt(attempt.id, error_code=MediaErrorCode.OUTPUT_MISSING,
+                                                 error_message=str(exc))
+                    return self._current_task(task_id)
+
                 if not snapshot.results:
                     self._store.fail_attempt(
                         attempt.id,
@@ -226,6 +245,10 @@ class RunningHubExecutor:
                 )
                 return self._current_task(task_id)
         except RunningHubError as exc:
+            if profile.manifest and phase in {"query", "download"} and exc.retriable:
+                # Keep the remote task and completed downloads; resume never generates again.
+                self._store.save_checkpoint(attempt.id, {"last_error": {"phase": phase, "code": "PROVIDER_TRANSIENT"}})
+                return self._current_task(task_id)
             if (
                 phase == "submit"
                 and (exc.retriable or exc.code in {"INVALID_JSON", "INVALID_RESPONSE"})

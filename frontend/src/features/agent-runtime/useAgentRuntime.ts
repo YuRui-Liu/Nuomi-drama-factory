@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { SetStateAction } from 'react';
 import { useRouter, useRouterState } from '@tanstack/react-router';
 import * as api from '@/api/agentRuns';
 import {
@@ -10,27 +11,68 @@ import {
 import { useAuthStore } from '@/stores/auth-store';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { captureFreezoneCanvasRuntime } from '@/features/freezone/canvasSyncRuntime';
+import { getFreezoneCanvas, type FreezoneCanvasPayload } from '@/api/canvas';
+import { refreshAgentCanvasChanges } from '@/features/canvas/infrastructure/orchestrationGateway';
 import {
   createRunOperation,
+  readDelegationCanvasBaseline,
   readRunIntent,
   runOwnerKey,
+  writeDelegationCanvasBaseline,
   type RunIntent,
 } from './runOperation';
+import {
+  consumePendingAgentSelection,
+  missingSelection,
+  readSelectionDelegationDraft,
+  selectionChanged,
+  writeSelectionDelegationDraft,
+  type AgentSelectionIntent,
+  type SelectionDelegationNode,
+} from './selectionDelegation';
 
-export interface RuntimeNode {
-  id: string;
-  title: string;
+export type RuntimeNode = SelectionDelegationNode;
+const parentDelegationId = (delegation: api.Delegation) =>
+  delegation.parent_id ?? delegation.contract.parent_id ?? null;
+const ACTIVE_RUN_STATES = ['queued', 'model_inflight', 'applying'];
+export function canStopAgentRun(run: api.AgentRun): boolean {
+  if (ACTIVE_RUN_STATES.includes(run.state)) return true;
+  const lastRound = run.rounds[run.rounds.length - 1];
+  return run.state === 'blocked' &&
+    (!!run.error?.node_run_id || lastRound?.phase === 'decision_saved');
 }
+const isCanvasOperationOutput = (output: api.AgentRun['outputs'][number]) =>
+  output.operation === 'node.patch'
+    ? typeof output.node_id === 'string' && Array.isArray(output.changes)
+    : output.operation === 'node.run' && output.status === 'succeeded' &&
+      output.projection?.status === 'verified_projected' &&
+      typeof output.projection.node_id === 'string';
 const selectedNodes = (): RuntimeNode[] =>
   useCanvasStore
     .getState()
     .nodes.filter((n) => n.selected)
     .map((n) => ({
       id: n.id,
+      nodeType: n.type,
       title: String(
         n.data.displayName || n.data.title || n.data.label || '画布节点',
       ),
     }));
+const nodesForIds = (ids: readonly string[]): RuntimeNode[] => {
+  const byId = new Map(useCanvasStore.getState().nodes.map((node) => [node.id, node]));
+  return [...new Set(ids)].map((id) => {
+    const node = byId.get(id);
+    return node
+      ? {
+          id,
+          nodeType: node.type,
+          title: String(
+            node.data.displayName || node.data.title || node.data.label || '画布节点',
+          ),
+        }
+      : { id, title: '节点已删除或无法访问' };
+  });
+};
 
 const transientFields = new Set([
   'isSizeManuallyAdjusted',
@@ -57,13 +99,12 @@ function ordered(value: unknown): unknown {
 }
 // Keep actual input/output fields and membership, not layout or transient job UI.
 // This is a local comparison fence, never a substitute for the server proof.
-function inputEvidence(ids: string[], entireCanvas: boolean): string {
+function inputEvidence(ids: string[]): string {
   const all = useCanvasStore.getState().nodes;
   const byId = new Map(all.map((node) => [node.id, node]));
-  const selected = entireCanvas ? all.map((node) => node.id) : ids;
   return JSON.stringify(
     ordered(
-      [...selected].sort().map((id) => {
+      [...ids].sort().map((id) => {
         const node = byId.get(id);
         if (!node) return { id, missing: true };
         const ancestry = [];
@@ -103,6 +144,14 @@ export function useAgentRuntime(
   const router = useRouter();
   const location = useRouterState({ select: (s) => s.location });
   const identity = runOwnerKey(owner);
+  const selectedNodeIdsKey = useCanvasStore((state) =>
+    JSON.stringify(state.nodes.filter((node) => node.selected).map((node) => node.id).sort()),
+  );
+  const availableNodeIdsKey = useCanvasStore((state) =>
+    JSON.stringify(state.nodes.map((node) => node.id).sort()),
+  );
+  const selectedNodeIds = useMemo(() => JSON.parse(selectedNodeIdsKey) as string[], [selectedNodeIdsKey]);
+  const availableNodeIds = useMemo(() => JSON.parse(availableNodeIdsKey) as string[], [availableNodeIdsKey]);
   const latest = useRef({ identity, active });
   latest.current = { identity, active };
   const instance = useMemo(
@@ -130,47 +179,219 @@ export function useAgentRuntime(
     router.state.location === instance.location &&
     useAuthStore.getState().username === owner.user;
   const [error, setError] = useState('');
+  const [directoryNotice, setDirectoryNotice] = useState('');
+  const [canvasSyncNotice, setCanvasSyncNotice] = useState('');
   const [working, setWorking] = useState(false);
   const [main, setMain] = useState<api.MainAgent | null>(null);
   const [runtime, setRuntime] = useState<api.RuntimeStatus | null>(null);
   const [adoptions, setAdoptions] = useState<AgentAdoption[]>([]);
   const [personal, setPersonal] = useState<PersonalAgent[]>([]);
   const [builtins, setBuiltins] = useState<api.BuiltinAgent[]>([]);
-  const [nodes, setNodes] = useState<RuntimeNode[]>(selectedNodes);
-  const [canvasScope, setCanvasScope] = useState(false);
-  const [limit, setLimit] = useState(1);
+  const [delegateAgentId, setDelegateAgentId] = useState('main');
+  const [nodeCapabilities, setNodeCapabilities] = useState<api.NodeCapability[]>([]);
+  const [nodeOperationGrants, setNodeOperationGrants] = useState<Record<string, string[]>>({});
+  const [maxNodeRuns, setMaxNodeRuns] = useState(1);
+  const [selectionDraft, setSelectionDraft] = useState(() => ({
+    identity,
+    nodes: readSelectionDelegationDraft(owner)?.nodes ?? selectedNodes(),
+  }));
+  const [acceptedSelectionState, setAcceptedSelectionState] = useState<{
+    identity: string;
+    value: { requestId: string; nodeIds: string[] } | null;
+  }>(() => ({ identity, value: null }));
+  const acceptedSelectionIds = useRef(new Set<string>());
+  const nodes = selectionDraft.identity === identity
+    ? selectionDraft.nodes
+    : readSelectionDelegationDraft(owner)?.nodes ?? selectedNodes();
+  const setNodes = (next: SetStateAction<RuntimeNode[]>) => {
+    setSelectionDraft((previous) => {
+      const currentNodes = previous.identity === identity
+        ? previous.nodes
+        : readSelectionDelegationDraft(owner)?.nodes ?? selectedNodes();
+      return {
+        identity,
+        nodes: typeof next === 'function' ? next(currentNodes) : next,
+      };
+    });
+  };
+  useEffect(() => {
+    if (selectionDraft.identity === identity) {
+      writeSelectionDelegationDraft(owner, { nodes: selectionDraft.nodes });
+    }
+  }, [identity, owner.canvas, owner.conversation, owner.project, owner.user, selectionDraft]);
+  const selectionChangedFromCanvas = selectionChanged(
+    nodes.map((node) => node.id),
+    selectedNodeIds,
+  );
+  const missingNodes = missingSelection(
+    nodes.map((node) => node.id),
+    availableNodeIds,
+  );
+  const [limit, setLimit] = useState(8);
+  const limitInitialized = useRef(false);
   const [specialists, setSpecialists] = useState<string[]>([]);
   const [intent, setIntent] = useState<RunIntent | null>(null);
   const [history, setHistory] = useState<
     { delegation: api.Delegation; runs: api.AgentRun[] }[]
   >([]);
+  const historyRef = useRef(history);
+  historyRef.current = history;
   const sequence = useRef(0);
+  const nodeOperationBaselines = useRef(new Map<string, FreezoneCanvasPayload>());
+  const refreshedNodeOperations = useRef(new Set<string>());
+  const refreshingNodeOperations = useRef(new Set<string>());
+  const acceptSelectionIntent = (selection: Pick<AgentSelectionIntent, 'requestId' | 'nodeIds'>) => {
+    if (!current() || acceptedSelectionIds.current.has(selection.requestId)) return;
+    acceptedSelectionIds.current.add(selection.requestId);
+    setNodes(nodesForIds(selection.nodeIds));
+    setNodeOperationGrants({});
+    setAcceptedSelectionState({
+      identity,
+      value: { requestId: selection.requestId, nodeIds: [...selection.nodeIds] },
+    });
+  };
   async function refresh() {
     if (!current()) return;
     const ticket = ++sequence.current;
     try {
-      const [m, r, a, p, b, delegations] = await Promise.all([
+      const results = await Promise.allSettled([
         api.getMainAgent(owner.project),
         api.getRuntime(owner.project),
         listAgentAdoptions(owner.project),
         listPersonalAgents(owner.project),
         api.listBuiltinAgents(owner.project),
         api.listDelegations(owner),
+        api.getNodeCapabilities(owner.project),
       ]);
-      const items = await Promise.all(
-        delegations.map(async (d) => ({
-          delegation: d,
-          runs: await api.listRuns(owner, d.id || d.delegation_id!),
-        })),
+      const [m, r, a, p, b, delegations, capabilities] = results;
+      const failedSources = results.flatMap((result, index) =>
+        result.status === 'rejected'
+          ? [['项目主创', '运行配置', '项目成员', '个人 Agent', '内置岗位', '任务记录', '节点操作目录'][index]]
+          : [],
       );
+      const values = <T,>(result: PromiseSettledResult<T>, fallback: T): T =>
+        result.status === 'fulfilled' ? result.value : fallback;
+      const mainAgent = values(m, null as unknown as api.MainAgent);
+      const runtimeStatus = values(r, null as unknown as api.RuntimeStatus);
+      const adopted = values(a, [] as AgentAdoption[]);
+      const personalAgents = values(p, [] as PersonalAgent[]);
+      const builtinAgents = values(b, [] as api.BuiltinAgent[]);
+      const projectDelegations = values(delegations, [] as api.Delegation[]);
+      const nodeCatalog = values(capabilities, null as unknown as api.OrchestrationCapabilities | null);
+      const runResults = await Promise.all(projectDelegations.map(async (d) => {
+        try {
+          return {
+            status: 'fulfilled' as const,
+            item: {
+              delegation: d,
+              runs: await api.listRuns(owner, d.id || d.delegation_id!),
+            },
+          };
+        } catch {
+          return { status: 'rejected' as const, delegation: d };
+        }
+      }));
+      if (runResults.some((result) => result.status === 'rejected')) failedSources.push('运行记录');
+      const previous = new Map(historyRef.current.map((item) => [
+        item.delegation.id ?? item.delegation.delegation_id ?? '', item,
+      ]));
+      const items = runResults.map((result) => {
+        if (result.status === 'fulfilled') return result.item;
+        const delegation = result.delegation;
+        return previous.get(delegation.id ?? delegation.delegation_id ?? '') ?? {
+          delegation, runs: [],
+        };
+      });
       if (!current() || ticket !== sequence.current) return;
-      setMain(m);
-      setRuntime(r);
-      setAdoptions(a);
-      setPersonal(p);
-      setBuiltins(b);
-      setHistory(items);
+      const byId = new Map(items.map((item) => [
+        item.delegation.id ?? item.delegation.delegation_id ?? '', item.delegation,
+      ]));
+      const rootOf = (delegation: api.Delegation) => {
+        let root = delegation;
+        const visited = new Set<string>();
+        while (parentDelegationId(root)) {
+          const id = parentDelegationId(root)!;
+          if (visited.has(id)) break;
+          visited.add(id);
+          const parent = byId.get(id);
+          if (!parent) break;
+          root = parent;
+        }
+        return root.id ?? root.delegation_id ?? '';
+      };
+      for (const { delegation, runs } of items) {
+        const rootId = rootOf(delegation);
+        for (const run of runs) {
+          for (const [index, output] of run.outputs.entries()) {
+            if (!isCanvasOperationOutput(output)) continue;
+            const operationKey = `${run.id}:${index}:${JSON.stringify(output.changes ?? output.after ?? output.artifacts ?? {})}`;
+            if (refreshedNodeOperations.current.has(operationKey) ||
+                refreshingNodeOperations.current.has(operationKey)) continue;
+            if (!current() || ticket !== sequence.current) return;
+            const baseline = nodeOperationBaselines.current.get(rootId) ??
+              readDelegationCanvasBaseline(owner, rootId);
+            if (!baseline) {
+              if (current()) setCanvasSyncNotice(
+                '找不到这次 Agent 操作开始前保存的画布基线；已保留本地内容，未自动同步。',
+              );
+              continue;
+            }
+            nodeOperationBaselines.current.set(rootId, baseline);
+            refreshingNodeOperations.current.add(operationKey);
+            try {
+              const refreshResult = await refreshAgentCanvasChanges(
+                owner.project,
+                owner.canvas,
+                baseline,
+                current,
+                output.after_revision ?? output.revision,
+              );
+              if (refreshResult.status === 'applied') {
+                nodeOperationBaselines.current.set(rootId, refreshResult.baseline);
+                refreshedNodeOperations.current.add(operationKey);
+                if (current()) setCanvasSyncNotice(
+                  writeDelegationCanvasBaseline(owner, rootId, refreshResult.baseline)
+                    ? ''
+                    : '画布已同步，但无法持久保存后续操作基线；请保留当前会话继续处理。',
+                );
+              } else if (refreshResult.status === 'conflict') {
+                refreshedNodeOperations.current.add(operationKey);
+                if (current()) setCanvasSyncNotice(
+                  `Agent 已更新画布节点，但与本地并发修改冲突；本地编辑已保留，未同步冲突字段：${refreshResult.paths.slice(0, 4).join('、')}`,
+                );
+              } else if (refreshResult.status === 'pending') {
+                // Keep polling until the canvas service exposes the receipt's revision.
+              } else {
+                if (current()) setCanvasSyncNotice('会话已切换，未应用 Agent 画布结果。');
+              }
+            } catch {
+              if (current()) setCanvasSyncNotice('Agent 已更新画布节点，但刷新失败；本地编辑已保留，请重新打开画布检查。');
+            } finally {
+              refreshingNodeOperations.current.delete(operationKey);
+            }
+          }
+        }
+      }
+      if (m.status === 'fulfilled') setMain(mainAgent);
+      if (r.status === 'fulfilled') {
+        setRuntime(runtimeStatus);
+        if (!limitInitialized.current) {
+          setLimit(runtimeStatus.default_model_calls);
+          limitInitialized.current = true;
+        }
+      }
+      if (a.status === 'fulfilled') setAdoptions(adopted);
+      if (p.status === 'fulfilled') setPersonal(personalAgents);
+      if (b.status === 'fulfilled') setBuiltins(builtinAgents);
+      if (capabilities.status === 'fulfilled') setNodeCapabilities(nodeCatalog?.nodes ?? []);
+      if (delegations.status === 'fulfilled') {
+        historyRef.current = items;
+        setHistory(items);
+      }
       setIntent(readRunIntent(owner));
+      setDirectoryNotice(failedSources.length
+        ? `部分信息暂时无法读取（${[...new Set(failedSources)].join('、')}）；已保留其他可用信息。`
+        : '');
     } catch (e) {
       if (current() && ticket === sequence.current)
         setError(e instanceof Error ? e.message : '无法读取运行状态');
@@ -182,17 +403,32 @@ export function useAgentRuntime(
     void refresh();
     const interval = setInterval(() => void refresh(), 4000);
     const selection = (event: Event) => {
-      const detail = (event as CustomEvent).detail;
+      const detail = (event as CustomEvent<Partial<{
+        requestId: string;
+        user: string;
+        project: string;
+        canvas: string;
+        nodeIds: string[];
+      }>>).detail;
       if (
         current() &&
         detail?.project === owner.project &&
-        detail?.canvas === owner.canvas
+        detail?.canvas === owner.canvas &&
+        (!detail.user || detail.user === owner.user)
       ) {
-        setNodes(selectedNodes());
-        setCanvasScope(false);
+        const pending = consumePendingAgentSelection(owner.user, owner.project, owner.canvas);
+        const nodeIds = pending?.nodeIds ?? (Array.isArray(detail.nodeIds)
+          ? detail.nodeIds
+          : selectedNodes().map((node) => node.id));
+        const requestId = pending?.requestId ?? detail.requestId?.trim() ?? crypto.randomUUID();
+        acceptSelectionIntent({ requestId, nodeIds });
       }
     };
     window.addEventListener('nuomi:agent-selection', selection);
+    if (current()) {
+      const pending = consumePendingAgentSelection(owner.user, owner.project, owner.canvas);
+      if (pending) acceptSelectionIntent(pending);
+    }
     return () => {
       clearInterval(interval);
       window.removeEventListener('nuomi:agent-selection', selection);
@@ -200,7 +436,7 @@ export function useAgentRuntime(
     };
   }, [enabled, active, instance]);
   async function execute(
-    input?: Pick<RunIntent, 'id' | 'label' | 'steps'>,
+    input?: Pick<RunIntent, 'id' | 'label' | 'steps' | 'canvasBaseline'>,
     guard = current,
   ) {
     if (!guard() || instance.busy) return false;
@@ -210,6 +446,15 @@ export function useAgentRuntime(
     try {
       const result = await createRunOperation(owner, guard).run(input);
       if (!guard()) return false;
+      const recoveredDelegationId = result.intent?.steps
+        .find((step) => step.kind === 'delegation')?.result?.delegation_id;
+      if (typeof recoveredDelegationId === 'string' &&
+          result.intent?.canvasBaseline) {
+        nodeOperationBaselines.current.set(
+          recoveredDelegationId,
+          result.intent.canvasBaseline,
+        );
+      }
       setIntent(readRunIntent(owner));
       if (result.status === 'busy') setError('请先恢复或处理原请求');
       await refresh();
@@ -275,6 +520,47 @@ export function useAgentRuntime(
     }
     await execute({ id: requestId, label: '选择项目主创', steps });
   }
+  async function adoptMember(builtinId: string) {
+    if (!current() || instance.busy) return false;
+    const builtin = builtins.find((item) => item.source.ref.id === builtinId);
+    if (!builtin) return false;
+    if (adoptions.some((item) =>
+      item.source.kind === 'builtin' && item.source.ref.id === builtinId,
+    )) return true;
+    const requestId = crypto.randomUUID();
+    return execute({
+      id: requestId,
+      label: `加入项目机组：${builtin.configuration.name}`,
+      steps: [{
+        kind: 'adopt',
+        request: {
+          request_id: requestId,
+          action: 'adopt',
+          payload: {
+            source: 'builtin',
+            ref: builtin.source.ref,
+            proof: builtin.proof,
+          },
+        },
+      }],
+    });
+  }
+  function setNodeOperationGrant(nodeId: string, operation: string, enabled: boolean) {
+    setNodeOperationGrants((current) => {
+      const values = new Set(current[nodeId] ?? []);
+      if (enabled) values.add(operation);
+      else values.delete(operation);
+      const next = { ...current };
+      if (values.size) next[nodeId] = [...values];
+      else delete next[nodeId];
+      return next;
+    });
+  }
+  function selectDelegateAgent(agentId: string) {
+    setDelegateAgentId(agentId);
+    setNodeOperationGrants({});
+    setLimit(agentId === 'main' ? runtime?.default_model_calls ?? 8 : 1);
+  }
   async function send(text: string, hasAttachments: boolean) {
     if (!current() || instance.busy) return false;
     if (readRunIntent(owner)?.phase === 'pending') {
@@ -283,12 +569,22 @@ export function useAgentRuntime(
     }
     if (
       history.some((h) =>
-        h.runs.some((r) =>
-          ['queued', 'model_inflight', 'applying'].includes(r.state),
-        ),
+        h.runs.some(canStopAgentRun),
       )
     ) {
       setError('本会话已有运行，请先查看或停止原运行');
+      return false;
+    }
+    if (!nodes.length) {
+      setError('请先选择要委托的节点');
+      return false;
+    }
+    const unavailableNodes = missingSelection(
+      nodes.map((node) => node.id),
+      useCanvasStore.getState().nodes.map((node) => node.id),
+    );
+    if (unavailableNodes.length) {
+      setError(`所选节点已删除或无法访问：${unavailableNodes.join('、')}`);
       return false;
     }
     if (hasAttachments) {
@@ -299,38 +595,68 @@ export function useAgentRuntime(
       setError('请先配置可用的文本模型，当前不能运行。');
       return false;
     }
-    if (!main?.current_agent) {
-      setError('请先明确选择项目主创');
-      return false;
-    }
-    if (!canvasScope && !nodes.length) {
-      setError('请选择节点，或明确选择当前画布准备范围');
+    const directMember = adoptions.find((item) => item.adoption_id === delegateAgentId);
+    const selectedAgent = delegateAgentId === 'main'
+      ? main?.current_agent
+      : directMember
+        ? {
+            adoption_id: directMember.adoption_id,
+            revision: directMember.revision,
+            effective: directMember.effective,
+          }
+        : null;
+    if (!selectedAgent) {
+      setError('请选择项目主创或已加入机组的专业成员');
       return false;
     }
     if (!text.trim()) return false;
     const captured = captureFreezoneCanvasRuntime(owner.project, owner.canvas);
     const guard = () => current() && !!captured?.isCurrent();
-    const selection = structuredClone(nodes);
+    const selection = structuredClone([...new Map(nodes.map((node) => [node.id, node])).values()]);
     const inputIds = selection.map((node) => node.id);
-    const frozenInputs = inputEvidence(inputIds, canvasScope);
+    const frozenInputs = inputEvidence(inputIds);
     const verifyInputs = () => {
-      if (inputEvidence(inputIds, canvasScope) !== frozenInputs) {
+      const missing = missingSelection(
+        inputIds,
+        useCanvasStore.getState().nodes.map((node) => node.id),
+      );
+      if (missing.length) {
+        throw Error(`所选节点已删除或无法访问：${missing.join('、')}`);
+      }
+      if (inputEvidence(inputIds) !== frozenInputs) {
         throw Error('引用内容或分组归属已变化，请重新引用并比较后发送');
       }
     };
-    const selectedAgent = main.current_agent;
+    const nodeById = new Map(selection.map((node) => [node.id, node]));
+    const capabilitiesByType = new Map(nodeCapabilities.map((item) => [item.node_type, item]));
+    const operationPairs = Object.entries(nodeOperationGrants)
+      .filter(([nodeId]) => inputIds.includes(nodeId))
+      .flatMap(([nodeId, operations]) => {
+        const nodeType = nodeById.get(nodeId)?.nodeType;
+        const available = capabilitiesByType.get(nodeType ?? '')?.operations ?? [];
+        return operations
+          .filter((operation) => operation === 'patch'
+            ? selectedAgent.effective.capabilities.includes('node.patch')
+            : selectedAgent.effective.capabilities.includes('node.run') &&
+              available.some((item) => item.name === operation && item.available))
+          .map((operation) => ({ node_id: nodeId, operation }));
+      });
+    const selectedGrantIds = [...new Set(operationPairs.map((grant) => grant.node_id))];
+    const nodeRunCount = operationPairs.some((grant) => grant.operation !== 'patch')
+      ? maxNodeRuns
+      : 0;
     const operationCapabilities: Record<string, string> = {
       'context.read': 'context.read',
       'proposal.create': 'proposal.create',
       'ontology.definition.draft': 'ontology.draft',
       'media.propose': 'media.propose',
+      'node.patch': 'node.patch',
+      'node.run': 'node.run',
     };
     const body = {
       canvas_id: owner.canvas,
       conversation_id: owner.conversation,
-      scope: canvasScope
-        ? { kind: 'canvas' }
-        : { kind: 'nodes', node_ids: selection.map((n) => n.id) },
+      scope: { kind: 'nodes', node_ids: inputIds },
       agent: {
         kind: 'adoption',
         adoption_id: selectedAgent.adoption_id,
@@ -349,12 +675,26 @@ export function useAgentRuntime(
       ),
       acceptance: [text.trim()],
     };
+    if (operationPairs.length) {
+      Object.assign(body, {
+        execution_authorization: {
+          allowed_node_ids: selectedGrantIds,
+          allowed_node_operations: operationPairs,
+          max_node_runs: nodeRunCount,
+        },
+      });
+    }
     instance.busy = true;
     setWorking(true);
     setError('');
     try {
       if (!captured || (await captured.flush()) !== true || !guard())
         throw Error('画布尚未保存，未发送');
+      verifyInputs();
+      const operationBaseline = operationPairs.length
+        ? await getFreezoneCanvas(owner.project, owner.canvas)
+        : null;
+      if (!guard()) return false;
       verifyInputs();
       const preview = await api.previewDelegation(owner.project, body);
       if (!guard()) return false;
@@ -363,6 +703,7 @@ export function useAgentRuntime(
       const result = await createRunOperation(owner, guard).run({
         id,
         label: text.trim(),
+        ...(operationBaseline ? { canvasBaseline: operationBaseline } : {}),
         steps: [
           {
             kind: 'delegation',
@@ -373,12 +714,20 @@ export function useAgentRuntime(
             request: {
               request_id: crypto.randomUUID(),
               max_model_calls: limit,
-              specialist_ids: [...specialists],
+              specialist_ids: directMember
+                ? []
+                : specialists.filter((id) => id !== selectedAgent.adoption_id),
             },
           },
         ],
       });
       if (!guard()) return false;
+      if (operationBaseline) {
+        const delegationResult = result.intent?.steps.find((step) => step.kind === 'delegation')?.result;
+        const delegationId = String(delegationResult?.delegation_id ?? '');
+        if (delegationId) nodeOperationBaselines.current.set(delegationId, operationBaseline);
+      }
+      if (operationPairs.length && result.status === 'applied') setCanvasSyncNotice('');
       setIntent(readRunIntent(owner));
       await refresh();
       return guard() && result.status === 'applied';
@@ -421,7 +770,7 @@ export function useAgentRuntime(
   }
   const liveRuns = history
     .flatMap((h) => h.runs)
-    .filter((r) => ['queued', 'model_inflight', 'applying'].includes(r.state));
+    .filter(canStopAgentRun);
   return {
     error,
     working,
@@ -430,18 +779,31 @@ export function useAgentRuntime(
     adoptions,
     personal,
     builtins,
+    nodeCapabilities,
+    canvasSyncNotice,
+    directoryNotice,
     nodes,
     setNodes,
-    canvasScope,
-    setCanvasScope,
+    selectionChanged: selectionChangedFromCanvas,
+    missingNodes,
+    acceptedSelectionIntent: acceptedSelectionState.identity === identity
+      ? acceptedSelectionState.value
+      : null,
     limit,
     setLimit,
     specialists,
     setSpecialists,
+    nodeOperationGrants,
+    setNodeOperationGrant,
+    maxNodeRuns,
+    setMaxNodeRuns,
+    delegateAgentId,
+    selectDelegateAgent,
     intent,
     history,
     send,
     selectMain,
+    adoptMember,
     finish,
     control,
     recover: () => execute(),
@@ -449,7 +811,7 @@ export function useAgentRuntime(
     captureSelection: () => {
       if (current()) {
         setNodes(selectedNodes());
-        setCanvasScope(false);
+        setNodeOperationGrants({});
       }
     },
     busy: working || liveRuns.length > 0,
@@ -457,7 +819,9 @@ export function useAgentRuntime(
     canSend:
       current() &&
       !!runtime?.available &&
-      !!main?.current_agent &&
+      (delegateAgentId === 'main'
+        ? !!main?.current_agent
+        : adoptions.some((item) => item.adoption_id === delegateAgentId)) &&
       !working &&
       !liveRuns.length &&
       intent?.phase !== 'pending',

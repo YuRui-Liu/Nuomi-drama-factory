@@ -1507,6 +1507,7 @@ class FreezoneAudioVoiceRef(BaseModel):
         "character_age_group",
         "identity",
         "identity_resolved",
+        "character_voice_version",
     ] = Field(
         description=(
             "声线类型：project_narrator=项目解说人；user_custom=账号级我的音色；"
@@ -1520,6 +1521,11 @@ class FreezoneAudioVoiceRef(BaseModel):
         default="",
         description="角色名。scope 为 character_* 或 identity* 时必填，需匹配项目角色名。",
         examples=["林小满"],
+    )
+    character_id: str = Field(
+        default="",
+        description="固定角色声音版本的角色 ID。仅 scope=character_voice_version 使用。",
+        examples=["a3c39ed5-4d04-4ef0-98e1-909f5e0a7831"],
     )
     identity_id: str = Field(
         default="",
@@ -1539,6 +1545,11 @@ class FreezoneAudioVoiceRef(BaseModel):
             "或 POST /freezone/audio/voices 的返回值。"
         ),
         examples=["fv_abc123"],
+    )
+    version_id: str = Field(
+        default="",
+        description="固定已采用角色声音版本 ID。仅 scope=character_voice_version 使用。",
+        examples=["voice-version-id"],
     )
 
 
@@ -1608,14 +1619,26 @@ class FreezoneAudioMusicRequest(BaseModel):
     )
 
 
+class FreezoneVideoComposeDubbingSource(BaseModel):
+    take_id: str = Field(min_length=1, description="已采用配音 take 身份")
+    dialogue_id: str = Field(min_length=1, description="来源台词身份")
+    group_id: str = Field(min_length=1, description="来源叙事组身份")
+    episode: int | None = Field(default=None, ge=1, description="可选兼容字段；服务端以权威 take 定位集数")
+
+
 class FreezoneVideoComposeItem(BaseModel):
     item_id: str = Field(description="前端片段唯一标识")
     source_url: str = Field(description="源媒体静态地址")
+    source_node_id: str | None = Field(default=None, description="片段来源画布节点 id")
+    dubbing_source: FreezoneVideoComposeDubbingSource | None = Field(
+        default=None, description="显式配音来源；服务端必须核验采用状态"
+    )
     timeline_start: float = Field(default=0.0, ge=0.0, description="片段在时间线上的开始秒数")
     source_start: float = Field(default=0.0, ge=0.0, description="源媒体裁剪起始秒")
     source_end: float = Field(gt=0.0, description="源媒体裁剪结束秒，必须大于 source_start")
     volume: float = Field(default=1.0, ge=0.0, le=2.0, description="音量倍率")
     muted: bool = Field(default=False, description="是否静音")
+    speed: float = Field(default=1.0, ge=0.25, le=4.0, description="时间线草稿记录的播放速度")
 
 
 class FreezoneVideoComposeTrack(BaseModel):
@@ -1624,15 +1647,57 @@ class FreezoneVideoComposeTrack(BaseModel):
     items: list[FreezoneVideoComposeItem] = Field(default_factory=list, description="轨道片段列表")
 
 
+class FreezoneVideoComposeSubtitleSourceTiming(BaseModel):
+    timeline_start: float = Field(ge=0, description="关联音频片段的时间线开始秒")
+    timeline_end: float = Field(gt=0, description="关联音频片段的时间线结束秒")
+    source_start: float = Field(ge=0, description="关联音频片段的源内裁切起点秒")
+    source_end: float = Field(gt=0, description="关联音频片段的源内裁切终点秒")
+    speed: float = Field(ge=0.25, le=4.0, description="关联音频片段的播放速度")
+
+
+class FreezoneVideoComposeSubtitleCue(BaseModel):
+    cue_id: str = Field(description="字幕条目唯一标识")
+    text: str = Field(max_length=2000, description="用户校对后的字幕文字")
+    timeline_start: float = Field(ge=0, description="字幕开始秒")
+    timeline_end: float = Field(gt=0, description="字幕结束秒")
+    source_clip_id: str | None = Field(default=None, description="关联时间线音频片段 id")
+    source_clip_url: str | None = Field(default=None, description="关联音频源 URL 快照")
+    source_take_id: str | None = Field(default=None, description="关联采用的配音 take id")
+    source_dialogue_id: str | None = Field(default=None, description="关联来源台词 id")
+    source_group_id: str | None = Field(default=None, description="关联来源叙事组 id")
+    source_timing: FreezoneVideoComposeSubtitleSourceTiming | None = Field(
+        default=None, description="关联音频片段的时间快照，用于提示字幕需要复核"
+    )
+    timing: Literal["manual", "estimated_audio_clip"] = Field(
+        default="manual", description="人工校时或按整段音频时长估算"
+    )
+    timing_confirmed: bool = Field(default=False, description="用户已复核当前字幕时间")
+
+
+class FreezoneVideoComposeSubtitleTrack(BaseModel):
+    track_id: str = Field(description="字幕轨唯一标识")
+    cues: list[FreezoneVideoComposeSubtitleCue] = Field(default_factory=list)
+
+
 class FreezoneVideoComposeRequest(BaseModel):
     title: str = Field(default="", description="合成任务标题，可为空")
     canvas_id: str = Field(default="", description="来源画布 id，可为空")
-    resolution: Literal["720p", "1080p"] = Field(default="1080p", description="目标输出分辨率")
+    resolution: Literal["720p", "1080p"] | None = Field(default=None, description="目标输出分辨率；缺省时沿用项目保存值")
+    resolution_origin: Literal["project", "default", "user", "legacy_unverified"] | None = Field(
+        default=None, description="输出分辨率来源；旧调用不提供该字段"
+    )
     fps: int = Field(default=30, ge=1, le=60, description="输出帧率")
+    fps_origin: Literal["default", "user", "legacy_unverified"] | None = Field(
+        default=None, description="帧率来源；旧调用缺省时由服务端标记为 legacy_unverified 或默认"
+    )
     background_color: str = Field(default="#000000", description="补边或空隙使用的背景色")
     keep_original_audio: bool = Field(default=True, description="是否保留视频片段自带音频")
+    draft_revision: int = Field(default=0, ge=0, description="画布中持久化的时间线草稿修订号")
     tracks: list[FreezoneVideoComposeTrack] = Field(
         default_factory=list, description="时间线轨道列表"
+    )
+    subtitle_tracks: list[FreezoneVideoComposeSubtitleTrack] = Field(
+        default_factory=list, description="可编辑字幕轨道"
     )
 
 
@@ -1722,6 +1787,7 @@ class FreezoneJobAcceptedData(BaseModel):
     task_type: str
     job_id: str
     task_key: str
+    export_manifest: dict[str, Any] | None = None
 
 
 class FreezoneJobAcceptedResponse(BaseModel):

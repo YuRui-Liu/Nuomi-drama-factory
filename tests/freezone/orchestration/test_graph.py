@@ -56,6 +56,42 @@ def test_target_order_excludes_independent_nodes_and_container():
     assert execution_order(nodes, [edge("source", "image")], "image") == ["source", "image"]
 
 
+def test_fixed_revision_operations_skip_generation_dependencies_but_plan_keeps_them():
+    from novelvideo.freezone.orchestration.graph import execution_order
+
+    nodes = [node("idea", "ideationNode", operation="generate", referenceOnly=True),
+             node("screenplay", "screenplayNode", operation="inspect", referenceOnly=True)]
+    edges = [edge("idea", "screenplay")]
+
+    assert execution_order(nodes, edges, "screenplay", operation="inspect") == ["screenplay"]
+    assert execution_order(nodes, edges, "screenplay", operation="rewrite") == ["screenplay"]
+    assert execution_order(nodes, edges, "screenplay", operation="plan") == ["idea", "screenplay"]
+
+
+def test_media_operation_keeps_its_dependency_closure():
+    from novelvideo.freezone.orchestration.graph import execution_order
+
+    nodes = [node("image", "imageGenNode", operation="generate"),
+             node("video", "videoNode", operation="generate")]
+    edges = [edge("image", "video")]
+
+    assert execution_order(nodes, edges, "video", operation="generate") == ["image", "video"]
+
+
+def test_director_and_dubbing_operations_use_their_bound_inputs():
+    from novelvideo.freezone.orchestration.graph import execution_order
+
+    cases = [
+        ("screenplayNode", "plan", "directorWorkspaceNode", "prepare"),
+        ("characterVoiceNode", "design", "audioNode", "group_dubbing"),
+    ]
+    for source_type, source_operation, target_type, target_operation in cases:
+        nodes = [node("source", source_type, operation=source_operation),
+                 node("target", target_type, operation=target_operation, referenceOnly=True)]
+        assert execution_order(nodes, [edge("source", "target")], "target",
+                               operation=target_operation) == ["target"]
+
+
 def test_input_fingerprint_ignores_layout_and_result_but_not_prompt():
     from novelvideo.freezone.orchestration.models import input_fingerprint
     original = node("image", "imageGenNode", prompt="first", model="saved")

@@ -969,6 +969,7 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext, *, split_only:
                   "batches": results, "grid_asset": results[0].get("grid_asset", "")}
         record_stage_result(_project_dir(raw, ctx), int(envelope.get("episode") or raw["episode"]),
                             str(raw["group_id"]), str(raw["stage"]), expected_revision=int(raw["revision"]),
+                            expected_director_revision_id=raw.get("director_revision_id"),
                             status=status, cell_assets=cells,
                             provider_parameters={"storyboard_split_inputs": split_inputs},
                             error="; ".join(str(error) for error in errors))
@@ -993,6 +994,13 @@ async def _execute_single(envelope: dict[str, Any], ctx: ProjectContext, *, spli
     for field in ("layout", "beat_ids", "cell_to_beat"):
         payload.setdefault(field, saved[field])
     expected_revision = int(payload["revision"])
+    expected_director_revision_id = payload.get("director_revision_id")
+    if expected_director_revision_id is not None:
+        from novelvideo.director_plan.store import DirectorPlanStore
+
+        active = DirectorPlanStore(project_dir).load_active(episode)
+        if active is None or active.revision_id != expected_director_revision_id:
+            raise RuntimeError("narrative group director revision is stale")
     split_input = None
     record_stage_result(
         project_dir,
@@ -1000,6 +1008,7 @@ async def _execute_single(envelope: dict[str, Any], ctx: ProjectContext, *, spli
         group_id,
         stage,
         expected_revision=expected_revision,
+        expected_director_revision_id=expected_director_revision_id,
         status="running",
         error="",
     )
@@ -1084,6 +1093,7 @@ async def _execute_single(envelope: dict[str, Any], ctx: ProjectContext, *, spli
             group_id,
             stage,
             expected_revision=expected_revision,
+            expected_director_revision_id=expected_director_revision_id,
             status="running" if payload.get("_physical_pack") else result["status"],
             grid_asset=result.get("grid_asset"),
             cell_assets=result.get("cell_assets") or [],
@@ -1117,6 +1127,8 @@ async def _execute_single(envelope: dict[str, Any], ctx: ProjectContext, *, spli
         )
         if split_input is not None:
             result["storyboard_split_input"] = split_input.model_dump(mode="json")
+        result["batch_id"] = str(payload.get("batch_id") or "")
+        result["revision"] = expected_revision
         return result
     except Exception as exc:
         record_stage_result(
@@ -1125,6 +1137,7 @@ async def _execute_single(envelope: dict[str, Any], ctx: ProjectContext, *, spli
             group_id,
             stage,
             expected_revision=expected_revision,
+            expected_director_revision_id=expected_director_revision_id,
             status="failed",
             error=str(exc),
         )

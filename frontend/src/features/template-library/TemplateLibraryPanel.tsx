@@ -11,6 +11,7 @@ import {
   type TemplateOwner,
   type TemplateIntent,
 } from './templateOperation';
+import type { SettingsDraftGuard } from '@/features/creation-workspace/projectSettingsDraftGuard';
 
 type Runtime = { flush: () => Promise<boolean>; isCurrent: () => boolean };
 type Draft = {
@@ -63,10 +64,12 @@ export function TemplateLibraryPanel({
   owner,
   runtime,
   isCurrent,
+  draftGuardRef,
 }: {
   owner: TemplateOwner;
   runtime: Runtime;
   isCurrent: () => boolean;
+  draftGuardRef?: { current: SettingsDraftGuard | null };
 }) {
   const [tab, setTab] = useState<'project' | 'personal'>('project'),
     [personal, setPersonal] = useState<api.PersonalTemplate[]>([]),
@@ -304,6 +307,32 @@ export function TemplateLibraryPanel({
     d.adoption
       ? adoptions.find((a) => a.adoption_id === d.adoption!.adoption_id)
       : personal.find((p) => p.id === d.fixed?.id);
+  if (draftGuardRef) {
+    draftGuardRef.current = {
+      isDirty: () => !!edit || !!prepared || !!installation || !!activation,
+      save: async () =>
+        !prepared &&
+        !installation &&
+        !activation &&
+        (!edit || drafts.some(value => value.key === edit.key)),
+      discard: () => {
+        try {
+          if (edit) {
+            const next = drafts.filter(value => value.key !== edit.key);
+            localStorage.setItem(draftKey, JSON.stringify(next));
+            setDrafts(next);
+          }
+        } catch {
+          setError('无法清除当前草稿；草稿仍保留。');
+        }
+        setEdit(null);
+        setPrepared(null);
+        setInstallation(null);
+        setActivation(null);
+        setBasis('');
+      },
+    };
+  }
   return (
     <div className="space-y-4 text-sm">
       <p className="text-muted-foreground">

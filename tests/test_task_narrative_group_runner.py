@@ -53,6 +53,8 @@ async def test_multi_pack_runs_real_split_and_aggregates_selected_cells(tmp_path
     assert [beat['id'] for beat in calls[1]['keyframe_context_beats']] == ids
     assert 'reverse angle' in narrative_group._grid_prompt(calls[1])
     assert [cell["shot_id"] for cell in result["cell_assets"]] == ids, result["errors"]
+    assert [batch["batch_id"] for batch in result["batches"]] == ["pack-a", "pack-b"]
+    assert [batch["revision"] for batch in result["batches"]] == [1, 1]
     saved = load_groups(tmp_path, 1)[0].stages["render"]
     assert len(saved.storyboard_sources) == 2
     assert len(saved.cell_assets) == 5

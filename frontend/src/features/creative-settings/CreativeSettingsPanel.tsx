@@ -45,6 +45,7 @@ import {
   type SettingsOwner,
   type SettingsIntent,
 } from './settingsOperation';
+import type { SettingsDraftGuard } from '@/features/creation-workspace/projectSettingsDraftGuard';
 type Draft =
   | { id: string; kind: 'definition'; form: DefinitionForm; baseline?: DefinitionVersion }
   | {
@@ -59,12 +60,20 @@ interface Props {
   selected: { id: string; type?: string }[];
   runtime: { flush: () => Promise<boolean | null>; isCurrent: () => boolean };
   isCurrent: () => boolean;
+  defaultScope?: 'project' | 'context';
+  draftGuardRef?: { current: SettingsDraftGuard | null };
 }
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const scopeKey = (value: CreativeScope) =>
   JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
-const initialScope = (canvas: string, selected: Props['selected']): CreativeScope | null =>
-  selected.length === 1 && selected[0].type
+const initialScope = (
+  canvas: string,
+  selected: Props['selected'],
+  defaultScope: Props['defaultScope'],
+): CreativeScope | null =>
+  defaultScope === 'project'
+    ? { level: 'project' }
+    : selected.length === 1 && selected[0].type
     ? selected[0].type === 'groupNode'
       ? { level: 'group', canvas_id: canvas, group_id: selected[0].id }
       : { level: 'node', canvas_id: canvas, node_id: selected[0].id }
@@ -93,7 +102,7 @@ export function CreativeSettingsPanel(props: Props) {
     [canvases, setCanvases] = useState<CreationCanvas[]>([]),
     [nodes, setNodes] = useState<ScopeNode[]>([]);
   const [scope, setScope] = useState<CreativeScope | null>(() =>
-      initialScope(owner.canvas, frozen.selected),
+      initialScope(owner.canvas, frozen.selected, frozen.defaultScope),
     ),
     [effect, setEffect] = useState<ConstraintEffect | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null),
@@ -425,6 +434,26 @@ export function CreativeSettingsPanel(props: Props) {
     draft?.kind === 'definition'
       ? !!latestDefinition && latestDefinition.current_revision !== draft.baseline?.current_revision
       : !!latestConstraint && latestConstraint.revision !== draft?.baseline?.revision;
+  if (frozen.draftGuardRef) {
+    frozen.draftGuardRef.current = {
+      isDirty: () => !!draft,
+      save: async () => !storageError,
+      discard: () => {
+        if (draft) {
+          try {
+            localStorage.removeItem(prefix + encodeURIComponent(draft.id));
+            readDrafts();
+          } catch {
+            setStorageError('无法清除当前草稿；草稿仍保留。');
+          }
+        }
+        setDraft(null);
+        setBasis('');
+        setDetail(null);
+        setRecordDetail(null);
+      },
+    };
+  }
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">按需补充创作对象与约定，不影响继续使用画布。</p>

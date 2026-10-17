@@ -178,6 +178,8 @@ import { useReferenceMentionSync } from '@/features/canvas/nodes/useReferenceMen
 import { composeImagePrompt } from '@/features/canvas/extension-styles/composePrompt';
 import { ExtensionStyleChip } from '@/features/canvas/extension-styles/ExtensionStyleChip';
 import { fixedStyleVersionLabel, useFixedNodeStyle } from '@/features/direction-references/useFixedNodeStyle';
+import { GridExtractionPanel } from '@/features/canvas/production/grid/GridExtractionPanel';
+import type { GroupGridBinding } from '@/features/canvas/production/grid/gridBinding';
 
 type ImageGenNodeProps = NodeProps & {
   id: string;
@@ -286,6 +288,8 @@ export async function submitImageGenerationPayloadAtIndex<TResult>(
 
 export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGenNodeProps) => {
   const { t } = useTranslation();
+  const isNarrativeGroupGrid = data.gridMode === 'narrative-group';
+  const gridBinding = data.gridBinding as GroupGridBinding | undefined;
   const updateNodeInternals = useUpdateNodeInternals();
   const setSelectedNode = useCanvasStore((state) => state.setSelectedNode);
   const isBoxSelecting = useIsBoxSelecting();
@@ -385,7 +389,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     records: historyRecords,
     isLoading: historyLoading,
     refresh: refreshHistory,
-  } = useNodeGenerationHistory(id, { enabled: Boolean(selected) });
+  } = useNodeGenerationHistory(id, { enabled: Boolean(selected && !isNarrativeGroupGrid) });
 
   // 生成进行中时，点击历史记录走「非破坏性预览」：不覆写 imageUrl、不打断在途
   // 任务，仅把这张历史图临时显示在主体上（见 isGenerating 渲染分支）。新图生成
@@ -649,14 +653,18 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   const panelWidth = Math.max(resolvedWidth, OPERATIONS_PANEL_MIN_WIDTH);
 
   const previewUrl = useMemo(() => {
+    if (isNarrativeGroupGrid) {
+      const gridResult = [...(data.gridRuns ?? [])].reverse().find((run) => run.imageUrl);
+      return gridResult?.imageUrl ? resolveImageDisplayUrl(gridResult.imageUrl) : null;
+    }
     if (data.previewImageUrl) return resolveImageDisplayUrl(data.previewImageUrl);
     if (data.imageUrl) return resolveImageDisplayUrl(data.imageUrl);
     if (referenceImageUrl) return resolveImageDisplayUrl(referenceImageUrl);
     return null;
-  }, [data.imageUrl, data.previewImageUrl, referenceImageUrl]);
+  }, [data.gridRuns, data.gridMode, data.imageUrl, data.previewImageUrl, isNarrativeGroupGrid, referenceImageUrl]);
   const visiblePreviewUrl = isGenerating ? null : previewUrl;
 
-  const hasGeneratedResult = Boolean(data.imageUrl);
+  const hasGeneratedResult = isNarrativeGroupGrid ? Boolean(previewUrl) : Boolean(data.imageUrl);
   // Natural pixel size of the displayed image, mirrored from data when present
   // (persisted by the onLoad handler below) and refreshed on every <img> load so
   // the resolution badge shows even for nodes whose size already matched (those
@@ -688,7 +696,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   }, [data.generationBatch]);
   const albumTotalSlots = Math.max(albumUrls.length, albumPendingTotal);
   const albumPendingCount = Math.max(0, albumPendingTotal - albumUrls.length);
-  const hasAlbum = albumTotalSlots > 1;
+  const hasAlbum = !isNarrativeGroupGrid && albumTotalSlots > 1;
 
   // 画册展开期间注册为本节点的 activeOverlay：拖动画册会让 React Flow 重新
   // 选中节点（selectNodesOnDrag），单靠展开瞬间的取消选中压不住——action
@@ -875,7 +883,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
       upstreamTextJoined.length > 0 &&
       (!shouldInlineUpstreamTextAsPrompt || !hasUserEditedPromptRef.current)
     );
-  const submitDisabled = isGenerating || !selectedModel || !hasEffectivePrompt;
+  const submitDisabled = isNarrativeGroupGrid || isGenerating || !selectedModel || !hasEffectivePrompt;
 
   const handleSubmit = useCallback(async () => {
     if (submitDisabled || submittingRef.current) return;
@@ -1227,7 +1235,9 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   // 画册展开时一并隐藏 OpsPanel——展开瞬间已 setSelectedNode(null)，这里再兜
   // 一道，防止展开后用户点节点重新选中时面板叠到宫格上。
   const showImageOpsPanel =
-    selected && !isBoxSelecting && !hasActiveOverlay && !mainlineCanvasReadonly && !albumExpanded;
+    !isNarrativeGroupGrid && selected && !isBoxSelecting && !hasActiveOverlay && !mainlineCanvasReadonly && !albumExpanded;
+  const showGridExtractionPanel =
+    isNarrativeGroupGrid && selected && !isBoxSelecting && !hasActiveOverlay && !mainlineCanvasReadonly && !albumExpanded;
 
   return (
     <div
@@ -1315,7 +1325,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
         keepAspectRatio
       />
 
-      {!hasGeneratedResult && !referenceImageUrl && !isGenerating && !generationError && (
+      {!isNarrativeGroupGrid && !hasGeneratedResult && !referenceImageUrl && !isGenerating && !generationError && (
         <NodeSideActionRail nodeId={id} autoHide selected={Boolean(selected)}>
           <button
             type="button"
@@ -1328,7 +1338,12 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
             title="上传图片"
             className={NODE_SIDE_ACTION_BUTTON_CLASS}
           >
-            {isUploading ? (
+            {isNarrativeGroupGrid ? (
+              <div className="flex w-full flex-col items-center justify-center gap-2 text-center">
+                <ImageIcon className="h-7 w-7 opacity-60" />
+                <span className="text-[12px] leading-6">在宫格出图工作区查看结果与拆分单帧</span>
+              </div>
+            ) : isUploading ? (
               <Loader2 className={`${NODE_SIDE_ACTION_ICON_CLASS} animate-spin`} />
             ) : (
               <Upload className={NODE_SIDE_ACTION_ICON_CLASS} />
@@ -1557,13 +1572,13 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
                 </button>
               </div>
             )}
-            <div className="mt-2 flex justify-center">
+            {!isNarrativeGroupGrid && <div className="mt-2 flex justify-center">
               <RegenerateButton
                 onClick={() => void handleSubmit()}
                 busy={isGenerating}
                 disabled={submitDisabled}
               />
-            </div>
+            </div>}
           </div>
         )}
       </div>
@@ -1928,7 +1943,42 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
           </div>
         </OperationPanelShell>
       )}
-      {selected && !isBoxSelecting && !hasActiveOverlay && !panelExpanded && !stylePickerOpen && !extensionStyleDrawerOpen && hasCompletedHistoryRecords(historyRecords) && (
+      {showGridExtractionPanel && (
+        <OperationPanelShell
+          expanded={panelExpanded}
+          onCollapse={() => setPanelExpanded(false)}
+          inlineClassName={`nodrag absolute left-1/2 z-10 flex -translate-x-1/2 flex-col overflow-hidden rounded-[var(--node-radius)] ${CANVAS_NODE_OPS_PANEL_CLASS}`}
+          inlineStyle={{
+            top: `calc(100% + ${OPERATIONS_PANEL_GAP}px)`,
+            width: 'min(1120px, 92vw)',
+            height: 'min(760px, calc(100vh - 150px))',
+          }}
+          modalStyle={{
+            width: 'min(1200px, 94vw)',
+            height: 'min(840px, 90vh)',
+          }}
+        >
+          <PanelExpandButton
+            expanded={panelExpanded}
+            onToggle={() => setPanelExpanded((value) => !value)}
+            className="absolute right-2 top-2 z-20"
+          />
+          {gridBinding ? (
+            <GridExtractionPanel
+              nodeId={id}
+              binding={gridBinding}
+              prompt={prompt}
+              runs={data.gridRuns ?? []}
+              aspectRatio={aspectRatio}
+            />
+          ) : (
+            <div role="alert" className="grid-extraction-panel grid-extraction-error">
+              此宫格节点缺少叙事组绑定信息，请从导演工作区重新连接。
+            </div>
+          )}
+        </OperationPanelShell>
+      )}
+      {!isNarrativeGroupGrid && selected && !isBoxSelecting && !hasActiveOverlay && !panelExpanded && !stylePickerOpen && !extensionStyleDrawerOpen && hasCompletedHistoryRecords(historyRecords) && (
         <div
           className={`nodrag absolute left-1/2 z-[300] -translate-x-1/2 rounded-[var(--node-radius)] ${CANVAS_NODE_OPS_PANEL_CLASS} ${NODE_OPS_PANEL_ENTER_CLASS} px-3 py-2`}
           style={{

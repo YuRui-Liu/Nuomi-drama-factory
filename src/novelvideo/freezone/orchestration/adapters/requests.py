@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from copy import deepcopy
 
 from ..models import OrchestrationError
@@ -94,7 +95,8 @@ def build_request(node: dict, operation: str, upstream: list[dict], *, canvas_id
         body["video_url"] = videos[0]
     elif kind == "threeDWorldNode" and images:
         body.update(source_url=images[0], source_kind=data.get("plyKind", "master"))
-    body.update(deepcopy(data.get("request", {})))
+    if not (kind == "videoComposeNode" and "draftTimeline" in data):
+        body.update(deepcopy(data.get("request", {})))
     if kind == "storyboardGenNode":
         if data.get('storyboardMode') == 'narrative' or data.get('group_id'):
             from .storyboard import compile_canvas_storyboard
@@ -183,6 +185,8 @@ def project_director_inputs(node: dict, upstream: list[dict], edges: list[dict])
 
 
 def _compose(data, inputs, canvas_id):
+    if "draftTimeline" in data:
+        return _compose_draft_timeline(data.get("draftTimeline"), canvas_id)
     request = deepcopy(data.get("request", {}))
     if request.get("tracks"):
         return request
@@ -204,3 +208,179 @@ def _compose(data, inputs, canvas_id):
     return {"canvas_id": canvas_id, "resolution": data.get("resolution", "1080p"),
             "keep_original_audio": data.get("keepOriginalAudio", True),
             "tracks": [{"track_id": "video", "kind": "video", "items": items}]}
+
+
+def _compose_draft_timeline(draft, canvas_id):
+    """Translate the canvas editor's saved camelCase draft into the Freezone API contract.
+
+    The draft's source URLs are frozen editor choices. Current upstream node results are not
+    allowed to silently replace them; source replacement requires an explicit editor action.
+    """
+    if not isinstance(draft, dict):
+        raise OrchestrationError("invalid_timeline", "Saved composition draft must be an object")
+    raw_tracks = draft.get("tracks")
+    if not isinstance(raw_tracks, list):
+        raise OrchestrationError("invalid_timeline", "Saved composition draft has no track list")
+
+    def number(value, label, *, minimum=None, maximum=None, default=None):
+        if value is None and default is not None:
+            value = default
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise OrchestrationError("invalid_timeline", f"Composition {label} must be numeric")
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise OrchestrationError("invalid_timeline", f"Composition {label} must be finite")
+        if minimum is not None and parsed < minimum:
+            raise OrchestrationError("invalid_timeline", f"Composition {label} is below its supported range")
+        if maximum is not None and parsed > maximum:
+            raise OrchestrationError("invalid_timeline", f"Composition {label} is above its supported range")
+        return parsed
+
+    tracks = []
+    track_ids = set()
+    item_ids = set()
+    for track in raw_tracks:
+        if not isinstance(track, dict):
+            raise OrchestrationError("invalid_timeline", "Saved composition draft contains an invalid track")
+        track_id = str(track.get("id") or "")
+        kind = track.get("kind")
+        clips = track.get("clips")
+        if not track_id or track_id in track_ids or kind not in {"video", "audio"} or not isinstance(clips, list):
+            raise OrchestrationError("invalid_timeline", "Saved composition draft contains an invalid track")
+        track_ids.add(track_id)
+        items = []
+        for clip in clips:
+            if not isinstance(clip, dict):
+                raise OrchestrationError("invalid_timeline", "Saved composition draft contains an invalid clip")
+            item_id = str(clip.get("id") or "")
+            source_url = str(clip.get("sourceUrl") or "").strip()
+            if not item_id or item_id in item_ids or not source_url:
+                raise OrchestrationError("invalid_timeline", "Saved composition clip needs unique identity and source URL")
+            item_ids.add(item_id)
+            start_ms = number(clip.get("timelineStartMs"), "timeline position", minimum=0)
+            source_start_ms = number(clip.get("trimStartMs"), "source trim start", minimum=0)
+            source_end_ms = number(clip.get("trimEndMs"), "source trim end", minimum=0)
+            if source_end_ms <= source_start_ms:
+                raise OrchestrationError("invalid_timeline", "Saved composition clip has an invalid source range")
+            speed = number(clip.get("speed"), "speed", minimum=0.25, maximum=4, default=1)
+            volume = number(clip.get("volume"), "volume", minimum=0, maximum=2, default=1)
+            dubbing = clip.get("dubbingSource")
+            dubbing_source = None
+            if dubbing is not None:
+                if not isinstance(dubbing, dict):
+                    raise OrchestrationError("invalid_timeline", "Saved composition clip has invalid dubbing provenance")
+                take_id = str(dubbing.get("takeId") or "").strip()
+                dialogue_id = str(dubbing.get("dialogueId") or "").strip()
+                group_id = str(dubbing.get("groupId") or "").strip()
+                if not take_id or not dialogue_id or not group_id:
+                    raise OrchestrationError("invalid_timeline", "Saved composition dubbing provenance is incomplete")
+                dubbing_source = {
+                    "take_id": take_id,
+                    "dialogue_id": dialogue_id,
+                    "group_id": group_id,
+                }
+                if dubbing.get("episode") is not None:
+                    episode = dubbing["episode"]
+                    if isinstance(episode, bool) or not isinstance(episode, int) or episode < 1:
+                        raise OrchestrationError("invalid_timeline", "Saved composition dubbing episode is invalid")
+                    dubbing_source["episode"] = episode
+            muted = clip.get("muted", False)
+            if not isinstance(muted, bool):
+                raise OrchestrationError("invalid_timeline", "Saved composition clip mute state is invalid")
+            items.append({
+                "item_id": item_id,
+                "source_url": source_url,
+                "source_node_id": str(clip.get("nodeId") or "") or None,
+                "dubbing_source": dubbing_source,
+                "timeline_start": max(0.0, start_ms) / 1000,
+                "source_start": source_start_ms / 1000,
+                "source_end": source_end_ms / 1000,
+                "volume": volume,
+                "muted": muted,
+                "speed": speed,
+            })
+        if items:
+            tracks.append({"track_id": track_id, "kind": kind, "items": items})
+    if not any(track["kind"] == "video" and track["items"] for track in tracks):
+        raise OrchestrationError("invalid_timeline", "Saved composition draft needs at least one video clip")
+
+    raw_subtitle_track = draft.get("subtitleTrack")
+    subtitle_tracks = []
+    if raw_subtitle_track is not None:
+        if not isinstance(raw_subtitle_track, dict) or not isinstance(raw_subtitle_track.get("cues", []), list):
+            raise OrchestrationError("invalid_timeline", "Saved composition draft has an invalid subtitle track")
+        subtitle_track_id = str(raw_subtitle_track.get("id") or "")
+        if not subtitle_track_id:
+            raise OrchestrationError("invalid_timeline", "Saved subtitle track needs an identity")
+        cues = []
+        cue_ids = set()
+        for cue in raw_subtitle_track.get("cues", []):
+            if not isinstance(cue, dict):
+                raise OrchestrationError("invalid_timeline", "Saved subtitle track contains an invalid cue")
+            cue_id = str(cue.get("id") or "")
+            text = str(cue.get("text") or "")
+            if not cue_id or cue_id in cue_ids:
+                raise OrchestrationError("invalid_timeline", "Subtitle cues need unique identities")
+            cue_ids.add(cue_id)
+            start = number(cue.get("timelineStartMs"), "subtitle start", minimum=0)
+            end = number(cue.get("timelineEndMs"), "subtitle end", minimum=0)
+            if end <= start:
+                raise OrchestrationError("invalid_timeline", "Saved subtitle cue has an invalid time range")
+            timing = cue.get("timing", "manual")
+            if timing not in {"manual", "estimated_audio_clip"}:
+                raise OrchestrationError("invalid_timeline", "Saved subtitle cue has an invalid timing mode")
+            source_timing = cue.get("sourceTiming")
+            wire_source_timing = None
+            if source_timing is not None:
+                if not isinstance(source_timing, dict):
+                    raise OrchestrationError("invalid_timeline", "Saved subtitle source timing is invalid")
+                wire_source_timing = {
+                    "timeline_start": number(source_timing.get("timelineStartMs"), "source timing start", minimum=0) / 1000,
+                    "timeline_end": number(source_timing.get("timelineEndMs"), "source timing end", minimum=0) / 1000,
+                    "source_start": number(source_timing.get("sourceStartMs"), "source trim start", minimum=0) / 1000,
+                    "source_end": number(source_timing.get("sourceEndMs"), "source trim end", minimum=0) / 1000,
+                    "speed": number(source_timing.get("speed"), "source speed", minimum=0.25, maximum=4),
+                }
+                if wire_source_timing["source_end"] <= wire_source_timing["source_start"]:
+                    raise OrchestrationError("invalid_timeline", "Saved subtitle source trim range is invalid")
+            confirmed = cue.get("timingConfirmed", False)
+            if not isinstance(confirmed, bool):
+                raise OrchestrationError("invalid_timeline", "Saved subtitle timing confirmation is invalid")
+            cues.append({
+                "cue_id": cue_id,
+                "text": text,
+                "timeline_start": start / 1000,
+                "timeline_end": end / 1000,
+                "source_clip_id": str(cue.get("sourceClipId") or "") or None,
+                "source_clip_url": str(cue.get("sourceClipUrl") or "") or None,
+                "source_take_id": str(cue.get("sourceTakeId") or "") or None,
+                "source_dialogue_id": str(cue.get("sourceDialogueId") or "") or None,
+                "source_group_id": str(cue.get("sourceGroupId") or "") or None,
+                "source_timing": wire_source_timing,
+                "timing": timing,
+                "timing_confirmed": confirmed,
+            })
+        if cues:
+            subtitle_tracks.append({"track_id": subtitle_track_id, "cues": cues})
+
+    resolution = draft.get("resolution", "1080p")
+    if resolution not in {"720p", "1080p"}:
+        raise OrchestrationError("invalid_timeline", "Saved composition draft has an unsupported resolution")
+    fps = number(draft.get("fps", 30), "FPS", minimum=1, maximum=60)
+    if not fps.is_integer():
+        raise OrchestrationError("invalid_timeline", "Saved composition draft FPS must be an integer")
+    revision = draft.get("draftRevision", 0)
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        raise OrchestrationError("invalid_timeline", "Saved composition draft revision is invalid")
+    return {
+        "canvas_id": canvas_id,
+        "resolution": resolution,
+        "resolution_origin": draft.get("resolutionOrigin", "default"),
+        "fps": int(fps),
+        "fps_origin": draft.get("fpsOrigin", "default"),
+        "draft_revision": revision,
+        "cover_url": (draft.get("cover") or {}).get("url") if isinstance(draft.get("cover"), dict) else "",
+        "keep_original_audio": True,
+        "tracks": tracks,
+        "subtitle_tracks": subtitle_tracks,
+    }

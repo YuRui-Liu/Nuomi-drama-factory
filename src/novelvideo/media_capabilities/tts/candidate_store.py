@@ -7,7 +7,7 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 
 class VoiceCandidateStore:
@@ -17,7 +17,8 @@ class VoiceCandidateStore:
         with self.connection() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS character_voice_candidates (
                 candidate_id TEXT PRIMARY KEY, request_id TEXT UNIQUE NOT NULL,
-                character_name TEXT NOT NULL, slot TEXT NOT NULL, kind TEXT NOT NULL,
+                character_name TEXT NOT NULL, character_id TEXT NOT NULL DEFAULT '',
+                voice_version_id TEXT NOT NULL DEFAULT '', slot TEXT NOT NULL, kind TEXT NOT NULL,
                 batch_id TEXT NOT NULL, profile_digest TEXT NOT NULL,
                 payload_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'prepared',
                 provider_task_id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '',
@@ -27,6 +28,42 @@ class VoiceCandidateStore:
             db.execute("""CREATE TABLE IF NOT EXISTS character_nonverbal_selections (
                 character_name TEXT NOT NULL, purpose TEXT NOT NULL, candidate_id TEXT NOT NULL,
                 PRIMARY KEY(character_name,purpose))""")
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(character_voice_candidates)")}
+            for name, definition in (
+                ("character_id", "TEXT NOT NULL DEFAULT ''"),
+                ("voice_version_id", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE character_voice_candidates ADD COLUMN {name} {definition}")
+            self._ensure_character_ids(db)
+
+    @staticmethod
+    def _ensure_character_ids(db: sqlite3.Connection) -> None:
+        table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='characters'").fetchone()
+        if not table:
+            return
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(characters)")}
+        if "character_id" not in columns:
+            db.execute("ALTER TABLE characters ADD COLUMN character_id TEXT NOT NULL DEFAULT ''")
+        rows = db.execute("SELECT name, character_id FROM characters ORDER BY name").fetchall()
+        seen: set[str] = set()
+        for row in rows:
+            character_id = str(row["character_id"] or "")
+            try:
+                UUID(character_id)
+            except (ValueError, AttributeError):
+                character_id = ""
+            if not character_id or character_id in seen:
+                character_id = str(uuid4())
+                db.execute("UPDATE characters SET character_id=? WHERE name=?", (character_id, row["name"]))
+            seen.add(character_id)
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_characters_character_id ON characters(character_id)")
+        db.execute(
+            """CREATE TRIGGER IF NOT EXISTS fill_character_id_after_insert
+               AFTER INSERT ON characters WHEN NEW.character_id=''
+               BEGIN UPDATE characters SET character_id=lower(hex(randomblob(16)))
+               WHERE rowid=NEW.rowid; END"""
+        )
 
     @contextmanager
     def connection(self):
@@ -45,6 +82,7 @@ class VoiceCandidateStore:
         result = dict(row)
         result["payload"] = json.loads(result.pop("payload_json"))
         result["report"] = json.loads(result.pop("report_json"))
+        result["character_key"] = result.get("character_id", "")
         return result
 
     def get(self, candidate_id: str) -> dict:
@@ -65,13 +103,17 @@ class VoiceCandidateStore:
                 return
             if candidate['status'] in {'prepared', 'submitted', 'submission_unknown', 'candidate'}:
                 raise ValueError('声音仍在处理中，请等待任务结束后删除')
-            row = db.execute('SELECT * FROM characters WHERE name=?', (candidate['character_name'],)).fetchone()
+            row = db.execute(
+                "SELECT * FROM characters WHERE character_id=? OR name=? "
+                "ORDER BY CASE WHEN character_id=? THEN 0 ELSE 1 END LIMIT 1",
+                (candidate['character_id'], candidate['character_name'], candidate['character_id']),
+            ).fetchone()
             if row:
                 if row['reference_audio_path'] == candidate['path']:
-                    db.execute("UPDATE characters SET reference_audio_path='',reference_audio_sha256='',reference_audio_updated_at='' WHERE name=?", (candidate['character_name'],))
+                    db.execute("UPDATE characters SET reference_audio_path='',reference_audio_sha256='',reference_audio_updated_at='' WHERE character_id=? OR name=?", (candidate['character_id'], candidate['character_name']))
                 samples = json.loads(row['voice_samples_by_age_group_json'] or '{}')
                 samples = {key: value for key, value in samples.items() if value.get('path') != candidate['path']}
-                db.execute('UPDATE characters SET voice_samples_by_age_group_json=? WHERE name=?', (json.dumps(samples, ensure_ascii=False), candidate['character_name']))
+                db.execute('UPDATE characters SET voice_samples_by_age_group_json=? WHERE character_id=? OR name=?', (json.dumps(samples, ensure_ascii=False), candidate['character_id'], candidate['character_name']))
             db.execute('DELETE FROM character_nonverbal_selections WHERE candidate_id=?', (candidate_id,))
             db.execute("UPDATE character_voice_candidates SET status='deleted' WHERE candidate_id=?", (candidate_id,))
 
@@ -103,10 +145,17 @@ class VoiceCandidateStore:
                     WHERE character_name=? AND slot=? AND kind=? AND batch_id=? AND profile_digest=?""", key).fetchone()[0]
                 if count >= 2:
                     raise ValueError("awaiting_import: nonverbal attempt limit reached")
+            character_id = ""
+            has_characters = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='characters'"
+            ).fetchone()
+            if has_characters:
+                char = db.execute("SELECT character_id FROM characters WHERE name=?", (payload["character_name"],)).fetchone()
+                character_id = str(char["character_id"] or "") if char else ""
             candidate_id = uuid4().hex
             db.execute("""INSERT INTO character_voice_candidates
-                (candidate_id,request_id,character_name,slot,kind,batch_id,profile_digest,payload_json)
-                VALUES (?,?,?,?,?,?,?,?)""", (candidate_id, request_id, *key, serialized))
+                (candidate_id,request_id,character_name,character_id,slot,kind,batch_id,profile_digest,payload_json)
+                VALUES (?,?,?,?,?,?,?,?,?)""", (candidate_id, request_id, key[0], character_id, *key[1:], serialized))
         return self.get(candidate_id)
 
     def claim_submission(self, candidate_id: str) -> bool:
@@ -179,23 +228,33 @@ class VoiceCandidateStore:
         """Explicit human exception approval, guarded against stale facts/references."""
         from novelvideo.models import NovelCharacter
         from novelvideo.media_capabilities.tts.character_voice import character_voice_snapshot, voice_snapshot_digest
+        from novelvideo.media_capabilities.tts.voice_versions import VoiceVersionStore
 
         if not actor.strip() or not reason.strip():
             raise ValueError("review actor and reason required")
         self.read_audio(candidate_id)
+        versions = VoiceVersionStore(self.db_path)
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             candidate = self.decode(db.execute("SELECT * FROM character_voice_candidates WHERE candidate_id=?", (candidate_id,)).fetchone())
-            row = db.execute("SELECT * FROM characters WHERE name=?", (candidate["character_name"],)).fetchone()
+            row = db.execute(
+                "SELECT * FROM characters WHERE character_id=? OR name=? "
+                "ORDER BY CASE WHEN character_id=? THEN 0 ELSE 1 END LIMIT 1",
+                (candidate["character_id"], candidate["character_name"], candidate["character_id"]),
+            ).fetchone()
             if candidate['status'] == 'deleted':
                 raise ValueError('此候选已删除')
             if row is None:
                 raise ValueError("character no longer exists")
-            role = NovelCharacter(name=row["name"], gender=row["gender"] or "", age_group=row["age_group"] or "",
+            character_id = str(row["character_id"] or "")
+            role = NovelCharacter(name=row["name"], character_id=character_id,
+                                  gender=row["gender"] or "", age_group=row["age_group"] or "",
                                   role=row["role"] or "", description=row['description'] or '',
                                   voice_facts_json=row["voice_facts_json"] or "{}")
             if voice_snapshot_digest(character_voice_snapshot(role, db_path=self.db_path)) != candidate["profile_digest"]:
                 raise ValueError("stale voice profile; review a new candidate")
+            if candidate["voice_version_id"]:
+                return candidate
             allowed_modes = {"dialogue", "both"} if candidate["kind"] == "dialogue" else {"nonverbal", "both"}
             if role.voice_facts.vocalization_mode not in allowed_modes or role.voice_facts.conflicts:
                 raise ValueError("vocalization_not_dialogue")
@@ -203,45 +262,81 @@ class VoiceCandidateStore:
             if not report.get("technical", {}).get("passed") or report.get("status") == "rejected":
                 raise ValueError("technical quality check must pass before approval")
             slot = candidate["slot"]
+            identity_id = str(candidate["payload"].get("identity_id") or "")
+            approval = {"method": "human", "actor": actor, "reason": reason}
+            snapshot = {
+                "source": candidate["payload"].get("origin", "candidate"),
+                "profile_snapshot": candidate["payload"].get("profile_snapshot", {}),
+                "payload": candidate["payload"],
+                "report": report,
+                "approval": approval,
+            }
             if candidate["kind"] == "nonverbal":
                 selected = db.execute("SELECT candidate_id FROM character_nonverbal_selections WHERE character_name=? AND purpose=?", (role.name, slot)).fetchone()
                 selected_id = selected[0] if selected else ""
-                if candidate["status"] == "approved" and selected_id == candidate_id:
-                    return candidate
                 if selected_id != candidate["payload"].get("previous_candidate_id", ""):
                     raise ValueError("stale nonverbal selection")
+                version = versions.append_version(
+                    character_id, identity_id=identity_id, slot=slot,
+                    candidate_id=candidate_id, audio_sha256=candidate["sha256"],
+                    path=candidate["path"], snapshot={**snapshot, "approval": approval}, db=db,
+                )
                 db.execute("""INSERT INTO character_nonverbal_selections VALUES(?,?,?)
                     ON CONFLICT(character_name,purpose) DO UPDATE SET candidate_id=excluded.candidate_id""", (role.name, slot, candidate_id))
-                report = {**report, "approval": {"method": "human", "actor": actor, "reason": reason}}
-                db.execute("UPDATE character_voice_candidates SET status='approved',report_json=? WHERE candidate_id=?", (json.dumps(report, ensure_ascii=False), candidate_id))
-                candidate.update(status="approved", report=report)
+                report = {**report, "approval": approval}
+                db.execute("UPDATE character_voice_candidates SET status='approved',report_json=?,voice_version_id=?,character_id=? WHERE candidate_id=?",
+                           (json.dumps(report, ensure_ascii=False), version["version_id"], character_id, candidate_id))
+                candidate.update(status="approved", report=report, voice_version_id=version["version_id"], character_id=character_id,
+                                 character_key=character_id)
                 return candidate
             samples = json.loads(row["voice_samples_by_age_group_json"] or "{}")
-            current = ({"path": row["reference_audio_path"] or "", "sha256": row["reference_audio_sha256"] or ""}
-                       if slot == "default" else samples.get(slot, {}))
+            identity_values = json.loads(row["identities_json"] or "[]")
+            identity = None
+            if identity_id:
+                identity = next((value for value in identity_values if value.get("identity_id") == identity_id), None)
+                if identity is None:
+                    raise ValueError("identity no longer exists")
+            identity_samples = json.loads(identity.get("voice_samples_by_age_group_json") or "{}") if identity else {}
+            current = (
+                {"path": (identity.get("reference_audio_path") or "") if identity else (row["reference_audio_path"] or ""),
+                 "sha256": (identity.get("reference_audio_sha256") or "") if identity else (row["reference_audio_sha256"] or "")}
+                if slot == "default" else (identity_samples if identity else samples).get(slot, {})
+            )
             if expected_reference is not None and {
                 key: current.get(key, "") for key in ("path", "sha256")
             } != expected_reference:
                 raise ValueError("当前声音已变化，请刷新候选后重新选择")
-            if candidate["status"] == "approved":
-                if current.get("path") == candidate["path"] and current.get("sha256") == candidate["sha256"]:
-                    return candidate
-                if expected_reference is None:
-                    raise ValueError("reference changed after approval; explicit version selection required")
+            if candidate["status"] == "approved" and current.get("path") != candidate["path"]:
+                raise ValueError("reference changed after approval; explicit version selection required")
             if expected_reference is None and current != candidate["payload"].get("target_reference", {}):
                 raise ValueError("stale target reference; another version was selected")
             metadata = {"path": candidate["path"], "sha256": candidate["sha256"], "updated_at": candidate["created_at"]}
-            if slot == "default":
+            if identity and slot == "default":
+                identity.update(reference_audio_path=metadata["path"], reference_audio_sha256=metadata["sha256"],
+                                reference_audio_updated_at=metadata["updated_at"])
+                db.execute("UPDATE characters SET identities_json=? WHERE character_id=?",
+                           (json.dumps(identity_values, ensure_ascii=False), character_id))
+            elif identity:
+                identity_samples[slot] = metadata
+                identity["voice_samples_by_age_group_json"] = json.dumps(identity_samples, ensure_ascii=False)
+                db.execute("UPDATE characters SET identities_json=? WHERE character_id=?",
+                           (json.dumps(identity_values, ensure_ascii=False), character_id))
+            elif slot == "default":
                 db.execute("""UPDATE characters SET reference_audio_path=?,reference_audio_sha256=?,
-                    reference_audio_updated_at=? WHERE name=?""",
-                    (metadata["path"], metadata["sha256"], metadata["updated_at"], role.name))
+                    reference_audio_updated_at=? WHERE character_id=?""",
+                    (metadata["path"], metadata["sha256"], metadata["updated_at"], character_id))
             elif slot in {"child", "youth", "middle", "elder"}:
                 samples[slot] = metadata
-                db.execute("UPDATE characters SET voice_samples_by_age_group_json=? WHERE name=?",
-                           (json.dumps(samples, ensure_ascii=False), role.name))
+                db.execute("UPDATE characters SET voice_samples_by_age_group_json=? WHERE character_id=?",
+                           (json.dumps(samples, ensure_ascii=False), character_id))
             else:
                 raise ValueError("invalid voice slot")
-            report = {**report, "approval": {"method": "human", "actor": actor, "reason": reason}}
-            db.execute("UPDATE character_voice_candidates SET status='approved',report_json=? WHERE candidate_id=?",
-                       (json.dumps(report, ensure_ascii=False), candidate_id))
+            report = {**report, "approval": approval}
+            version = versions.append_version(
+                character_id, identity_id=identity_id, slot=slot,
+                candidate_id=candidate_id, audio_sha256=candidate["sha256"],
+                path=candidate["path"], snapshot=snapshot, db=db,
+            )
+            db.execute("UPDATE character_voice_candidates SET status='approved',report_json=?,voice_version_id=?,character_id=? WHERE candidate_id=?",
+                       (json.dumps(report, ensure_ascii=False), version["version_id"], character_id, candidate_id))
         return self.get(candidate_id)

@@ -45,10 +45,11 @@ class ScreenplaySemanticService:
         *,
         concurrency: int = 5,
         selected_scene_ids: set[str] | None = None,
+        scene_identity_ids: tuple[str, ...] | list[str] | None = None,
         save_revision: Callable[[ScreenplaySemanticRevision], ScreenplaySemanticRevision] | None = None,
         reference_context: dict | None = None,
     ) -> ScreenplaySemanticRevision:
-        parsed = parse_screenplay_document(source.content)
+        parsed = parse_screenplay_document(source.content, scene_identity_ids=scene_identity_ids)
         if not parsed.scenes:
             raise ValueError(
                 "SCREENPLAY_SCENES_NOT_FOUND: 未识别到场次，请检查场头格式，例如 1-1 海边灯塔 外 夜"

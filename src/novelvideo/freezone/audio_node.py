@@ -309,6 +309,81 @@ async def _resolve_voice_ref(
             str(voice_ref.get("voice_id") or ""),
         )
 
+    if scope == "character_voice_version":
+        character_id = str(voice_ref.get("character_id") or "").strip()
+        version_id = str(voice_ref.get("version_id") or "").strip()
+        if not character_id or not version_id:
+            raise RuntimeError("固定角色声音版本缺少角色或版本 ID")
+        characters = list(await store.list_characters())
+        character = next(
+            (item for item in characters
+             if str(getattr(item, "character_id", "") or "") == character_id),
+            None,
+        )
+        if character is None:
+            raise RuntimeError("固定角色声音所属角色已不存在")
+        identities = list(getattr(character, "identities", None) or [])
+        if identity_id and not any(
+            str(getattr(item, "identity_id", "") or "") == identity_id
+            for item in identities
+        ):
+            raise RuntimeError("固定角色声音身份已不存在")
+
+        from novelvideo.media_capabilities.tts.voice_versions import VoiceVersionStore
+
+        version_store = VoiceVersionStore(store.db_path)
+        version = version_store.get_version(version_id)
+        if version is None and version_id.startswith("legacy-"):
+            identity = next(
+                (item for item in identities
+                 if str(getattr(item, "identity_id", "") or "") == identity_id),
+                None,
+            )
+            if slot == "default":
+                reference = (
+                    {
+                        "path": getattr(identity, "reference_audio_path", "") or "",
+                        "sha256": getattr(identity, "reference_audio_sha256", "") or "",
+                    }
+                    if identity_id and identity is not None
+                    else {
+                        "path": getattr(character, "reference_audio_path", "") or "",
+                        "sha256": getattr(character, "reference_audio_sha256", "") or "",
+                    }
+                )
+            else:
+                source = identity if identity_id and identity is not None else character
+                samples = getattr(source, "voice_samples_by_age_group", None) or {}
+                reference = samples.get(slot, {}) if isinstance(samples, dict) else {}
+                if not isinstance(reference, dict):
+                    reference = {}
+            version = version_store.get_legacy_current(
+                character_id,
+                identity_id=identity_id,
+                slot=slot or "default",
+                project_dir=project_dir,
+                reference=reference,
+            )
+            if version is not None and version.get("version_id") != version_id:
+                version = None
+        if version is None:
+            raise RuntimeError("固定角色声音版本不可用")
+        if (str(version.get("character_id") or "") != character_id
+                or str(version.get("identity_id") or "") != identity_id
+                or (slot and str(version.get("slot") or "") != slot)):
+            raise RuntimeError("固定角色声音版本与所选身份或槽位不匹配")
+
+        root = Path(project_dir).resolve()
+        stored_path = Path(str(version.get("path") or ""))
+        audio_path = (stored_path if stored_path.is_absolute() else root / stored_path).resolve()
+        if not audio_path.is_relative_to(root) or not audio_path.is_file():
+            raise RuntimeError("固定角色声音文件不可用")
+        expected_sha = str(version.get("audio_sha256") or "")
+        actual_sha = file_sha256(audio_path)
+        if not expected_sha or actual_sha != expected_sha:
+            raise RuntimeError("固定角色声音文件校验失败")
+        return FreezoneVoiceRefResolution(audio_path, actual_sha, "character_voice_version")
+
     characters = list(await store.list_characters())
 
     def _find_character():

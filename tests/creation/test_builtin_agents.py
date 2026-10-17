@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from novelvideo.creation import builtin_agents
+from novelvideo.creation import builtin_agents, professional_agents
 from novelvideo.creation.agent_profiles import AgentProfiles
 from novelvideo.creation.personal_library import PersonalLibrary
 from novelvideo.creation.operations import OperationError
@@ -68,6 +68,12 @@ _LEGACY_FIXED_BASELINE = (
 )
 
 
+LEGACY_V1_PROOFS = {
+    'builtin:creative-lead': 'f7f18851f9c5499ee10ed0cc0bca77d2f7fa01f6e48709d4ee171556aac8505c',
+    'builtin:text-writer': '53f6bd5a0db6fcf013478645a8b69e1dea6c8a928ae6ca2d28da081317ccd808',
+}
+
+
 @pytest.fixture
 def service(ctx, tmp_path):
     return AgentProfiles(ctx, PersonalLibrary(tmp_path/'personal', ctx.requester_user_id))
@@ -85,7 +91,8 @@ async def adopt(service, request_id='adopt'):
 
 
 def add_version(monkeypatch):
-    newer = deepcopy(builtin_agents.BUILTIN_AGENTS[0])
+    newer = deepcopy(max((entry for entry in builtin_agents.BUILTIN_AGENTS
+                         if entry['id'] == 'builtin:creative-lead'), key=lambda entry: entry['revision']))
     newer['revision'] += 1
     newer['configuration']['methods'] = '新版：根据用户目标比较两个可行方案'
     monkeypatch.setattr(builtin_agents, 'BUILTIN_AGENTS', (*builtin_agents.BUILTIN_AGENTS, newer))
@@ -94,16 +101,13 @@ def add_version(monkeypatch):
 
 def test_catalog_and_preview_do_not_initialize_personal_or_project(service, ctx):
     entries = service.builtin_catalog()
-    assert len(entries) == 35
-    assert len({entry['id'] for entry in entries}) == 35
+    assert len(entries) == 22
+    assert len({entry['id'] for entry in entries}) == 22
     by_id = {entry['id']:entry for entry in entries}
-    expected_professional_ids = {
-        'builtin:' + role['slug'] for role in builtin_agents.role_catalog()
-    }
-    assert set(by_id) == expected_professional_ids | {'builtin:text-writer'}
-    assert {'builtin:creative-lead','builtin:text-writer','builtin:ideation'} <= by_id.keys()
-    ideation = by_id['builtin:ideation']
-    assert ideation['revision'] == 1
+    assert set(by_id) == {entry['id'] for entry in professional_agents.PROFESSIONAL_AGENTS}
+    assert {'builtin:creative-lead','builtin:text-writer'} <= by_id.keys()
+    assert 'builtin:ideation' not in by_id
+    ideation = builtin_agents.resolve({'id':'builtin:ideation','revision':1})
     assert ideation['configuration']['capabilities'] == ['context.read','proposal.create']
     methods = ideation['configuration']['methods']
     assert 'proposal.create' in methods and 'text' in methods
@@ -119,12 +123,7 @@ def test_catalog_and_preview_do_not_initialize_personal_or_project(service, ctx)
         assert entry['configuration']['defaults'] == {}
         assert entry['configuration']['studio_refs'] == []
         assert set(entry['configuration']['capabilities']) <= {c['id'] for c in service.capabilities()['items']}
-        if entry['id'] not in {'builtin:creative-lead'}:
-            assert entry['configuration']['capabilities'] == ['context.read','proposal.create']
-        if entry['id'].startswith('builtin:') and entry['id'] not in {
-            'builtin:creative-lead','builtin:text-writer','builtin:ideation',
-        }:
-            assert any('当前仅提供方案' in note for note in entry['configuration']['skill_notes'])
+        assert entry['configuration']['capability_policy']['execution_enabled'] is False
         assert service.adoption_preview({'id':entry['id'],'revision':entry['revision']}, source='builtin') == entry
     assert not ctx.state_dir.exists() and not service.library.root.exists()
 
@@ -134,12 +133,11 @@ def test_legacy_builtin_revision_1_objects_match_full_baseline():
         builtin_agents.resolve({'id':entry['id'],'revision':entry['revision']})
         for entry in _LEGACY_FIXED_BASELINE
     )
-    listed = tuple(
-        entry for entry in builtin_agents.catalog()
-        if entry['id'] in {baseline['id'] for baseline in _LEGACY_FIXED_BASELINE}
-    )
     assert resolved == _LEGACY_FIXED_BASELINE
-    assert listed == _LEGACY_FIXED_BASELINE
+    listed = {entry['id']:entry for entry in builtin_agents.catalog()}
+    assert listed['builtin:creative-lead']['revision'] > 1
+    assert listed['builtin:text-writer']['revision'] > 1
+    assert 'builtin:ideation' not in listed
 
 
 async def test_professional_adoption_is_frozen(service, monkeypatch):
@@ -150,10 +148,19 @@ async def test_professional_adoption_is_frozen(service, monkeypatch):
         'source':'builtin','ref':ref,'proof':entry['proof']
     }, 'adopt-lighting'))
     snapshot = service.adoption(result['adoption_id'])
-    assert snapshot['effective']['capabilities'] == ['context.read','proposal.create']
+    assert snapshot['effective']['capabilities'] == entry['configuration']['capabilities']
     assert snapshot['effective']['skill_notes'] == entry['configuration']['skill_notes']
     monkeypatch.setattr(builtin_agents, 'BUILTIN_AGENTS', ())
     assert service.adoption(result['adoption_id']) == snapshot
+
+
+@pytest.mark.parametrize(('identifier', 'proof'), LEGACY_V1_PROOFS.items())
+def test_legacy_builtin_v1_proofs_and_content_remain_fixed(identifier, proof):
+    fixed = builtin_agents.resolve({'id':identifier,'revision':1})
+    assert fixed['proof'] == proof
+    assert fixed['configuration']['defaults'] == {}
+    assert fixed['configuration']['studio_refs'] == []
+    assert not {'delivery_requirements','collaboration_rules','required_node_operations','examples'} & fixed['configuration'].keys()
 
 
 async def test_explicit_adoption_freezes_builtin_source_without_personal_seed(service, monkeypatch):
@@ -172,7 +179,8 @@ async def test_explicit_adoption_freezes_builtin_source_without_personal_seed(se
 
 async def test_stale_builtin_selection_cannot_copy_changed_catalog(service, monkeypatch):
     ref, entry = first(service)
-    changed = deepcopy(builtin_agents.BUILTIN_AGENTS[0])
+    changed = deepcopy(next(item for item in builtin_agents.BUILTIN_AGENTS
+                            if item['id'] == ref['id'] and item['revision'] == ref['revision']))
     changed['configuration']['methods'] = '目录内容已变化'
     monkeypatch.setattr(builtin_agents, 'BUILTIN_AGENTS', (changed, *builtin_agents.BUILTIN_AGENTS[1:]))
     with pytest.raises(OperationError) as error:
@@ -201,10 +209,10 @@ async def test_builtin_upgrade_cas_conflicts_and_fixed_history(service, monkeypa
     result = await service.apply(command('upgrade', payload, 'upgrade'))
     current = service.adoption(identifier)
     assert result['revision'] == 3
-    assert current['source']['ref'] == ref and current['fixed']['revision'] == 2
+    assert current['source']['ref'] == ref and current['fixed']['revision'] == ref['revision']
     assert current['effective']['methods'] == ('本项目的方法' if resolution == 'keep' else preview['after']['methods'])
     assert service.adoption(identifier, 2) == old
-    assert service.adoption(identifier, 1)['fixed']['revision'] == 1
+    assert service.adoption(identifier, 1)['fixed']['revision'] == old['fixed']['revision']
     assert await service.apply(command('upgrade', payload, 'upgrade')) == result
     with pytest.raises(OperationError):
         await service.apply(command('upgrade', payload, 'stale-cas'))
@@ -261,6 +269,17 @@ async def test_builtin_first_use_reaches_real_main_and_delegation(service, ctx, 
     task = await delegations.apply(command('delegation.create', {**body,'preview_proof':preview['proof']}, 'task'))
     assert task['contract']['agent']['source']['kind'] == 'builtin'
     assert task['contract']['agent']['effective'] == service.adoption(adopted['adoption_id'])['effective']
+    task_id = task['delegation_id']
+    fixed_task = delegations.get(task_id)
+    newer_ref = add_version(monkeypatch)
+    upgrade = service.upgrade_preview(adopted['adoption_id'], newer_ref, source='builtin')
+    await service.apply(command('upgrade', {'source':'builtin','adoption_id':adopted['adoption_id'],
+        'expected_revision':1,'ref':newer_ref,'proof':upgrade['proof'],'resolutions':{}}, 'upgrade-main'))
+    current_task = delegations.get(task_id)
+    assert current_task['contract']['allowed_operations'] == fixed_task['contract']['allowed_operations']
+    assert current_task['contract']['agent'] == fixed_task['contract']['agent']
+    assert current_task['contract']['agent']['source']['ref'] == fixed_task['contract']['agent']['source']['ref']
+    assert service.adoption(adopted['adoption_id'])['fixed']['revision'] == newer_ref['revision']
     assert not service.library.root.exists()
 
 

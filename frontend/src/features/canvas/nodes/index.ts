@@ -4,6 +4,11 @@ import type { NodeTypes } from '@xyflow/react';
 
 import { AudioNode } from './AudioNode';
 import { AgentNode } from './AgentNode';
+import { IdeationNode } from './IdeationNode';
+import { ScreenplayNode } from './ScreenplayNode';
+import { DirectorWorkspaceNode } from './DirectorWorkspaceNode';
+import { NarrativeGroupStoryboardNode } from './NarrativeGroupStoryboardNode';
+import { CharacterVoiceNode } from './CharacterVoiceNode';
 import { MusicDeskNode } from './MusicDeskNode';
 import { BeatContextNode } from './BeatContextNode';
 import { GroupNode } from './GroupNode';
@@ -25,6 +30,11 @@ import { VideoStoryNode } from './VideoStoryNode';
 
 export const nodeTypes: NodeTypes = {
   agentNode: AgentNode,
+  ideationNode: IdeationNode,
+  screenplayNode: ScreenplayNode,
+  directorWorkspaceNode: DirectorWorkspaceNode,
+  narrativeGroupStoryboardNode: NarrativeGroupStoryboardNode,
+  characterVoiceNode: CharacterVoiceNode,
   musicDeskNode: MusicDeskNode,
   audioNode: AudioNode,
   beatContextNode: BeatContextNode,
@@ -46,4 +56,29 @@ export const nodeTypes: NodeTypes = {
   videoStoryNode: VideoStoryNode,
 };
 
-export { AgentNode, AudioNode, BeatContextNode, GroupNode, ImageEditNode, ImageGenNode, ImageNode, Pano360ViewerNode, ScriptNode, SkillNode, StoryboardGenNode, StoryboardNode, TextAnnotationNode, ThreeDWorldNode, UploadNode, VideoComposeNode, VideoDirectorNode, VideoNode, VideoStoryNode };
+export {
+  AgentNode,
+  AudioNode,
+  BeatContextNode,
+  CharacterVoiceNode,
+  DirectorWorkspaceNode,
+  GroupNode,
+  IdeationNode,
+  ImageEditNode,
+  ImageGenNode,
+  ImageNode,
+  NarrativeGroupStoryboardNode,
+  Pano360ViewerNode,
+  ScreenplayNode,
+  ScriptNode,
+  SkillNode,
+  StoryboardGenNode,
+  StoryboardNode,
+  TextAnnotationNode,
+  ThreeDWorldNode,
+  UploadNode,
+  VideoComposeNode,
+  VideoDirectorNode,
+  VideoNode,
+  VideoStoryNode,
+};

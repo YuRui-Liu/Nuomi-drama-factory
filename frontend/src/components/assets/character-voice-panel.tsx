@@ -20,6 +20,7 @@ import {
   useCharacterVoiceSamples,
   useCharacterVoiceRecommendation,
   useRefineCharacterVoice,
+  usePrepareCharacterVoiceDesign,
   useDeleteCharacterVoiceSample,
   useDesignCharacterVoiceSample,
   useRecordCharacterVoiceSample,
@@ -39,12 +40,72 @@ import { cn } from "@/lib/utils";
 import { useTaskController } from "@/hooks/use-task-controller";
 import { queryKeys } from "@/lib/query-keys";
 import type { Character, CharacterVoiceDesign, CharacterVoiceFacts, CharacterVoiceSlot, CharacterVoiceSlotId } from "@/types/character";
-import { CharacterVoiceDesignForm, voiceDesignPreview } from "./character-voice-design-form";
+import { CharacterVoiceDesignForm } from "./character-voice-design-form";
 import { useProject } from "@/lib/queries/projects";
 import { GlobalVoicePicker, VoiceAssetFavorite } from "./global-voice-assets";
 
-type VoiceDraft = { description: string; audition: string; age: string; design: CharacterVoiceDesign | null; context?: Record<string, unknown>; edited: { description: boolean; audition: boolean } };
+type VoiceDraft = { description: string; descriptionDraft: string; audition: string; age: string; design: CharacterVoiceDesign | null; context?: Record<string, unknown>; edited: { description: boolean; audition: boolean } };
 const voiceDrafts = new Map<string, VoiceDraft>();
+
+type CharacterVoiceNodeUpdate = {
+  voiceDesign?: CharacterVoiceDesign | null;
+  voiceDescriptionDraft?: string;
+  voiceDescription?: string;
+  auditionText?: string;
+  voicePerceivedAge?: string;
+  voiceDesignPreview?: null;
+};
+type CharacterVoicePanelProps = {
+  project: string;
+  character: Character;
+  active?: boolean;
+  nodeVoiceDesign?: CharacterVoiceDesign | null;
+  nodeVoiceDescriptionDraft?: string;
+  nodeVoiceDescription?: string;
+  nodeAuditionText?: string;
+  nodeVoicePerceivedAge?: string;
+  isNodeContextCurrent?: () => boolean;
+  onNodeDataChange?: (patch: CharacterVoiceNodeUpdate) => void;
+};
+
+const VOICE_SPEC_FIELDS = [
+  "age_impression", "pitch", "texture", "resonance", "articulation",
+  "pace", "accent", "emotional_baseline", "negative_constraints",
+] as const;
+const VOICE_SPEC_LABELS: Record<(typeof VOICE_SPEC_FIELDS)[number], string> = {
+  age_impression: "听感年龄",
+  pitch: "音区",
+  texture: "音色质感",
+  resonance: "共鸣",
+  articulation: "吐字",
+  pace: "节奏",
+  accent: "口音",
+  emotional_baseline: "性格底色",
+  negative_constraints: "避免特征",
+};
+
+function voiceSpecDiff(before: CharacterVoiceDesign["voice_spec"], after: CharacterVoiceDesign["voice_spec"]) {
+  return VOICE_SPEC_FIELDS.flatMap(field => {
+    const oldValue = before[field] ?? (field === "negative_constraints" ? [] : "");
+    const newValue = after[field] ?? (field === "negative_constraints" ? [] : "");
+    return JSON.stringify(oldValue) === JSON.stringify(newValue)
+      ? []
+      : [{ field, label: VOICE_SPEC_LABELS[field], before: oldValue, after: newValue }];
+  });
+}
+
+function displayVoiceSpecValue(value: string | string[]) {
+  return Array.isArray(value) ? value.join("、") || "（空）" : value || "（空）";
+}
+
+function sameVoiceDraftValue(left: unknown, right: unknown) {
+  if (Object.is(left, right)) return true;
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
 
 const AGE_SLOT_ORDER: CharacterVoiceSlotId[] = ["child", "youth", "middle", "elder"];
 const SUPPORTED_AUDIO_ACCEPT = ".mp3,.wav,.m4a,.aac,.ogg,audio/*";
@@ -140,13 +201,11 @@ function VoiceActionButton({
   );
 }
 
-export function CharacterVoicePanel(props: { project: string; character: Character; active?: boolean }) {
+export function CharacterVoicePanel(props: CharacterVoicePanelProps) {
   return <CharacterVoiceWorkspaces key={props.project} {...props} />;
 }
 
-function CharacterVoiceWorkspaces({ project, character, active = true }: {
-  project: string; character: Character; active?: boolean;
-}) {
+function CharacterVoiceWorkspaces({ project, character, active = true, ...nodeProps }: CharacterVoicePanelProps) {
   const characters = useCharacters(project).data?.data;
   const [visited, setVisited] = useState<Character[]>(() => active ? [character] : []);
   // Keep each opened voice workspace alive: its requests, draft and generation
@@ -162,7 +221,7 @@ function CharacterVoiceWorkspaces({ project, character, active = true }: {
     if (characters && !characters.some(item => item.name === previous.name)) return null;
     const visible = active && current.name === character.name;
     return <div key={current.name} hidden={!visible}>
-      <CharacterVoicePanelContent project={project} character={current} active={visible} />
+      <CharacterVoicePanelContent project={project} character={current} active={visible} {...(current.name === character.name ? nodeProps : {})} />
     </div>;
   });
 }
@@ -171,11 +230,14 @@ function CharacterVoicePanelContent({
   project,
   character,
   active = true,
-}: {
-  project: string;
-  character: Character;
-  active?: boolean;
-}) {
+  nodeVoiceDesign,
+  nodeVoiceDescriptionDraft,
+  nodeVoiceDescription,
+  nodeAuditionText,
+  nodeVoicePerceivedAge,
+  isNodeContextCurrent,
+  onNodeDataChange,
+}: CharacterVoicePanelProps) {
   const { t } = useTranslation();
   const samples = useCharacterVoiceSamples(project, character.name);
   const projectConfig = useProject(project).data?.data;
@@ -187,9 +249,12 @@ function CharacterVoicePanelContent({
   const designVoice = useDesignCharacterVoiceSample(project, character.name);
   const updateCharacter = useUpdateCharacter(project, character.name);
   const refineVoice = useRefineCharacterVoice(project, character.name);
+  const prepareVoice = usePrepareCharacterVoiceDesign(project, character.name);
   const draftKey = JSON.stringify([project, character.name]);
   const savedDraft = useRef(voiceDrafts.get(draftKey)).current;
-  const [design, setDesign] = useState<CharacterVoiceDesign | null>(savedDraft?.design ?? null);
+  const [design, setDesign] = useState<CharacterVoiceDesign | null>(
+    nodeVoiceDesign !== undefined ? nodeVoiceDesign : savedDraft?.design ?? null,
+  );
   const [designContext, setDesignContext] = useState<Record<string, unknown> | undefined>(savedDraft?.context);
   const draftVersion = useRef(0);
   const audioContainer = useRef<HTMLElement>(null);
@@ -260,18 +325,45 @@ function CharacterVoicePanelContent({
   const [preparingVoice, setPreparingVoice] = useState(false);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const contextRef = useRef({ project, characterName: character.name, active });
+  contextRef.current = { project, characterName: character.name, active };
+  const isCurrentContext = () => {
+    const current = contextRef.current;
+    return mounted.current
+      && current.active
+      && current.project === project
+      && current.characterName === character.name
+      && (isNodeContextCurrent?.() ?? true);
+  };
+  const writeNodeData = (patch: CharacterVoiceNodeUpdate) => {
+    if (isCurrentContext()) onNodeDataChange?.(patch);
+  };
   const [confirmedFacts, setConfirmedFacts] = useState<CharacterVoiceFacts | null>(null);
   const facts = confirmedFacts ?? (storedFacts?.provenance === "human" ? storedFacts : recommendation.data?.voice_facts ?? storedFacts);
   const mode = facts?.vocalization_mode ?? "unknown";
   const nonverbal = mode === "nonverbal" || mode === "none";
   const canGenerate = (mode === "dialogue" || mode === "both") && !facts?.conflicts?.length;
   const [factDraft, setFactDraft] = useState<CharacterVoiceFacts | null>(null);
-  const [voiceDescription, setVoiceDescription] = useState(savedDraft?.description ?? "");
-  const [perceivedAge, setPerceivedAge] = useState(savedDraft?.age ?? "");
-  const [auditionText, setAuditionText] = useState(savedDraft?.audition ?? "");
-  const liveVoiceInput = useRef({ voiceDescription, auditionText, perceivedAge, storedFacts, confirmedFacts, character, design });
-  liveVoiceInput.current = { voiceDescription, auditionText, perceivedAge, storedFacts, confirmedFacts, character, design };
-  const edited = useRef(savedDraft?.edited ?? { description: false, audition: false });
+  const [voiceDescription, setVoiceDescription] = useState(nodeVoiceDescription ?? savedDraft?.description ?? "");
+  const [voiceDescriptionDraft, setVoiceDescriptionDraft] = useState(nodeVoiceDescriptionDraft ?? savedDraft?.descriptionDraft ?? "");
+  const [perceivedAge, setPerceivedAge] = useState(nodeVoicePerceivedAge ?? savedDraft?.age ?? "");
+  const [auditionText, setAuditionText] = useState(nodeAuditionText ?? nodeVoiceDesign?.audition_text ?? savedDraft?.audition ?? "");
+  const [voiceDesignProposal, setVoiceDesignProposal] = useState<CharacterVoiceDesign | null>(null);
+  const proposedVoiceSpecDiff = useMemo(
+    () => voiceDesignProposal ? voiceSpecDiff(design?.voice_spec ?? {}, voiceDesignProposal.voice_spec) : [],
+    [design, voiceDesignProposal],
+  );
+  const liveVoiceInput = useRef({ voiceDescription, voiceDescriptionDraft, auditionText, perceivedAge, storedFacts, confirmedFacts, character, design });
+  liveVoiceInput.current = { voiceDescription, voiceDescriptionDraft, auditionText, perceivedAge, storedFacts, confirmedFacts, character, design };
+  const edited = useRef({
+    description: Boolean(savedDraft?.edited.description)
+      || nodeVoiceDesign !== undefined
+      || nodeVoiceDescriptionDraft !== undefined
+      || nodeVoiceDescription !== undefined,
+    audition: Boolean(savedDraft?.edited.audition)
+      || nodeAuditionText !== undefined
+      || nodeVoiceDesign?.audition_text !== undefined,
+  });
   const factsEditor = useRef<HTMLDetailsElement>(null);
   const moreSettings = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
@@ -285,9 +377,41 @@ function CharacterVoicePanelContent({
     if (!edited.current.audition) setAuditionText(current.audition_text);
   }, [recommendation.data, recommendation.isError]);
   useEffect(() => {
-    voiceDrafts.set(draftKey, { description: voiceDescription, audition: auditionText, age: perceivedAge, design, context: designContext, edited: { ...edited.current } });
+    if (nodeVoiceDesign === undefined || sameVoiceDraftValue(nodeVoiceDesign, liveVoiceInput.current.design)) return;
+    draftVersion.current++;
+    edited.current.description = true;
+    setDesign(nodeVoiceDesign);
+    setVoiceDesignProposal(null);
+  }, [nodeVoiceDesign]);
+  useEffect(() => {
+    if (nodeVoiceDescriptionDraft === undefined || nodeVoiceDescriptionDraft === liveVoiceInput.current.voiceDescriptionDraft) return;
+    draftVersion.current++;
+    edited.current.description = true;
+    setVoiceDescriptionDraft(nodeVoiceDescriptionDraft);
+    setVoiceDesignProposal(null);
+  }, [nodeVoiceDescriptionDraft]);
+  useEffect(() => {
+    if (nodeVoiceDescription === undefined || nodeVoiceDescription === liveVoiceInput.current.voiceDescription) return;
+    draftVersion.current++;
+    edited.current.description = true;
+    setVoiceDescription(nodeVoiceDescription);
+    setVoiceDesignProposal(null);
+  }, [nodeVoiceDescription]);
+  useEffect(() => {
+    if (nodeAuditionText === undefined || nodeAuditionText === liveVoiceInput.current.auditionText) return;
+    draftVersion.current++;
+    edited.current.audition = true;
+    setAuditionText(nodeAuditionText);
+  }, [nodeAuditionText]);
+  useEffect(() => {
+    if (nodeVoicePerceivedAge === undefined || nodeVoicePerceivedAge === liveVoiceInput.current.perceivedAge) return;
+    draftVersion.current++;
+    setPerceivedAge(nodeVoicePerceivedAge);
+  }, [nodeVoicePerceivedAge]);
+  useEffect(() => {
+    voiceDrafts.set(draftKey, { description: voiceDescription, descriptionDraft: voiceDescriptionDraft, audition: auditionText, age: perceivedAge, design, context: designContext, edited: { ...edited.current } });
     if (voiceDrafts.size > 100) voiceDrafts.delete(voiceDrafts.keys().next().value!);
-  }, [draftKey, voiceDescription, auditionText, perceivedAge, design, designContext]);
+  }, [draftKey, voiceDescription, voiceDescriptionDraft, auditionText, perceivedAge, design, designContext]);
   const preparedOnOpen = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (active && projectConfig && !samples.isLoading && samples.data?.ok && (!hasSavedVoice || wantsNewVoice) && !nonverbal && !edited.current.description && preparedOnOpen.current !== contextKey) {
@@ -307,16 +431,92 @@ function CharacterVoicePanelContent({
   const refineDesign = async (adjustment: string) => {
     if (refineVoice.isPending || generationLock.current) return;
     const version = draftVersion.current;
+    const stillCurrent = () => isCurrentContext() && version === draftVersion.current;
     try {
       const result = await refineVoice.mutateAsync({ adjustment, design: design ?? undefined, refresh: true });
-      if (!mounted.current || version !== draftVersion.current) return;
+      if (!stillCurrent()) return;
       edited.current = { description: true, audition: true };
       setDesign(result.design ?? null);
       setDesignContext(result.design_context);
       setVoiceDescription(result.voice_description);
       setAuditionText(result.audition_text);
+      setVoiceDescriptionDraft("");
+      setVoiceDesignProposal(null);
+      if (result.design) writeNodeData({
+        voiceDesign: result.design,
+        voiceDescription: result.voice_description,
+        voiceDescriptionDraft: "",
+        auditionText: result.audition_text,
+        voiceDesignPreview: null,
+      });
       if (!liveVoiceInput.current.confirmedFacts) setConfirmedFacts(result.voice_facts);
-    } catch (error) { if (mounted.current) toast.error(backendErrorToastMessage(error, t)); }
+    } catch (error) { if (stillCurrent()) toast.error(backendErrorToastMessage(error, t)); }
+  };
+  const parseVoiceDescriptionDraft = async () => {
+    const description = voiceDescriptionDraft.trim();
+    if (!description || refineVoice.isPending || prepareVoice.isPending || generationLock.current) return;
+    const version = draftVersion.current;
+    const base: CharacterVoiceDesign = design ?? { voice_spec: {}, performance: {} };
+    try {
+      const result = await refineVoice.mutateAsync({
+        adjustment: [
+          "只把下面的自由描述整理到稳定声线 voice_spec 字段。不要改写本次表演 performance、试听文本、角色事实或来源依据。",
+          "自由描述：",
+          description,
+        ].join("\n"),
+        design: base,
+        refresh: true,
+      });
+      if (!mounted.current || version !== draftVersion.current) return;
+      if (!result.design) throw new Error("没有得到可审阅的结构化声线差异");
+      const proposed: CharacterVoiceDesign = {
+        ...base,
+        voice_spec: result.design.voice_spec,
+      };
+      setVoiceDesignProposal(proposed);
+      setDesignContext(result.design_context);
+    } catch (error) {
+      if (mounted.current) toast.error(backendErrorToastMessage(error, t));
+    }
+  };
+  const acceptVoiceDescriptionChanges = async () => {
+    if (!voiceDesignProposal || prepareVoice.isPending) return;
+    const version = draftVersion.current;
+    const stillCurrent = () => isCurrentContext() && version === draftVersion.current;
+    const next: CharacterVoiceDesign = {
+      ...(design ?? { voice_spec: {}, performance: {} }),
+      voice_spec: voiceDesignProposal.voice_spec,
+      audition_text: auditionText.trim(),
+      audition_source: edited.current.audition ? "custom" : design?.audition_source ?? "example",
+    };
+    try {
+      const prepared = await prepareVoice.mutateAsync({
+        slot: "default",
+        design: next,
+        audition_text: auditionText.trim(),
+        language: "Auto",
+        perceived_age: perceivedAge.trim(),
+      });
+      if (!stillCurrent()) return;
+      const compiledDesign = prepared.design ?? next;
+      edited.current.description = true;
+      updateNodeData(compiledDesign, prepared.voice_description, "");
+      setVoiceDesignProposal(null);
+    } catch (error) {
+      if (stillCurrent()) toast.error(backendErrorToastMessage(error, t));
+    }
+  };
+  const updateNodeData = (nextDesign: CharacterVoiceDesign, compiled: string, descriptionDraft: string) => {
+    setDesign(nextDesign);
+    setVoiceDescription(compiled);
+    setVoiceDescriptionDraft(descriptionDraft);
+    writeNodeData({
+      voiceDesign: nextDesign,
+      voiceDescription: compiled,
+      voiceDescriptionDraft: descriptionDraft,
+      auditionText: auditionText.trim(),
+      voiceDesignPreview: null,
+    });
   };
   const storedFactsKey = JSON.stringify(storedFacts);
   useEffect(() => { setConfirmedFacts(null); }, [storedFactsKey]);
@@ -432,6 +632,10 @@ function CharacterVoicePanelContent({
 
   const designVoiceSample = async (slot: CharacterVoiceSlot) => {
     if (generationLock.current || pending || nonverbal || facts?.conflicts?.length) return;
+    if (voiceDescriptionDraft.trim() || voiceDesignProposal) {
+      toast.error("请先审阅并接受自由描述对应的结构化声线差异");
+      return;
+    }
     generationLock.current = true;
     setPreparingVoice(true);
     const sourceKey = JSON.stringify({ character, storedFacts });
@@ -445,6 +649,10 @@ function CharacterVoicePanelContent({
         if (!mounted.current) return;
         if (result.isError || !result.data) throw result.error ?? new Error("声音建议生成失败，请重试");
         const live = liveVoiceInput.current;
+        if (live.voiceDescriptionDraft.trim()) {
+          toast.error("请先审阅并接受自由描述对应的结构化声线差异");
+          return;
+        }
         if (JSON.stringify({ character: live.character, storedFacts: live.storedFacts }) !== sourceKey) {
           toast.error("角色资料已变化，请重新点击生成"); return;
         }
@@ -790,24 +998,37 @@ function CharacterVoicePanelContent({
         <h4 className="flex items-center gap-2 text-sm font-medium"><WandSparkles className="size-4 text-primary" />为这个角色推荐的声音</h4>
         {recommendation.isFetching && <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" />正在阅读角色资料，准备声音建议与试听台词…</p>}
         {recommendation.isError && <div className="text-xs text-muted-foreground">暂时无法获取 AI 推荐，可重试或自行调整声音。<Button size="sm" variant="ghost" onClick={() => void recommendation.refetch()}>重试推荐</Button></div>}
-        <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={refineVoice.isPending || preparingVoice || recommendation.isFetching} onClick={() => void refineDesign("根据当前人物与影视风格重新拟定完整声音方案")}>{refineVoice.isPending ? "正在拟定…" : "重新拟定声音方案"}</Button><Button size="sm" variant="ghost" onClick={() => { edited.current.description = true; setDesign({ voice_spec: {}, performance: {} }); draftVersion.current++; }}>手动设计</Button></div>
-        {design ? <CharacterVoiceDesignForm character={character} design={design} context={designContext} busy={refineVoice.isPending || preparingVoice} onRefine={text => void refineDesign(text)} onChange={next => { edited.current.description = true; draftVersion.current++; setDesign(next); setVoiceDescription(voiceDesignPreview(next)); }} /> : <p className="text-sm leading-6">{voiceDescription || "正在准备人物声音建议，也可手动填写描述后生成。"}</p>}
+        <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={refineVoice.isPending || preparingVoice || recommendation.isFetching} onClick={() => void refineDesign("根据当前人物与影视风格重新拟定完整声音方案")}>{refineVoice.isPending ? "正在拟定…" : "重新拟定声音方案"}</Button><Button size="sm" variant="ghost" onClick={() => { edited.current.description = true; draftVersion.current++; updateNodeData({ voice_spec: {}, performance: {} }, "", voiceDescriptionDraft); setVoiceDesignProposal(null); }}>手动设计</Button></div>
+        {design ? <CharacterVoiceDesignForm character={character} design={design} context={designContext} busy={refineVoice.isPending || preparingVoice || prepareVoice.isPending} onRefine={text => void refineDesign(text)} onChange={next => { edited.current.description = true; draftVersion.current++; updateNodeData(next, "", voiceDescriptionDraft); setVoiceDesignProposal(null); }} /> : <p className="text-sm leading-6">{voiceDescription || "正在准备人物声音建议，也可手动填写描述后生成。"}</p>}
         {recommendation.data && <p className="text-xs text-muted-foreground">AI 创作建议，可调整，不改变角色原文事实。</p>}
         <div className="rounded-md bg-muted/40 p-3"><p className="mb-1 text-xs text-muted-foreground">{edited.current.audition ? "自定义试听台词" : recommendation.data?.audition_source === "dialogue" ? "角色原文对白" : "试听例句（非原文台词）"}</p><p className="text-sm leading-6">{auditionText || "推荐完成后自动准备，也可在“调整声音”中填写。"}</p></div>
         <details open className="text-xs"><summary className="cursor-pointer text-muted-foreground">试听文本与声音描述</summary>
         <div className="mt-3 grid grid-cols-1 gap-3 @md:grid-cols-2 text-xs">
-          <label className="block space-y-1">自定义声音描述（编辑后切换为自由描述）<textarea className="min-h-28 w-full rounded-md border bg-background p-3 text-sm" aria-label="自定义声音描述" placeholder="描述听感年龄、音色、节奏和表演特点" value={voiceDescription} onChange={(event) => { edited.current.description = true; draftVersion.current++; setDesign(null); setVoiceDescription(event.target.value); }} /></label>
-          <label className="block space-y-1">试听文本<textarea className="min-h-28 w-full rounded-md border bg-background p-3 text-sm" aria-label="试听文本" placeholder="输入适合这个角色的一句台词" value={auditionText} onChange={(event) => { edited.current.audition = true; draftVersion.current++; setAuditionText(event.target.value); }} /></label>
+          <label className="block space-y-1">自由声音描述草案<textarea maxLength={8000} className="min-h-28 w-full rounded-md border bg-background p-3 text-sm" aria-label="自定义声音描述" placeholder="描述听感年龄、音色、节奏和表演特点；解析后先审阅字段差异" value={voiceDescriptionDraft} onChange={(event) => { const value = event.target.value; edited.current.description = true; draftVersion.current++; setVoiceDescriptionDraft(value); setVoiceDesignProposal(null); writeNodeData({ voiceDescriptionDraft: value }); }} /></label>
+          <label className="block space-y-1">试听文本<textarea maxLength={200} className="min-h-28 w-full rounded-md border bg-background p-3 text-sm" aria-label="试听文本" placeholder="输入适合这个角色的一句台词" value={auditionText} onChange={(event) => { const value = event.target.value; edited.current.audition = true; draftVersion.current++; setAuditionText(value); const nextDesign = design ? { ...design, audition_text: value, audition_source: "custom" } : null; if (nextDesign) setDesign(nextDesign); writeNodeData({ ...(nextDesign ? { voiceDesign: nextDesign } : {}), auditionText: value, voiceDesignPreview: null }); }} /></label>
         </div>
+        {voiceDescriptionDraft.trim() && <div className="mt-3 space-y-2 rounded-md border p-3">
+          <p className="text-xs text-muted-foreground">自由描述只作为待解析草案，不会直接替换已接受的结构化声线。</p>
+          <Button size="sm" variant="outline" disabled={refineVoice.isPending || prepareVoice.isPending || preparingVoice} onClick={() => void parseVoiceDescriptionDraft()}>
+            {refineVoice.isPending ? "正在整理差异…" : "解析并查看声线字段差异"}
+          </Button>
+        </div>}
+        {voiceDesignProposal && <section aria-label="声音设定差异" className="mt-3 space-y-3 rounded-md border border-primary/40 p-3">
+          <h5 className="text-sm font-medium">待接受的结构化声线差异</h5>
+          {proposedVoiceSpecDiff.length ? <ul className="space-y-2 text-xs">{proposedVoiceSpecDiff.map(item => <li key={item.field} className="grid gap-1 sm:grid-cols-[7rem_1fr_1fr]">
+            <strong>{item.label}</strong><span>当前：{displayVoiceSpecValue(item.before)}</span><span>建议：{displayVoiceSpecValue(item.after)}</span>
+          </li>)}</ul> : <p className="text-xs text-muted-foreground">结构化声线字段没有变化；确认后仍会按当前设计重新编译。</p>}
+          <div className="flex gap-2"><Button size="sm" disabled={prepareVoice.isPending} onClick={() => void acceptVoiceDescriptionChanges()}>{prepareVoice.isPending ? "正在重新编译…" : "接受差异并重新编译"}</Button><Button size="sm" variant="ghost" disabled={prepareVoice.isPending} onClick={() => setVoiceDesignProposal(null)}>取消</Button></div>
+        </section>}
         <details className="text-xs">
           <summary className="cursor-pointer text-muted-foreground">高级声音参数</summary>
-          <label className="mt-3 block space-y-1">听感年龄<Input aria-label="听感年龄" placeholder="留空沿用方案年龄，例如：老年" value={perceivedAge} onChange={(event) => { draftVersion.current++; setPerceivedAge(event.target.value); }} /></label>
+          <label className="mt-3 block space-y-1">听感年龄<Input aria-label="听感年龄" placeholder="留空沿用方案年龄，例如：老年" value={perceivedAge} onChange={(event) => { const value = event.target.value; draftVersion.current++; setPerceivedAge(value); writeNodeData({ voicePerceivedAge: value }); }} /></label>
           <p className="mt-2 text-muted-foreground">听感年龄仅用于声音设计，不修改原文事实；生成指定年龄槽位时，以槽位年龄为准。</p>
         </details>
         </details>
         {mode === "unknown" && !!voiceSamples && !recommendation.isFetching && <div className="space-y-2 rounded-md bg-muted/40 p-3 text-xs"><p>资料中尚未确认：这个角色需要人声对白吗？</p><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={pending} onClick={() => void confirmVocalization("dialogue")}>需要人声对白</Button><Button size="sm" variant="ghost" disabled={pending} onClick={() => void confirmVocalization("nonverbal")}>只发出叫声等声音</Button><Button size="sm" variant="ghost" disabled={pending} onClick={() => void confirmVocalization("none")}>不需要发声</Button></div></div>}
         {!!facts?.conflicts?.length && <div role="alert" className="text-xs text-amber-500">声音资料有矛盾，需要先确认：{facts.conflicts.join("；")}<Button size="sm" variant="ghost" onClick={openFacts}>查看并修正</Button></div>}
-        <Button size="sm" disabled={pending || preparingVoice || refineVoice.isPending || !!facts?.conflicts?.length || samples.isLoading || loadFailed || recommendation.isFetching} onClick={() => void designVoiceSample(sampleSlots.find((slot) => slot.slot === "default") ?? emptySlot("default", "角色声音"))}>
+        <Button size="sm" disabled={pending || preparingVoice || refineVoice.isPending || prepareVoice.isPending || !!voiceDescriptionDraft.trim() || !!voiceDesignProposal || !!facts?.conflicts?.length || samples.isLoading || loadFailed || recommendation.isFetching} onClick={() => void designVoiceSample(sampleSlots.find((slot) => slot.slot === "default") ?? emptySlot("default", "角色声音"))}>
           <WandSparkles className="size-4" />{preparingVoice ? "正在准备并生成…" : "一键生成声音"}
         </Button>
         <p className="text-xs text-muted-foreground">仅在点击后生成音频，试听采用前保留当前声音。</p>

@@ -87,17 +87,17 @@ function PickerInstance({ project, canvasId, managedWorkspace = false, value = '
       }
     } finally { if (current.current) setBusy(false); }
   };
-  return <div className="space-y-2 border-b px-3 py-2" aria-label="助手会话管理">
+  return <div className={`space-y-1 border-b px-3 ${managedWorkspace ? 'py-1' : 'py-2'}`} aria-label="助手会话管理">
     <div className="flex items-center gap-2">
       <label className="flex min-w-0 flex-1 items-center gap-2 text-xs">会话
-        <select aria-label="切换助手会话" className="min-w-0 flex-1 rounded border bg-background p-1.5" value={value} onChange={event => select(event.target.value)}>
+        <select aria-label="切换助手会话" className="min-h-9 min-w-0 flex-1 rounded border bg-background px-2 py-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" value={value} onChange={event => select(event.target.value)}>
           {managedWorkspace && <option value="">{items.length ? '请选择会话' : '此画布暂无会话'}</option>}
           {items.map(item => <option key={item.id} value={item.id}>{item.title}{item.running ? ' · 运行中' : ''}</option>)}
         </select>
       </label>
-      <Button size="sm" variant="outline" disabled={!ready || busy} onClick={() => setCreating(true)}>新建会话</Button>
+      <Button size="sm" variant="outline" className="min-h-9" disabled={!ready || busy} onClick={() => setCreating(true)}>新建会话</Button>
     </div>
-    <p className="text-[10px] text-muted-foreground">各会话独立保存上下文；切换会话不会停止正在执行的任务。</p>
+    <p className={`text-[10px] text-muted-foreground ${managedWorkspace ? 'sr-only' : ''}`}>各会话独立保存上下文；切换会话不会停止正在执行的任务。</p>
     {creating && <form className="flex flex-wrap gap-2" onSubmit={event => { event.preventDefault(); void create(); }}>
       <input aria-label="新会话名称" className="min-w-0 flex-1 rounded border bg-background p-1.5 text-sm" value={title} maxLength={100} required disabled={busy} onChange={event => setTitle(event.target.value)} />
       <Button size="sm" type="submit" disabled={busy || !title.trim()}>{busy ? '创建中…' : '创建'}</Button>

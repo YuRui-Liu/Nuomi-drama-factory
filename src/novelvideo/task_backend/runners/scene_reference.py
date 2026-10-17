@@ -93,7 +93,8 @@ def _register_scene_reference_candidate(
             )
             try:
                 shutil.copy2(output_path, staged_canonical)
-                with staged_canonical.open("rb") as staged_file:
+                # Windows _commit requires a writable descriptor.
+                with staged_canonical.open("rb+") as staged_file:
                     os.fsync(staged_file.fileno())
             except Exception:
                 staged_canonical.unlink(missing_ok=True)

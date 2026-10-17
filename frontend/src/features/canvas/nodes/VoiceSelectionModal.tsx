@@ -17,6 +17,7 @@ import {
   createFreezoneAudioVoice,
   fetchFreezoneAudioReferences,
   type FreezoneAudioReferenceItem,
+  type FreezoneAudioVoiceRefScope,
 } from '@/api/ops';
 import { readUrl } from '@/lib/url-params';
 import { CANVAS_NODE_INPUT_PLACEHOLDER_CLASS } from '@/features/canvas/ui/nodeFrameStyles';
@@ -72,6 +73,19 @@ function isAllowedAudioFile(file: File): boolean {
 }
 
 type TabId = 'library' | 'mine';
+type GenericAudioVoiceScope = Exclude<
+  FreezoneAudioVoiceRefScope,
+  'character_voice_version'
+>;
+type GenericAudioReferenceItem = FreezoneAudioReferenceItem & {
+  scope: GenericAudioVoiceScope;
+};
+
+function isGenericAudioReferenceItem(
+  item: FreezoneAudioReferenceItem,
+): item is GenericAudioReferenceItem {
+  return item.scope !== 'character_voice_version';
+}
 
 export interface VoicePickResult {
   ref: AudioVoiceRef;
@@ -132,7 +146,10 @@ export function VoiceSelectionModal({
   }, [open, reload]);
 
   // 音色库 = available 完整字段；我的音色 = available 里 scope=user_custom 的子集。
-  const libraryItems = items;
+  const libraryItems = useMemo(
+    () => items.filter(isGenericAudioReferenceItem),
+    [items],
+  );
   const myItems = useMemo(
     () => items.filter((it) => it.scope === 'user_custom'),
     [items],
@@ -232,7 +249,7 @@ function TabsRow({ tab, onChange }: TabsRowProps) {
 interface LibraryTabProps {
   currentRef: AudioVoiceRef;
   onPick: (result: VoicePickResult) => void;
-  items: FreezoneAudioReferenceItem[];
+  items: GenericAudioReferenceItem[];
   loading: boolean;
   error: string | null;
 }

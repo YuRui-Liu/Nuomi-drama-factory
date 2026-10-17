@@ -77,6 +77,20 @@ async def test_unknown_or_paid_operations_never_write(ctx,ready,task,operation):
     assert await tools.outputs()==[] and await tools.receipt('write') is None
 
 
+async def test_node_orchestration_error_is_preserved_as_domain_error(ctx,ready,task,monkeypatch):
+    from novelvideo.freezone.orchestration.models import OrchestrationError
+
+    tools=broker(ctx,ready,task)
+    async def fail_node_execution(*args,**kwargs):
+        raise OrchestrationError('authorization_revoked','节点授权已撤销',node_run_id='inner-run')
+    monkeypatch.setattr(tools,'_execute_node',fail_node_execution)
+    with pytest.raises(OperationError) as error:
+        await tools.execute({'request_id':'node-fail','operation':'node.run','payload':{
+            'node_id':'a','operation':'generate','expected_revision':1}})
+    assert error.value.code=='authorization_revoked'
+    assert error.value.details=={'node_run_id':'inner-run'}
+
+
 async def test_targets_inputs_authority_and_request_collision(ctx,ready,task):
     tools=broker(ctx,ready,task)
     for changes in ({'target_node_ids':['other']},{'target_node_ids':[]},{'input_indices':[0]},

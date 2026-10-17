@@ -27,6 +27,7 @@ import {
   type AgentIntent,
   type AgentOwner,
 } from './agentOperation';
+import type { SettingsDraftGuard } from '@/features/creation-workspace/projectSettingsDraftGuard';
 interface Edit {
   identity: string;
   mode: 'new' | 'personal' | 'override';
@@ -59,9 +60,11 @@ function normalized(changes: AgentChanges) {
 export function AgentConfigurationPanel({
   owner,
   isCurrent,
+  draftGuardRef,
 }: {
   owner: AgentOwner;
   isCurrent: () => boolean;
+  draftGuardRef?: { current: SettingsDraftGuard | null };
 }) {
   const client = useQueryClient();
   const [tab, setTab] = useState<'project' | 'personal'>('project');
@@ -384,6 +387,26 @@ export function AgentConfigurationPanel({
             adoption: latestProject,
           }
         : null;
+  if (draftGuardRef) {
+    draftGuardRef.current = {
+      isDirty: () => !!edit || !!prepared || !!upgrade,
+      save: async () => !prepared && !upgrade && !storageError,
+      discard: () => {
+        if (edit) {
+          try {
+            localStorage.removeItem(draftKey(owner, edit.identity));
+            reloadDrafts();
+          } catch {
+            setStorageError('无法清除当前草稿；草稿仍保留。');
+          }
+        }
+        setEdit(null);
+        setPrepared(null);
+        setUpgrade(null);
+        setResolutions({});
+      },
+    };
+  }
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">保存到个人库，或仅调整此项目的配置。</p>

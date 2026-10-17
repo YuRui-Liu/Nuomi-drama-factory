@@ -192,6 +192,30 @@ class TaskStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize_schema()
+        with self._write() as connection:
+            connection.execute("CREATE TABLE IF NOT EXISTS media_attempt_checkpoints ("
+                               "attempt_id TEXT PRIMARY KEY REFERENCES media_attempts(id), "
+                               "body_json TEXT NOT NULL DEFAULT '{}')")
+
+    def get_checkpoint(self, attempt_id: str) -> dict:
+        connection = self._connect()
+        try:
+            row = connection.execute("SELECT body_json FROM media_attempt_checkpoints WHERE attempt_id = ?", (attempt_id,)).fetchone()
+            return json.loads(row[0]) if row else {}
+        finally:
+            connection.close()
+
+    def save_checkpoint(self, attempt_id: str, updates: dict) -> dict:
+        copied, _ = _json_for_storage(updates)
+        with self._write() as connection:
+            self._attempt_row(connection, attempt_id)
+            row = connection.execute("SELECT body_json FROM media_attempt_checkpoints WHERE attempt_id = ?", (attempt_id,)).fetchone()
+            value = json.loads(row[0]) if row else {}
+            value.update(copied)
+            connection.execute("INSERT INTO media_attempt_checkpoints(attempt_id, body_json) VALUES (?, ?) "
+                               "ON CONFLICT(attempt_id) DO UPDATE SET body_json=excluded.body_json",
+                               (attempt_id, json.dumps(value, ensure_ascii=False, allow_nan=False)))
+            return value
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(str(self.path), timeout=10)

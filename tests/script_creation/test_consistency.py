@@ -71,6 +71,74 @@ async def test_invalid_quote_and_changed_reference_publish_no_issues(tmp_path):
     assert (await service.get(next_run["id"]))["issues"] == []
 
 
+@pytest.mark.parametrize("changed_kind", ["people", "episode"])
+async def test_changed_reference_before_execution_does_not_call_model(tmp_path, changed_kind):
+    store, people, _, _, episode = await setup(tmp_path)
+    service = ConsistencyService(store)
+    run = await service.start(episode.id,
+        context_revisions={d.id: d.current_revision_id for d in (people, episode)},
+        client_mutation_id="queued-check")
+    changed = people if changed_kind == "people" else episode
+    await store.save(changed.id, base_revision_id=changed.current_revision_id,
+        markdown="修改后的正文。", client_mutation_id="edit-before-execution")
+    runtime = Runtime([])
+    with pytest.raises(DocumentConflict, match="consistency reference changed"):
+        await service.execute(run["id"], runtime=runtime, task_id="queued-task")
+    assert not hasattr(runtime, "prompt")
+    saved = await service.get(run["id"])
+    assert saved["status"] == "needs_rebase"
+    assert saved["issues"] == []
+
+
+async def test_context_read_failure_does_not_leave_run_running(tmp_path, monkeypatch):
+    store, people, _, _, episode = await setup(tmp_path)
+    service = ConsistencyService(store)
+    run = await service.start(episode.id,
+        context_revisions={d.id: d.current_revision_id for d in (people, episode)},
+        client_mutation_id="unreadable-check")
+
+    async def unreadable(*args, **kwargs):
+        raise DocumentNotFound("context missing")
+
+    monkeypatch.setattr(store, "_document", unreadable)
+    runtime = Runtime([])
+    with pytest.raises(DocumentNotFound):
+        await service.execute(run["id"], runtime=runtime, task_id="unreadable-task")
+    assert not hasattr(runtime, "prompt")
+    saved = await service.get(run["id"])
+    assert saved["status"] == "failed"
+    assert "context missing" in saved["error"]
+
+
+async def test_unique_verbatim_evidence_recovers_model_character_count(tmp_path):
+    store, people, _, _, episode = await setup(tmp_path)
+    service = ConsistencyService(store)
+    run = await service.start(episode.id,
+        context_revisions={d.id: d.current_revision_id for d in (people, episode)},
+        client_mutation_id="wrong-offset")
+    finding = issue("character_knowledge", people, episode, "阿宁不知密钥😀", "我知道密钥😀")
+    finding["target"].update(start=999, end=1000)
+    done = await service.execute(run["id"], runtime=Runtime([finding]), task_id="offset-task")
+    evidence = done["issues"][0]["target"]
+    block = next(b for b in episode.revision.blocks if b.id == evidence["block_id"])
+    assert block.markdown[evidence["start"]:evidence["end"]] == "我知道密钥😀"
+
+
+async def test_ambiguous_evidence_does_not_guess_a_location(tmp_path):
+    store, people, _, _, episode = await setup(tmp_path)
+    episode = await store.save(episode.id, base_revision_id=episode.current_revision_id,
+        markdown="阿宁：我知道密钥。阿宁：我知道密钥。", client_mutation_id="repeat")
+    service = ConsistencyService(store)
+    run = await service.start(episode.id,
+        context_revisions={d.id: d.current_revision_id for d in (people, episode)},
+        client_mutation_id="ambiguous")
+    finding = issue("knowledge", people, episode, "阿宁不知密钥😀", "我知道密钥")
+    finding["target"].update(start=999, end=1000)
+    with pytest.raises(DocumentValidation):
+        await service.execute(run["id"], runtime=Runtime([finding]), task_id="ambiguous-task")
+    assert (await service.get(run["id"]))["issues"] == []
+
+
 async def test_hypothetical_is_distinct_and_intentional_becomes_stale(tmp_path):
     store, people, _, _, episode = await setup(tmp_path)
     proposal = await ProposalService(store).create(document_id=people.id, base_revision_id=people.current_revision_id,

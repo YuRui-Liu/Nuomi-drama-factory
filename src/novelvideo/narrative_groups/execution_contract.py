@@ -47,11 +47,14 @@ def validate_execution_contract(payload: Mapping[str, Any]) -> dict[str, Any] | 
 def workflow_execution_definition(workflow) -> dict[str, Any]:
     """Only execution-relevant public configuration; never credentials."""
     data = workflow.model_dump(mode='json')
-    return {key: data.get(key) for key in (
+    result = {key: data.get(key) for key in (
         'id', 'provider', 'adapter_key', 'provider_workflow_id',
         'workflow_settings_key', 'supported_modes', 'default_mode',
         'reference_policy', 'parameters',
     )}
+    if data.get('workflow_profile') is not None:
+        result['workflow_profile'] = data['workflow_profile']
+    return result
 
 
 def validate_workflow_definition(payload, workflow):

@@ -39,6 +39,7 @@ class NarrativeGroupVideoRequest:
     provider_workflow_id: str | None = None
     frozen_frames: Mapping[str, H3FrozenFrame] | None = None
     reference_wire: H3ReferenceWire | None = None
+    workflow_profile: dict | None = None
 
     def __post_init__(self) -> None:
         parameters = dict(self.workflow_parameters)
@@ -261,6 +262,8 @@ class H3ReferenceWorkflowAdapter:
             "wire": request.reference_wire,
             "frozen_frames": request.frozen_frames,
         }
+        if request.workflow_profile is not None:
+            kwargs["workflow_profile"] = request.workflow_profile
         if request.on_provider_submitted is not None:
             kwargs["on_provider_submitted"] = request.on_provider_submitted
         generated = await self._generator(ctx, **kwargs)

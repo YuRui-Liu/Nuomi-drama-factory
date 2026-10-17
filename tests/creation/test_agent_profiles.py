@@ -48,6 +48,42 @@ async def test_personal_versions_copy_and_cross_user_isolation(service,tmp_path)
     assert await service.save(command('copy',{'ref':first,'name':'副本'},'copy'))==copied
 
 
+async def test_legacy_profile_input_publishes_complete_professional_fields(service):
+    preview=service.preview(configuration())
+    fields=('required_node_operations','delivery_requirements','examples','collaboration_rules')
+    assert all(preview['configuration'][field]==[] for field in fields)
+    ref=await service.save(command('save',{'configuration':configuration(),'proof':preview['proof'],
+        'expected_revision':0},'legacy-shaped-save'))
+    published=service.library.version('agent',ref)['configuration']
+    assert all(published[field]==[] for field in fields)
+
+
+async def test_patching_legacy_profile_publishes_complete_professional_fields(service):
+    legacy=configuration()
+    ref=service.library.apply('agent',command('save',{
+        'configuration':legacy,'proof':'legacy-proof','expected_revision':0,
+    },'seed-legacy'),lambda config,proof:config)
+    changes={'methods':'旧配置的新方法'}
+    preview=service.personal_patch_preview(ref,changes)
+    fields=('required_node_operations','delivery_requirements','examples','collaboration_rules')
+    assert all(preview['configuration'][field]==[] for field in fields)
+    newer=await service.save(command('patch',{'ref':ref,'changes':changes,'proof':preview['proof']},'patch-legacy'))
+    assert all(service.library.version('agent',newer)['configuration'][field]==[] for field in fields)
+    assert all(field not in service.library.version('agent',ref)['configuration'] for field in fields)
+
+
+async def test_project_override_accepts_catalogued_unavailable_node_operations(service):
+    ref=await save(service)
+    adopted=await service.apply(command('adopt',{'ref':ref,'proof':service.library.version('agent',ref)['proof']},'adopt-ops'))
+    operations=[{'node_type':'musicDeskNode','operation':'export'}]
+    changes={'required_node_operations':operations}
+    preview=service.override_preview(adopted['adoption_id'],changes)
+    result=await service.apply(command('override',{'adoption_id':adopted['adoption_id'],
+        'expected_revision':1,'changes':changes,'proof':preview['proof']},'override-ops'))
+    assert result['effective']['required_node_operations']==operations
+    assert service.capabilities()['execution_enabled'] is False
+
+
 async def test_fixed_adoption_overlay_upgrade_conflict_and_two_projects(service,ctx):
     ref=await save(service)
     body=command('adopt',{'ref':ref,'proof':service.library.version('agent',ref)['proof']},'adopt')

@@ -71,6 +71,7 @@ class VideoWorkflowDefinition(BaseModel):
         RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3
     )
     provider_workflow_id: str | None = None
+    workflow_profile: dict | None = None
     scenes: frozenset[VideoWorkflowScene]
     supported_modes: tuple[str, ...]
     default_mode: str = "auto"
@@ -377,6 +378,33 @@ def build_video_workflow_registry(
             "unavailable_reason": reference_unavailable_reason,
         }
     )
+    from novelvideo.media_capabilities.workflows.registry import WorkflowRegistry
+    registered = []
+    for manifest in WorkflowRegistry(store).for_scene("video.ref2va", "narrative_group"):
+        saved_profile = store.get_workflow(manifest.id, manifest.version)
+        if saved_profile is None or saved_profile.status != "active":
+            continue
+        # The existing H3 business adapter consumes a compiled timeline string.
+        execution_profile = saved_profile.model_copy(update={
+            "bindings": {"timeline_data": {"node_id": "12", "field": "timeline_data"}},
+            "constraints": {"required": ["timeline_data"]},
+            "capabilities": [MediaCapability.VIDEO_REF2VA],
+        })
+        reason = None
+        try:
+            load_runninghub_runtime_configuration(store, resolver)
+        except MediaRuntimeConfigurationError:
+            reason = "provider_not_configured"
+        registered.append(VideoWorkflowDefinition(
+            id=f"runninghub:workflow:{manifest.id}:v{manifest.version}",
+            label=manifest.label, provider="runninghub", adapter_key="minimax-h3-ref",
+            workflow_settings_key=RunningHubWorkflowSettingsKey.VIDEO_MINIMAX_H3_REF,
+            provider_workflow_id=manifest.workflow_id,
+            workflow_profile=execution_profile.model_dump(mode="json"),
+            scenes=frozenset({VideoWorkflowScene.NARRATIVE_GROUP}), supported_modes=("ref2va",),
+            reference_policy=reference_definition.reference_policy, parameters=_h3_parameters(),
+            available=reason is None, unavailable_reason=reason,
+        ))
     return VideoWorkflowRegistry(
         (
             VideoWorkflowDefinition(
@@ -396,6 +424,7 @@ def build_video_workflow_registry(
                 unavailable_reason=unavailable_reason,
             ),
             reference_definition,
+            *registered,
         )
     )
 

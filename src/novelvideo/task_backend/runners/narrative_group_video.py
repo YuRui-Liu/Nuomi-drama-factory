@@ -666,11 +666,12 @@ def _source_state_context(active, segment: H3DirectorSegment, director_context: 
         return director_context
     for state in states:
         shot = shots[state["shot_id"]]
+        if getattr(shot, "cinematography", None) is not None:
+            state["cinematography"] = shot.cinematography.model_dump(mode="json")
         if getattr(shot, "creative", None) is not None:
             creative = shot.creative.model_dump(mode="json")
             state.update(creative_contract_version=1, creative=creative,
                          action=shot.action,
-                         cinematography=shot.cinematography.model_dump(mode="json") if shot.cinematography else {},
                          duration_seconds=shot.duration_seconds,
                          creative_h3_slots=creative_h3_slots(creative),
                          creative_h3_rigid_slots=creative_h3_rigid_slots(creative))
@@ -2977,6 +2978,7 @@ async def _execute_inner(
                             global_references=global_references,
                             reference_limit=reference_limit,
                             provider_workflow_id=provider_workflow_id,
+                            workflow_profile=getattr(workflow, "workflow_profile", None),
                             frozen_frames=frozen_frames,
                             reference_wire=reference_wire,
                             on_provider_submitted=on_provider_submitted,

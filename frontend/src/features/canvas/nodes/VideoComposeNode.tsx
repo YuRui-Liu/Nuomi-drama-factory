@@ -30,7 +30,10 @@ import {
   canvasNodeFrameClass,
 } from "@/features/canvas/ui/nodeFrameStyles";
 import { readUrl } from "@/lib/url-params";
-import { VideoComposeModal } from "@/features/canvas/compose/VideoComposeModal";
+import {
+  VideoComposeModal,
+  type ComposeExportEvidence,
+} from "@/features/canvas/compose/VideoComposeModal";
 import type { ComposeTimelineState } from "@/features/canvas/compose/timelineModel";
 
 type VideoComposeNodeProps = NodeProps & {
@@ -41,7 +44,6 @@ type VideoComposeNodeProps = NodeProps & {
 
 const NODE_WIDTH = 240;
 const NODE_HEIGHT = 136;
-const MIN_UPSTREAM_VIDEOS = 2;
 
 export const VideoComposeNode = memo(
   ({ id, data, selected }: VideoComposeNodeProps) => {
@@ -65,14 +67,7 @@ export const VideoComposeNode = memo(
           .map((node) => node.id),
       [upstreamNodes],
     );
-    const videoCount = useMemo(
-      () =>
-        upstreamNodes.filter(
-          (node) => (isVideoNode(node) || isVideoDirectorNode(node)) && Boolean(node.data.videoUrl),
-        ).length,
-      [upstreamNodes],
-    );
-    const canOpen = videoCount >= MIN_UPSTREAM_VIDEOS;
+    const canOpen = seedNodeIds.length > 0 || Boolean(data.draftTimeline);
 
     const resolvedTitle = useMemo(
       () => resolveNodeDisplayName(CANVAS_NODE_TYPES.videoCompose, data),
@@ -136,7 +131,7 @@ export const VideoComposeNode = memo(
               {t("videoCompose.node.open")}
             </button>
             <span className="text-[12px] text-text-muted/90">
-              {t("videoCompose.node.hint", { min: MIN_UPSTREAM_VIDEOS })}
+              连接音频或视频即可编辑；导出成片需有视频轨。
             </span>
           </div>
         </div>
@@ -152,8 +147,18 @@ export const VideoComposeNode = memo(
             onPersistDraft={(timeline) =>
               updateNodeData(id, { draftTimeline: timeline })
             }
+            onExported={(evidence: ComposeExportEvidence) =>
+              updateNodeData(id, {
+                exportTimelineRevision: evidence.timelineRevision,
+                exportDraftRevision: evidence.draftRevision,
+                exportManifestUrl: evidence.manifestUrl,
+                exportArtifactSha256: evidence.videoSha256,
+                exportSubtitleSha256: evidence.subtitleSha256,
+                exportSubtitlePath: evidence.subtitlePath,
+              })
+            }
             onClose={() => setEditorOpen(false)}
-            onComposed={(url, coverUrl) => {
+            onComposed={(url, coverUrl, evidence) => {
               // 合成完成：在本节点下游新建一个视频节点承载结果，并连边、聚焦。
               // 封面（若设置）写进结果视频节点 + 本合成节点的 previewImageUrl。
               const store = useCanvasStore.getState();
@@ -163,6 +168,12 @@ export const VideoComposeNode = memo(
                 previewImageUrl: coverUrl,
                 displayName: t("videoCompose.node.resultName"),
                 sourceFileName: null,
+                exportTimelineRevision: evidence?.timelineRevision ?? null,
+                exportDraftRevision: evidence?.draftRevision ?? null,
+                exportManifestUrl: evidence?.manifestUrl ?? null,
+                exportArtifactSha256: evidence?.videoSha256 ?? null,
+                exportSubtitleSha256: evidence?.subtitleSha256 ?? null,
+                exportSubtitlePath: evidence?.subtitlePath ?? null,
               } as Partial<CanvasNodeData>);
               store.addEdge(id, newId);
               store.setSelectedNode(newId);
@@ -170,6 +181,12 @@ export const VideoComposeNode = memo(
               updateNodeData(id, {
                 resultVideoUrl: url,
                 previewImageUrl: coverUrl,
+                exportTimelineRevision: evidence?.timelineRevision ?? null,
+                exportDraftRevision: evidence?.draftRevision ?? null,
+                exportManifestUrl: evidence?.manifestUrl ?? null,
+                exportArtifactSha256: evidence?.videoSha256 ?? null,
+                exportSubtitleSha256: evidence?.subtitleSha256 ?? null,
+                exportSubtitlePath: evidence?.subtitlePath ?? null,
               });
               setEditorOpen(false);
             }}

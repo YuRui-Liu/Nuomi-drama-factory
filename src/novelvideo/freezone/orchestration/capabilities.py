@@ -7,6 +7,12 @@ from novelvideo.freezone.skill_registry import list_skills
 # (category, accepted media, produced media, operations). Do not remove blocked
 # operations to make an acceptance report appear complete.
 _SPECS = {
+    "ideationNode": ("generation", ("text", "json"), ("json",), ("generate",)),
+    "screenplayNode": ("generation", ("text", "json"), ("json",), ("plan", "inspect", "review", "rewrite")),
+    "narrativeGroupStoryboardNode": ("input", ("json",), ("json",), ("validate",)),
+    "directorWorkspaceNode": ("generation", ("text", "json"), ("json",),
+                               ("prepare", "preview_handoff", "inspect", "save_blocking", "compile_blocking", "edit_shot", "edit_structure", "render_groups", "retry_render_groups", "produce", "retry_production")),
+    "characterVoiceNode": ("generation", ("text", "audio", "json"), ("audio", "json"), ("design", "prepare_design")),
     "uploadNode": ("input", (), ("image", "video", "audio"), ("validate", "upload")),
     "imageNode": ("generation", ("image", "text"), ("image",), ("edit",)),
     "imageGenNode": ("generation", ("image", "text"), ("image",), ("generate", "edit")),
@@ -19,7 +25,8 @@ _SPECS = {
     "videoNode": ("generation", ("text", "image", "video", "audio"), ("video",),
                   ("generate", "image_to_video", "keyframes", "reference", "edit", "upscale", "erase", "extract_frames", "separate_audio")),
     "videoDirectorNode": ("generation", ("text", "image", "json"), ("video",), ("generate",)),
-    "audioNode": ("generation", ("text", "audio"), ("audio",), ("speech", "music")),
+    "audioNode": ("generation", ("text", "audio", "json"), ("audio", "json"),
+                  ("speech", "music", "prepare_dubbing", "generate_dubbing", "group_dubbing", "audition")),
     "videoStoryNode": ("generation", ("video", "text"), ("text", "json"), ("analyze",)),
     "videoComposeNode": ("transform", ("video", "audio"), ("video",), ("compose",)),
     "musicDeskNode": ("transform", ("video", "audio"), ("audio", "video"), ("edit", "export")),

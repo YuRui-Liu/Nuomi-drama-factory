@@ -63,7 +63,7 @@ async def _generate(envelope, ctx):
     store, job_id = get_store(), envelope['payload']['job_id']
     job = store.job(ctx.project_id, job_id)
     workflow = job['input']['workflow']
-    if not job.get('remoteTaskId'):
+    if not job.get('remoteTaskId') and not job['input'].get('workflowPackage'):
         configured_workflow, fingerprint = await generation_configuration()
         if configured_workflow != workflow or fingerprint != job['input']['contractHash']:
             store.update_job(ctx.project_id, job_id, status='failed', error='工作流配置已变化，请重新审阅请求')
@@ -73,7 +73,7 @@ async def _generate(envelope, ctx):
         base_url=runtime.account.base_url or RunningHubClient.DEFAULT_BASE_URL,
         workflow_media={workflow:'audio'}, download_allowed_hosts=RUNNINGHUB_DOWNLOAD_HOSTS) as client:
         for _ in range(240):
-            result = await advance_generation(store, ctx.project_id, job_id, client, media_root())
+            result = await advance_generation(store, ctx.project_id, job_id, client, media_root(), runtime=runtime)
             if result['status'] == 'completed':
                 return {'music_version_id': result['candidate']['versionId'], 'provider_task_id':result.get('remoteTaskId')}
             if result['status'] in {'failed','submission_unknown','submitting','cancelled'}:

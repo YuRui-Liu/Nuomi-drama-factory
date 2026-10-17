@@ -1,10 +1,13 @@
 import asyncio
 import json
+import time
+from types import SimpleNamespace
 
 import pytest
 
 from novelvideo.creation import agent_model
-from novelvideo.creation.agent_runs import AgentRuns
+from novelvideo.creation import agent_runs
+from novelvideo.creation.agent_runs import AgentRuns, _RunTools
 from novelvideo.creation.library_references import digest
 from novelvideo.creation.operations import OperationError
 from novelvideo.freezone.canvas_store import canvas_path
@@ -51,6 +54,26 @@ async def test_actual_broker_two_candidates_and_no_repeat_model(ctx,ready,task,r
     assert await runs.start(start_request(task))==result
     await runs.drive(result['run']['id'])
     assert len(calls)==1
+
+
+async def test_agent_run_scope_is_checked_from_sql_row(task,runs):
+    started=await runs.start(start_request(task))
+    runs.canvas_id='different-canvas'
+    with pytest.raises(OperationError) as failure:
+        await runs.get(started['run']['id'])
+    assert failure.value.code=='scope_violation'
+
+
+async def test_model_call_budget_allows_bounded_crew_not_unlimited(task,runs):
+    over_limit = start_request(task, request_id='over-limit', max_model_calls=25)
+    with pytest.raises(OperationError):
+        await runs.start(over_limit)
+    oversized_roster = start_request(task, request_id='oversized-roster',
+        specialist_ids=[str(index) for index in range(19)])
+    with pytest.raises(OperationError):
+        await runs.start(oversized_roster)
+    allowed = await runs.start(start_request(task, request_id='bounded-crew', max_model_calls=24))
+    assert allowed['run']['max_model_calls'] == 24
 
 
 async def test_unknown_model_never_retried_on_resume(ctx,ready,task,runs,monkeypatch):
@@ -287,3 +310,115 @@ async def test_unmet_is_latest_per_delegation_not_last_child(task,runs,monkeypat
     assert calls==[1,1] and len(final['outputs'])==2
     assert final['unmet']==(['主创尚缺第二方案'] if child_run else [])
     assert final['state']==('partial' if child_run else 'delivered')
+
+
+def _run_tools_lease_harness(tmp_path):
+    class LeaseHarness:
+        def __init__(self):
+            self.ctx = SimpleNamespace(project_id='p', requester_user_id='alice',
+                owner_username='alice', is_home_node=True, state_dir=tmp_path, output_dir=tmp_path)
+            self.username = 'alice'
+            self.canvas_id = 'canvas'
+            self.conversation_id = 'conversation'
+            self.state = 'applying'
+            self.lease_expires = time.monotonic() + agent_runs.LEASE_SECONDS
+            self.heartbeat_attempts = 0
+            self.heartbeats = 0
+
+        async def resolve_context(self, role):
+            return self.ctx
+
+        async def _authorize_node_action(self, *args, **kwargs):
+            return None
+
+        async def _authorize_node_submission(self, *args, **kwargs):
+            return None
+
+        def _authorize_node_projection_sync(self, *args, **kwargs):
+            return None
+
+        async def _send(self, action, payload):
+            if action == 'admit_action':
+                return {'run': {'rounds': [{'action_node_context': {'0': {'node_id': 'a'}}}]}}
+            if action == 'heartbeat':
+                self.heartbeat_attempts += 1
+                if (self.state != 'applying' or self.lease_expires is None
+                        or self.lease_expires <= time.monotonic()):
+                    raise OperationError('run_fenced', 'stopped or expired')
+                self.heartbeats += 1
+                self.lease_expires = time.monotonic() + agent_runs.LEASE_SECONDS
+                return {'run': {'state': self.state}}
+            raise AssertionError(f'unexpected run action: {action}')
+
+    return LeaseHarness()
+
+
+def _accepted_node_transition():
+    return {'agent_run_id': 'run-id', 'step_id': 'step-id',
+            'action_id': 'action-id', 'action_index': 0}
+
+
+def _node_run_action():
+    return {'request_id': 'action-id', 'operation': 'node.run', 'payload': {
+        'node_id': 'a', 'operation': 'generate', 'expected_revision': 1}}
+
+
+async def test_admitted_slow_node_action_renews_agent_lease(tmp_path, monkeypatch):
+    from novelvideo.creation.agent_tools import AgentTools
+
+    monkeypatch.setattr(agent_runs, 'LEASE_SECONDS', .12)
+    monkeypatch.setattr(agent_runs, 'HEARTBEAT_SECONDS', .01, raising=False)
+    harness = _run_tools_lease_harness(tmp_path)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_provider(self, body, *, accepted_transition=None):
+        entered.set()
+        await release.wait()
+        return {'receipt': 'durable'}
+
+    monkeypatch.setattr(AgentTools, 'execute', slow_provider)
+    tools = _RunTools(harness, 'run-id', 'owner-id', 'delegation-id',
+                      step={'attempt_id': 'step-id'}, round_index=0)
+    work = asyncio.create_task(tools.execute(_node_run_action(),
+                                              accepted_transition=_accepted_node_transition()))
+    await entered.wait()
+    try:
+        await asyncio.sleep(.28)
+        assert harness.heartbeats >= 2
+        assert harness.lease_expires > time.monotonic()
+    finally:
+        release.set()
+    assert await work == {'receipt': 'durable'}
+    heartbeats_after_receipt = harness.heartbeats
+    await asyncio.sleep(.03)
+    assert harness.heartbeats == heartbeats_after_receipt
+
+
+async def test_stopping_slow_node_action_prevents_heartbeat_from_reviving_lease(tmp_path, monkeypatch):
+    from novelvideo.creation.agent_tools import AgentTools
+
+    monkeypatch.setattr(agent_runs, 'LEASE_SECONDS', .12)
+    monkeypatch.setattr(agent_runs, 'HEARTBEAT_SECONDS', .01, raising=False)
+    harness = _run_tools_lease_harness(tmp_path)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_provider(self, body, *, accepted_transition=None):
+        entered.set()
+        await release.wait()
+        return {'receipt': 'provider-result-retained'}
+
+    monkeypatch.setattr(AgentTools, 'execute', slow_provider)
+    tools = _RunTools(harness, 'run-id', 'owner-id', 'delegation-id',
+                      step={'attempt_id': 'step-id'}, round_index=0)
+    work = asyncio.create_task(tools.execute(_node_run_action(),
+                                              accepted_transition=_accepted_node_transition()))
+    await entered.wait()
+    harness.state = 'stopped'
+    harness.lease_expires = None
+    deadline = asyncio.get_running_loop().time() + .5
+    while harness.heartbeat_attempts == 0 and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(.005)
+    assert harness.heartbeat_attempts == 1
+    assert harness.state == 'stopped' and harness.lease_expires is None
+    release.set()
+    assert await work == {'receipt': 'provider-result-retained'}

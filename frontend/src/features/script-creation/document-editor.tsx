@@ -14,18 +14,24 @@ type Props = {
   manager: DraftManager;
   onSelection: (selection: { text: string; start: number; end: number } | null) => void;
   focusEvidence?: ConsistencyEvidence | null;
+  readingTarget?: { document_id: string; revision_id: string; offset: number } | null;
 };
 
-export function DocumentEditor({ project, draft, manager, onSelection, focusEvidence }: Props) {
+export function DocumentEditor({ project, draft, manager, onSelection, focusEvidence, readingTarget }: Props) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(draft.markdown);
   const [server, setServer] = useState<ScriptDocument | null>(null);
   const [compareError, setCompareError] = useState("");
   const composing = useRef(false);
   const input = useRef<HTMLTextAreaElement>(null);
+  const readingTargetId = "document-editor-reading-target";
+  const readingTargetMatches = readingTarget?.document_id === draft.document.id && readingTarget.revision_id === draft.document.current_revision_id;
   const headingId = (offset: number | undefined) => offset === undefined
     ? undefined
     : "heading-" + draft.document.id + "-" + Array.from(draft.markdown.slice(0, offset)).length;
+  const readingTargetForOffset = (offset: number | undefined, end?: number) => readingTargetMatches && offset !== undefined && readingTarget &&
+    (offset === readingTarget.offset || (end !== undefined && offset <= readingTarget.offset && readingTarget.offset < end))
+    ? readingTargetId : undefined;
 
   useEffect(() => { if (!composing.current) setValue(draft.markdown); }, [draft.markdown]);
   useEffect(() => { setServer(null); setCompareError(""); }, [draft.document.id]);
@@ -36,6 +42,14 @@ export function DocumentEditor({ project, draft, manager, onSelection, focusEvid
         focusEvidence.revision_id !== draft.document.current_revision_id) return;
     setEditing(true);
   }, [focusEvidence, draft.document.id, draft.document.current_revision_id]);
+  useEffect(() => {
+    if (readingTargetMatches) setEditing(false);
+  }, [readingTarget, readingTargetMatches]);
+  useEffect(() => {
+    if (!readingTargetMatches || editing) return;
+    const frame = requestAnimationFrame(() => document.getElementById(readingTargetId)?.scrollIntoView?.({ block: "center", behavior: "smooth" }));
+    return () => cancelAnimationFrame(frame);
+  }, [readingTargetMatches, readingTarget?.offset, editing, draft.markdown]);
   useEffect(() => {
     if (!editing || !focusEvidence || focusEvidence.document_id !== draft.document.id ||
         focusEvidence.revision_id !== draft.document.current_revision_id || !input.current) return;
@@ -78,7 +92,7 @@ export function DocumentEditor({ project, draft, manager, onSelection, focusEvid
   };
 
   return (
-    <article className="mx-auto my-7 min-h-[calc(100%-4rem)] w-full max-w-[860px] rounded-xl border border-white/[0.07] bg-[#181A1E] px-6 py-7 shadow-xl shadow-black/20 md:px-10">
+    <article className="mx-auto my-7 min-h-[calc(100%-4rem)] w-full max-w-[860px] rounded-xl border border-white/[0.07] bg-[#181A1E] px-6 py-7 shadow-xl shadow-black/20 md:px-10 [&_#document-editor-reading-target]:rounded [&_#document-editor-reading-target]:bg-primary/10 [&_#document-editor-reading-target]:outline [&_#document-editor-reading-target]:outline-1 [&_#document-editor-reading-target]:outline-primary/40">
       <div className="flex flex-wrap items-center gap-2 border-b border-white/10 pb-4">
         <div className="min-w-0 flex-1"><span className="text-[11px] uppercase tracking-[.17em] text-white/40">创作文档 / {draft.document.title}</span><h1 className="mt-2 truncate text-xl font-semibold">{draft.document.title}</h1></div>
         <span aria-live="polite" className={"inline-flex items-center gap-1 text-xs " + (draft.status === "error" || draft.status === "conflict" ? "text-amber-300" : "text-white/45")}>
@@ -100,13 +114,13 @@ export function DocumentEditor({ project, draft, manager, onSelection, focusEvid
         <div className="mt-2 flex items-center justify-between text-xs text-white/45"><span>编辑内容将自动保存；支持 Markdown 标题、场次和对白。</span><button onClick={() => void manager.flush(draft.document.id)} className="inline-flex items-center gap-1 rounded border border-white/15 px-2.5 py-1.5 text-white/80"><Save size={13} />立即保存</button></div>
       </div> : <div className="mt-6 min-w-0 break-words text-[15px] leading-8 text-[#C9CED6]">
         <ReactMarkdown skipHtml remarkPlugins={[remarkGfm, remarkDocumentLabels, [remarkBriefSettings, { enabled: draft.document.kind === "brief", title: draft.document.title }], remarkBreaks]} components={{
-          h1: ({ children }) => <h1 className="mb-5 mt-8 text-2xl font-semibold leading-snug text-white first:mt-0">{children}</h1>,
-          h2: ({ node, children }) => <h2 id={headingId(node?.position?.start.offset)} className="mb-4 mt-9 scroll-mt-4 border-t border-white/10 pt-6 text-xl font-semibold leading-snug text-white">{children}</h2>,
-          h3: ({ node, children }) => <h3 id={headingId(node?.position?.start.offset)} className="mb-3 mt-6 scroll-mt-4 text-lg font-semibold leading-snug text-white">{children}</h3>,
-          h4: ({ children }) => <h4 className="mb-2 mt-5 font-semibold text-white">{children}</h4>,
-          h5: ({ children }) => <h5 className="mb-2 mt-4 font-semibold text-white">{children}</h5>,
-          h6: ({ children }) => <h6 className="mb-2 mt-4 text-sm font-semibold text-white">{children}</h6>,
-          p: ({ children }) => <p className="my-4 leading-8">{children}</p>,
+          h1: ({ node, children }) => <h1 id={readingTargetForOffset(node?.position?.start.offset, node?.position?.end.offset)} className="mb-5 mt-8 text-2xl font-semibold leading-snug text-white first:mt-0">{children}</h1>,
+          h2: ({ node, children }) => <h2 id={readingTargetForOffset(node?.position?.start.offset, node?.position?.end.offset) ?? headingId(node?.position?.start.offset)} className="mb-4 mt-9 scroll-mt-4 border-t border-white/10 pt-6 text-xl font-semibold leading-snug text-white">{children}</h2>,
+          h3: ({ node, children }) => <h3 id={readingTargetForOffset(node?.position?.start.offset, node?.position?.end.offset) ?? headingId(node?.position?.start.offset)} className="mb-3 mt-6 scroll-mt-4 text-lg font-semibold leading-snug text-white">{children}</h3>,
+          h4: ({ node, children }) => <h4 id={readingTargetForOffset(node?.position?.start.offset, node?.position?.end.offset)} className="mb-2 mt-5 font-semibold text-white">{children}</h4>,
+          h5: ({ node, children }) => <h5 id={readingTargetForOffset(node?.position?.start.offset, node?.position?.end.offset)} className="mb-2 mt-4 font-semibold text-white">{children}</h5>,
+          h6: ({ node, children }) => <h6 id={readingTargetForOffset(node?.position?.start.offset, node?.position?.end.offset)} className="mb-2 mt-4 text-sm font-semibold text-white">{children}</h6>,
+          p: ({ node, children }) => <p id={readingTargetForOffset(node?.position?.start.offset, node?.position?.end.offset)} className="my-4 leading-8">{children}</p>,
           strong: ({ children }) => <strong className="font-semibold text-[#F1F3F5]">{children}</strong>,
           ul: ({ children }) => <ul className="my-4 list-disc space-y-2 pl-6 marker:text-white/45">{children}</ul>,
           ol: ({ children, start }) => <ol start={start} className="my-4 list-decimal space-y-2 pl-6 marker:text-white/60">{children}</ol>,

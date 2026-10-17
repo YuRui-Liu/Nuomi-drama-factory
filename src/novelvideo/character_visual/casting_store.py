@@ -45,6 +45,9 @@ class CastingCandidateStore:
 
     @staticmethod
     def _sync_directory(path: Path) -> None:
+        # Windows CRT has no directory descriptors; file contents are fsynced.
+        if os.name == 'nt':
+            return
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             os.fsync(descriptor)

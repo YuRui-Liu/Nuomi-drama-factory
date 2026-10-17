@@ -103,7 +103,9 @@ def _metadata_kind(text: str, *, in_frontmatter: bool) -> SourceBlockKind:
     return "unclassified"
 
 
-def parse_screenplay_document(text: str) -> ParsedScreenplayDocument:
+def parse_screenplay_document(
+    text: str, *, scene_identity_ids: tuple[str, ...] | list[str] | None = None
+) -> ParsedScreenplayDocument:
     lines = enumerate_screenplay_lines(text)
     scenes: list[Scene] = []
     metadata: list[SourceBlock] = []
@@ -233,6 +235,13 @@ def parse_screenplay_document(text: str) -> ParsedScreenplayDocument:
         last_scene_line = line.number
 
     flush_scene()
+    if scene_identity_ids is not None:
+        if (len(scene_identity_ids) != len(scenes)
+                or any(not isinstance(value, str) or not value.strip() for value in scene_identity_ids)
+                or len(set(scene_identity_ids)) != len(scene_identity_ids)):
+            raise ValueError("scene identity list does not match the parsed screenplay")
+        scenes = [scene.model_copy(update={"id": scene_identity_ids[index]})
+                  for index, scene in enumerate(scenes)]
     return ParsedScreenplayDocument(scenes=tuple(scenes), metadata_blocks=tuple(metadata))
 
 

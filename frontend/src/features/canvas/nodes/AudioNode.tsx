@@ -41,8 +41,13 @@ import {
   hasMainlineContexts,
   NodeContextBadges,
 } from '@/features/freezone/context/NodeContextBadges';
-import { fetchFreezoneAudioReferences, uploadFreezoneImage } from '@/api/ops';
+import {
+  fetchFreezoneAudioReferences,
+  uploadFreezoneImage,
+  type FreezoneAudioReferenceItem,
+} from '@/api/ops';
 import { readUrl } from '@/lib/url-params';
+import { DubbingPanel } from '../production/DubbingPanel';
 
 type AudioNodeProps = NodeProps & {
   id: string;
@@ -90,6 +95,12 @@ function getCachedAudioReferences(project: string) {
     audioReferencesPromiseCache.set(project, p);
   }
   return p;
+}
+
+function isGenericAudioReference(
+  item: FreezoneAudioReferenceItem,
+): item is FreezoneAudioReferenceItem & { scope: AudioVoiceRef['scope'] } {
+  return item.scope !== 'character_voice_version';
 }
 
 export const AudioNode = memo(({ id, data, selected, width, height }: AudioNodeProps) => {
@@ -212,7 +223,11 @@ export const AudioNode = memo(({ id, data, selected, width, height }: AudioNodeP
       try {
         const res = await getCachedAudioReferences(project);
         if (cancelled) return;
-        const first = (res.available ?? [])[0];
+        // Fixed character versions are selected in the dubbing audition flow,
+        // whose reference also carries the immutable character/version IDs.
+        // The generic audio node's legacy AudioVoiceRef cannot represent that
+        // binding, so don't initialize it from a version-only entry.
+        const first = (res.available ?? []).find(isGenericAudioReference);
         if (!first) return;
         const fresh = useCanvasStore.getState().nodes.find((n) => n.id === id);
         if (!fresh) return;
@@ -357,6 +372,7 @@ export const AudioNode = memo(({ id, data, selected, width, height }: AudioNodeP
         )}
       </div>
 
+      {selected && !isBoxSelecting && <div className="nodrag nopan px-3 pb-2"><DubbingPanel nodeId={id} /></div>}
       {/* 节点一旦有音频内容（手动上传 or TTS 合成），就不再展示底部操作区 ——
           这条规则覆盖手动上传 / TTS 合成完成两种情况。
           想要重新合成只能先清掉音频（暂时通过删节点重建）。 */}

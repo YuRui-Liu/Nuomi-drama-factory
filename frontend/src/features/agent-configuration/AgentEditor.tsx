@@ -13,6 +13,10 @@ export const agentFields: Record<keyof AgentConfiguration, string> = {
   name: '名称',
   responsibilities: '职责',
   methods: '创作方法',
+  delivery_requirements: '交付要求',
+  collaboration_rules: '协作规则',
+  required_node_operations: '所需节点操作',
+  examples: '公开示例',
   references: '参考作品',
   skill_notes: '技能说明',
   capabilities: '可用能力',
@@ -24,6 +28,10 @@ export const emptyAgent: AgentConfiguration = {
   name: '',
   responsibilities: '',
   methods: '',
+  delivery_requirements: [],
+  collaboration_rules: [],
+  required_node_operations: [],
+  examples: [],
   references: [],
   skill_notes: [],
   capabilities: [],
@@ -68,6 +76,8 @@ const capabilityTitles: Record<string, string> = {
   'proposal.create': '提出创作修改建议',
   'ontology.draft': '提出对象定义草案',
   'media.propose': '提出媒体生成方案',
+  'node.patch': '局部修改已授权节点',
+  'node.run': '运行已授权节点操作',
 };
 export function AgentSummary({ configuration }: { configuration: AgentConfiguration }) {
   return (
@@ -76,7 +86,7 @@ export function AgentSummary({ configuration }: { configuration: AgentConfigurat
         <div key={key}>
           <dt className="font-medium">{agentFields[key]}</dt>
           <dd className="mt-1 whitespace-pre-wrap break-words text-muted-foreground">
-            {key === 'defaults'
+          {key === 'defaults'
               ? Object.values(configuration.defaults).map((v, i) => (
                   <div key={i}>
                     <DefaultLabel value={v} />
@@ -88,13 +98,26 @@ export function AgentSummary({ configuration }: { configuration: AgentConfigurat
                       <StudioLabel value={v} />
                     </div>
                   ))
+                : key === 'required_node_operations'
+                  ? (configuration.required_node_operations ?? []).map((v, i) => (
+                      <div key={i}>{v.node_type} · {v.operation}</div>
+                    ))
+                  : key === 'examples'
+                    ? (configuration.examples ?? []).map((v, i) => (
+                        <div key={i}>
+                          <a href={v.source_url} target="_blank" rel="noreferrer" className="underline">
+                            示例 {i + 1}
+                          </a>{' '}
+                          · Prompt {v.prompt_public ? '公开' : '未公开'}
+                          · 输入 {v.inputs_public ? '公开' : '未公开'}
+                          · 流程 {v.workflow_public ? '公开' : '未公开'}
+                        </div>
+                      ))
                 : Array.isArray(configuration[key])
                   ? (configuration[key] as string[])
-                      .map((value) =>
-                        key === 'capabilities'
-                          ? (capabilityTitles[value] ?? '历史能力（目录已变更）')
-                          : value,
-                      )
+                      .map((value) => key === 'capabilities'
+                        ? (capabilityTitles[value] ?? '历史能力（目录已变更）')
+                        : value)
                       .join('、') || '未设置'
                   : String(configuration[key] || '未设置')}
           </dd>
@@ -171,6 +194,96 @@ export function AgentEditor({
           )}
         </label>
       ))}
+      {(['delivery_requirements', 'collaboration_rules'] as const).map((key) => (
+        <label key={key} className="block space-y-1 text-sm">
+          <span>{agentFields[key]}（每行一项）</span>
+          <textarea
+            className={inputClass}
+            rows={2}
+            value={(value[key] ?? []).join('\n')}
+            onChange={(e) => update(key, e.target.value.split('\n').filter(Boolean))}
+          />
+        </label>
+      ))}
+      <label className="block space-y-1 text-sm">
+        <span>{agentFields.required_node_operations}（每行 node_type · operation）</span>
+        <textarea
+          className={inputClass}
+          rows={2}
+          value={(value.required_node_operations ?? [])
+            .map((item) => `${item.node_type} · ${item.operation}`)
+            .join('\n')}
+          onChange={(e) =>
+            update(
+              'required_node_operations',
+              e.target.value.split('\n').flatMap((line) => {
+                const split = line.indexOf('·');
+                if (split < 1) return [];
+                const node_type = line.slice(0, split).trim();
+                const operation = line.slice(split + 1).trim();
+                return node_type && operation ? [{ node_type, operation }] : [];
+              }),
+            )
+          }
+        />
+      </label>
+      <section className="space-y-2 rounded-lg border p-3">
+        <p className="text-sm font-medium">{agentFields.examples}</p>
+        {(value.examples ?? []).map((example, index) => (
+          <div key={index} className="space-y-2 rounded border p-2">
+            <label className="block space-y-1 text-sm">
+              <span>来源 URL</span>
+              <input
+                type="url"
+                className={inputClass}
+                value={example.source_url}
+                onChange={(e) => {
+                  const examples = [...(value.examples ?? [])];
+                  examples[index] = { ...example, source_url: e.target.value };
+                  update('examples', examples);
+                }}
+              />
+            </label>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+              {([
+                ['prompt_public', 'Prompt'],
+                ['inputs_public', '输入'],
+                ['workflow_public', '流程'],
+              ] as const).map(([key, label]) => (
+                <label key={key} className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={example[key]}
+                    onChange={(e) => {
+                      const examples = [...(value.examples ?? [])];
+                      examples[index] = { ...example, [key]: e.target.checked };
+                      update('examples', examples);
+                    }}
+                  />
+                  {label}公开
+                </label>
+              ))}
+              <button
+                type="button"
+                className="text-muted-foreground underline"
+                onClick={() => update('examples', (value.examples ?? []).filter((_, i) => i !== index))}
+              >
+                移除示例
+              </button>
+            </div>
+          </div>
+        ))}
+        <button
+          type="button"
+          className="text-sm underline"
+          onClick={() => update('examples', [
+            ...(value.examples ?? []),
+            { source_url: '', prompt_public: false, inputs_public: false, workflow_public: false },
+          ])}
+        >
+          添加公开示例
+        </button>
+      </section>
       {(['references', 'skill_notes'] as const).map((key) => (
         <label key={key} className="block space-y-1 text-sm">
           <span>{agentFields[key]}（每行一项）</span>

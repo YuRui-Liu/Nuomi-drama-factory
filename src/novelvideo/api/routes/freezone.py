@@ -244,6 +244,8 @@ from novelvideo.media_capabilities.runtime.credentials import CredentialResolver
 from novelvideo.media_capabilities.store import MediaCapabilityStore
 from novelvideo.project_config import (
     load_effective_narration_style_for_voice,
+    load_project_config_file,
+    load_project_config_file_from_state_dir,
     load_narrator_reference_audio,
 )
 from novelvideo.project_context import (
@@ -5543,6 +5545,8 @@ def _start_freezone_video_compose_task(
     job_id: str,
     body: FreezoneVideoComposeRequest,
     resolved_tracks: list[dict],
+    resolution: str,
+    export_manifest: dict[str, Any],
 ) -> None:
     task_type = "freezone_video_compose"
     task_manager = get_task_manager()
@@ -5569,19 +5573,39 @@ def _start_freezone_video_compose_task(
                 job_id=job_id,
                 title=body.title,
                 canvas_id=body.canvas_id,
-                resolution=body.resolution,
+                resolution=resolution,
                 fps=body.fps,
                 background_color=body.background_color,
                 keep_original_audio=body.keep_original_audio,
                 tracks=resolved_tracks,
+                subtitle_tracks=[track.model_dump() for track in body.subtitle_tracks if track.cues],
+                draft_revision=body.draft_revision,
+                export_manifest=export_manifest,
+                project_id=username + "/" + project,
             )
+            manifest_path = (
+                outputs_dir(project_dir, "freezone_video_compose")
+                / f"{job_id}.manifest.json"
+            )
+            try:
+                sidecar = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                sidecar = {}
             task_manager.complete_task(
                 task_type,
                 username,
                 project,
                 episode=0,
                 scope=job_id,
-                result={"output_format": "mp4", "output_path": str(output_path)},
+                result={
+                    "output_format": "mp4",
+                    "output_path": str(output_path),
+                    "export_manifest": export_manifest,
+                    "timeline_revision": export_manifest.get("timeline_revision"),
+                    "draft_revision": export_manifest.get("draft_revision"),
+                    "artifact": sidecar.get("artifact"),
+                    "manifest_path": str(manifest_path),
+                },
                 current_task="completed",
                 logs=["视频合成完成"],
             )
@@ -7655,10 +7679,81 @@ async def freezone_video_compose(
     if not has_video_item:
         raise HTTPException(400, "video compose requires at least one video item")
 
+    resolved_subtitle_tracks = [
+        track.model_dump() for track in body.subtitle_tracks if track.cues
+    ]
+
+    if body.resolution is not None:
+        resolution = body.resolution
+        resolution_origin = body.resolution_origin or "legacy_unverified"
+    else:
+        if ctx is not None:
+            project_config = await asyncio.to_thread(
+                load_project_config_file_from_state_dir,
+                ctx.state_dir,
+            )
+        else:
+            project_config = await asyncio.to_thread(
+                load_project_config_file,
+                username,
+                project_name,
+            )
+        configured_resolution = project_config.get("video_resolution")
+        if configured_resolution in {"720p", "1080p"}:
+            resolution = str(configured_resolution)
+            resolution_origin = "project"
+        else:
+            resolution = "1080p"
+            resolution_origin = "default"
+    if body.fps_origin is not None:
+        fps_origin = body.fps_origin
+    else:
+        fps_origin = "legacy_unverified" if "fps" in body.model_fields_set else "default"
+
+    from novelvideo.freezone.export_manifest import ExportManifestError, build_export_manifest
+
+    sqlite_store = None
+    dubbing_store = None
+    has_dubbing_provenance = any(
+        item.get("dubbing_source")
+        for track in resolved_tracks
+        for item in track.get("items") or []
+    )
+    try:
+        if has_dubbing_provenance:
+            sqlite_store = (
+                await make_sqlite_store_for_context(ctx)
+                if ctx is not None
+                else await make_sqlite_store(username, project_name)
+            )
+            from novelvideo.audio.dubbing_store import DubbingStore
+
+            dubbing_store = DubbingStore(sqlite_store.db_path, project_dir)
+        export_manifest = await asyncio.to_thread(
+            build_export_manifest,
+            project_id=ctx.project_id if ctx is not None else f"{username}/{project_name}",
+            project_dir=project_dir,
+            resolution=resolution,
+            resolution_origin=resolution_origin,
+            fps=body.fps,
+            fps_origin=fps_origin,
+            background_color=body.background_color,
+            keep_original_audio=body.keep_original_audio,
+            tracks=resolved_tracks,
+            subtitle_tracks=resolved_subtitle_tracks,
+            draft_revision=body.draft_revision,
+            dubbing_store=dubbing_store,
+        )
+    except ExportManifestError as exc:
+        raise HTTPException(422, f"invalid compose export provenance: {exc}") from exc
+    finally:
+        if sqlite_store is not None:
+            await sqlite_store.close()
+
     try:
         job_id = _new_job_id()
         if ctx is not None:
-            return await _enqueue_or_start_freezone_media_job(
+            accepted = await _enqueue_or_start_freezone_media_job(
                 ctx=ctx,
                 username=username,
                 project=project_name,
@@ -7668,31 +7763,41 @@ async def freezone_video_compose(
                 payload={
                     "title": body.title,
                     "canvas_id": body.canvas_id,
-                    "resolution": body.resolution,
+                    "resolution": resolution,
+                    "resolution_origin": resolution_origin,
                     "fps": body.fps,
+                    "fps_origin": fps_origin,
                     "background_color": body.background_color,
                     "keep_original_audio": body.keep_original_audio,
+                    "draft_revision": body.draft_revision,
                     "tracks": resolved_tracks,
+                    "subtitle_tracks": resolved_subtitle_tracks,
+                    "export_manifest": export_manifest,
                 },
             )
-        _start_freezone_video_compose_task(
-            username=username,
-            project=project_name,
-            project_dir=project_dir,
-            job_id=job_id,
-            body=body,
-            resolved_tracks=resolved_tracks,
-        )
+        else:
+            _start_freezone_video_compose_task(
+                username=username,
+                project=project_name,
+                project_dir=project_dir,
+                job_id=job_id,
+                body=body,
+                resolved_tracks=resolved_tracks,
+                resolution=resolution,
+                export_manifest=export_manifest,
+            )
+            accepted = _accepted_job_response(
+                task_type="freezone_video_compose",
+                username=username,
+                project=project_name,
+                job_id=job_id,
+            )
     except RuntimeError as exc:
         _handle_task_start_runtime_error("failed to start freezone video compose task", exc)
         raise HTTPException(503, f"failed to start freezone video compose task: {exc}") from exc
 
-    return _accepted_job_response(
-        task_type="freezone_video_compose",
-        username=username,
-        project=project_name,
-        job_id=job_id,
-    )
+    accepted.setdefault("data", {})["export_manifest"] = export_manifest
+    return accepted
 
 
 @router.post(
@@ -7965,13 +8070,38 @@ async def freezone_job_result(
             push_metadata["pushable"] = True
         if isinstance(task_result.get("slot_target"), dict):
             push_metadata["slot_target"] = task_result["slot_target"]
+    result_data = {
+        "url": make_static_url_for_context(ctx, rel, local_path=out),
+        "size": out.stat().st_size,
+        **push_metadata,
+    }
+    if task_type == "freezone_video_compose":
+        sidecar_path = outputs_dir(project_dir, "freezone_video_compose") / f"{job_id}.manifest.json"
+        if sidecar_path.is_file():
+            try:
+                sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise HTTPException(500, "compose export manifest sidecar is unreadable") from exc
+            if isinstance(sidecar, dict) and isinstance(sidecar.get("manifest"), dict):
+                frozen_manifest = sidecar["manifest"]
+                result_data["export_manifest"] = frozen_manifest
+                result_data["timeline_revision"] = frozen_manifest.get("timeline_revision")
+                result_data["draft_revision"] = frozen_manifest.get("draft_revision")
+                result_data["artifact"] = sidecar.get("artifact")
+                result_data["manifest_url"] = make_static_url_for_context(
+                    ctx,
+                    sidecar_path.relative_to(project_dir).as_posix(),
+                    local_path=sidecar_path,
+                )
+        elif isinstance(task_result, dict) and isinstance(task_result.get("export_manifest"), dict):
+            result_data["export_manifest"] = task_result["export_manifest"]
+            result_data["timeline_revision"] = task_result.get("timeline_revision")
+            result_data["draft_revision"] = task_result.get("draft_revision")
+            result_data["artifact"] = task_result.get("artifact")
+            result_data["manifest_url"] = task_result.get("manifest_url")
     return {
         "ok": True,
-        "data": {
-            "url": make_static_url_for_context(ctx, rel, local_path=out),
-            "size": out.stat().st_size,
-            **push_metadata,
-        },
+        "data": result_data,
     }
 
 

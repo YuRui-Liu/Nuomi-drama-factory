@@ -7,13 +7,16 @@ from pydantic import ValidationError
 from ulid import ULID
 
 from .models import (
+    AddShotFromTemplate,
     AssetMigrationReport,
+    DeleteShot,
     DirectorEdit,
     DirectorPlanRevision,
     MergeAdjacentGroups,
     MoveShot,
     NarrativeGroupPlan,
     ReorderGroups,
+    ReorderShots,
     ShotPlan,
     SourceSpan,
     SplitGroup,
@@ -40,6 +43,7 @@ def apply_edit(
     """Apply one structural command and return a validated child revision."""
     try:
         groups = _dispatch_edit(revision.groups, command, source_spans)
+        groups = _link_shot_handoffs(groups)
         _validate_shot_source_order(groups, source_spans)
     except DirectorEditError:
         raise
@@ -77,6 +81,12 @@ def _dispatch_edit(
         return _move_shot(groups, command, source_spans)
     if isinstance(command, ReorderGroups):
         return _reorder_groups(groups, command)
+    if isinstance(command, AddShotFromTemplate):
+        return _add_shot_from_template(groups, command)
+    if isinstance(command, DeleteShot):
+        return _delete_shot(groups, command)
+    if isinstance(command, ReorderShots):
+        return _reorder_shots(groups, command)
     if isinstance(command, UpdateShot):
         return _update_shot(groups, command)
     if isinstance(command, UpdateShots):
@@ -185,6 +195,97 @@ def _reorder_groups(
         )
     by_id = {group.id: group for group in groups}
     return _renumber(tuple(by_id[group_id] for group_id in command.group_ids))
+
+
+def _add_shot_from_template(
+    groups: tuple[NarrativeGroupPlan, ...], command: AddShotFromTemplate
+) -> tuple[NarrativeGroupPlan, ...]:
+    group_index = _group_index(groups, command.group_id)
+    group = groups[group_index]
+    if group.creative_contract_version is None and len(group.shots) >= 4:
+        raise _edit_error("too_many_shots", "Legacy groups cannot contain more than 4 shots.")
+    if len(group.shots) >= 100:
+        raise _edit_error("too_many_shots", "A group cannot contain more than 100 shots.")
+    template_index = _shot_index(group.shots, command.template_shot_id)
+    template = group.shots[template_index]
+    added = template.model_copy(update={"id": f"shot-{ULID()}"})
+    shots = list(group.shots)
+    shots.insert(template_index + 1, added)
+    updated = group.model_copy(update={"shots": tuple(shots)})
+    return groups[:group_index] + (updated,) + groups[group_index + 1 :]
+
+
+def _delete_shot(
+    groups: tuple[NarrativeGroupPlan, ...], command: DeleteShot
+) -> tuple[NarrativeGroupPlan, ...]:
+    group_index, shot_index = _find_shot(groups, command.shot_id)
+    group = groups[group_index]
+    if len(group.shots) <= 1:
+        raise _edit_error("empty_group", "A narrative group must keep at least one shot.")
+    removed = group.shots[shot_index]
+    remaining = group.shots[:shot_index] + group.shots[shot_index + 1 :]
+    covered_spans = {span_id for shot in remaining for span_id in shot.source_span_ids}
+    missing_spans = set(removed.source_span_ids) - covered_spans
+    if missing_spans:
+        raise _edit_error(
+            "shot_source_would_be_uncovered",
+            "Reassign this shot's only source coverage before deleting it: "
+            + ", ".join(sorted(missing_spans)),
+        )
+    covered_dialogue = {
+        source_id for shot in remaining for source_id in shot.dialogue_source_ids
+    }
+    missing_dialogue = set(removed.dialogue_source_ids) - covered_dialogue
+    if missing_dialogue:
+        raise _edit_error(
+            "shot_dialogue_would_be_uncovered",
+            "Reassign this shot's only dialogue references before deleting it: "
+            + ", ".join(sorted(missing_dialogue)),
+        )
+    updated = group.model_copy(update={"shots": remaining})
+    return groups[:group_index] + (updated,) + groups[group_index + 1 :]
+
+
+def _reorder_shots(
+    groups: tuple[NarrativeGroupPlan, ...], command: ReorderShots
+) -> tuple[NarrativeGroupPlan, ...]:
+    group_index = _group_index(groups, command.group_id)
+    group = groups[group_index]
+    expected = [shot.id for shot in group.shots]
+    if len(command.shot_ids) != len(expected) or set(command.shot_ids) != set(expected):
+        raise _edit_error(
+            "invalid_shot_order", "Reorder must include every group shot exactly once."
+        )
+    by_id = {shot.id: shot for shot in group.shots}
+    updated = group.model_copy(
+        update={"shots": tuple(by_id[shot_id] for shot_id in command.shot_ids)}
+    )
+    return groups[:group_index] + (updated,) + groups[group_index + 1 :]
+
+
+def _link_shot_handoffs(
+    groups: tuple[NarrativeGroupPlan, ...],
+) -> tuple[NarrativeGroupPlan, ...]:
+    """Keep creative outgoing references aligned after a structural edit."""
+    flat = [shot for group in groups for shot in group.shots]
+    next_by_id = {
+        shot.id: flat[index + 1].id if index + 1 < len(flat) else None
+        for index, shot in enumerate(flat)
+    }
+    linked_groups = []
+    for group in groups:
+        linked_shots = []
+        for shot in group.shots:
+            if shot.creative is None:
+                linked_shots.append(shot)
+                continue
+            handoff = shot.creative.handoff.model_copy(
+                update={"next_shot_id": next_by_id[shot.id]}
+            )
+            creative = shot.creative.model_copy(update={"handoff": handoff})
+            linked_shots.append(shot.model_copy(update={"creative": creative}))
+        linked_groups.append(group.model_copy(update={"shots": tuple(linked_shots)}))
+    return tuple(linked_groups)
 
 
 def _update_shot(

@@ -64,6 +64,7 @@ async def _run_screenplay_semantics(envelope: dict[str, Any], ctx: ProjectContex
         raise ScreenplaySemanticTaskError("HANDOFF_NO_SEMANTIC_UPDATE")
     selected = payload.get("scene_ids")
     selected_ids = set(map(str, selected)) if selected else None
+    scene_identity_ids = payload.get("scene_identity_ids")
     if handoff and scope.get("mode") == "selected" and not selected_ids:
         raise ScreenplaySemanticTaskError("INVALID_SELECTED_SCENES")
     manager = get_task_manager()
@@ -87,7 +88,8 @@ async def _run_screenplay_semantics(envelope: dict[str, Any], ctx: ProjectContex
                     raise ScreenplaySemanticTaskError("INVALID_HANDOFF_REFERENCE_CONTEXT")
                 options["reference_context"] = reference_context
         revision = await service.build(source, concurrency=concurrency,
-                                       selected_scene_ids=selected_ids, **options)
+                                       selected_scene_ids=selected_ids,
+                                       scene_identity_ids=scene_identity_ids, **options)
         current = next((item for item in await repository.list_sources() if item.episode_number == episode), None)
         if current is None or current.source_revision != expected_revision or current.content_hash != source.content_hash:
             raise ScreenplaySemanticTaskError("SOURCE_REVISION_CONFLICT")

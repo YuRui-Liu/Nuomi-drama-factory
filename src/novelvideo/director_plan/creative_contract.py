@@ -59,7 +59,7 @@ class OpticsDecision(Decision):
     depth_of_field: Text
     focus_target: Text
     focus_change: Text
-    end_focus_target: Text | None = None
+    end_focus_target: Text | None = Field(default=None, description="Non-null terminal focus target required when keyframe_anchor=end.")
 
     @model_validator(mode="after")
     def validate_basis(self) -> Self:
@@ -187,7 +187,7 @@ class HandoffDecision(Decision):
 
 class ShotCreativeDecisions(DirectionModel):
     keyframe_anchor: Literal["start", "end"] = "start"
-    end_cinematography: ShotCinematography | None = None
+    end_cinematography: ShotCinematography | None = Field(default=None, description="Complete terminal ShotCinematography snapshot required when keyframe_anchor=end; must not be null. Describe terminal positions, facing, gaze and lighting explicitly.")
     optics: OpticsDecision
     framing: FramingDecision
     camera_position: CameraPositionDecision
@@ -204,7 +204,7 @@ class ShotCreativeDecisions(DirectionModel):
         return self
 
 
-def creative_shot_errors(shot) -> tuple[str, ...]:
+def creative_shot_errors(shot, *, explain: bool = False) -> tuple[str, ...]:
     creative = shot.creative
     if creative is None or shot.cinematography is None:
         return ("creative_decisions_missing",)
@@ -214,7 +214,11 @@ def creative_shot_errors(shot) -> tuple[str, ...]:
             continue
         source = getattr(creative, name).source
         if source.kind == "script_fact" and not set(source.reference_ids).issubset(shot.source_span_ids):
-            errors.append("creative_source_mismatch")
+            missing = sorted(set(source.reference_ids) - set(shot.source_span_ids))
+            errors.append("creative_source_mismatch" + (
+                f": creative.{name}.source.reference_ids={missing!r} are outside this shot's source_span_ids; "
+                "cite this shot's supported source spans, or classify an actual directing choice as director_choice"
+                if explain else ""))
         if source.kind == "asset_fact" and not set(source.reference_ids).issubset({r.entity_key for r in shot.asset_requirements}):
             errors.append("creative_asset_source_mismatch")
     if not set(creative.lighting.light_ids).issubset({light.light_id for light in shot.cinematography.lights}):

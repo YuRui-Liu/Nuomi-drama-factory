@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from novelvideo.creation import agent_model
+from novelvideo.creation.agent_model import Decision, ToolDecision
 from novelvideo.text_task_runtime.models import AgentTaskRouteSnapshot
 from .test_delegations import ctx
 
@@ -25,6 +26,44 @@ def test_availability_no_files_secret_hydration_or_network(ctx,tmp_path,monkeypa
     result=agent_model.availability(ctx)
     assert result['available'] is False and result['code']=='runtime_unconfigured'
     assert not ctx.state_dir.exists() and not config.STATE_DIR.exists()
+
+
+def test_node_decisions_have_precise_structured_payloads():
+    patch = ToolDecision.model_validate({'operation': 'node.patch', 'payload': {
+        'node_id': 'frame-node', 'expected_revision': 4,
+        'changes': [{'path': ['frames', 0, 'static_panel', 'lighting'], 'value': '冷色侧光'}],
+    }})
+    run = ToolDecision.model_validate({'operation': 'node.run', 'payload': {
+        'node_id': 'image-node', 'operation': 'generate', 'expected_revision': 4,
+    }})
+    assert patch.payload['changes'][0]['path'][-1] == 'lighting'
+    assert run.payload['operation'] == 'generate'
+    skill_run = ToolDecision.model_validate({'operation': 'node.run', 'payload': {
+        'node_id': 'skill-node', 'operation': 'run', 'expected_revision': 4,
+    }})
+    assert skill_run.payload['operation'] == 'run'
+    with pytest.raises(Exception):
+        ToolDecision.model_validate({'operation': 'node.run', 'payload': {
+            'node_id': 'image-node', 'operation': 'patch', 'expected_revision': 4,
+        }})
+    with pytest.raises(Exception):
+        ToolDecision.model_validate({'operation': 'node.patch', 'payload': {
+            'node_id': 'frame-node', 'expected_revision': 4,
+            'changes': [{'path': ['id'], 'value': 'attacker-controlled'}], 'target_node_ids': ['frame-node'],
+        }})
+
+
+def test_agent_decision_supports_bounded_full_crew_roster():
+    decision = Decision.model_validate({'message': '分工完成', 'actions': [],
+        'delegations': [{'adoption_id': str(index), 'target_node_ids': ['node'], 'input_indices': [],
+            'allowed_operations': ['context.read'], 'goal': '核对节点', 'acceptance': ['给出结论']}
+            for index in range(18)], 'finished': True, 'unmet': []})
+    assert len(decision.delegations) == agent_model.MAX_ELIGIBLE_SPECIALISTS
+    with pytest.raises(Exception):
+        Decision.model_validate({'message': '超过团队规模', 'actions': [],
+            'delegations': [{'adoption_id': str(index), 'target_node_ids': ['node'], 'input_indices': [],
+                'allowed_operations': ['context.read'], 'goal': '核对节点', 'acceptance': ['给出结论']}
+                for index in range(19)], 'finished': True, 'unmet': []})
 
 
 def test_readonly_metadata_freezes_route_without_exposing_endpoint(ctx,tmp_path,monkeypatch):

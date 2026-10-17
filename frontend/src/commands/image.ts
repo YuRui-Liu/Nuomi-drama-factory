@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
+import { getGridCellCropGeometry } from '@/features/canvas/production/grid/gridCrop';
 export interface MergeStoryboardImagesPayload {
   frameSources: string[];
   rows: number;
@@ -144,32 +145,20 @@ export async function splitImageSource(
   source: string,
   rows: number,
   cols: number,
-  _lineThickness = 0,
+  lineThickness = 0,
 ): Promise<string[]> {
   const image = await loadImageElement(source);
-  const cellWidth = Math.floor(image.naturalWidth / cols);
-  const cellHeight = Math.floor(image.naturalHeight / rows);
+  const cells = getGridCellCropGeometry(image.naturalWidth, image.naturalHeight, rows, cols, lineThickness);
   const outputs: string[] = [];
-  for (let row = 0; row < rows; row += 1) {
-    for (let col = 0; col < cols; col += 1) {
-      const canvas = document.createElement('canvas');
-      canvas.width = cellWidth;
-      canvas.height = cellHeight;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) throw new Error('canvas is unavailable');
-      ctx.drawImage(
-        image,
-        col * cellWidth,
-        row * cellHeight,
-        cellWidth,
-        cellHeight,
-        0,
-        0,
-        cellWidth,
-        cellHeight,
-      );
-      outputs.push(canvasToPng(canvas));
-    }
+  for (const { crop } of cells) {
+    const { width: cellWidth, height: cellHeight } = crop;
+    const canvas = document.createElement('canvas');
+    canvas.width = cellWidth;
+    canvas.height = cellHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('canvas is unavailable');
+    ctx.drawImage(image, crop.x, crop.y, cellWidth, cellHeight, 0, 0, cellWidth, cellHeight);
+    outputs.push(canvasToPng(canvas));
   }
   return outputs;
 }

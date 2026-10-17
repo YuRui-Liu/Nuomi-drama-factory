@@ -279,7 +279,10 @@ async def test_selected_scope_accepts_only_reliable_parsed_scene_ids(workspace):
                               client_mutation_id="bad-scenes")
     prepared = await service.prepare(**kwargs, update_scope={"mode": "selected", "scene_ids": [scene_ids[0]]},
                                      client_mutation_id="good-scenes")
-    assert prepared["diff"]["available_scene_ids"] == scene_ids
+    # The legacy parser ID remains accepted on input, while handoff previews
+    # expose the screenplay revision's stable identities.
+    assert prepared["diff"]["available_scene_ids"] == [
+        item.id for item in episode.revision.scene_identities]
 
 
 async def test_diff_exposes_dialogue_references_reuse_and_retained_stale_media(workspace):
@@ -306,7 +309,7 @@ async def test_diff_exposes_dialogue_references_reuse_and_retained_stale_media(w
     assert prepared["diff"]["dialogue"]
     assert prepared["diff"]["references"]
     assert prepared["diff"]["reused_scenes"][0]["source_revision"] == 1
-    assert prepared["diff"]["reused_scenes"][0]["new_scene_id"] == parse_screenplay_document(new).scenes[1].id
+    assert prepared["diff"]["reused_scenes"][0]["new_scene_id"] == script.revision.scene_identities[1].id
     assert prepared["snapshot"]["previous_stage_revisions"]["media"]["consumed_revision"] == 1
     await service.confirm(prepared["id"], expected_source_project_revision=1,
                           client_mutation_id="confirm-diff")
@@ -700,7 +703,8 @@ async def test_selected_scene_order_is_one_handoff_action(workspace):
     second = await service.prepare(**kwargs, update_scope={"mode": "selected", "scene_ids": list(reversed(ids))},
                                    client_mutation_id="scene-order-second")
     assert second["id"] == first["id"]
-    assert second["snapshot"]["update_scope"]["scene_ids"] == sorted(ids)
+    assert second["snapshot"]["update_scope"]["scene_ids"] == sorted(
+        item.id for item in script.revision.scene_identities)
 
 
 async def test_first_retry_skips_decorated_completed_failed_task_result(workspace, monkeypatch):

@@ -356,6 +356,7 @@ def test_runninghub_workflow_ids_have_supported_defaults_and_can_be_saved(
         "video_minimax_h3_ref_max_images": 5,
         "tts_qwen3_voice_design": "",
         "tts_indextts2_voice_clone": "",
+        "music_acestep": "2059090557116440578",
     }
 
     saved = client.put(
@@ -367,6 +368,7 @@ def test_runninghub_workflow_ids_have_supported_defaults_and_can_be_saved(
             "video_minimax_h3_ref_max_images": 7,
             "tts_qwen3_voice_design": "3003",
             "tts_indextts2_voice_clone": "4004",
+            "music_acestep": "5005",
         },
     )
     assert saved.status_code == 200
@@ -377,6 +379,7 @@ def test_runninghub_workflow_ids_have_supported_defaults_and_can_be_saved(
         "video_minimax_h3_ref_max_images": 7,
         "tts_qwen3_voice_design": "3003",
         "tts_indextts2_voice_clone": "4004",
+        "music_acestep": "5005",
     }
     assert client.get(
         "/api/v1/media-capabilities/providers/runninghub-main/workflows"

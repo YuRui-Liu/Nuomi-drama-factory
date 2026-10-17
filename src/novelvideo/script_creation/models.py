@@ -1,12 +1,20 @@
 from dataclasses import dataclass
 from typing import Any
 
-KINDS = frozenset({'brief', 'outline', 'people', 'scenes', 'props', 'episode_synopsis', 'episode_script'})
+KINDS = frozenset({'brief', 'idea_candidate', 'outline', 'people', 'scenes', 'props', 'episode_synopsis', 'episode_script'})
 
 @dataclass(frozen=True, slots=True)
 class Block:
     id: str
     markdown: str
+
+@dataclass(frozen=True, slots=True)
+class SceneIdentity:
+    id: str
+    ordinal: int
+    heading: str
+    parent_ids: tuple[str, ...] = ()
+    anchor_block_ids: tuple[str, ...] = ()
 
 @dataclass(frozen=True, slots=True)
 class Revision:
@@ -18,6 +26,7 @@ class Revision:
     client_mutation_id: str
     created_at: str
     restored_from_revision_id: str | None = None
+    scene_identities: tuple[SceneIdentity, ...] = ()
 
 @dataclass(frozen=True, slots=True)
 class Document:

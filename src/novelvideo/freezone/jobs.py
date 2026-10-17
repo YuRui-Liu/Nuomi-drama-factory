@@ -15,7 +15,9 @@ Provider selection (since v1.1):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import math
 import shutil
 import subprocess
 import tempfile
@@ -25,6 +27,7 @@ from typing import Any, Optional
 import numpy as np
 from PIL import Image
 
+from novelvideo.freezone.export_manifest import VIDEO_TIMELINE_TOLERANCE_SECONDS
 from novelvideo.freezone.paths import output_path_for_job, outputs_dir
 
 logger = logging.getLogger(__name__)
@@ -434,13 +437,14 @@ async def run_freezone_video_upscale(
     return out, meta
 
 
-async def _run_cmd(cmd: list[str]) -> None:
+async def _run_cmd(cmd: list[str], *, cwd: Path | None = None) -> None:
     proc = await asyncio.to_thread(
         subprocess.run,
         cmd,
         capture_output=True,
         text=True,
         timeout=1800,
+        cwd=cwd,
     )
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
@@ -516,6 +520,7 @@ async def _render_video_clip(
     output_path: Path,
     source_start: float,
     duration: float,
+    speed: float,
     width: int,
     height: int,
     fps: int,
@@ -524,9 +529,11 @@ async def _render_video_clip(
     volume: float,
     muted: bool,
 ) -> None:
+    output_duration = duration / speed
     video_filter = (
         f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={background_color},fps={fps}"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={background_color},"
+        f"setpts=PTS/{speed:.8f},fps={fps}"
     )
     has_audio = keep_original_audio and (not muted) and await _probe_has_audio(source_path)
 
@@ -555,7 +562,7 @@ async def _render_video_clip(
             "-ac",
             "2",
             "-af",
-            f"volume={volume:.4f}",
+            _audio_speed_filter(speed, volume),
             "-movflags",
             "+faststart",
             str(output_path),
@@ -573,7 +580,7 @@ async def _render_video_clip(
             "-f",
             "lavfi",
             "-t",
-            f"{duration:.3f}",
+            f"{output_duration:.3f}",
             "-i",
             "anullsrc=channel_layout=stereo:sample_rate=48000",
             "-map",
@@ -608,6 +615,7 @@ async def _render_audio_clip(
     output_path: Path,
     source_start: float,
     duration: float,
+    speed: float,
     volume: float,
 ) -> None:
     await _run_cmd(
@@ -622,7 +630,7 @@ async def _render_audio_clip(
             source_path,
             "-vn",
             "-af",
-            f"volume={volume:.4f}",
+            _audio_speed_filter(speed, volume),
             "-c:a",
             "aac",
             "-ar",
@@ -632,6 +640,21 @@ async def _render_audio_clip(
             str(output_path),
         ]
     )
+
+
+def _audio_speed_filter(speed: float, volume: float) -> str:
+    """Build an FFmpeg atempo chain for the supported 0.25x–4x range."""
+    filters: list[str] = []
+    remaining = speed
+    while remaining > 2.0 + 1e-9:
+        filters.append("atempo=2")
+        remaining /= 2.0
+    while remaining < 0.5 - 1e-9:
+        filters.append("atempo=0.5")
+        remaining /= 0.5
+    filters.append(f"atempo={remaining:.8f}")
+    filters.append(f"volume={volume:.4f}")
+    return ",".join(filters)
 
 
 async def _concat_media_segments(segment_paths: list[Path], output_path: Path) -> None:
@@ -672,6 +695,72 @@ async def _concat_media_segments(segment_paths: list[Path], output_path: Path) -
         list_path.unlink(missing_ok=True)
 
 
+def _srt_timestamp(seconds: float) -> str:
+    milliseconds = max(0, int(round(seconds * 1000)))
+    hours, remainder = divmod(milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    whole_seconds, millis = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d},{millis:03d}"
+
+
+def _write_srt(subtitle_tracks: list[dict[str, Any]], output_path: Path) -> None:
+    cues = [
+        cue
+        for track in subtitle_tracks
+        for cue in (track.get("cues") or [])
+        if isinstance(cue, dict) and str(cue.get("text") or "").strip()
+    ]
+    cues.sort(key=lambda cue: (float(cue.get("timeline_start") or 0.0), str(cue.get("cue_id") or "")))
+    with output_path.open("w", encoding="utf-8", newline="\n") as stream:
+        for index, cue in enumerate(cues, start=1):
+            text = str(cue.get("text") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+            stream.write(f"{index}\n")
+            stream.write(
+                f"{_srt_timestamp(float(cue.get('timeline_start') or 0.0))} --> "
+                f"{_srt_timestamp(float(cue.get('timeline_end') or 0.0))}\n"
+            )
+            stream.write(f"{text}\n\n")
+
+
+async def _render_subtitles(
+    *,
+    source_path: Path,
+    output_path: Path,
+    subtitle_path: Path,
+    temp_dir: Path,
+) -> None:
+    """Burn the frozen SRT track into the video using FFmpeg's libass filter."""
+    local_subtitle_path = temp_dir / "subtitles.srt"
+    if subtitle_path.resolve() != local_subtitle_path.resolve():
+        shutil.copyfile(subtitle_path, local_subtitle_path)
+    await _run_cmd(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source_path),
+            "-vf",
+            "subtitles=filename='subtitles.srt':charenc=UTF-8",
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ],
+        cwd=temp_dir,
+    )
+
+
 async def _mix_audio_tracks(
     *,
     base_video_path: Path,
@@ -683,12 +772,13 @@ async def _mix_audio_tracks(
     for index, item in enumerate(audio_items):
         if bool(item.get("muted")):
             continue
-        volume = float(item.get("volume", 1.0) or 1.0)
+        volume = float(item.get("volume", 1.0) if item.get("volume") is not None else 1.0)
         if volume <= 0:
             continue
         source_start = float(item.get("source_start", 0.0) or 0.0)
         source_end = float(item.get("source_end", 0.0) or 0.0)
         duration = source_end - source_start
+        speed = float(item.get("speed", 1.0) if item.get("speed") is not None else 1.0)
         if duration <= 0:
             continue
         audio_path = temp_dir / f"audio_track_{index:03d}.m4a"
@@ -697,6 +787,7 @@ async def _mix_audio_tracks(
             output_path=audio_path,
             source_start=source_start,
             duration=duration,
+            speed=speed,
             volume=volume,
         )
         audio_inputs.append((audio_path, float(item.get("timeline_start", 0.0) or 0.0)))
@@ -751,9 +842,30 @@ async def run_freezone_video_compose(
     background_color: str = "#000000",
     keep_original_audio: bool = True,
     tracks: list[dict[str, Any]],
+    subtitle_tracks: list[dict[str, Any]] | None = None,
+    draft_revision: int = 0,
+    export_manifest: dict[str, Any] | None = None,
+    project_id: str | None = None,
 ) -> Path:
     """Compose a minimal timeline JSON into a final mp4."""
     del title, canvas_id
+
+    if export_manifest is not None:
+        from novelvideo.freezone.export_manifest import verify_export_source_integrity
+
+        await asyncio.to_thread(
+            verify_export_source_integrity,
+            project_dir,
+            tracks,
+            export_manifest,
+            resolution=resolution,
+            fps=fps,
+            background_color=background_color,
+            keep_original_audio=keep_original_audio,
+            project_id=project_id,
+            subtitle_tracks=subtitle_tracks or [],
+            draft_revision=draft_revision,
+        )
 
     if not shutil.which("ffmpeg"):
         raise RuntimeError("ffmpeg not found on PATH; install via brew/apt")
@@ -766,6 +878,7 @@ async def run_freezone_video_compose(
     output_dir = outputs_dir(project_dir, "freezone_video_compose")
     output_dir.mkdir(parents=True, exist_ok=True)
     final_output_path = output_dir / f"{job_id}.mp4"
+    subtitle_artifact_path = output_dir / f"{job_id}.srt" if subtitle_tracks else None
 
     video_items = [
         item
@@ -799,13 +912,14 @@ async def run_freezone_video_compose(
             source_start = float(item.get("source_start", 0.0) or 0.0)
             source_end = float(item.get("source_end", 0.0) or 0.0)
             duration = source_end - source_start
-            if duration <= 0:
+            speed = float(item.get("speed", 1.0) if item.get("speed") is not None else 1.0)
+            if duration <= 0 or not math.isfinite(speed) or not 0.25 <= speed <= 4.0:
                 raise RuntimeError(
-                    f"compose item {item.get('item_id') or index} has invalid source range"
+                    f"compose item {item.get('item_id') or index} has invalid source range or speed"
                 )
-            if timeline_start < cursor - 1e-6:
+            if timeline_start < cursor - VIDEO_TIMELINE_TOLERANCE_SECONDS:
                 raise RuntimeError("overlapping video clips are not supported in MVP compose")
-            if timeline_start > cursor + 1e-6:
+            if timeline_start > cursor + VIDEO_TIMELINE_TOLERANCE_SECONDS:
                 gap_path = temp_dir / f"gap_{index:03d}.mp4"
                 await _render_gap_clip(
                     output_path=gap_path,
@@ -824,28 +938,57 @@ async def run_freezone_video_compose(
                 output_path=clip_path,
                 source_start=source_start,
                 duration=duration,
+                speed=speed,
                 width=width,
                 height=height,
                 fps=fps,
                 background_color=background_color,
                 keep_original_audio=keep_original_audio,
-                volume=float(item.get("volume", 1.0) or 1.0),
+                volume=float(item.get("volume", 1.0) if item.get("volume") is not None else 1.0),
                 muted=bool(item.get("muted")),
             )
             segment_paths.append(clip_path)
-            cursor = timeline_start + duration
+            cursor = timeline_start + duration / speed
 
         concatenated_path = temp_dir / "concatenated.mp4"
         await _concat_media_segments(segment_paths, concatenated_path)
+        audio_video_path = concatenated_path
+        if subtitle_tracks:
+            temp_srt_path = temp_dir / "subtitles.srt"
+            _write_srt(subtitle_tracks, temp_srt_path)
+            assert subtitle_artifact_path is not None
+            subtitled_path = temp_dir / "subtitled.mp4"
+            await _render_subtitles(
+                source_path=concatenated_path,
+                output_path=subtitled_path,
+                subtitle_path=temp_srt_path,
+                temp_dir=temp_dir,
+            )
+            audio_video_path = subtitled_path
         await _mix_audio_tracks(
-            base_video_path=concatenated_path,
+            base_video_path=audio_video_path,
             final_output_path=final_output_path,
             audio_items=audio_items,
             temp_dir=temp_dir,
         )
+        if subtitle_artifact_path is not None:
+            shutil.copyfile(temp_srt_path, subtitle_artifact_path)
 
     if not final_output_path.exists():
         raise RuntimeError("video compose finished without output file")
+    render_validation = await _verify_rendered_video(final_output_path)
+    if export_manifest is not None:
+        from novelvideo.freezone.export_manifest import write_export_sidecar
+
+        await asyncio.to_thread(
+            write_export_sidecar,
+            output_dir / f"{job_id}.manifest.json",
+            export_manifest,
+            final_output_path,
+            project_dir=project_dir,
+            subtitle_output_path=subtitle_artifact_path,
+            render_validation=render_validation,
+        )
     return final_output_path
 
 
@@ -901,6 +1044,48 @@ async def _probe_video_duration(source_path: str) -> float:
         return max(0.1, float((proc.stdout or "").strip()))
     except ValueError as exc:
         raise RuntimeError("unable to parse video duration") from exc
+
+
+async def _verify_rendered_video(path: Path) -> dict[str, Any]:
+    proc = await asyncio.to_thread(
+        subprocess.run,
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type,width,height:format=duration",
+            "-of",
+            "json",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"rendered video failed ffprobe validation: {(proc.stderr or '').strip()[-1000:]}"
+        )
+    try:
+        info = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("rendered video returned invalid ffprobe metadata") from exc
+    video = next(
+        (stream for stream in info.get("streams", []) if stream.get("codec_type") == "video"),
+        None,
+    )
+    try:
+        duration = float((info.get("format") or {}).get("duration") or 0)
+    except (TypeError, ValueError):
+        duration = 0
+    if video is None or duration <= 0:
+        raise RuntimeError("rendered video has no playable video stream or duration")
+    return {
+        "width": int(video.get("width") or 0),
+        "height": int(video.get("height") or 0),
+        "duration_seconds": duration,
+    }
 
 
 def _expand_mask(mask: np.ndarray, radius: int = 2) -> np.ndarray:

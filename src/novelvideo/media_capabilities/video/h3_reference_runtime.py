@@ -1395,6 +1395,7 @@ async def generate_h3_reference_director_video(
     wire: H3ReferenceWire,
     frozen_frames=None,
     on_provider_submitted: Callable[[str], Awaitable[None] | None] | None = None,
+    workflow_profile: dict | None = None,
 ) -> H3GenerationResult:
     """Submit H3 Ref using immutable bytes captured before remote I/O."""
     from novelvideo.media_capabilities.video.h3_timeline import build_h3_timeline_data
@@ -1440,6 +1441,11 @@ async def generate_h3_reference_director_video(
         output_settings=output_settings,
     )
     profile = load_h3_reference_workflow_profile(workflow_id=workflow_id)
+    if workflow_profile is not None:
+        from novelvideo.media_capabilities.models import WorkflowProfile
+        profile = WorkflowProfile.model_validate(workflow_profile)
+        if profile.workflow_id != workflow_id or profile.manifest is None or profile.source_graph is None:
+            raise ValueError("registered workflow snapshot does not match request")
     runtime = _load_runtime()
     runtime_root = Path(ctx.runtime_dir) / "media_h3_ref"
     artifact_root = runtime_root / "artifacts"
@@ -1450,6 +1456,11 @@ async def generate_h3_reference_director_video(
         staging.mkdir(parents=True, mode=0o700)
         staging.chmod(0o700)
         client = runtime.create_client()
+        if workflow_profile is not None:
+            from novelvideo.media_capabilities.workflows.graph import validate_deployed_graph
+            from novelvideo.media_capabilities.workflows.models import WorkflowManifest
+            validate_deployed_graph(WorkflowManifest.model_validate(profile.manifest), profile.source_graph,
+                                    await client.workflow_json(workflow_id))
         uploaded_references = []
         for index, (reference, validated, suffix) in enumerate(
             zip(references, preflight_references, reference_suffixes, strict=True),

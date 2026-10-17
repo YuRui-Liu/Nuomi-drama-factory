@@ -1,5 +1,5 @@
 /* V6 script settings: scoped to the editor and its nested picker. */
-.ns-modal[data-slot="dialog-content"]{display:flex;width:min(1220px,calc(100vw - 48px));max-width:none;height:min(780px,94dvh);gap:14px;padding:0;background:transparent;color:#F2F4F7;border:0;border-radius:0;box-shadow:none;--tw-ring-shadow:0 0 #0000;isolation:isolate;font-size:12px}
+.ns-modal[data-slot="dialog-content"]{display:flex;flex-direction:column;width:min(1220px,calc(100vw - 48px));max-width:none;height:min(780px,94dvh);gap:10px;padding:0;background:transparent;color:#F2F4F7;border:0;border-radius:0;box-shadow:none;--tw-ring-shadow:0 0 #0000;isolation:isolate;font-size:14px}
 .ns-backdrop[data-slot]{background:#050608bc;backdrop-filter:blur(8px)}
 .ns-modal button,.ns-modal input,.ns-modal textarea{font:inherit}
 .ns-modal button{cursor:pointer;border:1px solid #2A2F37;border-radius:7px;background:transparent;color:inherit;padding:8px 12px}
@@ -22,3 +22,32 @@
 @media(max-width:1050px){.ns-presets{width:182px;padding:20px 12px}.ns-header{padding:23px}.ns-body{padding:0 23px}.ns-genre-board{grid-template-columns:105px minmax(0,1fr) 105px;gap:4px;min-height:265px}.ns-disc{width:140px;height:140px}.ns-disc-secondary{width:126px;height:126px;margin-left:-34px}.ns-disc strong{font-size:15px;letter-spacing:0}.ns-fusion{min-height:200px}.ns-tiles{grid-template-columns:repeat(3,minmax(0,1fr));padding:18px 0}.ns-tiles button{min-height:65px;padding:10px}.ns-tiles svg{float:left;margin:6px 10px 8px 0}.ns-tile-caption{margin-top:0}.ns-footer{padding:17px 23px}}
 @media(max-width:760px){.ns-modal[data-slot="dialog-content"]{width:calc(100vw - 16px);height:calc(100dvh - 16px);flex-direction:column;gap:8px}.ns-presets{width:100%;height:92px;flex:0 0 92px;padding:10px;overflow-x:auto;overflow-y:hidden;border-radius:12px}.ns-presets h2,.ns-presets>p{display:none}.ns-preset-list{flex-direction:row;gap:8px;height:100%}.ns-preset-list button{width:157px;flex:0 0 157px;margin:0;padding:11px 10px;font-size:11px}.ns-preset-list small{font-size:9px;padding-left:0}.ns-main{width:100%;border-radius:13px}.ns-header{padding:18px 17px}.ns-header h2{font-size:17px}.ns-badge{display:none}.ns-body{padding:0 13px}.ns-genre-heading{font-size:9px;letter-spacing:0}.ns-genre-heading span:nth-child(2){max-width:130px;font-size:8px}.ns-genre-board{grid-template-columns:82px minmax(0,1fr) 82px;gap:3px;min-height:245px}.ns-genres{max-height:187px}.ns-genres button{font-size:10px;padding:7px 2px;gap:4px}.ns-genre-icon{width:17px;height:17px;font-size:8px}.ns-disc{width:96px;height:96px;padding:0 8px 21px}.ns-disc-secondary{width:84px;height:84px;margin-left:-56px;margin-top:-41px}.ns-disc strong{font-size:11px}.ns-fusion{min-height:162px}.ns-fusion-note{font-size:9px}.ns-fusion-note small{font-size:8px;letter-spacing:0}.ns-custom-genre{gap:0}.ns-custom-genre button{padding:3px 4px}.ns-tiles{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.ns-tiles button{min-height:60px}.ns-footer{padding:12px;gap:5px}.ns-toggle{font-size:9px;gap:4px}.ns-footer .ns-undo{font-size:9px}.ns-actions{gap:5px}.ns-actions button{padding:8px 9px;font-size:10px}.ns-actions .ns-primary{padding:9px 10px;font-size:10px;gap:3px}.ns-drawer{width:100%;padding:20px}.ns-picked{max-height:130px}.ns-drawer-hint{margin-bottom:16px}}
 @media(prefers-reduced-motion:reduce){.ns-modal[data-slot="dialog-content"]{animation:none;transition:none}}
+
+/* The setting editor is also mounted by the ideation workspace without a dialog shell. */
+.ns-content-layout{display:flex;flex:1;min-width:0;min-height:0;gap:14px;color:#F2F4F7;font-size:14px}
+.ns-content-layout button,.ns-content-layout input,.ns-content-layout textarea{font:inherit}
+.ns-content-layout button{cursor:pointer;border:1px solid #2A2F37;border-radius:7px;background:transparent;color:inherit;padding:8px 12px}
+.ns-content-layout button:hover{background:#20242A}
+.ns-content-layout button:focus-visible,.ns-content-layout input:focus-visible,.ns-content-layout textarea:focus-visible{outline:2px solid #BFE6FF;outline-offset:2px}
+.ns-content-layout button:disabled{opacity:.45;cursor:not-allowed}
+.ns-modal .ns-content-layout{width:100%}
+.ns-content-tools{display:flex;align-items:center;gap:8px;flex-shrink:0;padding:12px 20px;background:#15171b;border-top:1px solid #2A2F37}
+.ns-content-tools .ns-badge{margin-left:auto}
+.ns-drawer-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px;flex-shrink:0}
+.ns-drawer-actions .ns-done{margin-top:0}
+.ns-content-layout .ns-presets>p,.ns-content-layout .ns-preset-number,.ns-content-layout .ns-preset-list small,
+.ns-content-layout .ns-badge,.ns-content-layout .ns-genre-heading,.ns-content-layout .ns-genres button,
+.ns-content-layout .ns-genre-icon,.ns-content-layout .ns-custom-genre input,.ns-content-layout .ns-custom-genre button,
+.ns-content-layout .ns-fusion-note,.ns-content-layout .ns-fusion-note small,.ns-content-layout .ns-tile-caption,
+.ns-content-layout .ns-idea label,.ns-content-layout .ns-toggle,.ns-content-layout .ns-undo,
+.ns-content-layout .ns-drawer-hint,.ns-content-layout .ns-search input,.ns-content-layout .ns-add-custom,
+.ns-content-layout .ns-options h3,.ns-content-layout .ns-chips button,.ns-content-layout .ns-picked p,
+.ns-content-layout .ns-picked small,.ns-content-layout .ns-empty,.ns-content-layout .ns-picked .ns-chips button,
+.ns-content-layout .ns-mode button,.ns-content-layout .ns-structure label{font-size:12px}
+.ns-content-layout .ns-idea textarea{font-size:14px}
+.ns-content-layout .ns-primary{display:inline-flex;align-items:center;justify-content:center;gap:7px;background:#E5FF5C;color:#0D0E10;border-color:#E5FF5C;font-weight:600;padding:10px 20px;border-radius:8px}
+.ns-content-layout .ns-primary:hover{background:#edff8d}
+@media(max-width:1050px){.ns-content-layout{gap:14px}}
+@media(max-width:760px){.ns-content-layout{flex-direction:column;gap:8px}.ns-content-tools{padding:10px}.ns-content-layout .ns-presets{width:100%;height:92px;flex:0 0 92px;padding:10px;overflow-x:auto;overflow-y:hidden;border-radius:12px}.ns-content-layout .ns-main{width:100%}.ns-content-layout .ns-genres button,.ns-content-layout .ns-genre-heading,.ns-content-layout .ns-tile-caption,.ns-content-layout .ns-toggle,.ns-content-layout .ns-undo,.ns-content-layout .ns-content-tools .ns-badge{font-size:12px}.ns-content-layout .ns-drawer{width:100%;padding:20px}}
+.ns-content-layout .ns-tile-value,.ns-content-layout .ns-disc strong,.ns-content-layout .ns-genre-heading span:nth-child(2){font-size:12px}
+.ns-modal .ns-error,.ns-modal .ns-actions button{font-size:12px}

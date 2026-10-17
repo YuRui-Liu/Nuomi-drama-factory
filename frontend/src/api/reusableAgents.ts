@@ -29,6 +29,16 @@ export interface FrozenStudio {
   excluded_fields?: string[];
   source?: ResourceSource;
 }
+export interface RequiredNodeOperation {
+  node_type: string;
+  operation: string;
+}
+export interface AgentExample {
+  source_url: string;
+  prompt_public: boolean;
+  inputs_public: boolean;
+  workflow_public: boolean;
+}
 export interface AgentConfiguration {
   name: string;
   responsibilities: string;
@@ -38,6 +48,10 @@ export interface AgentConfiguration {
   capabilities: string[];
   defaults: Partial<Record<DirectionKind, AgentDefault>>;
   studio_refs: (StudioRef | FrozenStudio)[];
+  delivery_requirements?: string[];
+  collaboration_rules?: string[];
+  required_node_operations?: RequiredNodeOperation[];
+  examples?: AgentExample[];
 }
 export type AgentChanges = Partial<{
   [K in keyof AgentConfiguration]: AgentConfiguration[K] | null;

@@ -15,15 +15,63 @@ def test_five_groups_run_concurrently_without_splitting_group_units(monkeypatch)
     calls = []
     monkeypatch.setattr(module._Producer, "prepare_plan", lambda self, episode: None)
     monkeypatch.setattr(module._Producer, "groups", lambda self, episode: [{"id": f"g{i}"} for i in range(5)])
+
     def stage(self, episode, group_id, stage, **kwargs):
         calls.append((group_id, stage))
-        if stage == "video": barrier.wait()
+        if stage == "video":
+            barrier.wait()
         return "completed"
+
     monkeypatch.setattr(module._Producer, "stage", stage)
     result = module.run_batch(request=lambda *a: None, wait_task=lambda *a: None,
                               episodes=[1], through="video", concurrency={"render": 2, "video": 5})
     assert result["ok"] is True
     assert sorted(calls) == sorted((f"g{i}", stage) for i in range(5) for stage in ("render", "video"))
+
+
+def test_batch_can_limit_work_to_an_explicit_set_of_narrative_groups(monkeypatch):
+    module = batch_module()
+    calls = []
+    monkeypatch.setattr(module._Producer, "prepare_plan", lambda self, episode: None)
+    monkeypatch.setattr(module._Producer, "groups", lambda self, episode: [
+        {"id": "g1"}, {"id": "g2"}, {"id": "g3"},
+    ])
+    monkeypatch.setattr(
+        module._Producer,
+        "stage",
+        lambda self, episode, group_id, stage, **kwargs: calls.append((group_id, stage)) or "completed",
+    )
+
+    result = module.run_batch(
+        request=lambda *args: None,
+        wait_task=lambda *args: None,
+        episodes=[1],
+        through="video",
+        group_ids_by_episode={1: ["g3", "g1"]},
+        concurrency={"render": 2, "video": 2},
+    )
+
+    assert result["ok"] is True
+    assert [group["group_id"] for group in result["episodes"][0]["groups"]] == ["g1", "g3"]
+    assert sorted(calls) == [("g1", "render"), ("g1", "video"), ("g3", "render"), ("g3", "video")]
+
+
+def test_batch_reports_selected_group_that_is_no_longer_in_active_plan(monkeypatch):
+    module = batch_module()
+    monkeypatch.setattr(module._Producer, "prepare_plan", lambda self, episode: None)
+    monkeypatch.setattr(module._Producer, "groups", lambda self, episode: [{"id": "g1"}])
+
+    result = module.run_batch(
+        request=lambda *args: None,
+        wait_task=lambda *args: None,
+        episodes=[1],
+        through="video",
+        group_ids_by_episode={1: ["g2"]},
+    )
+
+    assert result["ok"] is False
+    assert result["episodes"][0]["status"] == "blocked"
+    assert "group_changed" in result["episodes"][0]["error"]
 
 
 def test_stale_active_and_review_plans_rebuild_semantics_before_director():

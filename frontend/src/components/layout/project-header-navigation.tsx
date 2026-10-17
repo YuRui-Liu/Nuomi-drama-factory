@@ -25,6 +25,7 @@ import { isRememberedSection, useProjectNavStore } from "@/stores/project-nav-st
 import { useAllProjectSummaries } from "@/lib/queries/projects";
 import { getProjectCover } from "@/lib/project-cover";
 import { cn } from "@/lib/utils";
+import { ProjectSettingsEntry } from '@/features/creation-workspace/ProjectSettingsEntry';
 
 function ProjectAvatar({ name }: { name: string }) {
   const { gradient, initial } = useMemo(() => getProjectCover(name), [name]);
@@ -216,6 +217,7 @@ export function ProjectHeaderNavigation({ project }: { project: string }) {
           {PROJECT_MANAGEMENT_ITEMS.map(item => <DropdownMenuItem key={item.labelKey} onClick={() => navigate({ to: item.to, params: { project } })}>{t(item.labelKey)}</DropdownMenuItem>)}
         </DropdownMenuContent>
       </DropdownMenu>
+      <ProjectSettingsEntry project={project} />
     </nav>
   );
 }
