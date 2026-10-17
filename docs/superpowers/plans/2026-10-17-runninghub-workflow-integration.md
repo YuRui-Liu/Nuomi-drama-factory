@@ -8,7 +8,7 @@
 
 **技术栈：** Python 3.11、Pydantic、SQLite、Typer、httpx、pytest/pytest-asyncio、uv。
 
-**依据：** `docs/superpowers/specs/2026-10-17-runninghub-workflow-integration-design.md`，用户已于 2026-10-17 确认。本文为计划，所有复选框均待执行。
+**依据：** `docs/superpowers/specs/2026-10-17-runninghub-workflow-integration-design.md`，用户已于 2026-10-17 确认。实现已在当前会话内联完成首版；下方保留原始细项作为计划记录，实际交付、调整及验证结果以 [执行报告](../reports/2026-10-17-runninghub-workflow-integration.md) 为准，不将未执行的付费验收标记为通过。
 
 ---
 

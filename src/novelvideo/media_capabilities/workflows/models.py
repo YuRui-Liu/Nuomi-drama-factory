@@ -1,15 +1,32 @@
 """Versioned workflow package contracts; no provider credentials belong here."""
+
 from __future__ import annotations
 
 from typing import Annotated, Literal
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StringConstraints,
+    model_validator,
+)
 
-Name = Annotated[str, StringConstraints(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]*$", max_length=128)]
+Name = Annotated[
+    str, StringConstraints(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]*$", max_length=128)
+]
 Digest = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 
 
 class WorkflowError(ValueError):
-    def __init__(self, code: str, message: str = "", *, phase: str = "validate", recoverable: bool = False):
+    def __init__(
+        self,
+        code: str,
+        message: str = "",
+        *,
+        phase: str = "validate",
+        recoverable: bool = False,
+    ):
         self.code, self.phase, self.recoverable = code, phase, recoverable
         super().__init__(f"workflow.{code}" + (f": {message}" if message else ""))
 
@@ -25,7 +42,9 @@ class Source(Model):
 
 
 class InputDefinition(Model):
-    type: Literal["string", "integer", "number", "boolean", "object", "array", "file", "files"]
+    type: Literal[
+        "string", "integer", "number", "boolean", "object", "array", "file", "files"
+    ]
     required: bool = False
     nullable: bool = False
     default: JsonValue = None
@@ -35,6 +54,7 @@ class InputDefinition(Model):
     min_length: int | None = Field(default=None, ge=0)
     max_length: int | None = Field(default=None, ge=0)
     pattern: str | None = None
+    format: Literal["uint64"] | None = None
     properties: dict[str, InputDefinition] = Field(default_factory=dict)
     additional_properties: bool = False
     items: InputDefinition | None = None
@@ -45,10 +65,14 @@ class InputDefinition(Model):
     def bounds(self):
         import math
         import re
+
         for v in (self.minimum, self.maximum):
             if v is not None and not math.isfinite(v):
                 raise ValueError("non-finite bound")
-        for lo, hi in ((self.minimum, self.maximum), (self.min_length, self.max_length)):
+        for lo, hi in (
+            (self.minimum, self.maximum),
+            (self.min_length, self.max_length),
+        ):
             if lo is not None and hi is not None and lo > hi:
                 raise ValueError("reversed bounds")
         if self.pattern is not None:
@@ -113,7 +137,9 @@ class WorkflowManifest(Model):
         targets = [(t.node_id, t.field) for b in self.bindings for t in b.targets]
         if len(targets) != len(set(targets)):
             raise ValueError("duplicate binding target")
-        if self.adapter is None and any(b.source not in self.inputs for b in self.bindings):
+        if self.adapter is None and any(
+            b.source not in self.inputs for b in self.bindings
+        ):
             raise ValueError("binding source must be declared")
         nodes = [o.node_id for o in self.outputs.values()]
         if len(nodes) != len(set(nodes)):

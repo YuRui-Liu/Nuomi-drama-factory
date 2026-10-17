@@ -242,6 +242,8 @@ async def render(project: str, body: RenderRequest, user: dict = Depends(require
 class GenerateRequest(Model):
     requestId: str = Field(pattern=r'^[a-f0-9]{32}$')
     request: MusicRequest
+    workflow: str | None = None
+    workflowVersion: int = Field(default=1, ge=1)
 
 
 @router.get(PREFIX + '/capabilities')
@@ -260,12 +262,22 @@ async def generate(project: str, body: GenerateRequest, user: dict = Depends(req
     scope = await resolve_project_scope(project, user, required_role='editor')
     from novelvideo.music.generation import generation_configuration
     with errors():
+        selected_package = None
         try:
-            workflow, fingerprint = await generation_configuration()
+            if body.workflow:
+                from novelvideo.music.generation import registered_music_package
+                selected_package = registered_music_package(body.workflow, body.workflowVersion)
+                workflow = selected_package['manifest']['workflow_id']
+                fingerprint = selected_package['manifest']['source']['graph_sha256']
+            else:
+                workflow, fingerprint = await generation_configuration()
         except RuntimeError as exc:
             raise HTTPException(422, str(exc)) from exc
         store = get_store()
-        job, created = store.create_job(project, body.requestId, 'generate', {'request':body.request.model_dump(), 'workflow':workflow, 'contractHash':fingerprint, 'owner':owner(user)})
+        job_input = {'request':body.request.model_dump(), 'workflow':workflow, 'contractHash':fingerprint, 'owner':owner(user)}
+        if selected_package is not None:
+            job_input['workflowPackage'] = selected_package
+        job, created = store.create_job(project, body.requestId, 'generate', job_input)
     return await enqueue(scope, store, project, job, created)
 
 

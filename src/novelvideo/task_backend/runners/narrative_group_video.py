@@ -2977,6 +2977,7 @@ async def _execute_inner(
                             global_references=global_references,
                             reference_limit=reference_limit,
                             provider_workflow_id=provider_workflow_id,
+                            workflow_profile=getattr(workflow, "workflow_profile", None),
                             frozen_frames=frozen_frames,
                             reference_wire=reference_wire,
                             on_provider_submitted=on_provider_submitted,

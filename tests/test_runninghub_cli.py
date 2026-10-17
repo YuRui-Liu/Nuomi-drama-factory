@@ -9,7 +9,9 @@ def test_help_and_offline_inspect(tmp_path):
     assert help_result.exit_code == 0
     assert "resume" in help_result.output
     path = tmp_path / "graph.json"
-    path.write_text(json.dumps({"1": {"class_type": "Text", "inputs": {"text": "hello"}}}))
+    path.write_text(
+        json.dumps({"1": {"class_type": "Text", "inputs": {"text": "hello"}}})
+    )
     result = runner.invoke(app, ["inspect", str(path)])
     assert result.exit_code == 0
     assert json.loads(result.stdout)["nodes"][0]["node_id"] == "1"

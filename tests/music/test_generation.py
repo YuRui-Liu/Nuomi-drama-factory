@@ -40,7 +40,7 @@ async def test_known_remote_id_is_queried_on_resume(tmp_path):
 async def test_completed_candidate_is_not_auto_added_to_library_or_plan(tmp_path):
     from novelvideo.music.generation import advance_generation
     from novelvideo.music.store import MusicStore
-    from test_api import wav_bytes
+    from tests.music.test_api import wav_bytes
     store = MusicStore(tmp_path/'store.db')
     store.create_job('p','j','generate',{'workflow':'123','request':{'tags':'piano','seed':'1'},'owner':'alice'})
     store.update_job('p','j',status='running',remoteTaskId='remote')
