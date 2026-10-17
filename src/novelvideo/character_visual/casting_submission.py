@@ -32,11 +32,14 @@ class SubmissionJournal:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, self.path)
-            descriptor = os.open(self.path.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
+            # Windows CRT cannot open directories; file fsync and atomic replace
+            # above still apply. Preserve directory durability on POSIX.
+            if os.name != 'nt':
+                descriptor = os.open(self.path.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
         finally:
             temporary.unlink(missing_ok=True)
 

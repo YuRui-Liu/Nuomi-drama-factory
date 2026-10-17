@@ -3,9 +3,10 @@ from copy import deepcopy
 
 from .library_references import digest
 from .ontology import exact, integer, require, text
+from .professional_agents import PROFESSIONAL_AGENTS
 
 
-BUILTIN_AGENTS=(
+_LEGACY_BUILTIN_AGENTS=(
     {'id':'builtin:creative-lead','revision':1,'configuration':{
         'name':'通用主创','responsibilities':'理解用户创作目标，协调局部创作建议，维护人物、场景与叙事一致性。',
         'methods':'依据用户题材、已确认约定和当前授权范围组织工作。先明确意图与已有素材，再提出可比较的局部方案；不强制线性制作阶段，不将草案视为已确认事实。',
@@ -18,13 +19,17 @@ BUILTIN_AGENTS=(
         'references':[],'skill_notes':['文本建议不代表用户已接受，不自动生成媒体。'],
         'capabilities':['context.read','proposal.create'], 'defaults':{},'studio_refs':[]}},
 )
+BUILTIN_AGENTS=(*_LEGACY_BUILTIN_AGENTS,*PROFESSIONAL_AGENTS)
 
 
 def _fixed(entry):
     from .agent_profiles import AgentProfiles
     fixed=deepcopy(entry)
     fixed['kind']='agent'
-    fixed['configuration']['capability_policy']=AgentProfiles.capabilities()
+    legacy_v1=(fixed['id'],fixed['revision']) in {
+        ('builtin:creative-lead',1),('builtin:text-writer',1),
+    }
+    fixed['configuration']['capability_policy']=AgentProfiles.capabilities(legacy=legacy_v1)
     content_hash=digest(fixed)
     fixed['source']={'kind':'builtin','ref':{'id':fixed['id'],'revision':fixed['revision']},
                      'content_hash':content_hash}

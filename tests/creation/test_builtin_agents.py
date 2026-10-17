@@ -12,6 +12,12 @@ from .test_ontology import ctx, command
 from .test_agent_profiles import configuration, save
 
 
+LEGACY_V1_PROOFS = {
+    'builtin:creative-lead': 'f7f18851f9c5499ee10ed0cc0bca77d2f7fa01f6e48709d4ee171556aac8505c',
+    'builtin:text-writer': '53f6bd5a0db6fcf013478645a8b69e1dea6c8a928ae6ca2d28da081317ccd808',
+}
+
+
 @pytest.fixture
 def service(ctx, tmp_path):
     return AgentProfiles(ctx, PersonalLibrary(tmp_path/'personal', ctx.requester_user_id))
@@ -29,7 +35,8 @@ async def adopt(service, request_id='adopt'):
 
 
 def add_version(monkeypatch):
-    newer = deepcopy(builtin_agents.BUILTIN_AGENTS[0])
+    newer = deepcopy(max((entry for entry in builtin_agents.BUILTIN_AGENTS
+                         if entry['id'] == 'builtin:creative-lead'), key=lambda entry: entry['revision']))
     newer['revision'] += 1
     newer['configuration']['methods'] = '新版：根据用户目标比较两个可行方案'
     monkeypatch.setattr(builtin_agents, 'BUILTIN_AGENTS', (*builtin_agents.BUILTIN_AGENTS, newer))
@@ -38,8 +45,8 @@ def add_version(monkeypatch):
 
 def test_catalog_and_preview_do_not_initialize_personal_or_project(service, ctx):
     entries = service.builtin_catalog()
-    assert len(entries) == 2
-    assert len({entry['id'] for entry in entries}) == 2
+    assert len(entries) == 22
+    assert len({entry['id'] for entry in entries}) == 22
     for entry in entries:
         assert entry['id'].startswith('builtin:')
         assert entry['source']['kind'] == 'builtin'
@@ -48,6 +55,15 @@ def test_catalog_and_preview_do_not_initialize_personal_or_project(service, ctx)
         assert set(entry['configuration']['capabilities']) <= {c['id'] for c in service.capabilities()['items']}
         assert service.adoption_preview({'id':entry['id'],'revision':entry['revision']}, source='builtin') == entry
     assert not ctx.state_dir.exists() and not service.library.root.exists()
+
+
+@pytest.mark.parametrize(('identifier', 'proof'), LEGACY_V1_PROOFS.items())
+def test_legacy_builtin_v1_proofs_and_content_remain_fixed(identifier, proof):
+    fixed = builtin_agents.resolve({'id':identifier,'revision':1})
+    assert fixed['proof'] == proof
+    assert fixed['configuration']['defaults'] == {}
+    assert fixed['configuration']['studio_refs'] == []
+    assert not {'delivery_requirements','collaboration_rules','required_node_operations','examples'} & fixed['configuration'].keys()
 
 
 async def test_explicit_adoption_freezes_builtin_source_without_personal_seed(service, monkeypatch):
@@ -66,7 +82,8 @@ async def test_explicit_adoption_freezes_builtin_source_without_personal_seed(se
 
 async def test_stale_builtin_selection_cannot_copy_changed_catalog(service, monkeypatch):
     ref, entry = first(service)
-    changed = deepcopy(builtin_agents.BUILTIN_AGENTS[0])
+    changed = deepcopy(next(item for item in builtin_agents.BUILTIN_AGENTS
+                            if item['id'] == ref['id'] and item['revision'] == ref['revision']))
     changed['configuration']['methods'] = '目录内容已变化'
     monkeypatch.setattr(builtin_agents, 'BUILTIN_AGENTS', (changed, *builtin_agents.BUILTIN_AGENTS[1:]))
     with pytest.raises(OperationError) as error:
@@ -95,10 +112,10 @@ async def test_builtin_upgrade_cas_conflicts_and_fixed_history(service, monkeypa
     result = await service.apply(command('upgrade', payload, 'upgrade'))
     current = service.adoption(identifier)
     assert result['revision'] == 3
-    assert current['source']['ref'] == ref and current['fixed']['revision'] == 2
+    assert current['source']['ref'] == ref and current['fixed']['revision'] == ref['revision']
     assert current['effective']['methods'] == ('本项目的方法' if resolution == 'keep' else preview['after']['methods'])
     assert service.adoption(identifier, 2) == old
-    assert service.adoption(identifier, 1)['fixed']['revision'] == 1
+    assert service.adoption(identifier, 1)['fixed']['revision'] == old['fixed']['revision']
     assert await service.apply(command('upgrade', payload, 'upgrade')) == result
     with pytest.raises(OperationError):
         await service.apply(command('upgrade', payload, 'stale-cas'))
@@ -155,6 +172,17 @@ async def test_builtin_first_use_reaches_real_main_and_delegation(service, ctx, 
     task = await delegations.apply(command('delegation.create', {**body,'preview_proof':preview['proof']}, 'task'))
     assert task['contract']['agent']['source']['kind'] == 'builtin'
     assert task['contract']['agent']['effective'] == service.adoption(adopted['adoption_id'])['effective']
+    task_id = task['delegation_id']
+    fixed_task = delegations.get(task_id)
+    newer_ref = add_version(monkeypatch)
+    upgrade = service.upgrade_preview(adopted['adoption_id'], newer_ref, source='builtin')
+    await service.apply(command('upgrade', {'source':'builtin','adoption_id':adopted['adoption_id'],
+        'expected_revision':1,'ref':newer_ref,'proof':upgrade['proof'],'resolutions':{}}, 'upgrade-main'))
+    current_task = delegations.get(task_id)
+    assert current_task['contract']['allowed_operations'] == fixed_task['contract']['allowed_operations']
+    assert current_task['contract']['agent'] == fixed_task['contract']['agent']
+    assert current_task['contract']['agent']['source']['ref'] == fixed_task['contract']['agent']['source']['ref']
+    assert service.adoption(adopted['adoption_id'])['fixed']['revision'] == newer_ref['revision']
     assert not service.library.root.exists()
 
 

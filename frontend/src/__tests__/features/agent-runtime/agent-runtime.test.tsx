@@ -5,19 +5,23 @@ import {
   render,
   renderHook,
   screen,
+  within,
   waitFor,
 } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { useAgentRuntime } from '@/features/agent-runtime/useAgentRuntime';
+import { canStopAgentRun, useAgentRuntime } from '@/features/agent-runtime/useAgentRuntime';
 import { AgentRuntimePanel } from '@/features/agent-runtime/AgentRuntimePanel';
+import { requestAgentSelection } from '@/features/agent-runtime/selectionDelegation';
 import { useAuthStore } from '@/stores/auth-store';
 import { useCanvasStore } from '@/stores/canvasStore';
 import * as api from '@/api/agentRuns';
 import * as agents from '@/api/reusableAgents';
+import * as canvasApi from '@/api/canvas';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SuperChatPanel } from '@/features/superchat/superchat-panel';
 import { activeConversationKey } from '@/features/superchat/conversation-scope';
 const chat = vi.hoisted(() => ({
+  hookCalls: 0,
   historyReady: true,
   messages: [],
   connecting: false,
@@ -27,6 +31,7 @@ const chat = vi.hoisted(() => ({
   pinnedIds: new Set(),
   approvals: [{ id: 'unsafe', tool: 'shell', args: {} }],
   models: [],
+  canvasId: 'a',
   relayInstances: [],
   settings: { showToolEvents: true },
   title: '助手',
@@ -36,14 +41,31 @@ const chat = vi.hoisted(() => ({
   appendNotification: vi.fn(),
   resolveApproval: vi.fn(),
 }));
+const discussion = vi.hoisted(() => ({
+  messages: [],
+  availability: { available: true, code: 'available' },
+  loading: false,
+  busy: false,
+  error: '',
+  pendingRequests: [],
+  pendingRequest: null,
+  send: vi.fn(),
+  refresh: vi.fn(),
+}));
 vi.mock('@/features/superchat/use-superchat', () => ({
-  useSuperChat: () => chat,
+  useSuperChat: () => {
+    chat.hookCalls += 1;
+    return chat;
+  },
+}));
+vi.mock('@/features/agent-runtime/useAgentDiscussion', () => ({
+  useAgentDiscussion: () => discussion,
 }));
 vi.mock('@/lib/api', () => ({
   api: {
     get: () => ({
       json: async () => ({
-        data: [{ id: 'c', canvas_id: 'a', title: '当前会话' }],
+        data: [{ id: 'c', canvas_id: chat.canvasId, title: '当前会话' }],
       }),
     }),
   },
@@ -81,6 +103,7 @@ vi.mock('@/features/freezone/canvasSyncRuntime', () => ({
 vi.mock('@/api/agentRuns', () => ({
   getMainAgent: vi.fn(),
   getRuntime: vi.fn(),
+  getNodeCapabilities: vi.fn(),
   listBuiltinAgents: vi.fn(),
   listDelegations: vi.fn(),
   listRuns: vi.fn(),
@@ -92,11 +115,28 @@ vi.mock('@/api/reusableAgents', () => ({
   listAgentAdoptions: vi.fn(),
   listPersonalAgents: vi.fn(),
 }));
+vi.mock('@/api/canvas', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getFreezoneCanvas: vi.fn(),
+}));
 const owner = { user: 'alice', project: 'p', canvas: 'a', conversation: 'c' };
 const configuration = {
   name: '文本主创',
   responsibilities: '提出方案',
   methods: '比较',
+  delivery_requirements: ['给出两项可比较方案'],
+  collaboration_rules: ['把冲突交给导演协调'],
+  required_node_operations: [
+    { node_type: 'storyboardGenNode', operation: 'generate' },
+  ],
+  examples: [
+    {
+      source_url: 'https://example.com/work',
+      prompt_public: true,
+      inputs_public: true,
+      workflow_public: true,
+    },
+  ],
   references: [],
   skill_notes: [],
   capabilities: ['context.read', 'proposal.create'],
@@ -109,9 +149,12 @@ function View() {
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  chat.hookCalls = 0;
+  discussion.send.mockResolvedValue(true);
   localStorage.clear();
   state.runtime = true;
   state.location = { key: 'a' };
+  chat.canvasId = 'a';
   state.flush.mockResolvedValue(true);
   useAuthStore.setState({ username: 'alice' });
   useCanvasStore.setState({
@@ -154,6 +197,10 @@ beforeEach(() => {
     max_model_calls: 3,
     default_model_calls: 1,
   });
+  vi.mocked(api.getNodeCapabilities).mockResolvedValue({
+    schema_version: 1,
+    nodes: [],
+  });
   vi.mocked(api.listBuiltinAgents).mockResolvedValue([
     {
       title: '内置主创',
@@ -184,6 +231,31 @@ beforeEach(() => {
   HTMLElement.prototype.scrollTo = vi.fn();
 });
 afterEach(cleanup);
+it('allows stopping blocked runs that retain an inner action, but not settled runs', () => {
+  const blocked = {
+    id: 'run',
+    revision: 2,
+    state: 'blocked',
+    delegation_id: 'delegation',
+    unmet: [],
+    max_model_calls: 1,
+    remaining_model_calls: 0,
+    rounds: [],
+    outputs: [],
+  } satisfies api.AgentRun;
+
+  expect(canStopAgentRun({
+    ...blocked,
+    error: { message: 'inner action unresolved', node_run_id: 'inner-run', status: 'submission_unknown' },
+  })).toBe(true);
+  expect(canStopAgentRun({
+    ...blocked,
+    rounds: [{ phase: 'decision_saved' }],
+  })).toBe(true);
+  expect(canStopAgentRun(blocked)).toBe(false);
+  expect(canStopAgentRun({ ...blocked, state: 'delivered' })).toBe(false);
+  expect(canStopAgentRun({ ...blocked, state: 'partial' })).toBe(false);
+});
 it('keeps configuration selectable when runtime is unavailable; builtin IDs and proof survive explicit adoption', async () => {
   vi.mocked(api.getRuntime).mockResolvedValue({
     available: false,
@@ -209,6 +281,153 @@ it('keeps configuration selectable when runtime is unavailable; builtin IDs and 
     expected_adoption_revision: 1,
   });
   expect(api.previewDelegation).not.toHaveBeenCalled();
+});
+it('shows builtin crew profiles with their five working aspects and durable membership separately', async () => {
+  const builtin = {
+    title: '灯光师',
+    configuration: {
+      ...configuration,
+      name: '灯光师',
+      responsibilities: '统一镜头光向与色温',
+      methods: '按叙事目标标注主光、轮廓光和环境光',
+      delivery_requirements: ['交付指定镜头的照明修改'],
+      collaboration_rules: ['空间冲突交导演协调'],
+      required_node_operations: [
+        { node_type: 'storyboardGenNode', operation: 'generate' },
+      ],
+    },
+    proof: 'lighting-proof',
+    source: {
+      kind: 'builtin' as const,
+      ref: { id: 'builtin:lighting', revision: 1 },
+    },
+  };
+  vi.mocked(api.listBuiltinAgents).mockResolvedValue([builtin]);
+  vi.mocked(agents.listAgentAdoptions).mockResolvedValue([
+    {
+      adoption_id: 'lighting-member',
+      revision: 1,
+      fixed: {
+        id: 'builtin:lighting',
+        revision: 1,
+        kind: 'agent',
+        proof: 'lighting-proof',
+        configuration: builtin.configuration,
+      },
+      overrides: {},
+      effective: builtin.configuration,
+      source: {
+        kind: 'builtin',
+        ref: { id: 'builtin:lighting', revision: 1 },
+        content_hash: 'hash',
+      },
+    },
+  ]);
+
+  render(<View />);
+
+  expect(await screen.findByRole('region', { name: '项目机组' })).toBeInTheDocument();
+  expect(screen.getByText('浏览 1 个内置岗位与专业配置')).toBeInTheDocument();
+  expect(screen.getByText('统一镜头光向与色温')).not.toBeVisible();
+  fireEvent.click(screen.getByText('浏览 1 个内置岗位与专业配置'));
+  fireEvent.click(screen.getByText('灯光师', { selector: 'summary' }));
+  expect(
+    within(screen.getByRole('region', { name: '项目机组' })).getAllByText('灯光师').length,
+  ).toBeGreaterThan(0);
+  expect(screen.getByText('统一镜头光向与色温')).toBeInTheDocument();
+  expect(screen.getByText('按叙事目标标注主光、轮廓光和环境光')).toBeInTheDocument();
+  expect(screen.getByText('交付指定镜头的照明修改')).toBeInTheDocument();
+  expect(screen.getByText('空间冲突交导演协调')).toBeInTheDocument();
+  expect(screen.getByText('storyboardGenNode · generate')).toBeInTheDocument();
+  expect(screen.getByText('已加入项目机组')).toBeInTheDocument();
+  expect(screen.queryByText('本次已执行')).not.toBeInTheDocument();
+});
+it('adopts a builtin into the project through the durable receipt-backed operation', async () => {
+  const builtin = {
+    title: '灯光师',
+    configuration: { ...configuration, name: '灯光师' },
+    proof: 'lighting-proof',
+    source: {
+      kind: 'builtin' as const,
+      ref: { id: 'builtin:lighting', revision: 1 },
+    },
+  };
+  vi.mocked(api.listBuiltinAgents).mockResolvedValue([builtin]);
+
+  render(<View />);
+  fireEvent.click(await screen.findByText('浏览 1 个内置岗位与专业配置'));
+  fireEvent.click(await screen.findByText('灯光师', { selector: 'summary' }));
+  fireEvent.click(screen.getByRole('button', { name: '加入项目机组：灯光师' }));
+
+  await waitFor(() => expect(api.requestStep).toHaveBeenCalledWith(
+    owner,
+    expect.objectContaining({
+      kind: 'adopt',
+      request: expect.objectContaining({
+        action: 'adopt',
+        payload: {
+          source: 'builtin',
+          ref: { id: 'builtin:lighting', revision: 1 },
+          proof: 'lighting-proof',
+        },
+      }),
+    }),
+  ));
+});
+it('can delegate one task directly to a persisted project specialist', async () => {
+  const specialist = {
+    adoption_id: 'lighting-member',
+    revision: 2,
+    fixed: {
+      id: 'builtin:lighting',
+      revision: 1,
+      kind: 'agent',
+      proof: 'lighting-proof',
+      configuration: { ...configuration, name: '灯光师' },
+    },
+    overrides: {},
+    effective: { ...configuration, name: '灯光师' },
+    source: {
+      kind: 'builtin' as const,
+      ref: { id: 'builtin:lighting', revision: 1 },
+      content_hash: 'hash',
+    },
+  };
+  vi.mocked(agents.listAgentAdoptions).mockResolvedValue([specialist]);
+
+  localStorage.setItem(
+    activeConversationKey({ user: 'alice', project: 'p', canvas: 'a' }),
+    'c',
+  );
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <SuperChatPanel managedWorkspace canvasId="a" variant="freezone" />
+    </QueryClientProvider>,
+  );
+  fireEvent.click(await screen.findByRole('button', { name: /创建节点委托/ }));
+  await screen.findByRole('option', { name: '灯光师 · v2' }, { timeout: 5000 });
+  fireEvent.change(screen.getByLabelText('本次委托成员'), {
+    target: { value: 'lighting-member' },
+  });
+  const goal = screen.getByRole('textbox', { name: '本次委托目标' });
+  await act(async () => {
+    fireEvent.change(goal, {
+      target: { value: '只调整指定镜头的光线' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发起委托' }));
+  });
+
+  await waitFor(() => expect(api.previewDelegation).toHaveBeenCalledWith(
+    'p',
+    expect.objectContaining({
+      agent: { kind: 'adoption', adoption_id: 'lighting-member', revision: 2 },
+    }),
+  ));
+  const requestCalls = vi.mocked(api.requestStep).mock.calls;
+  expect(requestCalls[requestCalls.length - 1]?.[1]).toMatchObject({
+    kind: 'start',
+    request: { specialist_ids: [] },
+  });
 });
 it('flushes then submits both selected nodes and server hash; attachments never preview or send', async () => {
   const { result } = renderHook(() => useAgentRuntime(owner, true, true));
@@ -241,7 +460,144 @@ it('flushes then submits both selected nodes and server hash; attachments never 
     },
   });
 });
-it('zero selection requires explicit canvas scope and late preview cannot submit after remount', async () => {
+it('keeps the frozen scope until the user explicitly updates it to the live selection', async () => {
+  const { result } = renderHook(() => useAgentRuntime(owner, true, true));
+  await waitFor(() => expect(result.current.canSend).toBe(true));
+
+  act(() => {
+    useCanvasStore.setState({
+      nodes: useCanvasStore.getState().nodes.map((node) => ({
+        ...node,
+        selected: node.id === 'b',
+      })),
+    });
+  });
+
+  await waitFor(() => expect(result.current.selectionChanged).toBe(true));
+  expect(result.current.nodes.map((node) => node.id)).toEqual(['a', 'b']);
+  act(() => result.current.setNodeOperationGrant('a', 'patch', true));
+  act(() => result.current.captureSelection());
+
+  expect(result.current.nodes.map((node) => node.id)).toEqual(['b']);
+  expect(result.current.selectionChanged).toBe(false);
+  expect(result.current.nodeOperationGrants).toEqual({});
+});
+it('blocks sending when any frozen input node has been deleted', async () => {
+  const { result } = renderHook(() => useAgentRuntime(owner, true, true));
+  await waitFor(() => expect(result.current.canSend).toBe(true));
+  act(() => {
+    useCanvasStore.setState({
+      nodes: useCanvasStore.getState().nodes.filter((node) => node.id !== 'a'),
+    });
+  });
+
+  await act(async () => expect(await result.current.send('修改镜头', false)).toBe(false));
+
+  expect(result.current.error).toBe('所选节点已删除或无法访问：a');
+  expect(api.previewDelegation).not.toHaveBeenCalled();
+});
+it('consumes a scoped selection intent queued before the Agent Runtime mounts', async () => {
+  requestAgentSelection({ project: 'p', canvas: 'a', nodeIds: ['a'] });
+  const { result } = renderHook(() => useAgentRuntime(owner, true, true));
+  await waitFor(() => expect(result.current.canSend).toBe(true));
+
+  expect(result.current.nodes.map((node) => node.id)).toEqual(['a']);
+  expect(result.current.acceptedSelectionIntent).toMatchObject({
+    requestId: expect.any(String),
+    nodeIds: ['a'],
+  });
+  await act(async () => expect(await result.current.send('只改开场一', false)).toBe(true));
+  expect(api.previewDelegation).toHaveBeenCalledWith('p', expect.objectContaining({
+    scope: { kind: 'nodes', node_ids: ['a'] },
+  }));
+});
+it('restores frozen inputs only for the same user, project, canvas, and conversation', async () => {
+  const { result, rerender } = renderHook(
+    ({ activeOwner }) => useAgentRuntime(activeOwner, true, true),
+    { initialProps: { activeOwner: owner } },
+  );
+  await waitFor(() => expect(result.current.canSend).toBe(true));
+  act(() => result.current.setNodes([{ id: 'a', title: '固定的 A 草稿' }]));
+
+  const otherOwner = { ...owner, canvas: 'b', conversation: 'conversation-b' };
+  rerender({ activeOwner: otherOwner });
+  await waitFor(() => expect(result.current.nodes[0]?.title).not.toBe('固定的 A 草稿'));
+  expect(result.current.nodes.map((node) => node.id)).toEqual(['a', 'b']);
+
+  rerender({ activeOwner: owner });
+  await waitFor(() => expect(result.current.nodes).toEqual([
+    { id: 'a', title: '固定的 A 草稿' },
+  ]));
+});
+it('freezes only explicitly granted node operations against selected nodes', async () => {
+  vi.mocked(api.getMainAgent).mockResolvedValue({
+    binding_revision: 1,
+    adoption_id: 'agent',
+    current_agent: {
+      adoption_id: 'agent', revision: 2,
+      effective: { ...configuration, capabilities: [...configuration.capabilities, 'node.patch', 'node.run'] },
+    },
+  });
+  vi.mocked(api.getNodeCapabilities).mockResolvedValue({
+    schema_version: 1,
+    nodes: [{
+      node_type: 'textAnnotationNode', category: 'text', default_operation: 'compose',
+      operations: [{ name: 'compose', available: true, reason: null }],
+    }],
+  });
+  vi.mocked(canvasApi.getFreezoneCanvas).mockResolvedValue({
+    revision: 4,
+    nodes: structuredClone(useCanvasStore.getState().nodes),
+    edges: [],
+  });
+  const { result } = renderHook(() => useAgentRuntime(owner, true, true));
+  await waitFor(() => expect(result.current.canSend).toBe(true));
+  act(() => {
+    result.current.setNodeOperationGrant('a', 'patch', true);
+    result.current.setNodeOperationGrant('a', 'compose', true);
+    result.current.setMaxNodeRuns(3);
+  });
+  await act(async () => expect(await result.current.send('改灯光并重新生成', false)).toBe(true));
+  expect(api.previewDelegation).toHaveBeenCalledWith('p', expect.objectContaining({
+    execution_authorization: {
+      allowed_node_ids: ['a'],
+      allowed_node_operations: [
+        { node_id: 'a', operation: 'patch' },
+        { node_id: 'a', operation: 'compose' },
+      ],
+      max_node_runs: 3,
+    },
+    allowed_operations: expect.arrayContaining(['node.patch', 'node.run']),
+  }));
+});
+it('shows readable names for concrete node operations', async () => {
+  vi.mocked(api.getMainAgent).mockResolvedValue({
+    binding_revision: 1,
+    adoption_id: 'agent',
+    current_agent: {
+      adoption_id: 'agent', revision: 2,
+      effective: { ...configuration, capabilities: [...configuration.capabilities, 'node.run'] },
+    },
+  });
+  vi.mocked(api.getNodeCapabilities).mockResolvedValue({
+    schema_version: 1,
+    nodes: [{
+      node_type: 'textAnnotationNode', category: 'text', default_operation: 'compose',
+      operations: [
+        { name: 'generate', available: true, reason: null },
+        { name: 'edit', available: true, reason: null },
+        { name: 'compose', available: true, reason: null },
+        { name: 'custom', label: '分镜拼接', available: true, reason: null },
+      ],
+    }],
+  });
+  render(<View />);
+  expect(await screen.findAllByText('允许运行 生成')).toHaveLength(2);
+  expect(screen.getAllByText('允许运行 编辑')).toHaveLength(2);
+  expect(screen.getAllByText('允许运行 合成')).toHaveLength(2);
+  expect(screen.getAllByText('允许运行 分镜拼接')).toHaveLength(2);
+});
+it('requires selected nodes and rejects a late preview after remount', async () => {
   useCanvasStore.setState({ nodes: [] });
   const { result, rerender } = renderHook(
     ({ active }) => useAgentRuntime(owner, true, active),
@@ -251,8 +607,19 @@ it('zero selection requires explicit canvas scope and late preview cannot submit
   await act(async () => {
     expect(await result.current.send('方案', false)).toBe(false);
   });
+  expect(result.current.error).toBe('请先选择要委托的节点');
   expect(api.previewDelegation).not.toHaveBeenCalled();
-  act(() => result.current.setCanvasScope(true));
+  act(() => {
+    useCanvasStore.setState({
+      nodes: [
+        {
+          id: 'a', type: 'textAnnotationNode', position: { x: 0, y: 0 },
+          selected: true, data: { title: '开场一' },
+        },
+      ] as never,
+    });
+    result.current.captureSelection();
+  });
   let resolve!: (v: unknown) => void;
   vi.mocked(api.previewDelegation).mockImplementation(
     () =>
@@ -315,7 +682,7 @@ it('shows persisted output and unknown usage, with safe queued recovery', async 
   );
 });
 
-it('real managed composer Enter uses restricted run despite disconnected legacy chat, never generic send or approvals', async () => {
+it('managed composer Enter sends a discussion and never creates a runtime task', async () => {
   localStorage.setItem(
     activeConversationKey({ user: 'alice', project: 'p', canvas: 'a' }),
     'c',
@@ -325,16 +692,102 @@ it('real managed composer Enter uses restricted run despite disconnected legacy 
       <SuperChatPanel managedWorkspace canvasId="a" variant="freezone" />
     </QueryClientProvider>,
   );
-  const composer =
-    await screen.findByPlaceholderText('交给主创：为选中内容提出文本方案…');
-  await screen.findByText('项目主创：文本主创');
+  const composer = await screen.findByRole('textbox', {}, { timeout: 5000 });
   fireEvent.change(composer, { target: { value: '两套开场' } });
   fireEvent.keyDown(composer, { key: 'Enter' });
-  await waitFor(() => expect(api.requestStep).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(discussion.send).toHaveBeenCalledWith('两套开场'));
+  expect(api.previewDelegation).not.toHaveBeenCalled();
+  expect(api.requestStep).not.toHaveBeenCalled();
+  expect(chat.hookCalls).toBe(0);
   expect(chat.send).not.toHaveBeenCalled();
   expect(chat.resolveApproval).not.toHaveBeenCalled();
-  expect(screen.getAllByRole('textbox')).toHaveLength(1);
-  expect(composer).toHaveValue('');
+});
+
+it('preserves the managed goal when the user explicitly updates the frozen selection', async () => {
+  localStorage.setItem(
+    activeConversationKey({ user: 'alice', project: 'p', canvas: 'a' }),
+    'c',
+  );
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <SuperChatPanel managedWorkspace canvasId="a" variant="freezone" />
+    </QueryClientProvider>,
+  );
+  const composer = await screen.findByRole('textbox', { name: '与助手讨论' }, { timeout: 5000 });
+  fireEvent.change(composer, { target: { value: '保留这段目标文字' } });
+  act(() => {
+    useCanvasStore.setState({
+      nodes: useCanvasStore.getState().nodes.map((node) => ({
+        ...node,
+        selected: node.id === 'b',
+      })),
+    });
+  });
+
+  fireEvent.click(screen.getByRole('button', { name: /创建节点委托/ }));
+  fireEvent.click(await screen.findByRole(
+    'button', { name: '更新为当前选择' }, { timeout: 5000 },
+  ));
+
+  expect(composer).toHaveValue('保留这段目标文字');
+  expect(await screen.findByText('开场二', {}, { timeout: 5000 })).toBeInTheDocument();
+  expect(screen.queryByText('开场一')).not.toBeInTheDocument();
+});
+
+it('restores the goal and frozen nodes for canvas A after opening canvas B', async () => {
+  const renderManagedCanvas = (canvasId: string) => render(
+    <QueryClientProvider client={new QueryClient()}>
+      <SuperChatPanel managedWorkspace canvasId={canvasId} variant="freezone" />
+    </QueryClientProvider>,
+  );
+  const activeKey = (canvas: string) => activeConversationKey({
+    user: 'alice', project: 'p', canvas,
+  });
+  localStorage.setItem(activeKey('a'), 'c');
+  requestAgentSelection({ project: 'p', canvas: 'a', nodeIds: ['a'] });
+  let view = renderManagedCanvas('a');
+  const goalA = await screen.findByRole('textbox', { name: '本次委托目标' }, { timeout: 5000 });
+  fireEvent.change(goalA, { target: { value: 'A 画布的未提交目标' } });
+  expect(await screen.findByText('开场一', {}, { timeout: 5000 })).toBeInTheDocument();
+  expect(screen.queryByText('开场二')).not.toBeInTheDocument();
+  view.unmount();
+
+  chat.canvasId = 'b';
+  localStorage.setItem(activeKey('b'), 'c');
+  useCanvasStore.setState({
+    nodes: [{
+      id: 'b', type: 'textAnnotationNode', position: { x: 0, y: 0 },
+      selected: true, data: { title: '开场二' },
+    }] as never,
+  });
+  view = renderManagedCanvas('b');
+  const goalB = await screen.findByRole('textbox', { name: '与助手讨论' }, { timeout: 5000 });
+  expect(goalB).toHaveValue('');
+  fireEvent.click(screen.getByRole('button', { name: /创建节点委托/ }));
+  expect(await screen.findByText('开场二', {}, { timeout: 5000 })).toBeInTheDocument();
+  view.unmount();
+
+  chat.canvasId = 'a';
+  localStorage.setItem(activeKey('a'), 'c');
+  useCanvasStore.setState({
+    nodes: [
+      {
+        id: 'a', type: 'textAnnotationNode', position: { x: 0, y: 0 },
+        selected: true, data: { title: '开场一' },
+      },
+      {
+        id: 'b', type: 'textAnnotationNode', position: { x: 0, y: 0 },
+        selected: true, data: { title: '开场二' },
+      },
+    ] as never,
+  });
+  view = renderManagedCanvas('a');
+  const restoredGoal = await screen.findByRole('textbox', { name: '与助手讨论' }, { timeout: 5000 });
+  expect(restoredGoal).toHaveValue('A 画布的未提交目标');
+  fireEvent.click(screen.getByRole('button', { name: /创建节点委托/ }));
+  expect(await screen.findByText('开场一', {}, { timeout: 5000 })).toBeInTheDocument();
+  expect(screen.queryByText('开场二')).not.toBeInTheDocument();
+  view.unmount();
 });
 
 it('rejects stale main/control/recovery callbacks after the canvas runtime is replaced', async () => {
@@ -460,8 +913,9 @@ it('does not report send success after the instance changes while refreshing the
 it('keeps secondary runtime settings collapsed while showing the current scope', async () => {
   render(<View />);
   await screen.findByText('项目主创：文本主创');
+  expect(screen.queryByLabelText('当前画布准备范围')).not.toBeInTheDocument();
   const select = screen.getByLabelText('选择项目主创');
-  expect(select.closest('details')).not.toHaveAttribute('open');
+  expect(select.closest('details')).toBeNull();
   expect(
     screen.getByLabelText('模型调用上限').closest('details'),
   ).not.toHaveAttribute('open');
@@ -512,4 +966,57 @@ it('renders actual media plans and fixed definition draft references without cla
   expect(screen.getByText(/图片方案 · 尚未生成/)).toBeVisible();
   expect(screen.getByText(/station_clue · 第 2 版草案/)).toBeVisible();
   expect(screen.queryByText(/可在项目配置中查看/)).not.toBeInTheDocument();
+});
+it('groups real child participation and node changes into the shared parent task record', async () => {
+  const specialist = { ...configuration, name: '灯光师' };
+  vi.mocked(api.listDelegations).mockResolvedValue([
+    {
+      id: 'root-task',
+      contract: {
+        goal: '完善开场镜头',
+        agent: { effective: { ...configuration, name: '历史文本主创' } },
+        expanded_scope: { nodes: [{ node_id: 'a' }] },
+      },
+    },
+    {
+      id: 'light-child',
+      parent_id: 'root-task',
+      contract: {
+        parent_id: 'root-task',
+        goal: '调整灯光',
+        agent: { effective: specialist },
+        expanded_scope: { nodes: [{ node_id: 'b' }] },
+      },
+    },
+  ]);
+  vi.mocked(api.listRuns).mockImplementation(async (_owner, id) => id === 'light-child'
+    ? []
+    : [{
+        id: 'root-run', delegation_id: 'root-task', revision: 1,
+        state: 'delivered', unmet: [], max_model_calls: 1, remaining_model_calls: 0,
+        rounds: [
+          {
+            delegation_id: 'root-task',
+            member: { adoption_id: 'main-adoption', revision: 1, origin: 'main' },
+            usage: {},
+          },
+          { delegation_id: 'light-child', usage: {} },
+        ],
+        outputs: [{
+          operation: 'node.patch', node_id: 'b', member_id: 'lighting-member',
+          member: { adoption_id: 'lighting-member', revision: 1, origin: 'adoption' },
+          delegation_id: 'light-child', revision: 4,
+          changes: [{ path: ['frames', 0, 'lighting'], before: 'cool', after: 'warm' }],
+        }],
+      }]);
+
+  render(<View />);
+  const record = await screen.findByRole('region', { name: '共享任务记录' });
+  expect(within(record).getByText('实际参与成员：历史文本主创、灯光师')).toBeInTheDocument();
+  expect(within(record).getByText(/frames\.0\.lighting："cool" → "warm/)).toBeInTheDocument();
+  fireEvent.click(within(record).getByRole('button', { name: '定位本次固定目标（2）' }));
+  expect(state.fit).toHaveBeenCalledWith(expect.objectContaining({
+    nodes: [{ id: 'a' }, { id: 'b' }],
+  }));
+  expect(screen.getAllByRole('region', { name: '共享任务记录' })).toHaveLength(1);
 });

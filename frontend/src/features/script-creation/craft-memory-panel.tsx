@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { scriptCreationApi } from "./api";
 import type { CraftMemoryEntry } from "./types";
 
-const kindLabels = { brief: "创作简报", outline: "故事大纲", people: "人物", scenes: "场景", props: "道具", episode_synopsis: "分集梗概", episode_script: "分集剧本" };
+const kindLabels = { brief: "创作简报", idea_candidate: "立意候选", outline: "故事大纲", people: "人物", scenes: "场景", props: "道具", episode_synopsis: "分集梗概", episode_script: "分集剧本" };
 
 export function CraftMemoryEvidence({ entry }: { entry: CraftMemoryEntry }) {
   return <div className="space-y-1">

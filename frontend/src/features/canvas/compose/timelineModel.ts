@@ -20,6 +20,14 @@ import type {
 
 export type ComposeTrackKind = "video" | "audio";
 
+export interface ComposeClipReplacementCandidate {
+  sourceUrl: string;
+  displayName: string | null;
+  thumbUrl: string | null;
+  durationMs: number | null;
+  dubbingSource?: ComposeClip["dubbingSource"];
+}
+
 export interface ComposeClip {
   /** 本地片段 id，同时作为提交时的 itemId。 */
   id: string;
@@ -43,9 +51,20 @@ export interface ComposeClip {
   muted: boolean;
   /**
    * 播放倍速（变速）。1 = 原速。时间线上占用长度 = 源裁剪长度 / speed。
-   * ⚠️ 导出是否真正变速取决于后端 compose 接口是否支持该字段。
+    * 导出由 FFmpeg 同步应用到音视频和片段输出时长。
    */
   speed: number;
+  /** A newer upstream file is available; applying it is always an explicit edit. */
+  replacementCandidate?: ComposeClipReplacementCandidate;
+  /** Upstream URL the user explicitly chose to leave unused. */
+  ignoredReplacementUrl?: string;
+  /** Frozen, explicitly adopted dialogue provenance; never follows a newer voice automatically. */
+  dubbingSource?: {
+    takeId: string;
+    dialogueId: string;
+    groupId: string;
+    episode?: number;
+  };
 }
 
 export interface ComposeTrack {
@@ -53,6 +72,34 @@ export interface ComposeTrack {
   kind: ComposeTrackKind;
   /** 顺序即首尾相接的排布顺序。 */
   clips: ComposeClip[];
+}
+
+export interface ComposeSubtitleCue {
+  id: string;
+  text: string;
+  timelineStartMs: number;
+  timelineEndMs: number;
+  /** Audio clip whose dialogue supplied this subtitle, if known. */
+  sourceClipId?: string;
+  sourceClipUrl?: string;
+  sourceTakeId?: string;
+  sourceDialogueId?: string;
+  sourceGroupId?: string;
+  sourceTiming?: {
+    timelineStartMs: number;
+    timelineEndMs: number;
+    sourceStartMs: number;
+    sourceEndMs: number;
+    speed: number;
+  };
+  /** Dialogue imports use the whole audio clip as an estimate until reviewed. */
+  timing: "manual" | "estimated_audio_clip";
+  timingConfirmed: boolean;
+}
+
+export interface ComposeSubtitleTrack {
+  id: string;
+  cues: ComposeSubtitleCue[];
 }
 
 /**
@@ -71,7 +118,14 @@ export interface ComposeCover {
 
 export interface ComposeTimelineState {
   tracks: ComposeTrack[];
+  subtitleTrack?: ComposeSubtitleTrack | null;
+  /** Monotonic revision of persisted editor drafts; export also freezes a content hash. */
+  draftRevision?: number;
   resolution: FreezoneVideoComposeResolution;
+  resolutionOrigin?: "project" | "default" | "user" | "legacy_unverified";
+  /** Persisted export FPS choice. Older drafts without it hydrate to the marked default 30. */
+  fps?: number;
+  fpsOrigin?: "default" | "user" | "legacy_unverified";
   /** 合成封面（未设置时为空）。随草稿持久化。 */
   cover?: ComposeCover | null;
 }
@@ -79,6 +133,8 @@ export interface ComposeTimelineState {
 /** 默认裁剪长度（ms）—— 源时长未知时的兜底，避免长度为 0 无法排布/预览。 */
 export const FALLBACK_CLIP_MS = 5000;
 export const MIN_CLIP_MS = 200;
+/** 1e-6 seconds, matching the compositor's adjacent-clip tolerance. */
+export const VIDEO_TIMELINE_TOLERANCE_MS = 0.001;
 
 /**
  * 主视频轨 / 主音频轨的固定 id。主视频轨是唯一的「磁吸」轨：片段永远无缝紧贴、
@@ -126,7 +182,7 @@ export function layoutTrack(track: ComposeTrack): LaidClip[] {
 export function packTrackClips(clips: ComposeClip[]): ComposeClip[] {
   let cursor = 0;
   return clips.map((clip) => {
-    const packed = { ...clip, timelineStartMs: Math.round(cursor) };
+    const packed = { ...clip, timelineStartMs: cursor };
     cursor += clipLengthMs(clip);
     return packed;
   });
@@ -203,7 +259,29 @@ export function timelineDurationMs(state: ComposeTimelineState): number {
     const end = laid.length > 0 ? laid[laid.length - 1].timelineEndMs : 0;
     if (end > max) max = end;
   }
+  for (const cue of state.subtitleTrack?.cues ?? []) {
+    max = Math.max(max, cue.timelineEndMs);
+  }
   return max;
+}
+
+/** End of the rendered video stream, excluding audio and subtitle-only extension. */
+export function videoTimelineEndMs(state: ComposeTimelineState): number {
+  return state.tracks
+    .filter((track) => track.kind === "video")
+    .flatMap((track) => layoutTrack(track))
+    .reduce((max, item) => Math.max(max, item.timelineEndMs), 0);
+}
+
+/** A cue past this boundary would survive in SRT but be clipped from the MP4. */
+export function subtitleCueExceedsVideoOutputMs(
+  state: ComposeTimelineState,
+  cueEndMs: number,
+): boolean {
+  return (
+    !Number.isFinite(cueEndMs) ||
+    cueEndMs > videoTimelineEndMs(state) + VIDEO_TIMELINE_TOLERANCE_MS
+  );
 }
 
 export interface ActiveClip {
@@ -248,12 +326,14 @@ export function buildComposePayload(
       items: layoutTrack(track).map(({ clip, timelineStartMs }) => ({
         itemId: clip.id,
         sourceUrl: clip.sourceUrl,
+        sourceNodeId: clip.nodeId,
+        ...(clip.dubbingSource ? { dubbingSource: clip.dubbingSource } : {}),
         timelineStart: timelineStartMs / 1000,
         sourceStart: clip.trimStartMs / 1000,
         sourceEnd: clip.trimEndMs / 1000,
         volume: clip.volume,
         muted: clip.muted,
-        // ⚠️ 后端需支持该字段才会真正变速；否则被忽略（导出按原速）。
+        // FFmpeg renders this playback rate; subtitle positions remain absolute seconds.
         speed: clip.speed > 0 ? clip.speed : 1,
       })),
     }))
@@ -263,11 +343,43 @@ export function buildComposePayload(
     title: options.title,
     canvasId: options.canvasId,
     resolution: state.resolution,
-    fps: options.fps ?? 30,
+    resolutionOrigin: state.resolutionOrigin ?? "default",
+    fps: options.fps ?? (state.fps ?? 30),
+    fpsOrigin: state.fpsOrigin ?? "default",
+    draftRevision: state.draftRevision ?? 0,
     // ⚠️ 后端需支持 cover_url 才会把封面烧进导出的 MP4；未支持时被忽略，
     // 前端的画布缩略图/poster 仍正常工作（封面来自同一个 url）。
     coverUrl: state.cover?.url ?? null,
     tracks,
+    subtitleTracks: state.subtitleTrack?.cues.length
+      ? [
+          {
+            trackId: state.subtitleTrack.id,
+            cues: state.subtitleTrack.cues.map((cue) => ({
+              cueId: cue.id,
+              text: cue.text,
+              timelineStart: cue.timelineStartMs / 1000,
+              timelineEnd: cue.timelineEndMs / 1000,
+              sourceClipId: cue.sourceClipId,
+              sourceClipUrl: cue.sourceClipUrl,
+              sourceTakeId: cue.sourceTakeId,
+              sourceDialogueId: cue.sourceDialogueId,
+              sourceGroupId: cue.sourceGroupId,
+              sourceTiming: cue.sourceTiming
+                ? {
+                    timelineStart: cue.sourceTiming.timelineStartMs / 1000,
+                    timelineEnd: cue.sourceTiming.timelineEndMs / 1000,
+                    sourceStart: cue.sourceTiming.sourceStartMs / 1000,
+                    sourceEnd: cue.sourceTiming.sourceEndMs / 1000,
+                    speed: cue.sourceTiming.speed,
+                  }
+                : undefined,
+              timing: cue.timing,
+              timingConfirmed: cue.timingConfirmed,
+            })),
+          },
+        ]
+      : [],
   };
 }
 
@@ -281,7 +393,7 @@ export function hasExportableClips(state: ComposeTimelineState): boolean {
 /**
  * 是否存在「时间上重叠的视频片段」（跨所有视频轨道合并后按时间排序判断）。
  * MVP 后端 compose 不支持视频重叠合成，导出前据此拦截并给出明确提示。
- * 音频不在此判断内（多条音频轨可叠加混音）。1ms 容差吸收浮点取整误差。
+ * 音频不在此判断内（多条音频轨可叠加混音）。容差与后端 1e-6 秒一致。
  */
 export function hasOverlappingVideoClips(state: ComposeTimelineState): boolean {
   return overlappingVideoClipIds(state).size > 0;
@@ -289,7 +401,7 @@ export function hasOverlappingVideoClips(state: ComposeTimelineState): boolean {
 
 /**
  * 返回所有「与其它视频片段时间重叠」的视频片段 id（跨所有视频轨道）。
- * 用于在时间轴上把冲突片段高亮出来提示用户。1ms 容差吸收浮点取整。
+ * 用于在时间轴上把冲突片段高亮出来提示用户。容差与后端 1e-6 秒一致。
  */
 export function overlappingVideoClipIds(state: ComposeTimelineState): Set<string> {
   const laid = state.tracks
@@ -300,7 +412,10 @@ export function overlappingVideoClipIds(state: ComposeTimelineState): Set<string
   for (let i = 0; i < laid.length; i += 1) {
     for (let j = i + 1; j < laid.length; j += 1) {
       // 已按起点排序：一旦后者起点 ≥ 前者终点，更后面的更不会与 i 重叠，提前停。
-      if (laid[j].timelineStartMs >= laid[i].timelineEndMs - 1) break;
+      if (
+        laid[j].timelineStartMs >=
+        laid[i].timelineEndMs - VIDEO_TIMELINE_TOLERANCE_MS
+      ) break;
       ids.add(laid[i].clip.id);
       ids.add(laid[j].clip.id);
     }

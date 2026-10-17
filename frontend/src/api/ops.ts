@@ -639,6 +639,15 @@ export type FreezoneVideoComposeTrackKind = "video" | "audio";
 export interface FreezoneVideoComposeItemPayload {
   itemId: string;
   sourceUrl: string;
+  /** Canvas node that supplied this frozen media reference. */
+  sourceNodeId?: string | null;
+  /** Explicit adopted dialogue take provenance, when this is a dubbing clip. */
+  dubbingSource?: {
+    takeId: string;
+    dialogueId: string;
+    groupId: string;
+    episode?: number;
+  };
   /** Position on the output timeline, in seconds. */
   timelineStart?: number;
   /** Trim start within source media, in seconds. */
@@ -648,8 +657,7 @@ export interface FreezoneVideoComposeItemPayload {
   volume?: number;
   muted?: boolean;
   /**
-   * Playback rate (变速). 1 = original speed. ⚠️ Only honored if the BE compose
-   * endpoint implements it; otherwise the field is ignored (export stays 1×).
+   * Playback rate (变速). 1 = original speed. FFmpeg renders video and audio at this rate.
    */
   speed?: number;
 }
@@ -660,19 +668,50 @@ export interface FreezoneVideoComposeTrackPayload {
   items: FreezoneVideoComposeItemPayload[];
 }
 
+export interface FreezoneVideoComposeSubtitleCuePayload {
+  cueId: string;
+  text: string;
+  timelineStart: number;
+  timelineEnd: number;
+  sourceClipId?: string;
+  sourceTakeId?: string;
+  sourceDialogueId?: string;
+  sourceGroupId?: string;
+  sourceClipUrl?: string;
+  sourceTiming?: {
+    timelineStart: number;
+    timelineEnd: number;
+    sourceStart: number;
+    sourceEnd: number;
+    speed: number;
+  };
+  timing: "manual" | "estimated_audio_clip";
+  timingConfirmed: boolean;
+}
+
+export interface FreezoneVideoComposeSubtitleTrackPayload {
+  trackId: string;
+  cues: FreezoneVideoComposeSubtitleCuePayload[];
+}
+
 export interface FreezoneVideoComposePayload {
   title?: string;
   canvasId?: string;
   resolution?: FreezoneVideoComposeResolution;
+  resolutionOrigin?: "project" | "default" | "user" | "legacy_unverified";
   fps?: number;
+  fpsOrigin?: "default" | "user" | "legacy_unverified";
   backgroundColor?: string;
   keepOriginalAudio?: boolean;
+  /** Monotonic revision stored with the canvas draft. */
+  draftRevision?: number;
   /**
    * 封面图 URL（已上传到后端的稳定地址）。后端支持时会把它挂成 MP4 的封面流
    * （attached_pic，不改正片时长）；不支持时忽略，前端缩略图仍用同一个 url。
    */
   coverUrl?: string | null;
   tracks: FreezoneVideoComposeTrackPayload[];
+  subtitleTracks?: FreezoneVideoComposeSubtitleTrackPayload[];
 }
 
 export async function submitFreezoneVideoCompose(
@@ -683,9 +722,12 @@ export async function submitFreezoneVideoCompose(
     title: payload.title ?? "",
     canvas_id: payload.canvasId ?? "",
     resolution: payload.resolution ?? "1080p",
+    resolution_origin: payload.resolutionOrigin,
     fps: payload.fps ?? 30,
+    fps_origin: payload.fpsOrigin,
     background_color: payload.backgroundColor ?? "#000000",
     keep_original_audio: payload.keepOriginalAudio ?? true,
+    draft_revision: payload.draftRevision ?? 0,
     cover_url: payload.coverUrl ?? "",
     tracks: payload.tracks.map((track) => ({
       track_id: track.trackId,
@@ -693,12 +735,48 @@ export async function submitFreezoneVideoCompose(
       items: track.items.map((item) => ({
         item_id: item.itemId,
         source_url: item.sourceUrl,
+        source_node_id: item.sourceNodeId ?? null,
+        dubbing_source: item.dubbingSource
+          ? {
+              take_id: item.dubbingSource.takeId,
+              dialogue_id: item.dubbingSource.dialogueId,
+              group_id: item.dubbingSource.groupId,
+              ...(item.dubbingSource.episode == null
+                ? {}
+                : { episode: item.dubbingSource.episode }),
+            }
+          : null,
         timeline_start: item.timelineStart ?? 0,
         source_start: item.sourceStart ?? 0,
         source_end: item.sourceEnd,
         volume: item.volume ?? 1,
         muted: item.muted ?? false,
         speed: item.speed ?? 1,
+      })),
+    })),
+    subtitle_tracks: (payload.subtitleTracks ?? []).map((track) => ({
+      track_id: track.trackId,
+      cues: track.cues.map((cue) => ({
+        cue_id: cue.cueId,
+        text: cue.text,
+        timeline_start: cue.timelineStart,
+        timeline_end: cue.timelineEnd,
+        source_clip_id: cue.sourceClipId,
+        source_clip_url: cue.sourceClipUrl,
+        source_take_id: cue.sourceTakeId,
+        source_dialogue_id: cue.sourceDialogueId,
+        source_group_id: cue.sourceGroupId,
+        source_timing: cue.sourceTiming
+          ? {
+              timeline_start: cue.sourceTiming.timelineStart,
+              timeline_end: cue.sourceTiming.timelineEnd,
+              source_start: cue.sourceTiming.sourceStart,
+              source_end: cue.sourceTiming.sourceEnd,
+              speed: cue.sourceTiming.speed,
+            }
+          : null,
+        timing: cue.timing,
+        timing_confirmed: cue.timingConfirmed,
       })),
     })),
   };
@@ -1776,6 +1854,17 @@ export async function submitFreezoneTemplateEdit(
 export interface FreezoneJobResult {
   url: string;
   size: number;
+  export_manifest?: Record<string, unknown>;
+  manifest_url?: string;
+  timeline_revision?: string;
+  draft_revision?: number;
+  artifact?: {
+    path?: string;
+    sha256?: string;
+    size?: number;
+    subtitle_file?: { path?: string; sha256?: string; size?: number; rendered_in_video?: boolean };
+    ffprobe?: Record<string, unknown>;
+  };
 }
 
 export async function fetchFreezoneJobResult(
@@ -1847,7 +1936,8 @@ export type FreezoneAudioVoiceRefScope =
   | "character_default"
   | "character_age_group"
   | "identity"
-  | "identity_resolved";
+  | "identity_resolved"
+  | "character_voice_version";
 
 export interface FreezoneAudioVoiceRef {
   scope: FreezoneAudioVoiceRefScope;
@@ -1859,6 +1949,10 @@ export interface FreezoneAudioVoiceRef {
   slot?: string;
   /** scope=user_custom 时必填：来自 GET/POST /freezone/audio/voices。 */
   voiceId?: string;
+  /** scope=character_voice_version 时必填，固定采用版本的角色 ID。 */
+  characterId?: string;
+  /** scope=character_voice_version 时必填，固定采用版本 ID。 */
+  versionId?: string;
 }
 
 /**
@@ -1940,6 +2034,8 @@ export async function submitFreezoneAudioSpeech(
         identity_id: payload.voiceRef.identityId ?? "",
         slot: payload.voiceRef.slot ?? "",
         voice_id: payload.voiceRef.voiceId ?? "",
+        character_id: payload.voiceRef.characterId ?? "",
+        version_id: payload.voiceRef.versionId ?? "",
       }
     : null;
   return await apiCall<FreezoneJobRef>(

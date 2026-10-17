@@ -11,64 +11,64 @@
 import { createFileRoute } from '@tanstack/react-router'
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as AppRouteImport } from './routes/_app'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as WatchWorkRouteImport } from './routes/watch.$work'
-import { Route as AppProjectsProjectAssistantRouteImport } from './routes/_app/projects.$project/assistant'
-import { Route as AppProjectsProjectCreationRouteImport } from './routes/_app/projects.$project/creation'
-import { Route as AppProjectsProjectEpisodesRouteImport } from './routes/_app/projects.$project/episodes'
-import { Route as AppProjectsProjectIngestRouteImport } from './routes/_app/projects.$project/ingest'
-import { Route as AppProjectsProjectStylesRouteImport } from './routes/_app/projects.$project/styles'
 import { Route as AppProjectsProjectTasksRouteImport } from './routes/_app/projects.$project/tasks'
+import { Route as AppProjectsProjectStylesRouteImport } from './routes/_app/projects.$project/styles'
+import { Route as AppProjectsProjectIngestRouteImport } from './routes/_app/projects.$project/ingest'
+import { Route as AppProjectsProjectEpisodesRouteImport } from './routes/_app/projects.$project/episodes'
+import { Route as AppProjectsProjectCreationRouteImport } from './routes/_app/projects.$project/creation'
+import { Route as AppProjectsProjectAssistantRouteImport } from './routes/_app/projects.$project/assistant'
 
-const AppProjectsProjectCharactersLazyRouteImport = createFileRoute(
-  '/_app/projects/$project/characters',
-)()
-const AppProjectsProjectCostsLazyRouteImport = createFileRoute(
-  '/_app/projects/$project/costs',
-)()
-const AppProjectsProjectFreezoneLazyRouteImport = createFileRoute(
-  '/_app/projects/$project/freezone',
+const AppProjectsProjectStudiosLazyRouteImport = createFileRoute(
+  '/_app/projects/$project/studios',
 )()
 const AppProjectsProjectProductionLazyRouteImport = createFileRoute(
   '/_app/projects/$project/production',
 )()
-const AppProjectsProjectStudiosLazyRouteImport = createFileRoute(
-  '/_app/projects/$project/studios',
+const AppProjectsProjectFreezoneLazyRouteImport = createFileRoute(
+  '/_app/projects/$project/freezone',
+)()
+const AppProjectsProjectCostsLazyRouteImport = createFileRoute(
+  '/_app/projects/$project/costs',
+)()
+const AppProjectsProjectCharactersLazyRouteImport = createFileRoute(
+  '/_app/projects/$project/characters',
 )()
 const AppProjectsProjectEpisodesEpisodeIndexLazyRouteImport = createFileRoute(
   '/_app/projects/$project/episodes/$episode/',
 )()
-const AppProjectsProjectEpisodesEpisodeAudioLazyRouteImport = createFileRoute(
-  '/_app/projects/$project/episodes/$episode/audio',
+const AppProjectsProjectEpisodesEpisodeVideoLazyRouteImport = createFileRoute(
+  '/_app/projects/$project/episodes/$episode/video',
+)()
+const AppProjectsProjectEpisodesEpisodeSketchesLazyRouteImport =
+  createFileRoute('/_app/projects/$project/episodes/$episode/sketches')()
+const AppProjectsProjectEpisodesEpisodeScriptLazyRouteImport = createFileRoute(
+  '/_app/projects/$project/episodes/$episode/script',
+)()
+const AppProjectsProjectEpisodesEpisodeOverviewLazyRouteImport =
+  createFileRoute('/_app/projects/$project/episodes/$episode/overview')()
+const AppProjectsProjectEpisodesEpisodeComposeLazyRouteImport = createFileRoute(
+  '/_app/projects/$project/episodes/$episode/compose',
 )()
 const AppProjectsProjectEpisodesEpisodeBeatsLazyRouteImport = createFileRoute(
   '/_app/projects/$project/episodes/$episode/beats',
 )()
-const AppProjectsProjectEpisodesEpisodeComposeLazyRouteImport = createFileRoute(
-  '/_app/projects/$project/episodes/$episode/compose',
-)()
-const AppProjectsProjectEpisodesEpisodeOverviewLazyRouteImport =
-  createFileRoute('/_app/projects/$project/episodes/$episode/overview')()
-const AppProjectsProjectEpisodesEpisodeScriptLazyRouteImport = createFileRoute(
-  '/_app/projects/$project/episodes/$episode/script',
-)()
-const AppProjectsProjectEpisodesEpisodeSketchesLazyRouteImport =
-  createFileRoute('/_app/projects/$project/episodes/$episode/sketches')()
-const AppProjectsProjectEpisodesEpisodeVideoLazyRouteImport = createFileRoute(
-  '/_app/projects/$project/episodes/$episode/video',
+const AppProjectsProjectEpisodesEpisodeAudioLazyRouteImport = createFileRoute(
+  '/_app/projects/$project/episodes/$episode/audio',
 )()
 
-const AppRoute = AppRouteImport.update({
-  id: '/_app',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any).lazy(() => import('./routes/login.lazy').then((d) => d.Route))
+const AppRoute = AppRouteImport.update({
+  id: '/_app',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -79,19 +79,31 @@ const WatchWorkRoute = WatchWorkRouteImport.update({
   path: '/watch/$work',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AppProjectsProjectAssistantRoute =
-  AppProjectsProjectAssistantRouteImport.update({
-    id: '/projects/$project/assistant',
-    path: '/projects/$project/assistant',
-    getParentRoute: () => AppRoute,
-  } as any)
-const AppProjectsProjectCharactersLazyRoute =
-  AppProjectsProjectCharactersLazyRouteImport.update({
-    id: '/projects/$project/characters',
-    path: '/projects/$project/characters',
+const AppProjectsProjectStudiosLazyRoute =
+  AppProjectsProjectStudiosLazyRouteImport.update({
+    id: '/projects/$project/studios',
+    path: '/projects/$project/studios',
     getParentRoute: () => AppRoute,
   } as any).lazy(() =>
-    import('./routes/_app/projects.$project/characters.lazy').then(
+    import('./routes/_app/projects.$project/studios.lazy').then((d) => d.Route),
+  )
+const AppProjectsProjectProductionLazyRoute =
+  AppProjectsProjectProductionLazyRouteImport.update({
+    id: '/projects/$project/production',
+    path: '/projects/$project/production',
+    getParentRoute: () => AppRoute,
+  } as any).lazy(() =>
+    import('./routes/_app/projects.$project/production.lazy').then(
+      (d) => d.Route,
+    ),
+  )
+const AppProjectsProjectFreezoneLazyRoute =
+  AppProjectsProjectFreezoneLazyRouteImport.update({
+    id: '/projects/$project/freezone',
+    path: '/projects/$project/freezone',
+    getParentRoute: () => AppRoute,
+  } as any).lazy(() =>
+    import('./routes/_app/projects.$project/freezone.lazy').then(
       (d) => d.Route,
     ),
   )
@@ -103,10 +115,31 @@ const AppProjectsProjectCostsLazyRoute =
   } as any).lazy(() =>
     import('./routes/_app/projects.$project/costs.lazy').then((d) => d.Route),
   )
-const AppProjectsProjectCreationRoute =
-  AppProjectsProjectCreationRouteImport.update({
-    id: '/projects/$project/creation',
-    path: '/projects/$project/creation',
+const AppProjectsProjectCharactersLazyRoute =
+  AppProjectsProjectCharactersLazyRouteImport.update({
+    id: '/projects/$project/characters',
+    path: '/projects/$project/characters',
+    getParentRoute: () => AppRoute,
+  } as any).lazy(() =>
+    import('./routes/_app/projects.$project/characters.lazy').then(
+      (d) => d.Route,
+    ),
+  )
+const AppProjectsProjectTasksRoute = AppProjectsProjectTasksRouteImport.update({
+  id: '/projects/$project/tasks',
+  path: '/projects/$project/tasks',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppProjectsProjectStylesRoute =
+  AppProjectsProjectStylesRouteImport.update({
+    id: '/projects/$project/styles',
+    path: '/projects/$project/styles',
+    getParentRoute: () => AppRoute,
+  } as any)
+const AppProjectsProjectIngestRoute =
+  AppProjectsProjectIngestRouteImport.update({
+    id: '/projects/$project/ingest',
+    path: '/projects/$project/ingest',
     getParentRoute: () => AppRoute,
   } as any)
 const AppProjectsProjectEpisodesRoute =
@@ -115,51 +148,18 @@ const AppProjectsProjectEpisodesRoute =
     path: '/projects/$project/episodes',
     getParentRoute: () => AppRoute,
   } as any)
-const AppProjectsProjectFreezoneLazyRoute =
-  AppProjectsProjectFreezoneLazyRouteImport.update({
-    id: '/projects/$project/freezone',
-    path: '/projects/$project/freezone',
-    getParentRoute: () => AppRoute,
-  } as any).lazy(() =>
-    import('./routes/_app/projects.$project/freezone.lazy').then(
-      (d) => d.Route,
-    ),
-  )
-const AppProjectsProjectIngestRoute =
-  AppProjectsProjectIngestRouteImport.update({
-    id: '/projects/$project/ingest',
-    path: '/projects/$project/ingest',
+const AppProjectsProjectCreationRoute =
+  AppProjectsProjectCreationRouteImport.update({
+    id: '/projects/$project/creation',
+    path: '/projects/$project/creation',
     getParentRoute: () => AppRoute,
   } as any)
-const AppProjectsProjectProductionLazyRoute =
-  AppProjectsProjectProductionLazyRouteImport.update({
-    id: '/projects/$project/production',
-    path: '/projects/$project/production',
-    getParentRoute: () => AppRoute,
-  } as any).lazy(() =>
-    import('./routes/_app/projects.$project/production.lazy').then(
-      (d) => d.Route,
-    ),
-  )
-const AppProjectsProjectStudiosLazyRoute =
-  AppProjectsProjectStudiosLazyRouteImport.update({
-    id: '/projects/$project/studios',
-    path: '/projects/$project/studios',
-    getParentRoute: () => AppRoute,
-  } as any).lazy(() =>
-    import('./routes/_app/projects.$project/studios.lazy').then((d) => d.Route),
-  )
-const AppProjectsProjectStylesRoute =
-  AppProjectsProjectStylesRouteImport.update({
-    id: '/projects/$project/styles',
-    path: '/projects/$project/styles',
+const AppProjectsProjectAssistantRoute =
+  AppProjectsProjectAssistantRouteImport.update({
+    id: '/projects/$project/assistant',
+    path: '/projects/$project/assistant',
     getParentRoute: () => AppRoute,
   } as any)
-const AppProjectsProjectTasksRoute = AppProjectsProjectTasksRouteImport.update({
-  id: '/projects/$project/tasks',
-  path: '/projects/$project/tasks',
-  getParentRoute: () => AppRoute,
-} as any)
 const AppProjectsProjectEpisodesEpisodeIndexLazyRoute =
   AppProjectsProjectEpisodesEpisodeIndexLazyRouteImport.update({
     id: '/$episode/',
@@ -170,53 +170,13 @@ const AppProjectsProjectEpisodesEpisodeIndexLazyRoute =
       (d) => d.Route,
     ),
   )
-const AppProjectsProjectEpisodesEpisodeAudioLazyRoute =
-  AppProjectsProjectEpisodesEpisodeAudioLazyRouteImport.update({
-    id: '/$episode/audio',
-    path: '/$episode/audio',
+const AppProjectsProjectEpisodesEpisodeVideoLazyRoute =
+  AppProjectsProjectEpisodesEpisodeVideoLazyRouteImport.update({
+    id: '/$episode/video',
+    path: '/$episode/video',
     getParentRoute: () => AppProjectsProjectEpisodesRoute,
   } as any).lazy(() =>
-    import('./routes/_app/projects.$project/episodes.$episode/audio.lazy').then(
-      (d) => d.Route,
-    ),
-  )
-const AppProjectsProjectEpisodesEpisodeBeatsLazyRoute =
-  AppProjectsProjectEpisodesEpisodeBeatsLazyRouteImport.update({
-    id: '/$episode/beats',
-    path: '/$episode/beats',
-    getParentRoute: () => AppProjectsProjectEpisodesRoute,
-  } as any).lazy(() =>
-    import('./routes/_app/projects.$project/episodes.$episode/beats.lazy').then(
-      (d) => d.Route,
-    ),
-  )
-const AppProjectsProjectEpisodesEpisodeComposeLazyRoute =
-  AppProjectsProjectEpisodesEpisodeComposeLazyRouteImport.update({
-    id: '/$episode/compose',
-    path: '/$episode/compose',
-    getParentRoute: () => AppProjectsProjectEpisodesRoute,
-  } as any).lazy(() =>
-    import('./routes/_app/projects.$project/episodes.$episode/compose.lazy').then(
-      (d) => d.Route,
-    ),
-  )
-const AppProjectsProjectEpisodesEpisodeOverviewLazyRoute =
-  AppProjectsProjectEpisodesEpisodeOverviewLazyRouteImport.update({
-    id: '/$episode/overview',
-    path: '/$episode/overview',
-    getParentRoute: () => AppProjectsProjectEpisodesRoute,
-  } as any).lazy(() =>
-    import('./routes/_app/projects.$project/episodes.$episode/overview.lazy').then(
-      (d) => d.Route,
-    ),
-  )
-const AppProjectsProjectEpisodesEpisodeScriptLazyRoute =
-  AppProjectsProjectEpisodesEpisodeScriptLazyRouteImport.update({
-    id: '/$episode/script',
-    path: '/$episode/script',
-    getParentRoute: () => AppProjectsProjectEpisodesRoute,
-  } as any).lazy(() =>
-    import('./routes/_app/projects.$project/episodes.$episode/script.lazy').then(
+    import('./routes/_app/projects.$project/episodes.$episode/video.lazy').then(
       (d) => d.Route,
     ),
   )
@@ -230,13 +190,53 @@ const AppProjectsProjectEpisodesEpisodeSketchesLazyRoute =
       (d) => d.Route,
     ),
   )
-const AppProjectsProjectEpisodesEpisodeVideoLazyRoute =
-  AppProjectsProjectEpisodesEpisodeVideoLazyRouteImport.update({
-    id: '/$episode/video',
-    path: '/$episode/video',
+const AppProjectsProjectEpisodesEpisodeScriptLazyRoute =
+  AppProjectsProjectEpisodesEpisodeScriptLazyRouteImport.update({
+    id: '/$episode/script',
+    path: '/$episode/script',
     getParentRoute: () => AppProjectsProjectEpisodesRoute,
   } as any).lazy(() =>
-    import('./routes/_app/projects.$project/episodes.$episode/video.lazy').then(
+    import('./routes/_app/projects.$project/episodes.$episode/script.lazy').then(
+      (d) => d.Route,
+    ),
+  )
+const AppProjectsProjectEpisodesEpisodeOverviewLazyRoute =
+  AppProjectsProjectEpisodesEpisodeOverviewLazyRouteImport.update({
+    id: '/$episode/overview',
+    path: '/$episode/overview',
+    getParentRoute: () => AppProjectsProjectEpisodesRoute,
+  } as any).lazy(() =>
+    import('./routes/_app/projects.$project/episodes.$episode/overview.lazy').then(
+      (d) => d.Route,
+    ),
+  )
+const AppProjectsProjectEpisodesEpisodeComposeLazyRoute =
+  AppProjectsProjectEpisodesEpisodeComposeLazyRouteImport.update({
+    id: '/$episode/compose',
+    path: '/$episode/compose',
+    getParentRoute: () => AppProjectsProjectEpisodesRoute,
+  } as any).lazy(() =>
+    import('./routes/_app/projects.$project/episodes.$episode/compose.lazy').then(
+      (d) => d.Route,
+    ),
+  )
+const AppProjectsProjectEpisodesEpisodeBeatsLazyRoute =
+  AppProjectsProjectEpisodesEpisodeBeatsLazyRouteImport.update({
+    id: '/$episode/beats',
+    path: '/$episode/beats',
+    getParentRoute: () => AppProjectsProjectEpisodesRoute,
+  } as any).lazy(() =>
+    import('./routes/_app/projects.$project/episodes.$episode/beats.lazy').then(
+      (d) => d.Route,
+    ),
+  )
+const AppProjectsProjectEpisodesEpisodeAudioLazyRoute =
+  AppProjectsProjectEpisodesEpisodeAudioLazyRouteImport.update({
+    id: '/$episode/audio',
+    path: '/$episode/audio',
+    getParentRoute: () => AppProjectsProjectEpisodesRoute,
+  } as any).lazy(() =>
+    import('./routes/_app/projects.$project/episodes.$episode/audio.lazy').then(
       (d) => d.Route,
     ),
   )
@@ -399,18 +399,18 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/_app': {
-      id: '/_app'
-      path: ''
-      fullPath: '/'
-      preLoaderRoute: typeof AppRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/login': {
       id: '/login'
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_app': {
+      id: '/_app'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof AppRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/': {
@@ -427,53 +427,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WatchWorkRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/_app/projects/$project/assistant': {
-      id: '/_app/projects/$project/assistant'
-      path: '/projects/$project/assistant'
-      fullPath: '/projects/$project/assistant'
-      preLoaderRoute: typeof AppProjectsProjectAssistantRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/projects/$project/characters': {
-      id: '/_app/projects/$project/characters'
-      path: '/projects/$project/characters'
-      fullPath: '/projects/$project/characters'
-      preLoaderRoute: typeof AppProjectsProjectCharactersLazyRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/projects/$project/costs': {
-      id: '/_app/projects/$project/costs'
-      path: '/projects/$project/costs'
-      fullPath: '/projects/$project/costs'
-      preLoaderRoute: typeof AppProjectsProjectCostsLazyRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/projects/$project/creation': {
-      id: '/_app/projects/$project/creation'
-      path: '/projects/$project/creation'
-      fullPath: '/projects/$project/creation'
-      preLoaderRoute: typeof AppProjectsProjectCreationRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/projects/$project/episodes': {
-      id: '/_app/projects/$project/episodes'
-      path: '/projects/$project/episodes'
-      fullPath: '/projects/$project/episodes'
-      preLoaderRoute: typeof AppProjectsProjectEpisodesRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/projects/$project/freezone': {
-      id: '/_app/projects/$project/freezone'
-      path: '/projects/$project/freezone'
-      fullPath: '/projects/$project/freezone'
-      preLoaderRoute: typeof AppProjectsProjectFreezoneLazyRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/projects/$project/ingest': {
-      id: '/_app/projects/$project/ingest'
-      path: '/projects/$project/ingest'
-      fullPath: '/projects/$project/ingest'
-      preLoaderRoute: typeof AppProjectsProjectIngestRouteImport
+    '/_app/projects/$project/studios': {
+      id: '/_app/projects/$project/studios'
+      path: '/projects/$project/studios'
+      fullPath: '/projects/$project/studios'
+      preLoaderRoute: typeof AppProjectsProjectStudiosLazyRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/projects/$project/production': {
@@ -483,18 +441,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppProjectsProjectProductionLazyRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/projects/$project/studios': {
-      id: '/_app/projects/$project/studios'
-      path: '/projects/$project/studios'
-      fullPath: '/projects/$project/studios'
-      preLoaderRoute: typeof AppProjectsProjectStudiosLazyRouteImport
+    '/_app/projects/$project/freezone': {
+      id: '/_app/projects/$project/freezone'
+      path: '/projects/$project/freezone'
+      fullPath: '/projects/$project/freezone'
+      preLoaderRoute: typeof AppProjectsProjectFreezoneLazyRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/projects/$project/styles': {
-      id: '/_app/projects/$project/styles'
-      path: '/projects/$project/styles'
-      fullPath: '/projects/$project/styles'
-      preLoaderRoute: typeof AppProjectsProjectStylesRouteImport
+    '/_app/projects/$project/costs': {
+      id: '/_app/projects/$project/costs'
+      path: '/projects/$project/costs'
+      fullPath: '/projects/$project/costs'
+      preLoaderRoute: typeof AppProjectsProjectCostsLazyRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/projects/$project/characters': {
+      id: '/_app/projects/$project/characters'
+      path: '/projects/$project/characters'
+      fullPath: '/projects/$project/characters'
+      preLoaderRoute: typeof AppProjectsProjectCharactersLazyRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/projects/$project/tasks': {
@@ -504,6 +469,41 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppProjectsProjectTasksRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/projects/$project/styles': {
+      id: '/_app/projects/$project/styles'
+      path: '/projects/$project/styles'
+      fullPath: '/projects/$project/styles'
+      preLoaderRoute: typeof AppProjectsProjectStylesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/projects/$project/ingest': {
+      id: '/_app/projects/$project/ingest'
+      path: '/projects/$project/ingest'
+      fullPath: '/projects/$project/ingest'
+      preLoaderRoute: typeof AppProjectsProjectIngestRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/projects/$project/episodes': {
+      id: '/_app/projects/$project/episodes'
+      path: '/projects/$project/episodes'
+      fullPath: '/projects/$project/episodes'
+      preLoaderRoute: typeof AppProjectsProjectEpisodesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/projects/$project/creation': {
+      id: '/_app/projects/$project/creation'
+      path: '/projects/$project/creation'
+      fullPath: '/projects/$project/creation'
+      preLoaderRoute: typeof AppProjectsProjectCreationRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/projects/$project/assistant': {
+      id: '/_app/projects/$project/assistant'
+      path: '/projects/$project/assistant'
+      fullPath: '/projects/$project/assistant'
+      preLoaderRoute: typeof AppProjectsProjectAssistantRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/projects/$project/episodes/$episode/': {
       id: '/_app/projects/$project/episodes/$episode/'
       path: '/$episode'
@@ -511,39 +511,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppProjectsProjectEpisodesEpisodeIndexLazyRouteImport
       parentRoute: typeof AppProjectsProjectEpisodesRoute
     }
-    '/_app/projects/$project/episodes/$episode/audio': {
-      id: '/_app/projects/$project/episodes/$episode/audio'
-      path: '/$episode/audio'
-      fullPath: '/projects/$project/episodes/$episode/audio'
-      preLoaderRoute: typeof AppProjectsProjectEpisodesEpisodeAudioLazyRouteImport
-      parentRoute: typeof AppProjectsProjectEpisodesRoute
-    }
-    '/_app/projects/$project/episodes/$episode/beats': {
-      id: '/_app/projects/$project/episodes/$episode/beats'
-      path: '/$episode/beats'
-      fullPath: '/projects/$project/episodes/$episode/beats'
-      preLoaderRoute: typeof AppProjectsProjectEpisodesEpisodeBeatsLazyRouteImport
-      parentRoute: typeof AppProjectsProjectEpisodesRoute
-    }
-    '/_app/projects/$project/episodes/$episode/compose': {
-      id: '/_app/projects/$project/episodes/$episode/compose'
-      path: '/$episode/compose'
-      fullPath: '/projects/$project/episodes/$episode/compose'
-      preLoaderRoute: typeof AppProjectsProjectEpisodesEpisodeComposeLazyRouteImport
-      parentRoute: typeof AppProjectsProjectEpisodesRoute
-    }
-    '/_app/projects/$project/episodes/$episode/overview': {
-      id: '/_app/projects/$project/episodes/$episode/overview'
-      path: '/$episode/overview'
-      fullPath: '/projects/$project/episodes/$episode/overview'
-      preLoaderRoute: typeof AppProjectsProjectEpisodesEpisodeOverviewLazyRouteImport
-      parentRoute: typeof AppProjectsProjectEpisodesRoute
-    }
-    '/_app/projects/$project/episodes/$episode/script': {
-      id: '/_app/projects/$project/episodes/$episode/script'
-      path: '/$episode/script'
-      fullPath: '/projects/$project/episodes/$episode/script'
-      preLoaderRoute: typeof AppProjectsProjectEpisodesEpisodeScriptLazyRouteImport
+    '/_app/projects/$project/episodes/$episode/video': {
+      id: '/_app/projects/$project/episodes/$episode/video'
+      path: '/$episode/video'
+      fullPath: '/projects/$project/episodes/$episode/video'
+      preLoaderRoute: typeof AppProjectsProjectEpisodesEpisodeVideoLazyRouteImport
       parentRoute: typeof AppProjectsProjectEpisodesRoute
     }
     '/_app/projects/$project/episodes/$episode/sketches': {
@@ -553,11 +525,39 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppProjectsProjectEpisodesEpisodeSketchesLazyRouteImport
       parentRoute: typeof AppProjectsProjectEpisodesRoute
     }
-    '/_app/projects/$project/episodes/$episode/video': {
-      id: '/_app/projects/$project/episodes/$episode/video'
-      path: '/$episode/video'
-      fullPath: '/projects/$project/episodes/$episode/video'
-      preLoaderRoute: typeof AppProjectsProjectEpisodesEpisodeVideoLazyRouteImport
+    '/_app/projects/$project/episodes/$episode/script': {
+      id: '/_app/projects/$project/episodes/$episode/script'
+      path: '/$episode/script'
+      fullPath: '/projects/$project/episodes/$episode/script'
+      preLoaderRoute: typeof AppProjectsProjectEpisodesEpisodeScriptLazyRouteImport
+      parentRoute: typeof AppProjectsProjectEpisodesRoute
+    }
+    '/_app/projects/$project/episodes/$episode/overview': {
+      id: '/_app/projects/$project/episodes/$episode/overview'
+      path: '/$episode/overview'
+      fullPath: '/projects/$project/episodes/$episode/overview'
+      preLoaderRoute: typeof AppProjectsProjectEpisodesEpisodeOverviewLazyRouteImport
+      parentRoute: typeof AppProjectsProjectEpisodesRoute
+    }
+    '/_app/projects/$project/episodes/$episode/compose': {
+      id: '/_app/projects/$project/episodes/$episode/compose'
+      path: '/$episode/compose'
+      fullPath: '/projects/$project/episodes/$episode/compose'
+      preLoaderRoute: typeof AppProjectsProjectEpisodesEpisodeComposeLazyRouteImport
+      parentRoute: typeof AppProjectsProjectEpisodesRoute
+    }
+    '/_app/projects/$project/episodes/$episode/beats': {
+      id: '/_app/projects/$project/episodes/$episode/beats'
+      path: '/$episode/beats'
+      fullPath: '/projects/$project/episodes/$episode/beats'
+      preLoaderRoute: typeof AppProjectsProjectEpisodesEpisodeBeatsLazyRouteImport
+      parentRoute: typeof AppProjectsProjectEpisodesRoute
+    }
+    '/_app/projects/$project/episodes/$episode/audio': {
+      id: '/_app/projects/$project/episodes/$episode/audio'
+      path: '/$episode/audio'
+      fullPath: '/projects/$project/episodes/$episode/audio'
+      preLoaderRoute: typeof AppProjectsProjectEpisodesEpisodeAudioLazyRouteImport
       parentRoute: typeof AppProjectsProjectEpisodesRoute
     }
   }

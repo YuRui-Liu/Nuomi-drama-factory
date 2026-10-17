@@ -10,6 +10,7 @@ import {
   type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from 'react';
 import {
   ReactFlow,
@@ -731,11 +732,13 @@ interface PendingNodePlacement {
 }
 
 interface CanvasProps {
+  selectionActions?: ReactNode;
   onBlankPaneClick?: () => void;
   controlsPlacement?: 'bottom-right' | 'top-right';
 }
 
 export function Canvas({
+  selectionActions,
   onBlankPaneClick,
   controlsPlacement = 'bottom-right',
 }: CanvasProps = {}) {
@@ -4656,6 +4659,7 @@ export function Canvas({
 
         <SelectedNodeOverlay />
         <MultiSelectionToolbar />
+        {selectionActions}
         <MultiSelectionConnectButton
           onBatchOpenMenu={handleBatchConnectOpenMenu}
           onBatchDragStart={handleBatchConnectDragStart}

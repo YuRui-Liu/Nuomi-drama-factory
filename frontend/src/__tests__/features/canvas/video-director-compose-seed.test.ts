@@ -8,6 +8,16 @@ import { useCanvasStore } from '@/stores/canvasStore';
 
 describe('director video compose seed', () => {
   beforeEach(() => useCanvasStore.getState().setCanvasData([], []));
+  it('keeps adopted dialogue provenance and original audio duration', () => {
+    const store = useCanvasStore.getState();
+    const id = store.addNode(CANVAS_NODE_TYPES.audio, { x: 0, y: 0 }, {
+      audioUrl: '/take.wav', durationMs: 7200, dubbingTakeId: 'take', dubbingDialogueId: 'line', dubbingGroupId: 'group',
+    });
+    const audio = buildInitialTimeline([id]).tracks.find(track => track.kind === 'audio')!.clips[0];
+    expect(audio.speed).toBe(1);
+    expect(audio.trimEndMs).toBe(7200);
+    expect(audio.dubbingSource).toEqual({ takeId: 'take', dialogueId: 'line', groupId: 'group' });
+  });
 
   it('uses persisted result duration after the editable draft changes', () => {
     const draft = updateSegment(createDirectorDraft('segment'), 'segment', { durationSeconds: 5 });

@@ -1,6 +1,19 @@
-export type ScriptDocumentKind = "brief" | "outline" | "people" | "scenes" | "props" | "episode_synopsis" | "episode_script";
+export type ScriptDocumentKind = "brief" | "idea_candidate" | "outline" | "people" | "scenes" | "props" | "episode_synopsis" | "episode_script";
 
 export interface ScriptBlock { id: string; markdown: string }
+export interface ScriptSceneIdentity {
+  id: string;
+  ordinal: number;
+  heading: string;
+  parent_ids: string[];
+  anchor_block_ids: string[];
+}
+export interface ScriptSceneIdentityUpdate {
+  id: string;
+  ordinal: number;
+  heading: string;
+  parent_ids: string[];
+}
 export interface ScriptRevision {
   id: string;
   document_id: string;
@@ -10,6 +23,7 @@ export interface ScriptRevision {
   client_mutation_id: string;
   created_at: string;
   restored_from_revision_id: string | null;
+  scene_identities?: ScriptSceneIdentity[];
 }
 export interface ScriptDocument {
   id: string;

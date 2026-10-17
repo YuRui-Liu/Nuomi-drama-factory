@@ -449,7 +449,13 @@ def _looks_like_scene_number_line(match: re.Match[str]) -> bool:
     rest = (match.group("rest") or "").strip()
     if not rest:
         return True
-    return bool(parse_location_line(rest))
+    if parse_location_line(rest):
+        return True
+    # Numbered scene headings in screenplay drafts can omit the interior /
+    # exterior marker while still giving a recognizable location and time,
+    # e.g. "1-1 仓库 夜". Keep the relaxation scoped to this explicit scene
+    # number so ordinary numbered lines are not promoted to scene headings.
+    return parse_location_header_relaxed(f"场景：{rest}") is not None
 
 
 def _looks_like_bare_scene_marker(line: str) -> bool:

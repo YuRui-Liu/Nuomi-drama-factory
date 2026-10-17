@@ -43,6 +43,8 @@ import {
 } from "lucide-react";
 
 import { useCanvasStore } from "@/stores/canvasStore";
+import { dubbingApi } from "@/features/canvas/production/dubbingApi";
+import { useProject } from "@/lib/queries/projects";
 import { resolveImageDisplayUrl } from "@/features/canvas/application/imageData";
 import {
   isAudioNode,
@@ -54,6 +56,7 @@ import {
   fetchFreezoneJobResult,
   uploadFreezoneVideo,
   type FreezoneVideoComposeResolution,
+  type FreezoneJobResult,
 } from "@/api/ops";
 import { awaitTaskCompletion } from "@/api/tasks";
 import { useViewerImmersiveBody } from "@/features/viewer-kit/useViewerImmersiveBody";
@@ -77,10 +80,13 @@ import {
   AUDIO_TRACK_ID,
   MIN_CLIP_MS,
   sourceSpanMs,
+  subtitleCueExceedsVideoOutputMs,
   timelineDurationMs,
   VIDEO_TRACK_ID,
   type ComposeClip,
+  type ComposeClipReplacementCandidate,
   type ComposeCover,
+  type ComposeSubtitleCue,
   type ComposeTimelineState,
   type ComposeTrack,
   type ComposeTrackKind,
@@ -95,12 +101,27 @@ export interface VideoComposeModalProps {
   /** 画布上被选中、用于初始化时间线的节点 id（按选择顺序）。 */
   seedNodeIds: string[];
   onClose: () => void;
-  /** 合成成功后回调，参数为最终视频 url + 封面 url（未设封面时为 null）。 */
-  onComposed: (url: string, coverUrl: string | null) => void;
+  /** Successfully rendered video, cover, and frozen manifest/artifact evidence. */
+  onComposed: (
+    url: string,
+    coverUrl: string | null,
+    evidence?: ComposeExportEvidence,
+  ) => void;
+  /** Called after either local or canvas export so the compose node keeps its evidence. */
+  onExported?: (evidence: ComposeExportEvidence) => void;
   /** 上次保存的草稿时间线；提供时优先用它初始化（而非从上游重新摆放）。 */
   initialTimeline?: ComposeTimelineState | null;
   /** 关闭弹窗时回传当前时间线，供宿主持久化为草稿。 */
   onPersistDraft?: (timeline: ComposeTimelineState) => void;
+}
+
+export interface ComposeExportEvidence {
+  timelineRevision: string | null;
+  draftRevision: number;
+  manifestUrl: string | null;
+  videoSha256: string | null;
+  subtitleSha256: string | null;
+  subtitlePath: string | null;
 }
 
 interface SelectedClipRef {
@@ -120,6 +141,96 @@ const HISTORY_LIMIT = 50;
 const SPEED_MIN = 0.25;
 const SPEED_MAX = 4;
 
+function sourceTimingSnapshot(clip: ComposeClip) {
+  return {
+    timelineStartMs: clip.timelineStartMs,
+    timelineEndMs: clip.timelineStartMs + clipLengthMs(clip),
+    sourceStartMs: clip.trimStartMs,
+    sourceEndMs: clip.trimEndMs,
+    speed: clip.speed > 0 ? clip.speed : 1,
+  };
+}
+
+type SubtitleReviewReason =
+  | "estimated"
+  | "invalid_timing"
+  | "missing_source"
+  | "source_changed"
+  | "timing_changed"
+  | "outside_video";
+
+function subtitleReviewReason(
+  cue: ComposeSubtitleCue,
+  timeline: ComposeTimelineState,
+): SubtitleReviewReason | null {
+  if (
+    !Number.isFinite(cue.timelineStartMs) ||
+    !Number.isFinite(cue.timelineEndMs) ||
+    cue.timelineStartMs < 0 ||
+    cue.timelineEndMs <= cue.timelineStartMs
+  ) {
+    return "invalid_timing";
+  }
+  const audioClips = timeline.tracks
+    .filter((track) => track.kind === "audio")
+    .flatMap((track) => track.clips);
+  if (cue.sourceClipId) {
+    const clip = audioClips.find((candidate) => candidate.id === cue.sourceClipId);
+    if (!clip) return "missing_source";
+    if (cue.sourceClipUrl !== clip.sourceUrl) return "source_changed";
+    if (
+      cue.sourceTakeId !== clip.dubbingSource?.takeId ||
+      cue.sourceDialogueId !== clip.dubbingSource?.dialogueId ||
+      cue.sourceGroupId !== clip.dubbingSource?.groupId
+    ) {
+      if (cue.sourceTakeId || cue.sourceDialogueId || cue.sourceGroupId || clip.dubbingSource) {
+        return "source_changed";
+      }
+    }
+    const saved = cue.sourceTiming;
+    const current = sourceTimingSnapshot(clip);
+    if (
+      !saved ||
+      Math.abs(saved.timelineStartMs - current.timelineStartMs) > 1 ||
+      Math.abs(saved.timelineEndMs - current.timelineEndMs) > 1 ||
+      Math.abs(saved.sourceStartMs - current.sourceStartMs) > 1 ||
+      Math.abs(saved.sourceEndMs - current.sourceEndMs) > 1 ||
+      Math.abs(saved.speed - current.speed) > 0.000001
+    ) {
+      return "timing_changed";
+    }
+  } else if (cue.sourceTakeId || cue.sourceDialogueId || cue.sourceGroupId) {
+    return "source_changed";
+  }
+  if (subtitleCueExceedsVideoOutputMs(timeline, cue.timelineEndMs)) {
+    return "outside_video";
+  }
+  if (!cue.timingConfirmed || cue.timing === "estimated_audio_clip") return "estimated";
+  return null;
+}
+
+function timelineContentFingerprint(timeline: ComposeTimelineState): string {
+  const { draftRevision: _revision, ...content } = timeline;
+  return JSON.stringify(content);
+}
+
+function exportEvidenceFromResult(result: FreezoneJobResult): ComposeExportEvidence {
+  const manifest = result.export_manifest ?? {};
+  const revision =
+    result.timeline_revision ??
+    (typeof manifest.timeline_revision === "string" ? manifest.timeline_revision : null);
+  const subtitle = result.artifact?.subtitle_file;
+  return {
+    timelineRevision: revision,
+    draftRevision: result.draft_revision ??
+      (typeof manifest.draft_revision === "number" ? manifest.draft_revision : 0),
+    manifestUrl: result.manifest_url ?? null,
+    videoSha256: result.artifact?.sha256 ?? null,
+    subtitleSha256: subtitle?.sha256 ?? null,
+    subtitlePath: subtitle?.path ?? null,
+  };
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
@@ -130,6 +241,10 @@ function makeClipId(): string {
 
 function makeTrackId(): string {
   return `track_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function makeSubtitleCueId(): string {
+  return `subtitle_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function formatTime(ms: number): string {
@@ -188,7 +303,11 @@ function probeMediaDuration(
 }
 
 /** Seed an initial timeline from the selected video/audio canvas nodes. */
-export function buildInitialTimeline(seedNodeIds: string[]): ComposeTimelineState {
+export function buildInitialTimeline(
+  seedNodeIds: string[],
+  resolution: FreezoneVideoComposeResolution = "1080p",
+  resolutionOrigin: "project" | "default" = "default",
+): ComposeTimelineState {
   const nodes = useCanvasStore.getState().nodes;
   const byId = new Map(nodes.map((node) => [node.id, node] as const));
   const videoClips: ComposeClip[] = [];
@@ -231,6 +350,20 @@ export function buildInitialTimeline(seedNodeIds: string[]): ComposeTimelineStat
         nodeId,
         kind: "audio",
         sourceUrl: node.data.audioUrl,
+        ...(typeof node.data.dubbingTakeId === "string" &&
+        typeof node.data.dubbingDialogueId === "string" &&
+        typeof node.data.dubbingGroupId === "string"
+          ? {
+              dubbingSource: {
+                takeId: node.data.dubbingTakeId,
+                dialogueId: node.data.dubbingDialogueId,
+                groupId: node.data.dubbingGroupId,
+                ...(typeof node.data.episodeNumber === "number"
+                  ? { episode: node.data.episodeNumber }
+                  : {}),
+              },
+            }
+          : {}),
         displayName: node.data.displayName ?? null,
         thumbUrl: null,
         durationMs,
@@ -251,7 +384,17 @@ export function buildInitialTimeline(seedNodeIds: string[]): ComposeTimelineStat
   if (audioClips.length > 0) {
     tracks.push({ id: AUDIO_TRACK_ID, kind: "audio", clips: audioClips });
   }
-  return { tracks, resolution: "1080p" };
+  return {
+    tracks,
+    resolution,
+    resolutionOrigin,
+    fps: 30,
+    fpsOrigin: "default",
+  };
+}
+
+function isComposeResolution(value: unknown): value is FreezoneVideoComposeResolution {
+  return value === "720p" || value === "1080p";
 }
 
 /**
@@ -267,12 +410,41 @@ function reconcileDraftWithUpstream(
   seedNodeIds: string[],
 ): ComposeTimelineState {
   const connected = new Set(seedNodeIds);
+  const upstreamClips = buildInitialTimeline(seedNodeIds).tracks.flatMap(
+    (track) => track.clips,
+  );
+  const upstreamByNodeId = new Map(
+    upstreamClips
+      .filter((clip) => clip.nodeId != null)
+      .map((clip) => [clip.nodeId as string, clip] as const),
+  );
   // 1) 丢弃上游已断开的片段（外部素材 nodeId 为空时保留）。
   const tracks: ComposeTrack[] = draft.tracks.map((track) => ({
     ...track,
-    clips: track.clips.filter(
-      (clip) => clip.nodeId == null || connected.has(clip.nodeId),
-    ),
+    clips: track.clips
+      .filter((clip) => clip.nodeId == null || connected.has(clip.nodeId))
+      .map((clip) => {
+        if (!clip.nodeId) return clip;
+        const upstream = upstreamByNodeId.get(clip.nodeId);
+        if (!upstream || upstream.kind !== clip.kind) return clip;
+        if (
+          upstream.sourceUrl === clip.sourceUrl ||
+          upstream.sourceUrl === clip.ignoredReplacementUrl
+        ) {
+          const { replacementCandidate: _candidate, ...current } = clip;
+          return current;
+        }
+        const replacementCandidate: ComposeClipReplacementCandidate = {
+          sourceUrl: upstream.sourceUrl,
+          displayName: upstream.displayName,
+          thumbUrl: upstream.thumbUrl,
+          durationMs: upstream.durationMs,
+          ...(upstream.dubbingSource
+            ? { dubbingSource: upstream.dubbingSource }
+            : {}),
+        };
+        return { ...clip, replacementCandidate };
+      }),
   }));
   // 2) 已连接但草稿里没有片段的上游 → 用初始摆放生成并追加到对应种类轨道末尾。
   const present = new Set(
@@ -295,7 +467,7 @@ function reconcileDraftWithUpstream(
         0,
       );
       for (const clip of freshTrack.clips) {
-        target.clips.push({ ...clip, timelineStartMs: Math.round(cursor) });
+        target.clips.push({ ...clip, timelineStartMs: cursor });
         cursor += clipLengthMs(clip);
       }
     }
@@ -429,19 +601,67 @@ export function VideoComposeModal({
   seedNodeIds,
   onClose,
   onComposed,
+  onExported,
   initialTimeline,
   onPersistDraft,
 }: VideoComposeModalProps) {
   const { t } = useTranslation();
+  const canvasNodes = useCanvasStore((state) => state.nodes);
+  const upstreamAssetSignature = useMemo(
+    () =>
+      JSON.stringify(
+        canvasNodes
+          .filter((node) => seedNodeIds.includes(node.id))
+          .map((node) => ({
+            id: node.id,
+            videoUrl: node.data.videoUrl,
+            audioUrl: node.data.audioUrl,
+            displayName: node.data.displayName,
+            previewImageUrl: node.data.previewImageUrl,
+            durationMs: node.data.durationMs,
+            dubbingTakeId: node.data.dubbingTakeId,
+            dubbingDialogueId: node.data.dubbingDialogueId,
+            dubbingGroupId: node.data.dubbingGroupId,
+            episodeNumber: node.data.episodeNumber,
+          })),
+      ),
+    [canvasNodes, seedNodeIds],
+  );
+  const projectConfigRes = useProject(project);
+  const savedProjectResolution = projectConfigRes.data?.data?.video_resolution;
+  const projectResolution = isComposeResolution(savedProjectResolution)
+    ? savedProjectResolution
+    : undefined;
+  const resolutionTouchedRef = useRef(false);
   // 合成弹窗打开期间标记为「沉浸式」：画布的全局快捷键（Delete 删节点、⌘C/⌘V、⌘Z…）
   // 整体让位，避免弹窗内按 Delete 删片段却把画布上的视频合成节点也删了、并弹回画布。
   useViewerImmersiveBody(true);
   const [timeline, setTimeline] = useState<ComposeTimelineState>(() =>
     // 有草稿则恢复草稿，但用「当前连着的上游」对账（断开的丢弃、新连的补回）；
     // 没草稿就按上游素材首次摆放。
-    initialTimeline && initialTimeline.tracks?.length
-      ? reconcileDraftWithUpstream(initialTimeline, seedNodeIds)
-      : buildInitialTimeline(seedNodeIds),
+    (() => {
+      const seeded = initialTimeline && initialTimeline.tracks?.length
+        ? reconcileDraftWithUpstream(initialTimeline, seedNodeIds)
+        : buildInitialTimeline(
+            seedNodeIds,
+            projectResolution ?? "1080p",
+            projectResolution ? "project" : "default",
+          );
+      const hasSavedFps = Number.isInteger(seeded.fps) && Number(seeded.fps) >= 1 && Number(seeded.fps) <= 60;
+      const validResolution = seeded.resolution === "720p" || seeded.resolution === "1080p";
+      return {
+        ...seeded,
+        resolution: validResolution ? seeded.resolution : (projectResolution ?? "1080p"),
+        resolutionOrigin: seeded.resolutionOrigin ?? (initialTimeline?.tracks?.length ? "legacy_unverified" : projectResolution ? "project" : "default"),
+        fps: hasSavedFps ? Number(seeded.fps) : 30,
+        fpsOrigin: seeded.fpsOrigin ?? (hasSavedFps ? "legacy_unverified" : "default"),
+        draftRevision:
+          Number.isInteger(seeded.draftRevision) && Number(seeded.draftRevision) >= 0
+            ? Number(seeded.draftRevision)
+            : 0,
+        subtitleTrack: seeded.subtitleTrack ?? { id: "track_subtitle", cues: [] },
+      };
+    })(),
   );
   const [past, setPast] = useState<ComposeTimelineState[]>([]);
   const [future, setFuture] = useState<ComposeTimelineState[]>([]);
@@ -473,10 +693,27 @@ export function VideoComposeModal({
     open: boolean;
     location: "local" | "canvas";
     resolution: FreezoneVideoComposeResolution;
-  }>({ open: false, location: "local", resolution: "1080p" });
+  }>({ open: false, location: "local", resolution: projectResolution ?? "1080p" });
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [coverEditorOpen, setCoverEditorOpen] = useState(false);
+  const [selectedSubtitleCueId, setSelectedSubtitleCueId] = useState<string | null>(null);
+  const [isImportingSubtitles, setIsImportingSubtitles] = useState(false);
+  const [replacementDialog, setReplacementDialog] = useState<SelectedClipRef | null>(null);
+
+  useEffect(() => {
+    setTimeline((current) => reconcileDraftWithUpstream(current, seedNodeIds));
+  }, [seedNodeIds, upstreamAssetSignature]);
+
+  useEffect(() => {
+    if (!projectResolution || initialTimeline?.tracks?.length || resolutionTouchedRef.current) return;
+    setTimeline((current) => ({
+      ...current,
+      resolution: projectResolution,
+      resolutionOrigin: "project",
+    }));
+    setExportDialog((current) => ({ ...current, resolution: projectResolution }));
+  }, [initialTimeline?.tracks?.length, projectResolution]);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -751,6 +988,21 @@ export function VideoComposeModal({
   // 关闭弹窗（卸载）时把当前时间线回传宿主存为草稿，重开/刷新后恢复。
   const onPersistDraftRef = useRef(onPersistDraft);
   onPersistDraftRef.current = onPersistDraft;
+  const persistedContentFingerprintRef = useRef(timelineContentFingerprint(timeline));
+  useEffect(() => {
+    const fingerprint = timelineContentFingerprint(timeline);
+    if (fingerprint === persistedContentFingerprintRef.current) return;
+    persistedContentFingerprintRef.current = fingerprint;
+    const next = {
+      ...timeline,
+      draftRevision: (timeline.draftRevision ?? 0) + 1,
+    };
+    timelineRef.current = next;
+    setTimeline((current) =>
+      current === timeline ? next : { ...current, draftRevision: next.draftRevision },
+    );
+    onPersistDraftRef.current?.(next);
+  }, [timeline]);
   useEffect(() => {
     return () => {
       onPersistDraftRef.current?.(timelineRef.current);
@@ -770,9 +1022,16 @@ export function VideoComposeModal({
   // 重新从上游素材摆放（丢弃当前草稿编辑）—— 上游新增/变更素材后用它重置。
   const resetToUpstream = useCallback(() => {
     pushHistory();
-    setTimeline(buildInitialTimeline(seedNodeIds));
+    resolutionTouchedRef.current = false;
+    setTimeline(
+      buildInitialTimeline(
+        seedNodeIds,
+        projectResolution ?? "1080p",
+        projectResolution ? "project" : "default",
+      ),
+    );
     clearSelection();
-  }, [clearSelection, pushHistory, seedNodeIds]);
+  }, [clearSelection, projectResolution, pushHistory, seedNodeIds]);
 
   // 拖动定位时把片段左/右边缘磁吸到其它片段边界或 0（排除自身），不吸时原值。
   const snapClipStart = useCallback(
@@ -942,7 +1201,7 @@ export function VideoComposeModal({
 
         const placed: ComposeClip = {
           ...movingClip,
-          timelineStartMs: Math.round(nextStart),
+          timelineStartMs: nextStart,
         };
         let tracks = snapshot.tracks.map((t) => ({
           ...t,
@@ -1086,6 +1345,300 @@ export function VideoComposeModal({
     return laid ? { track, clip, laid } : null;
   }, [selected, timeline]);
 
+  const selectedSubtitleCue = useMemo(
+    () =>
+      timeline.subtitleTrack?.cues.find((cue) => cue.id === selectedSubtitleCueId) ?? null,
+    [selectedSubtitleCueId, timeline.subtitleTrack],
+  );
+
+  const updateSubtitleCue = useCallback(
+    (cueId: string, patch: Partial<ComposeSubtitleCue>) => {
+      setTimeline((prev) => ({
+        ...prev,
+        subtitleTrack: {
+          id: prev.subtitleTrack?.id ?? "track_subtitle",
+          cues: (prev.subtitleTrack?.cues ?? []).map((cue) =>
+            cue.id === cueId ? { ...cue, ...patch } : cue,
+          ),
+        },
+      }));
+    },
+    [],
+  );
+
+  const addSubtitleCue = useCallback(() => {
+    const activeAudio = audioTrack ? activeClipAt(audioTrack, playheadMs)?.laid.clip : null;
+    const start = Math.max(0, playheadMs);
+    const cue: ComposeSubtitleCue = {
+      id: makeSubtitleCueId(),
+      text: "",
+      timelineStartMs: start,
+      timelineEndMs: start + 2000,
+      timing: "manual",
+      timingConfirmed: true,
+      ...(activeAudio
+        ? {
+            sourceClipId: activeAudio.id,
+            sourceClipUrl: activeAudio.sourceUrl,
+            ...(activeAudio.dubbingSource
+              ? {
+                  sourceTakeId: activeAudio.dubbingSource.takeId,
+                  sourceDialogueId: activeAudio.dubbingSource.dialogueId,
+                  sourceGroupId: activeAudio.dubbingSource.groupId,
+                }
+              : {}),
+            sourceTiming: sourceTimingSnapshot(activeAudio),
+          }
+        : {}),
+    };
+    pushHistory();
+    setTimeline((prev) => ({
+      ...prev,
+      subtitleTrack: {
+        id: prev.subtitleTrack?.id ?? "track_subtitle",
+        cues: [...(prev.subtitleTrack?.cues ?? []), cue],
+      },
+    }));
+    setSelectedSubtitleCueId(cue.id);
+  }, [audioTrack, playheadMs, pushHistory]);
+
+  const importAdoptedDialogueSubtitles = useCallback(async () => {
+    const dubbedClips = timeline.tracks
+      .filter((track) => track.kind === "audio")
+      .flatMap((track) => track.clips)
+      .filter(
+        (clip) =>
+          clip.dubbingSource &&
+          Number.isInteger(clip.dubbingSource.episode) &&
+          clip.dubbingSource.episode! > 0,
+      );
+    if (dubbedClips.length === 0) {
+      setExportError(t("videoCompose.subtitle.noAdoptedAudio"));
+      return;
+    }
+    setIsImportingSubtitles(true);
+    setExportError(null);
+    try {
+      const groupKeys = [
+        ...new Set(
+          dubbedClips.map(
+            (clip) => `${clip.dubbingSource!.episode}:${clip.dubbingSource!.groupId}`,
+          ),
+        ),
+      ];
+      const states = await Promise.all(
+        groupKeys.map(async (key) => {
+          const [episodeText, ...groupParts] = key.split(":");
+          const state = await dubbingApi.get(project, Number(episodeText), groupParts.join(":"));
+          return { key, state };
+        }),
+      );
+      const stateByKey = new Map(states.map(({ key, state }) => [key, state] as const));
+      const existing = timeline.subtitleTrack?.cues ?? [];
+      const additions: ComposeSubtitleCue[] = [];
+      for (const clip of dubbedClips) {
+        const source = clip.dubbingSource!;
+        const key = `${source.episode}:${source.groupId}`;
+        const state = stateByKey.get(key);
+        const dialogue = state?.dialogues.find((item) => item.dialogue_id === source.dialogueId);
+        const adoptedTake = state?.adoption.by_dialogue[source.dialogueId]?.take_id;
+        if (
+          !dialogue ||
+          dialogue.source_status !== "active" ||
+          adoptedTake !== source.takeId ||
+          !dialogue.text.trim()
+        ) continue;
+        if (
+          existing.some(
+            (cue) =>
+              cue.sourceClipId === clip.id &&
+              cue.sourceDialogueId === source.dialogueId &&
+              cue.sourceTakeId === source.takeId,
+          ) ||
+          additions.some(
+            (cue) => cue.sourceClipId === clip.id && cue.sourceDialogueId === source.dialogueId,
+          )
+        ) {
+          continue;
+        }
+        additions.push({
+          id: makeSubtitleCueId(),
+          text: dialogue.text,
+          timelineStartMs: clip.timelineStartMs,
+          timelineEndMs: clip.timelineStartMs + clipLengthMs(clip),
+          sourceClipId: clip.id,
+          sourceClipUrl: clip.sourceUrl,
+          sourceTakeId: source.takeId,
+          sourceDialogueId: source.dialogueId,
+          sourceGroupId: source.groupId,
+          sourceTiming: sourceTimingSnapshot(clip),
+          timing: "estimated_audio_clip",
+          timingConfirmed: false,
+        });
+      }
+      if (additions.length === 0) {
+        setExportError(t("videoCompose.subtitle.noNewDialogues"));
+        return;
+      }
+      pushHistory();
+      setTimeline((prev) => ({
+        ...prev,
+        subtitleTrack: {
+          id: prev.subtitleTrack?.id ?? "track_subtitle",
+          cues: [...(prev.subtitleTrack?.cues ?? []), ...additions],
+        },
+      }));
+      setSelectedSubtitleCueId(additions[0]?.id ?? null);
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsImportingSubtitles(false);
+    }
+  }, [project, pushHistory, t, timeline]);
+
+  const removeSubtitleCue = useCallback(
+    (cueId: string) => {
+      pushHistory();
+      setTimeline((prev) => ({
+        ...prev,
+        subtitleTrack: {
+          id: prev.subtitleTrack?.id ?? "track_subtitle",
+          cues: (prev.subtitleTrack?.cues ?? []).filter((cue) => cue.id !== cueId),
+        },
+      }));
+      setSelectedSubtitleCueId((current) => (current === cueId ? null : current));
+    },
+    [pushHistory],
+  );
+
+  const confirmSubtitleCue = useCallback(
+    (cueId: string, mode: "keep_timing" | "align_audio") => {
+      const cue = timeline.subtitleTrack?.cues.find((item) => item.id === cueId);
+      if (!cue) return;
+      const existingAudio = timeline.tracks
+        .filter((track) => track.kind === "audio")
+        .flatMap((track) => track.clips)
+        .find((clip) => clip.id === cue.sourceClipId);
+      const activeAudio = audioTrack ? activeClipAt(audioTrack, playheadMs)?.laid.clip : null;
+      const targetAudio =
+        existingAudio ??
+        (selectedClip?.track.kind === "audio" ? selectedClip.clip : activeAudio);
+      if (cue.sourceClipId && !existingAudio && !targetAudio) {
+        setExportError(t("videoCompose.subtitle.sourceMissing"));
+        return;
+      }
+      const clip = targetAudio;
+      const snapshot = clip ? sourceTimingSnapshot(clip) : undefined;
+      pushHistory();
+      updateSubtitleCue(cueId, {
+        ...(clip
+          ? {
+              sourceClipId: clip.id,
+              sourceClipUrl: clip.sourceUrl,
+              sourceTakeId: clip.dubbingSource?.takeId,
+              sourceDialogueId: clip.dubbingSource?.dialogueId,
+              sourceGroupId: clip.dubbingSource?.groupId,
+              sourceTiming: snapshot,
+              ...(mode === "align_audio"
+                ? {
+                    timelineStartMs: snapshot!.timelineStartMs,
+                    timelineEndMs: snapshot!.timelineEndMs,
+                  }
+                : {}),
+            }
+          : {
+              sourceClipId: undefined,
+              sourceClipUrl: undefined,
+              sourceTakeId: undefined,
+              sourceDialogueId: undefined,
+              sourceGroupId: undefined,
+              sourceTiming: undefined,
+            }),
+        timing: "manual",
+        timingConfirmed: true,
+      });
+      setExportError(null);
+    },
+    [audioTrack, playheadMs, selectedClip, timeline, pushHistory, updateSubtitleCue, t],
+  );
+
+  const unlinkSubtitleSource = useCallback(
+    (cueId: string) => {
+      pushHistory();
+      updateSubtitleCue(cueId, {
+        sourceClipId: undefined,
+        sourceClipUrl: undefined,
+        sourceTakeId: undefined,
+        sourceDialogueId: undefined,
+        sourceGroupId: undefined,
+        sourceTiming: undefined,
+        timing: "manual",
+        timingConfirmed: true,
+      });
+    },
+    [pushHistory, updateSubtitleCue],
+  );
+
+  const replacementDialogData = useMemo(() => {
+    if (!replacementDialog) return null;
+    const track = timeline.tracks.find((item) => item.id === replacementDialog.trackId);
+    const clip = track?.clips.find((item) => item.id === replacementDialog.clipId);
+    if (!track || !clip?.replacementCandidate) return null;
+    const affectedCueCount = (timeline.subtitleTrack?.cues ?? []).filter(
+      (cue) => cue.sourceClipId === clip.id,
+    ).length;
+    return { track, clip, candidate: clip.replacementCandidate, affectedCueCount };
+  }, [replacementDialog, timeline]);
+
+  const resolveSourceReplacement = useCallback(
+    (decision: "use_new" | "keep_current") => {
+      if (!replacementDialog) return;
+      pushHistory();
+      setTimeline((prev) => ({
+        ...prev,
+        tracks: prev.tracks.map((track) =>
+          track.id !== replacementDialog.trackId
+            ? track
+            : {
+                ...track,
+                clips: track.clips.map((clip) => {
+                  if (clip.id !== replacementDialog.clipId || !clip.replacementCandidate) return clip;
+                  const candidate = clip.replacementCandidate;
+                  if (decision === "keep_current") {
+                    return {
+                      ...clip,
+                      replacementCandidate: undefined,
+                      ignoredReplacementUrl: candidate.sourceUrl,
+                    };
+                  }
+                  const maxSource = candidate.durationMs ?? clip.trimEndMs;
+                  const trimStartMs = Math.min(clip.trimStartMs, Math.max(0, maxSource - 1));
+                  const trimEndMs = Math.min(
+                    maxSource,
+                    Math.max(clip.trimEndMs, trimStartMs + 1),
+                  );
+                  return {
+                    ...clip,
+                    sourceUrl: candidate.sourceUrl,
+                    displayName: candidate.displayName,
+                    thumbUrl: candidate.thumbUrl,
+                    durationMs: candidate.durationMs,
+                    trimStartMs,
+                    trimEndMs,
+                    dubbingSource: candidate.dubbingSource,
+                    replacementCandidate: undefined,
+                    ignoredReplacementUrl: undefined,
+                  };
+                }),
+              },
+        ),
+      }));
+      setReplacementDialog(null);
+      setExportError(null);
+    },
+    [pushHistory, replacementDialog],
+  );
+
   /** Source-time (ms) inside the selected clip at the playhead, or null. */
   const selectedSourceMs = useMemo(() => {
     if (!selectedClip) return null;
@@ -1226,7 +1779,7 @@ export function VideoComposeModal({
           );
           return {
             ...tr,
-            clips: [...tr.clips, { ...copy, timelineStartMs: Math.round(end) }],
+            clips: [...tr.clips, { ...copy, timelineStartMs: end }],
           };
         }),
       }));
@@ -1363,15 +1916,15 @@ export function VideoComposeModal({
           // 拖左把手：源入点变化，同时把左边缘随之平移，使右边缘保持不动。
           const nextTimelineStart = Math.max(
             0,
-            Math.round(origTimelineStart + (next - origStart) / speed),
+            origTimelineStart + (next - origStart) / speed,
           );
           updateClip(track.id, clip.id, {
-            trimStartMs: Math.round(next),
+            trimStartMs: next,
             timelineStartMs: nextTimelineStart,
           });
         } else {
           const next = clamp(snapSource(origEnd + dms), origStart + MIN_CLIP_MS, maxEnd);
-          updateClip(track.id, clip.id, { trimEndMs: Math.round(next) });
+          updateClip(track.id, clip.id, { trimEndMs: next });
         }
       };
       const onUp = () => {
@@ -1497,14 +2050,14 @@ export function VideoComposeModal({
 
   // 导出到画布：先把合成视频经 upload 接口落成稳定素材，再回显到本节点的合成结果上。
   const exportToCanvas = useCallback(
-    async (url: string) => {
+    async (url: string, evidence: ComposeExportEvidence) => {
       const blob = await fetchComposedBlob(url);
       const uploaded = await uploadFreezoneVideo(
         project,
         blob,
         composedFileName(url),
       );
-      onComposed(uploaded.url, timelineRef.current.cover?.url ?? null);
+      onComposed(uploaded.url, timelineRef.current.cover?.url ?? null, evidence);
     },
     [composedFileName, fetchComposedBlob, onComposed, project],
   );
@@ -1514,9 +2067,30 @@ export function VideoComposeModal({
       target: "local" | "canvas",
       resolution: FreezoneVideoComposeResolution,
     ) => {
-      if (isExporting || !hasExportableClips(timeline)) return;
+      const liveTimeline = timelineRef.current;
+      if (isExporting || !hasExportableClips(liveTimeline)) return;
+      const pendingReplacement = liveTimeline.tracks
+        .flatMap((track) => track.clips)
+        .some((clip) => Boolean(clip.replacementCandidate));
+      if (pendingReplacement) {
+        setExportError(t("videoCompose.subtitle.replacementExportBlocked"));
+        return;
+      }
+      const unresolvedCue = (liveTimeline.subtitleTrack?.cues ?? []).find(
+        (cue) =>
+          !cue.text.trim() ||
+          subtitleReviewReason(cue, liveTimeline) !== null,
+      );
+      if (unresolvedCue) {
+        setExportError(
+          !unresolvedCue.text.trim()
+            ? t("videoCompose.subtitle.textRequired")
+            : t(`videoCompose.subtitle.review.${subtitleReviewReason(unresolvedCue, liveTimeline)}`),
+        );
+        return;
+      }
       // MVP 后端不支持视频重叠合成；导出前拦截并给出明确提示，而不是让后端报错。
-      if (hasOverlappingVideoClips(timeline)) {
+      if (hasOverlappingVideoClips(liveTimeline)) {
         setExportError(t("videoCompose.error.overlap"));
         return;
       }
@@ -1524,8 +2098,15 @@ export function VideoComposeModal({
       setExportError(null);
       try {
         const payload = buildComposePayload(
-          { ...timeline, resolution },
-          { canvasId, fps: 30 },
+          {
+            ...liveTimeline,
+            resolution,
+            resolutionOrigin:
+              liveTimeline.resolution === resolution
+                ? liveTimeline.resolutionOrigin ?? "default"
+                : "user",
+          },
+          { canvasId },
         );
         const ref = await submitFreezoneVideoCompose(project, payload);
         await awaitTaskCompletion(ref.task_key, project);
@@ -1538,15 +2119,17 @@ export function VideoComposeModal({
           setExportError(t("videoCompose.error.noUrl"));
           return;
         }
+        const evidence = exportEvidenceFromResult(result);
+        onExported?.(evidence);
         if (target === "local") await exportToLocal(result.url);
-        else await exportToCanvas(result.url);
+        else await exportToCanvas(result.url, evidence);
       } catch (error) {
         setExportError(error instanceof Error ? error.message : String(error));
       } finally {
         setIsExporting(false);
       }
     },
-    [canvasId, exportToCanvas, exportToLocal, isExporting, project, t, timeline],
+    [canvasId, exportToCanvas, exportToLocal, isExporting, onExported, project, t],
   );
 
   // Close on Escape (unless a popover/export is busy).
@@ -1648,7 +2231,18 @@ export function VideoComposeModal({
 
   const rulerSeconds = Math.max(RULER_MIN_SECONDS, Math.ceil(durationMs / 1000));
   const timelineWidthPx = rulerSeconds * pxPerSec;
-  const canExport = hasExportableClips(timeline) && !isExporting;
+  const subtitleCues = timeline.subtitleTrack?.cues ?? [];
+  const pendingSubtitleCue = subtitleCues.find(
+    (cue) => !cue.text.trim() || subtitleReviewReason(cue, timeline) !== null,
+  );
+  const pendingReplacementCount = timeline.tracks
+    .flatMap((track) => track.clips)
+    .filter((clip) => Boolean(clip.replacementCandidate)).length;
+  const canExport =
+    hasExportableClips(timeline) &&
+    !isExporting &&
+    !pendingSubtitleCue &&
+    pendingReplacementCount === 0;
   // 时间轴上重叠的视频片段 id —— 用于把冲突片段高亮（红框）提示用户。
   const overlapClipIds = useMemo(() => overlappingVideoClipIds(timeline), [timeline]);
 
@@ -1669,6 +2263,9 @@ export function VideoComposeModal({
   const videoSource = useMemo(
     () => (videoActive ? resolveImageDisplayUrl(videoActive.laid.clip.sourceUrl) : null),
     [videoActive],
+  );
+  const activeSubtitleCue = subtitleCues.find(
+    (cue) => playheadMs >= cue.timelineStartMs && playheadMs < cue.timelineEndMs,
   );
 
   const selectedSpeed = selectedClip?.clip.speed ?? 1;
@@ -1741,7 +2338,7 @@ export function VideoComposeModal({
                     type="button"
                     onClick={() => {
                       setExportMenuOpen(false);
-                      setExportDialog({ open: true, location: "local", resolution: "1080p" });
+                      setExportDialog({ open: true, location: "local", resolution: timeline.resolution });
                     }}
                     className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-dark transition-colors hover:bg-white/8"
                   >
@@ -1752,7 +2349,7 @@ export function VideoComposeModal({
                     type="button"
                     onClick={() => {
                       setExportMenuOpen(false);
-                      setExportDialog({ open: true, location: "canvas", resolution: "1080p" });
+                      setExportDialog({ open: true, location: "canvas", resolution: timeline.resolution });
                     }}
                     className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-dark transition-colors hover:bg-white/8"
                   >
@@ -1800,17 +2397,48 @@ export function VideoComposeModal({
                       </span>
                       <select
                         value={exportDialog.resolution}
-                        onChange={(e) =>
-                          setExportDialog((d) => ({
-                            ...d,
-                            resolution: e.target.value as FreezoneVideoComposeResolution,
-                          }))
-                        }
+                        onChange={(e) => {
+                          const resolution = e.target.value as FreezoneVideoComposeResolution;
+                          resolutionTouchedRef.current = true;
+                          setTimeline((current) => ({
+                            ...current,
+                            resolution,
+                            resolutionOrigin: "user",
+                          }));
+                          setExportDialog((d) => ({ ...d, resolution }));
+                        }}
                         className="min-w-[160px] rounded-md border border-border-dark bg-bg-dark px-3 py-1.5 text-sm text-text-dark outline-none"
                       >
                         <option value="720p">720P</option>
                         <option value="1080p">1080P</option>
                       </select>
+                    </label>
+                    <label className="flex items-center justify-between gap-3">
+                      <span className="text-xs text-text-muted">
+                        {timeline.fpsOrigin === "default"
+                          ? "帧率（默认 30）"
+                          : timeline.fpsOrigin === "legacy_unverified"
+                            ? "帧率（旧草稿，来源未确认）"
+                            : "帧率"}
+                      </span>
+                      <input
+                        aria-label="导出帧率"
+                        type="number"
+                        min={1}
+                        max={60}
+                        step={1}
+                        value={timeline.fps ?? 30}
+                        onChange={(e) => {
+                          const fps = Number(e.target.value);
+                          if (!Number.isInteger(fps) || fps < 1 || fps > 60) return;
+                          setTimeline((current) => ({
+                            ...current,
+                            fps,
+                            fpsOrigin: "user",
+                          }));
+                        }}
+                        className="min-w-[160px] rounded-md border border-border-dark bg-bg-dark px-3 py-1.5 text-sm text-text-dark outline-none"
+                      />
                     </label>
                     <label className="flex items-center justify-between gap-3">
                       <span className="text-xs text-text-muted">
@@ -1868,11 +2496,71 @@ export function VideoComposeModal({
           {t("videoCompose.error.prefix")}: {exportError}
         </div>
       )}
+      {pendingReplacementCount > 0 && (
+        <div className="border-b border-amber-500/30 bg-amber-500/10 px-5 py-2 text-xs text-amber-100">
+          {t("videoCompose.subtitle.replacementReview", { count: pendingReplacementCount })}
+        </div>
+      )}
+      {pendingSubtitleCue && (
+        <div className="border-b border-amber-500/30 bg-amber-500/10 px-5 py-2 text-xs text-amber-100">
+          {!pendingSubtitleCue.text.trim()
+            ? t("videoCompose.subtitle.textRequired")
+            : t(`videoCompose.subtitle.review.${subtitleReviewReason(pendingSubtitleCue, timeline)}`)}
+        </div>
+      )}
+      {replacementDialogData && (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-lg rounded-xl border border-border-dark bg-surface-dark p-5 shadow-2xl">
+            <h2 className="mb-3 text-base font-semibold text-text-dark">
+              {t("videoCompose.subtitle.replaceTitle")}
+            </h2>
+            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-sm">
+              <div className="rounded-md border border-border-dark bg-bg-dark p-3">
+                <div className="mb-1 text-[10px] text-text-muted">{t("videoCompose.subtitle.currentSource")}</div>
+                <div className="break-words text-text-dark">
+                  {replacementDialogData.clip.displayName || replacementDialogData.clip.sourceUrl.split("/").pop()}
+                </div>
+              </div>
+              <span className="text-text-muted">→</span>
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+                <div className="mb-1 text-[10px] text-amber-200">{t("videoCompose.subtitle.newSource")}</div>
+                <div className="break-words text-text-dark">
+                  {replacementDialogData.candidate.displayName || replacementDialogData.candidate.sourceUrl.split("/").pop()}
+                </div>
+              </div>
+            </div>
+            <p className="mt-3 text-xs leading-5 text-text-muted">
+              {t("videoCompose.subtitle.replaceImpact", {
+                count: replacementDialogData.affectedCueCount,
+              })}
+            </p>
+            <p className="mt-1 text-xs leading-5 text-amber-100">
+              {t("videoCompose.subtitle.replaceReviewHint")}
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => resolveSourceReplacement("keep_current")}
+                className="rounded-md border border-border-dark px-3 py-1.5 text-sm text-text-dark hover:bg-white/[0.06]"
+              >
+                {t("videoCompose.subtitle.keepCurrentSource")}
+              </button>
+              <button
+                type="button"
+                onClick={() => resolveSourceReplacement("use_new")}
+                className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                {t("videoCompose.subtitle.useNewSource")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Preview stage */}
       <div
         ref={previewStageRef}
-        className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black/60 p-4"
+        className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-black/60 p-4"
       >
         <video
           ref={videoRef}
@@ -1883,6 +2571,14 @@ export function VideoComposeModal({
         {!videoSource && (
           <div className="text-sm text-text-muted">
             {t("videoCompose.emptyPreview")}
+          </div>
+        )}
+        {activeSubtitleCue?.text.trim() && (
+          <div className="pointer-events-none absolute bottom-10 left-1/2 max-w-[80%] -translate-x-1/2 rounded bg-black/70 px-3 py-1.5 text-center text-lg font-medium text-white shadow-lg">
+            {activeSubtitleCue.text}
+            {activeSubtitleCue.timing === "estimated_audio_clip" && (
+              <span className="ml-2 text-xs text-amber-200">{t("videoCompose.subtitle.estimated")}</span>
+            )}
           </div>
         )}
         <audio ref={audioRef} className="hidden" />
@@ -1956,6 +2652,24 @@ export function VideoComposeModal({
             disabled={!selectedClip}
             onClick={removeSelected}
           />
+          <ToolDivider />
+          <button
+            type="button"
+            onClick={addSubtitleCue}
+            className="rounded-md border border-border-dark px-2 py-1 text-xs text-text-dark hover:bg-white/[0.06]"
+          >
+            {t("videoCompose.subtitle.add")}
+          </button>
+          <button
+            type="button"
+            disabled={isImportingSubtitles}
+            onClick={() => void importAdoptedDialogueSubtitles()}
+            className="rounded-md border border-border-dark px-2 py-1 text-xs text-text-dark hover:bg-white/[0.06] disabled:opacity-50"
+          >
+            {isImportingSubtitles
+              ? t("videoCompose.subtitle.importing")
+              : t("videoCompose.subtitle.importAdopted")}
+          </button>
         </div>
 
         {/* Center: transport + snap */}
@@ -2014,6 +2728,103 @@ export function VideoComposeModal({
         </div>
       </div>
 
+      {selectedSubtitleCue && (
+        <section className="border-t border-border-dark bg-surface-dark/70 px-4 py-2">
+          <div className="mb-1 flex items-center justify-between gap-3 text-[11px] text-text-muted">
+            <span>
+              {t("videoCompose.subtitle.editor")}
+              {subtitleReviewReason(selectedSubtitleCue, timeline) && (
+                <span className="ml-2 text-amber-200">
+                  {t(`videoCompose.subtitle.review.${subtitleReviewReason(selectedSubtitleCue, timeline)}`)}
+                </span>
+              )}
+            </span>
+            <span>{selectedSubtitleCue.sourceClipId ? t("videoCompose.subtitle.linked") : t("videoCompose.subtitle.unlinked")}</span>
+          </div>
+          <div className="flex items-start gap-3">
+            <textarea
+              value={selectedSubtitleCue.text}
+              maxLength={2000}
+              rows={2}
+              onFocus={pushHistory}
+              onChange={(event) =>
+                updateSubtitleCue(selectedSubtitleCue.id, { text: event.target.value })
+              }
+              placeholder={t("videoCompose.subtitle.textPlaceholder")}
+              className="min-h-[48px] min-w-0 flex-1 resize-y rounded-md border border-border-dark bg-bg-dark px-2 py-1.5 text-sm text-text-dark outline-none focus:border-primary"
+            />
+            <label className="flex flex-col gap-1 text-[10px] text-text-muted">
+              {t("videoCompose.subtitle.start")}
+              <input
+                type="number"
+                min={0}
+                step={0.01}
+                value={(selectedSubtitleCue.timelineStartMs / 1000).toFixed(2)}
+                onFocus={pushHistory}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  if (Number.isFinite(value)) {
+                    updateSubtitleCue(selectedSubtitleCue.id, { timelineStartMs: value * 1000 });
+                  }
+                }}
+                className="w-24 rounded-md border border-border-dark bg-bg-dark px-2 py-1 text-xs text-text-dark"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-[10px] text-text-muted">
+              {t("videoCompose.subtitle.end")}
+              <input
+                type="number"
+                min={0}
+                step={0.01}
+                value={(selectedSubtitleCue.timelineEndMs / 1000).toFixed(2)}
+                onFocus={pushHistory}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  if (Number.isFinite(value)) {
+                    updateSubtitleCue(selectedSubtitleCue.id, { timelineEndMs: value * 1000 });
+                  }
+                }}
+                className="w-24 rounded-md border border-border-dark bg-bg-dark px-2 py-1 text-xs text-text-dark"
+              />
+            </label>
+            <div className="flex max-w-[38%] flex-wrap items-end gap-1">
+              <button
+                type="button"
+                onClick={() => confirmSubtitleCue(selectedSubtitleCue.id, "keep_timing")}
+                className="rounded-md bg-primary/20 px-2 py-1.5 text-[11px] text-primary hover:bg-primary/30"
+              >
+                {t("videoCompose.subtitle.confirmTiming")}
+              </button>
+              {selectedSubtitleCue.sourceClipId && (
+                <button
+                  type="button"
+                  onClick={() => confirmSubtitleCue(selectedSubtitleCue.id, "align_audio")}
+                  className="rounded-md border border-border-dark px-2 py-1.5 text-[11px] text-text-dark hover:bg-white/[0.06]"
+                >
+                  {t("videoCompose.subtitle.alignAudio")}
+                </button>
+              )}
+              {(selectedSubtitleCue.sourceClipId || selectedSubtitleCue.sourceTakeId) && (
+                <button
+                  type="button"
+                  onClick={() => unlinkSubtitleSource(selectedSubtitleCue.id)}
+                  className="rounded-md border border-border-dark px-2 py-1.5 text-[11px] text-text-dark hover:bg-white/[0.06]"
+                >
+                  {t("videoCompose.subtitle.unlink")}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => removeSubtitleCue(selectedSubtitleCue.id)}
+                className="rounded-md border border-red-500/30 px-2 py-1.5 text-[11px] text-red-200 hover:bg-red-500/10"
+              >
+                {t("videoCompose.subtitle.remove")}
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Timeline */}
       <div className="h-[260px] shrink-0 overflow-hidden border-t border-border-dark bg-surface-dark/40">
         <div ref={trackScrollRef} className="ui-scrollbar-vertical h-full overflow-auto">
@@ -2059,12 +2870,24 @@ export function VideoComposeModal({
                   onTrim={startTrim}
                   onMoveToNewTrack={moveToNewTrack}
                   onRemove={removeClip}
+                  onReplaceSource={(trackId, clipId) => setReplacementDialog({ trackId, clipId })}
                   onToggleMute={(clipId, muted) => {
                     pushHistory();
                     updateClip(track.id, clipId, { muted });
                   }}
                 />
               ))}
+              <SubtitleTrackRow
+                cues={subtitleCues}
+                pxPerMs={pxPerMs}
+                width={timelineWidthPx}
+                selectedCueId={selectedSubtitleCueId}
+                timeline={timeline}
+                onSelect={(cue) => {
+                  setSelectedSubtitleCueId(cue.id);
+                  seek(cue.timelineStartMs);
+                }}
+              />
             </div>
 
             {/* Playhead (draggable) —— 位置由 positionPlayhead 命令式写 transform，
@@ -2525,6 +3348,64 @@ function ClipWaveform({
   );
 }
 
+function SubtitleTrackRow({
+  cues,
+  pxPerMs,
+  width,
+  selectedCueId,
+  timeline,
+  onSelect,
+}: {
+  cues: ComposeSubtitleCue[];
+  pxPerMs: number;
+  width: number;
+  selectedCueId: string | null;
+  timeline: ComposeTimelineState;
+  onSelect: (cue: ComposeSubtitleCue) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-center gap-2" onPointerDown={(event) => event.stopPropagation()}>
+      <div className="flex w-6 shrink-0 justify-center text-[10px] font-semibold text-text-muted">
+        CC
+      </div>
+      <div className="relative h-12 flex-1" style={{ width, minWidth: width }}>
+        {cues.length === 0 && (
+          <div className="flex h-full items-center rounded-md border border-dashed border-border-dark px-3 text-[11px] text-text-muted">
+            {t("videoCompose.subtitle.trackEmpty")}
+          </div>
+        )}
+        {cues.map((cue) => {
+          const review = subtitleReviewReason(cue, timeline);
+          const cueWidth = Math.max(30, (cue.timelineEndMs - cue.timelineStartMs) * pxPerMs);
+          return (
+            <button
+              key={cue.id}
+              type="button"
+              title={review ? t(`videoCompose.subtitle.review.${review}`) : cue.text}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => onSelect(cue)}
+              className={`absolute inset-y-0 overflow-hidden rounded-md border px-2 text-left text-[10px] ${
+                review
+                  ? "border-amber-400/70 bg-amber-500/20 text-amber-100"
+                  : cue.id === selectedCueId
+                    ? "border-primary bg-primary/30 text-white"
+                    : "border-cyan-500/50 bg-cyan-500/15 text-cyan-100"
+              }`}
+              style={{ left: Math.max(0, cue.timelineStartMs) * pxPerMs, width: cueWidth }}
+            >
+              <span className="block truncate">{cue.text.trim() || t("videoCompose.subtitle.textRequired")}</span>
+              {cue.timing === "estimated_audio_clip" && (
+                <span className="block truncate text-[9px] opacity-80">{t("videoCompose.subtitle.estimated")}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function TrackRow({
   track,
   pxPerMs,
@@ -2539,6 +3420,7 @@ function TrackRow({
   onTrim,
   onMoveToNewTrack,
   onRemove,
+  onReplaceSource,
   onToggleMute,
 }: {
   track: ComposeTrack;
@@ -2568,6 +3450,7 @@ function TrackRow({
   ) => void;
   onMoveToNewTrack: (trackId: string, clipId: string) => void;
   onRemove: (trackId: string, clipId: string) => void;
+  onReplaceSource: (trackId: string, clipId: string) => void;
   onToggleMute: (clipId: string, muted: boolean) => void;
 }) {
   const { t } = useTranslation();
@@ -2656,6 +3539,18 @@ function TrackRow({
                     {formatTimecode(clipLengthMs(clip))}
                   </span>
                   <div className="flex items-center gap-0.5">
+                    {clip.replacementCandidate && (
+                      <button
+                        type="button"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={() => onReplaceSource(track.id, clip.id)}
+                        className="rounded bg-amber-500/80 px-1 text-[9px] font-semibold text-black hover:bg-amber-400"
+                        aria-label={t("videoCompose.subtitle.replaceSource")}
+                        title={t("videoCompose.subtitle.replaceSource")}
+                      >
+                        {t("videoCompose.subtitle.replaceShort")}
+                      </button>
+                    )}
                     {/* 视频和音频片段都可单独静音（视频静的是它自带的声轨）。 */}
                     <button
                       type="button"

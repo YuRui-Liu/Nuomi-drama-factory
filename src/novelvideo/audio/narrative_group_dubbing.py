@@ -51,6 +51,18 @@ async def _run(*command: str) -> str:
     return stdout.decode()
 
 
+async def _probe_audio_duration(path: Path) -> float:
+    """Read actual generated audio duration without editing or fitting it."""
+    raw = await _run(
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+    )
+    duration = float(raw.strip())
+    if duration <= 0:
+        raise ValueError("generated audio is empty")
+    return duration
+
+
 async def prepare_external_audio(ctx, episode: int, group_id: str, revision: int, span_index: int):
     from novelvideo.api.deps import make_sqlite_store_for_context
     from novelvideo.media_capabilities.audio.stem_separator import DemucsStemSeparator

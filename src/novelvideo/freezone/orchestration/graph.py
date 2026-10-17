@@ -9,6 +9,31 @@ from .capabilities import catalog_by_type
 from .models import OrchestrationError
 
 
+# These operations are explicitly scoped to frozen content or versioned
+# domain state stored on the selected node. Their adapters validate those
+# bindings directly and do not consume upstream attempt results.
+_FIXED_INPUT_OPERATIONS = {
+    ("screenplayNode", "inspect"),
+    ("screenplayNode", "review"),
+    ("screenplayNode", "rewrite"),
+    ("directorWorkspaceNode", "inspect"),
+    ("directorWorkspaceNode", "preview_handoff"),
+    ("directorWorkspaceNode", "save_blocking"),
+    ("directorWorkspaceNode", "compile_blocking"),
+    ("directorWorkspaceNode", "edit_shot"),
+    ("directorWorkspaceNode", "edit_structure"),
+    ("directorWorkspaceNode", "prepare"),
+    ("directorWorkspaceNode", "render_groups"),
+    ("directorWorkspaceNode", "retry_render_groups"),
+    ("directorWorkspaceNode", "produce"),
+    ("directorWorkspaceNode", "retry_production"),
+    ("audioNode", "prepare_dubbing"),
+    ("audioNode", "generate_dubbing"),
+    ("audioNode", "group_dubbing"),
+    ("audioNode", "audition"),
+}
+
+
 def validate_graph(nodes: list[dict], edges: list[dict]) -> dict:
     errors: list[dict] = []
 
@@ -109,12 +134,18 @@ def validate_graph(nodes: list[dict], edges: list[dict]) -> dict:
     return {"valid": not errors, "errors": errors, "order": order}
 
 
-def execution_order(nodes: list[dict], edges: list[dict], target: str) -> list[str]:
+def execution_order(nodes: list[dict], edges: list[dict], target: str,
+                    *, operation: str | None = None) -> list[str]:
     report = validate_graph(nodes, edges)
     if not report["valid"]:
         raise OrchestrationError("invalid_graph", "Canvas graph is invalid", errors=report["errors"])
     if target not in report["order"]:
         raise OrchestrationError("unknown_target", "Target node does not exist", node_id=target)
+    target_node = next(node for node in nodes if node["id"] == target)
+    selected_operation = (operation or (target_node.get("data") or {}).get("operation")
+                          or catalog_by_type()[target_node["type"]]["default_operation"])
+    if (target_node["type"], selected_operation) in _FIXED_INPUT_OPERATIONS:
+        return [target]
     dependencies = {n["id"]: set() for n in nodes}
     for edge in edges:
         if not (edge.get("data") or {}).get("contextLink"):

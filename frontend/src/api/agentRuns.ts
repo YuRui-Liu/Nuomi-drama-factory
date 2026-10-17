@@ -29,9 +29,11 @@ export interface RuntimeStatus {
 export interface Delegation {
   delegation_id?: string;
   id?: string;
+  parent_id?: string | null;
   contract_hash?: string;
   contract: {
     goal: string;
+    parent_id?: string | null;
     expanded_scope: { nodes: { node_id: string; title?: string }[] };
     agent: { effective: AgentConfiguration };
     [key: string]: unknown;
@@ -42,14 +44,37 @@ export interface AgentRun {
   revision: number;
   state: string;
   delegation_id: string;
+  error?: { message: string; node_run_id?: string; status?: string };
   unmet: string[];
   max_model_calls: number;
   remaining_model_calls: number;
-  error?: { message: string };
   outputs: {
     operation?: string;
     title?: string;
     target_node_ids?: string[];
+    node_id?: string;
+    member_id?: string;
+    delegation_id?: string;
+    origin?: string;
+    before?: Record<string, unknown>;
+    after?: Record<string, unknown>;
+    changes?: { path: (string | number)[]; before?: unknown; after?: unknown }[];
+    before_fingerprint?: string;
+    after_fingerprint?: string;
+    node_run_id?: string;
+    status?: string;
+    revision?: number;
+    after_revision?: number;
+    member?: { adoption_id: string; revision: number; origin: 'main' | 'adoption' };
+    delegation_origin?: { parent_id?: string | null; root_delegation_id?: string };
+    projection?: {
+      status: 'verified_projected' | 'stale' | string;
+      node_id: string;
+      input_fingerprint?: string;
+      result_fingerprint?: string;
+      fields?: Record<string, unknown>;
+    };
+    artifacts?: { id?: string; title?: string; url?: string; [key: string]: unknown }[];
     object?: { payload: { title?: string; text?: string } };
     plan?: {
       title: string;
@@ -61,6 +86,10 @@ export interface AgentRun {
     [key: string]: unknown;
   }[];
   rounds: {
+    delegation_id?: string;
+    member_id?: string;
+    phase?: string;
+    member?: { adoption_id: string; revision: number; origin: 'main' | 'adoption' };
     usage?: {
       input_tokens?: number;
       output_tokens?: number;
@@ -69,10 +98,28 @@ export interface AgentRun {
   }[];
 }
 export interface BuiltinAgent {
-  title: string;
+  title?: string;
   proof: string;
   configuration: AgentConfiguration;
   source: { kind: 'builtin'; ref: { id: string; revision: number } };
+}
+export interface NodeOperationCapability {
+  name: string;
+  title?: string | null;
+  label?: string | null;
+  available: boolean;
+  reason: string | null;
+}
+export interface NodeCapability {
+  node_type: string;
+  category: string;
+  default_operation: string;
+  operations: NodeOperationCapability[];
+}
+export interface OrchestrationCapabilities {
+  schema_version: number;
+  nodes: NodeCapability[];
+  runtime?: Record<string, unknown>;
 }
 export interface RunStep {
   kind: 'adopt' | 'main' | 'delegation' | 'start' | 'stop' | 'resume';
@@ -92,6 +139,10 @@ export const getRuntime = (p: string) =>
   apiCall<RuntimeStatus>(`${root(p)}/agent-runtime`);
 export const listBuiltinAgents = (p: string) =>
   apiCall<BuiltinAgent[]>(`${root(p)}/reusable/agent/builtins`);
+export const getNodeCapabilities = (p: string) =>
+  apiCall<OrchestrationCapabilities>(
+    `projects/${encodeURIComponent(p)}/freezone/orchestration/capabilities`,
+  );
 export const previewDelegation = (p: string, body: Record<string, unknown>) =>
   apiCall<{ proof: string; contract: Delegation['contract'] }>(
     `${root(p)}/delegations/preview`,

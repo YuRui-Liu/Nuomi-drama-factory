@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
+import { useAiAvatarUrl } from "@/features/superchat/ai-avatar";
 import { resolveExternalCanvasConflict } from './canvasSyncRuntime';
-import { DirectionReferenceEntry } from '@/features/direction-references/DirectionReferenceEntry';
-import { AgentConfigurationEntry } from '@/features/agent-configuration/AgentConfigurationEntry';
-import { TemplateLibraryEntry } from '@/features/template-library/TemplateLibraryEntry';
-import { CreativeSettingsEntry } from '@/features/creative-settings/CreativeSettingsEntry';
+import { SelectionDelegationToolbar } from '@/features/creation-workspace/SelectionDelegationToolbar';
+import { requestAgentSelection } from '@/features/agent-runtime/selectionDelegation';
 import { SharedAssetSaveDialog, isSharedAssetTarget } from './commit/SharedAssetSaveDialog';
 import { readSharedPublication, clearFinishedPublication, type PublicationScope } from './commit/sharedAssetPublication';
 import { useAuthStore } from '@/stores/auth-store';
@@ -884,6 +883,16 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
             <Canvas
               onBlankPaneClick={handleBlankPaneClick}
               controlsPlacement="bottom-right"
+              selectionActions={managedWorkspace ? <SelectionDelegationToolbar
+                project={projectId}
+                canvasId={canvasId}
+                sidePanelOpen={chatOpen}
+                enabled={sync.hydratedCanvasId === canvasId && sync.status !== 'conflict' && sync.status !== 'error'}
+                onDelegate={nodeIds => {
+                  requestAgentSelection({ project: projectId, canvas: canvasId, nodeIds });
+                  setChatOpen(true);
+                }}
+              /> : undefined}
             />
           )}
           {showLoadingOverlay && <CanvasLoadingOverlay />}
@@ -906,8 +915,6 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
           )}
           <BackupStatusIndicator status={sync.backupStatus} />
           {managedWorkspace && <OperationDraftBackup project={projectId} canvasId={canvasId} />}
-          {managedWorkspace && <button type="button" className="absolute right-3 top-32 z-20 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-foreground" disabled={sync.hydratedCanvasId!==canvasId||sync.status==='conflict'||sync.status==='error'} onClick={()=>{setChatOpen(true);window.dispatchEvent(new CustomEvent('nuomi:agent-selection',{detail:{project:projectId,canvas:canvasId}}));}}>交给 Agent</button>}
-          {managedWorkspace && <div className="absolute right-3 top-20 z-20 flex flex-wrap justify-end gap-2"><DirectionReferenceEntry project={projectId} canvasId={canvasId} selectedNodes /><AgentConfigurationEntry project={projectId} canvasId={canvasId}/><CreativeSettingsEntry project={projectId} canvasId={canvasId}/><TemplateLibraryEntry project={projectId} canvasId={canvasId}/></div>}
           <CanvasRunPanel project={projectId} canvas={canvasId} enabled={sync.hydratedCanvasId === canvasId && sync.status !== 'conflict' && sync.status !== 'error'} />
           {/* 调试面板暂时隐藏，恢复时去掉 `false &&` 即可 */}
           {false && import.meta.env.DEV && (
@@ -951,7 +958,6 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
         </main>
         <FreezoneChatDock
             managedWorkspace={managedWorkspace}
-            agentConfiguration={managedWorkspace ? <AgentConfigurationEntry project={projectId} canvasId={canvasId} compact/> : undefined}
             canvasId={canvasId}
             reference={chatReference}
             open={chatOpen}
@@ -1044,7 +1050,6 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
 
 function FreezoneChatDock({
   managedWorkspace,
-  agentConfiguration,
   canvasId,
   reference,
   open,
@@ -1054,7 +1059,6 @@ function FreezoneChatDock({
   toggleLabel,
 }: {
   managedWorkspace?: boolean;
-  agentConfiguration?: React.ReactNode;
   canvasId: string;
   reference?: import('@/features/superchat/canvas-references').ReferenceItem;
   open: boolean;
@@ -1082,7 +1086,9 @@ function FreezoneChatDock({
     // Keep sockets and their independent turns alive while the dock is closed.
   }, [isDesktop, open]);
 
-  if (!shouldRenderPanel) {
+  // Mount on the opening render so selection actions can measure the dock
+  // during layout, before its entrance animation starts.
+  if (!shouldRenderPanel && !open) {
     return (
       <FreezoneChatToggleButton
         label={toggleLabel}
@@ -1102,6 +1108,7 @@ function FreezoneChatDock({
         />
       )}
       <aside
+        data-canvas-chat-dock
         className={cn(
           "absolute bottom-4 right-4 top-4 z-40 flex origin-right flex-col overflow-hidden rounded-[14px] border border-white/[0.12] bg-zinc-950/95 shadow-none backdrop-blur-2xl transition-[opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
           panelVisible ? "translate-x-0 scale-100 opacity-100" : "invisible pointer-events-none translate-x-10 scale-[0.985] opacity-0",
@@ -1114,7 +1121,6 @@ function FreezoneChatDock({
         aria-hidden={!open}
         title={description}
       >
-        {agentConfiguration && <div className="shrink-0 border-b border-white/10 px-3 py-2">{agentConfiguration}</div>}
         <Suspense
           fallback={<div role="status" aria-live="polite" className="p-4 text-sm text-muted-foreground">正在加载糯米助手…</div>}
         >
@@ -1160,9 +1166,8 @@ function FreezoneChatToggleButton({
   expanded: boolean;
   onClick: () => void;
 }) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const avatarUrl = useAiAvatarUrl();
   const buttonRef = useRef<HTMLButtonElement | null>(null);
-  const [motionActive, setMotionActive] = useState(false);
   const [entered, setEntered] = useState(false);
   const [pos, setPos] = useState(loadChatLauncherPos);
   // 拖拽后抑制紧随 pointerup 的 click，避免拖完顺手把面板打开。
@@ -1255,23 +1260,6 @@ function FreezoneChatToggleButton({
     onClick();
   }, [onClick]);
 
-  const playMotion = useCallback(() => {
-    const video = videoRef.current;
-    setMotionActive(true);
-    if (!video) return;
-    video.currentTime = 0;
-    void video.play().catch(() => undefined);
-  }, []);
-
-  const stopMotion = useCallback(() => {
-    const video = videoRef.current;
-    setMotionActive(false);
-    if (video) {
-      video.pause();
-      video.currentTime = 0;
-    }
-  }, []);
-
   return (
     <Button
       ref={buttonRef}
@@ -1285,33 +1273,14 @@ function FreezoneChatToggleButton({
       style={{ right: pos.right, bottom: pos.bottom }}
       aria-label={label}
       aria-expanded={expanded}
-      onMouseEnter={playMotion}
-      onMouseLeave={stopMotion}
-      onFocus={playMotion}
-      onBlur={stopMotion}
       onPointerDown={handlePointerDown}
       onClick={handleClick}
     >
       <img
-        src="/images/avatar-claw.png"
+        src={avatarUrl ?? undefined}
         alt=""
-        className={cn(
-          "absolute inset-0 size-full rounded-full object-cover transition-opacity duration-[350ms] ease-out",
-          motionActive ? "opacity-0" : "opacity-100",
-        )}
-        aria-hidden="true"
-      />
-      <video
-        ref={videoRef}
-        src="/images/avatar-motion.mp4"
-        muted
-        loop
-        playsInline
-        preload="metadata"
-        className={cn(
-          "absolute inset-0 size-full rounded-full object-cover brightness-90 saturate-95 transition-opacity duration-[350ms] ease-out",
-          motionActive ? "opacity-100" : "opacity-0",
-        )}
+        draggable={false}
+        className="absolute inset-0 size-full rounded-full object-contain"
         aria-hidden="true"
       />
     </Button>

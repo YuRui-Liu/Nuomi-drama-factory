@@ -35,6 +35,13 @@ class BlockBody(Strict):
     markdown: str
 
 
+class SceneIdentityUpdateBody(Strict):
+    id: str = Field(min_length=1, max_length=128)
+    ordinal: int = Field(ge=1)
+    heading: str = Field(min_length=1, max_length=1000)
+    parent_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
 class DismissCraftMemoryBody(Strict):
     reason: str = Field(min_length=1,max_length=2000)
 
@@ -73,6 +80,7 @@ class SaveBody(Strict):
     markdown: str
     client_mutation_id: str = Field(min_length=1)
     blocks: list[BlockBody] | None = None
+    scene_identity_update: list[SceneIdentityUpdateBody] | None = None
 
 
 class RestoreBody(Strict):

@@ -114,6 +114,15 @@ class AssetMigrationReport(FrozenModel):
         return _thaw_json_value(items)
 
 
+class SceneBlockingRevisionReference(FrozenModel):
+    scene_id: str = Field(min_length=1)
+    group_id: str = Field(min_length=1)
+    director_revision_id: str | None = None
+    revision_id: str = Field(min_length=1)
+    version: int = Field(gt=0)
+    semantic_revision_id: str | None = None
+
+
 class StyleProjections(FrozenModel):
     director: str
     image: str
@@ -371,7 +380,7 @@ class ShotPlan(FrozenModel):
         if self.creative is None and self.duration_seconds > 15:
             raise ValueError("legacy shot duration cannot exceed 15 seconds")
         if self.creative is not None:
-            errors = creative_shot_errors(self)
+            errors = creative_shot_errors(self, explain=True)
             if errors:
                 raise ValueError(";".join(errors))
         return self
@@ -437,6 +446,23 @@ class ReorderGroups(FrozenModel):
     group_ids: tuple[str, ...]
 
 
+class AddShotFromTemplate(FrozenModel):
+    kind: Literal["add_shot_from_template"] = "add_shot_from_template"
+    group_id: str
+    template_shot_id: str
+
+
+class DeleteShot(FrozenModel):
+    kind: Literal["delete_shot"] = "delete_shot"
+    shot_id: str
+
+
+class ReorderShots(FrozenModel):
+    kind: Literal["reorder_shots"] = "reorder_shots"
+    group_id: str
+    shot_ids: tuple[str, ...] = Field(min_length=1, max_length=100)
+
+
 class UpdateShot(FrozenModel):
     kind: Literal["update_shot"] = "update_shot"
     shot_id: str
@@ -464,7 +490,8 @@ class UpdateShots(FrozenModel):
 
 
 DirectorEdit = Annotated[
-    SplitGroup | MergeAdjacentGroups | MoveShot | ReorderGroups | UpdateShot | UpdateShots,
+    SplitGroup | MergeAdjacentGroups | MoveShot | ReorderGroups | AddShotFromTemplate
+    | DeleteShot | ReorderShots | UpdateShot | UpdateShots,
     Field(discriminator="kind"),
 ]
 
@@ -493,6 +520,7 @@ class DirectorPlanRevision(FrozenModel):
     project_style_snapshot: StyleSnapshot | None = None
     edit_source: Literal["planner", "human"] = "planner"
     groups: tuple[NarrativeGroupPlan, ...]
+    scene_blocking_references: tuple[SceneBlockingRevisionReference, ...] = ()
     validation_report: ValidationReport = ValidationReport()
     migration_report: AssetMigrationReport = AssetMigrationReport()
     created_at: AwareDatetime

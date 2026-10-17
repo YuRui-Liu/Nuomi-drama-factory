@@ -1292,12 +1292,16 @@ def advance_revision(
     regenerate: bool = False,
     regenerate_completed: bool = False,
     expected_revision: int | None = None,
+    expected_director_revision_id: str | None = None,
 ) -> tuple[NarrativeGroup, int]:
     with _sidecar_guard(project_dir, episode):
         groups = load_materialized_groups(project_dir, episode)
         original = next((group for group in groups if group.id == group_id), None)
         if original is None:
             raise KeyError(group_id)
+        if (expected_director_revision_id is not None
+                and original.director_revision_id != expected_director_revision_id):
+            raise RuntimeError("narrative group director revision is stale")
         current = original.stages.get(stage, GroupStageState())
         if current.provider_parameters.get("cell_repair", {}).get("status") in {"queued", "running"}:
             raise RuntimeError("本组分镜修复正在进行中")
@@ -1521,6 +1525,7 @@ def record_stage_result(
     *,
     expected_revision: int,
     status: str,
+    expected_director_revision_id: str | None = None,
     grid_asset: str | None = None,
     cell_assets: Iterable[Mapping[str, Any]] | None = None,
     error: str | None = None,
@@ -1558,7 +1563,9 @@ def record_stage_result(
                 updated.append(group)
                 continue
             current = group.stages.get(stage, GroupStageState())
-            if current.revision != int(expected_revision):
+            if (current.revision != int(expected_revision)
+                    or (expected_director_revision_id is not None
+                        and group.director_revision_id != expected_director_revision_id)):
                 found = group
                 updated.append(group)
                 continue

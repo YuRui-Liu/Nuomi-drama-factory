@@ -4,17 +4,89 @@ import {
   type RunOwner,
   type RunStep,
 } from '@/api/agentRuns';
+import type { FreezoneCanvasPayload } from '@/api/canvas';
+export type AgentCanvasBaseline = Pick<
+  FreezoneCanvasPayload,
+  'nodes' | 'edges' | 'metadata' | 'revision'
+>;
 export interface RunIntent {
   id: string;
   label: string;
   owner: RunOwner;
   steps: RunStep[];
+  /** Frozen local recovery evidence; never sent to the agent API. */
+  canvasBaseline?: AgentCanvasBaseline;
   phase: 'pending' | 'applied' | 'failed';
   error?: string;
 }
 export const runOwnerKey = (o: RunOwner) =>
   JSON.stringify([o.user, o.project, o.canvas, o.conversation]);
 const key = (o: RunOwner) => `agent-run-intent:v1:${runOwnerKey(o)}`;
+function isCanvasBaseline(value: unknown): value is AgentCanvasBaseline {
+  if (!value || typeof value !== 'object') return false;
+  const baseline = value as Partial<AgentCanvasBaseline>;
+  return Array.isArray(baseline.nodes) && Array.isArray(baseline.edges) &&
+    (baseline.revision === undefined || baseline.revision === null ||
+      typeof baseline.revision === 'number') &&
+    (baseline.metadata === undefined || baseline.metadata === null ||
+      typeof baseline.metadata === 'object');
+}
+function delegationResult(intent: RunIntent) {
+  const value = intent.steps.find((step) => step.kind === 'delegation')?.result
+    ?.delegation_id;
+  return typeof value === 'string' && value ? value : null;
+}
+function findDelegationIntent(
+  owner: RunOwner,
+  delegationId: string,
+): { key: string; intent: RunIntent } | null {
+  if (!delegationId) return null;
+  const activeKey = key(owner);
+  const archivePrefix = `${activeKey}:archive:`;
+  const archives = Object.keys(localStorage)
+    .filter((item) => item.startsWith(archivePrefix))
+    .reverse();
+  const candidates = [
+    ...(localStorage.getItem(activeKey) === null ? [] : [activeKey]),
+    ...archives,
+  ];
+  for (const candidate of candidates) {
+    try {
+      const value = JSON.parse(localStorage.getItem(candidate) ?? 'null') as RunIntent | null;
+      if (!value || runOwnerKey(value.owner) !== runOwnerKey(owner) ||
+          delegationResult(value) !== delegationId ||
+          !isCanvasBaseline(value.canvasBaseline)) continue;
+      return { key: candidate, intent: value };
+    } catch {
+      // A corrupt or incomplete archive cannot be used as merge evidence.
+    }
+  }
+  return null;
+}
+/** Find the frozen baseline in active or archived intents after a remount. */
+export function readDelegationCanvasBaseline(
+  owner: RunOwner,
+  delegationId: string,
+): AgentCanvasBaseline | null {
+  const entry = findDelegationIntent(owner, delegationId);
+  return entry ? structuredClone(entry.intent.canvasBaseline!) : null;
+}
+/** Advance the durable merge base only for a delegation that already has one. */
+export function writeDelegationCanvasBaseline(
+  owner: RunOwner,
+  delegationId: string,
+  baseline: AgentCanvasBaseline,
+): boolean {
+  const entry = findDelegationIntent(owner, delegationId);
+  if (!entry) return false;
+  try {
+    entry.intent.canvasBaseline = structuredClone(baseline);
+    localStorage.setItem(entry.key, JSON.stringify(entry.intent));
+    return true;
+  } catch {
+    return false;
+  }
+}
 export function readRunIntent(o: RunOwner): RunIntent | null {
   const raw = localStorage.getItem(key(o));
   if (!raw) return null;
@@ -22,7 +94,8 @@ export function readRunIntent(o: RunOwner): RunIntent | null {
   if (
     runOwnerKey(value.owner) !== runOwnerKey(o) ||
     !value.id ||
-    !Array.isArray(value.steps)
+    !Array.isArray(value.steps) ||
+    (value.canvasBaseline !== undefined && !isCanvasBaseline(value.canvasBaseline))
   )
     throw Error('运行恢复记录损坏，请保留后处理');
   return value;
@@ -55,7 +128,7 @@ export function createRunOperation(owner: RunOwner, isCurrent: () => boolean) {
       });
     },
     async run(
-      input?: Pick<RunIntent, 'id' | 'label' | 'steps'>,
+      input?: Pick<RunIntent, 'id' | 'label' | 'steps' | 'canvasBaseline'>,
     ): Promise<{
       status: RunIntent['phase'] | 'detached' | 'busy';
       intent?: RunIntent;

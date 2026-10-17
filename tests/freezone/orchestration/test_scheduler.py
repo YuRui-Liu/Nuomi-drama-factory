@@ -48,6 +48,26 @@ def new_run(tmp_path, canvas=None):
     return store, run
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('receipt_key', ['task_id', 'candidate_id', 'dubbing_task_id', 'workflow_id'])
+async def test_unknown_submission_recovers_durable_receipt_without_resubmitting(tmp_path, receipt_key):
+    from novelvideo.freezone.orchestration.scheduler import Scheduler
+    store, run = new_run(tmp_path)
+    class RecoverableAdapter(Adapter):
+        async def reconcile_submission(self, run, attempt):
+            return {'status': 'submitted', 'submission': {receipt_key: 'durable-task'}}
+    adapter = RecoverableAdapter()
+    adapter.unknown = True
+    scheduler = Scheduler(store, adapter)
+    unknown = await scheduler.tick(run['id'])
+    assert unknown['attempts']['a'][-1]['status'] == 'submission_unknown'
+    adapter.unknown = False
+    recovered = await scheduler.tick(run['id'])
+    assert recovered['attempts']['a'][-1]['status'] == 'succeeded'
+    assert recovered['attempts']['a'][-1]['submission'][receipt_key] == 'durable-task'
+    assert adapter.submits.count('a') == 1
+
+
 def test_explicit_image_generation_overrides_reuse_only_for_target(tmp_path):
     from novelvideo.freezone.orchestration.store import RunStore
     canvas = graph()

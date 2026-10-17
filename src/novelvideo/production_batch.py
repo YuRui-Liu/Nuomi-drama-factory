@@ -224,6 +224,7 @@ def run_batch(
     max_submissions: int = 100, aspect_ratio: str = "9:16",
     retry_failed: bool = False, emit: Callable = lambda _event: None,
     concurrency: dict[str, int] | None = None,
+    group_ids_by_episode: dict[int, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Run each independent group; collect failures and compose only complete episodes."""
     if through not in {"render", "video", "compose"} or aspect_ratio not in {"9:16", "16:9"}:
@@ -249,6 +250,31 @@ def run_batch(
             groups = producer.groups(episode)
             if not groups:
                 raise BatchFailure("groups_missing: active plan contains no groups")
+            selected_ids = (
+                group_ids_by_episode.get(episode)
+                if group_ids_by_episode is not None
+                else None
+            )
+            if selected_ids is not None:
+                if (
+                    not selected_ids
+                    or len(selected_ids) != len(set(selected_ids))
+                    or any(not isinstance(group_id, str) or not group_id for group_id in selected_ids)
+                ):
+                    raise BatchFailure("invalid_group_selection: explicit group ids must be unique and non-empty")
+                available_ids = {
+                    str(group.get("id") or "")
+                    for group in groups
+                    if isinstance(group, dict)
+                }
+                missing_ids = [group_id for group_id in selected_ids if group_id not in available_ids]
+                if missing_ids:
+                    raise BatchFailure(
+                        "group_changed: selected group is no longer in the active plan: "
+                        + ",".join(missing_ids[:10])
+                    )
+                wanted_ids = set(selected_ids)
+                groups = [group for group in groups if str(group.get("id") or "") in wanted_ids]
             item["groups"] = [{"group_id": str(group["id"]), "stages": {}} for group in groups]
             changed: dict[str, bool] = {}
             def produce_stage(group_result, stage):

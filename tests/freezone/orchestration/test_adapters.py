@@ -7,6 +7,25 @@ from novelvideo.freezone.orchestration.models import OrchestrationError
 
 
 @pytest.mark.asyncio
+async def test_reference_only_screenplay_inspect_dispatches_the_bound_operation(tmp_path, monkeypatch):
+    from novelvideo.freezone.orchestration.adapters import NodeAdapter, production
+
+    calls = []
+
+    async def inspect(run, attempt, node, operation):
+        calls.append((node["id"], operation, node["data"]["documentRevisionId"]))
+        return {"local": True, "result": {"workflowResult": {"revision_id": "revision-1"}}}
+
+    monkeypatch.setattr(production, "submit", inspect)
+    run = {"snapshot": {"nodes": [{"id": "screenplay", "type": "screenplayNode", "data": {
+        "operation": "inspect", "referenceOnly": True, "documentRevisionId": "revision-1"}}]}}
+    result = await NodeAdapter(tmp_path).submit(run, {"node_id": "screenplay"}, [])
+
+    assert calls == [("screenplay", "inspect", "revision-1")]
+    assert result["result"]["workflowResult"]["revision_id"] == "revision-1"
+
+
+@pytest.mark.asyncio
 async def test_cancelled_planner_releases_canvas_instead_of_running_forever(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from novelvideo.freezone.orchestration.adapters import NodeAdapter
@@ -95,6 +114,69 @@ def test_compose_requires_explicit_order_not_upstream_completion_order():
     node["data"] = {}
     with pytest.raises(OrchestrationError, match="timeline"):
         build_request(node, "compose", upstream, canvas_id="canvas", attempt_id="a")
+
+
+def test_compose_agent_draft_rejects_subtitle_beyond_rendered_video(tmp_path):
+    from novelvideo.freezone.export_manifest import ExportManifestError, build_export_manifest
+    from novelvideo.freezone.orchestration.adapters.requests import build_request
+
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"video")
+    node = {
+        "id": "compose",
+        "type": "videoComposeNode",
+        "data": {
+            "draftTimeline": {
+                "draftRevision": 4,
+                "resolution": "720p",
+                "fps": 30,
+                "tracks": [{
+                    "id": "track_video",
+                    "kind": "video",
+                    "clips": [{
+                        "id": "video-clip",
+                        "sourceUrl": "/source.mp4",
+                        "timelineStartMs": 0,
+                        "trimStartMs": 0,
+                        "trimEndMs": 5000,
+                        "speed": 1,
+                        "volume": 1,
+                        "muted": False,
+                    }],
+                }],
+                "subtitleTrack": {
+                    "id": "track_subtitle",
+                    "cues": [{
+                        "id": "late-caption",
+                        "text": "This would not appear in the video",
+                        "timelineStartMs": 4800,
+                        "timelineEndMs": 5100,
+                        "timing": "manual",
+                        "timingConfirmed": True,
+                    }],
+                },
+            },
+            # A stale request must not hide the Agent's invalid current draft.
+            "request": {"tracks": []},
+        },
+    }
+    name, body = build_request(node, "compose", [], canvas_id="canvas", attempt_id="attempt")
+    assert name == "freezone_video_compose"
+    body["tracks"][0]["items"][0]["source_path"] = str(source)
+
+    with pytest.raises(ExportManifestError, match="beyond video output"):
+        build_export_manifest(
+            project_id="project-1",
+            project_dir=tmp_path,
+            resolution=body["resolution"],
+            resolution_origin=body["resolution_origin"],
+            fps=body["fps"],
+            fps_origin=body["fps_origin"],
+            tracks=body["tracks"],
+            subtitle_tracks=body["subtitle_tracks"],
+            draft_revision=body["draft_revision"],
+            dubbing_store=None,
+        )
 
 
 def test_reference_input_order_obeys_saved_order():

@@ -7,7 +7,9 @@ from pathlib import Path
 
 from novelvideo.freezone.canvas_store import default_canvas_payload, read_canvas, save_canvas, utc_now_iso
 from .graph import validate_graph
-from .models import OrchestrationError, RESULT_FIELDS, fingerprint, input_fingerprint
+from .models import (OrchestrationError, RESULT_FIELDS, dependency_edge_fingerprint,
+                     fingerprint, frozen_node_result, input_fingerprint,
+                     media_projection, result_projection)
 
 
 def create_canvas(project_dir: Path, canvas_id: str, *, project_id: str, name: str, actor_id: str) -> dict:
@@ -77,17 +79,79 @@ def patch_graph(project_dir: Path, canvas_id: str, *, base_revision: int, reques
 
 
 def project_result(project_dir: Path, canvas_id: str, *, node_id: str,
-                   expected_input: str, attempt_id: str, result: dict) -> dict:
+                   expected_input: str, attempt_id: str, result: dict,
+                   history_entry: dict | None = None,
+                   expected_result_fingerprint: str | None = None,
+                   expected_media_fingerprint: str | None = None,
+                   expected_source_output_fingerprints: dict | None = None,
+                   expected_dependency_edge_fingerprint: str | None = None,
+                   authorize_projection=None) -> dict:
     def build(existing):
         payload = _existing(existing)
         node = next((node for node in payload["nodes"] if node["id"] == node_id), None)
-        if node is None or input_fingerprint(node) != expected_input:
-            raise OrchestrationError("input_conflict", "Node input changed while its task was running", node_id=node_id)
+        if node is None:
+            raise OrchestrationError("input_conflict", "Node was removed while its task was running", node_id=node_id)
+        current_result_fingerprint = fingerprint(result_projection(node))
+        current_media_fingerprint = fingerprint(media_projection(node))
+        current_media = {key: value for key, value in media_projection(node).items()
+                         if key in {"imageUrl", "previewImageUrl", "videoUrl", "resultVideoUrl",
+                                    "audioUrl", "plyUrl"}
+                         and isinstance(value, str) and len(value) <= 4096}
+        if input_fingerprint(node) != expected_input:
+            raise OrchestrationError("input_conflict", "Node input changed while its task was running",
+                                     node_id=node_id, current_result_fingerprint=current_result_fingerprint,
+                                     current_media_fingerprint=current_media_fingerprint,
+                                     current_media=current_media)
+        if (expected_result_fingerprint is not None
+                and current_result_fingerprint != expected_result_fingerprint):
+            raise OrchestrationError("input_conflict", "Node output changed while its task was running",
+                                     node_id=node_id, current_result_fingerprint=current_result_fingerprint,
+                                     current_media_fingerprint=current_media_fingerprint,
+                                     current_media=current_media)
+        if (expected_media_fingerprint is not None
+                and current_media_fingerprint != expected_media_fingerprint):
+            raise OrchestrationError("input_conflict", "Node media changed while its task was running",
+                                     node_id=node_id, current_result_fingerprint=current_result_fingerprint,
+                                     current_media_fingerprint=current_media_fingerprint,
+                                     current_media=current_media)
+        if expected_dependency_edge_fingerprint is not None:
+            actual_edge_fingerprint = dependency_edge_fingerprint(payload, node_id)
+            if actual_edge_fingerprint != expected_dependency_edge_fingerprint:
+                raise OrchestrationError("input_conflict", "Node dependency edges changed while its task was running",
+                                         node_id=node_id, current_result_fingerprint=current_result_fingerprint,
+                                         current_media_fingerprint=current_media_fingerprint,
+                                         current_media=current_media)
+        for source_id, expected_source_fingerprint in (expected_source_output_fingerprints or {}).items():
+            source = next((candidate for candidate in payload["nodes"] if candidate["id"] == source_id), None)
+            if source is None or fingerprint(frozen_node_result(source)) != expected_source_fingerprint:
+                raise OrchestrationError("input_conflict", "A frozen upstream input changed while the task was running",
+                                         node_id=source_id, current_result_fingerprint=current_result_fingerprint,
+                                         current_media_fingerprint=current_media_fingerprint,
+                                         current_media=current_media)
+        if authorize_projection is not None:
+            try:
+                authorized = authorize_projection()
+                if hasattr(authorized, "__await__"):
+                    raise OrchestrationError("authorization_unavailable",
+                                             "Canvas projection authorization must be synchronous")
+            except OrchestrationError:
+                raise
+            except Exception as exc:
+                raise OrchestrationError("authorization_revoked",
+                                         "Agent execution authorization changed before projection") from exc
         allowed = RESULT_FIELDS.get(node["type"], set())
         if set(result) - allowed:
             raise OrchestrationError("invalid_result_patch", "Result contains fields outside the operation output", fields=sorted(set(result) - allowed))
         node["data"].update(deepcopy(result))
+        previous_orchestration = node["data"].get("orchestration")
+        history = deepcopy(previous_orchestration.get("result_history", [])) \
+            if isinstance(previous_orchestration, dict) else []
         node["data"]["orchestration"] = {"attempt_id": attempt_id, "status": "succeeded"}
+        if history_entry is not None:
+            history.append(deepcopy(history_entry))
+            node["data"]["orchestration"]["result_history"] = history[-25:]
+            node["data"]["orchestration"]["projected_media_fingerprint"] = fingerprint(media_projection(node))
+            node["data"]["orchestration"]["projected_result_fingerprint"] = fingerprint(result_projection(node))
         origin = node['data'].get('chatOrigin')
         if isinstance(origin, dict):
             from novelvideo.chat.canvas_context import node_fingerprint
@@ -105,7 +169,9 @@ def project_result(project_dir: Path, canvas_id: str, *, node_id: str,
             payload['edges'] = [edge for edge in payload['edges'] if not (
                 (edge.get('data') or {}).get('contextLink') and
                 (edge.get('source') not in ids or edge.get('target') not in ids))]
-        if node["type"] == "videoComposeNode" and result.get("resultVideoUrl"):
+        # Agent target-scoped projection may write only its granted compose
+        # node; companion creation/update would silently widen that write.
+        if node["type"] == "videoComposeNode" and result.get("resultVideoUrl") and history_entry is None:
             # Logical output identity survives retry/resume and successive renders.
             output_id = "output-" + fingerprint([canvas_id, node_id, "video"])[:24]
             output = next((n for n in payload["nodes"] if n["id"] == output_id), None)

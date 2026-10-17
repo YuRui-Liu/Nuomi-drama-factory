@@ -103,3 +103,44 @@ async def test_preflight_checks_actual_file_and_selected_identity(tmp_path, monk
         assert not result["data"]["production_ready"]
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_candidate_approval_and_voice_versions_api_return_persistent_version(tmp_path, monkeypatch):
+    from novelvideo.api.routes import voice_candidates
+    from novelvideo.models import NovelCharacter
+    from novelvideo.sqlite_store import SQLiteStore
+    from novelvideo.media_capabilities.tts.candidate_store import VoiceCandidateStore
+    from novelvideo.media_capabilities.tts.character_voice import prepare_character_voice_request
+
+    store = SQLiteStore("voices", str(tmp_path / "project"), str(tmp_path / "state"))
+    await store.initialize()
+    await store.add_character(NovelCharacter(
+        name="阿远", voice_facts={"vocalization_mode": "dialogue", "provenance": "human"},
+    ))
+    character = store.get_character("阿远")
+    candidates = VoiceCandidateStore(store.db_path, tmp_path / "project")
+    row = candidates.create("request-1", prepare_character_voice_request(character, slot="default", db_path=store.db_path))
+    row = candidates.save_audio(row["candidate_id"], b"voice", "voice.wav")
+    candidates.save_report(row["candidate_id"], {"status": "qc_unavailable", "technical": {"passed": True}})
+
+    async def resolve(project, name, user, *, read_only=False):
+        return SimpleNamespace(project_id="p"), store, character, candidates
+
+    monkeypatch.setattr(voice_candidates, "resolve_voice_scope", resolve)
+    monkeypatch.setattr(voice_candidates, "make_static_url_for_context", lambda ctx, path, **kw: "/static/" + path)
+    approved = await voice_candidates.approve_voice_candidate(
+        "p", "阿远", row["candidate_id"],
+        voice_candidates.VoiceApproval(confirm=True, reason="试听通过"),
+        {"username": "tester"},
+    )
+    assert approved["data"]["voice_version_id"]
+
+    versions = await voice_candidates.list_voice_versions("p", "阿远", {})
+    assert versions["data"]["character_id"] == character.character_id
+    assert versions["data"]["versions"][0]["version_id"] == approved["data"]["voice_version_id"]
+    assert versions["data"]["versions"][0]["snapshot"]["approval"]["actor"] == "tester"
+    assert versions["data"]["current"] == [{
+        "identity_id": "", "slot": "default", "version_id": approved["data"]["voice_version_id"],
+    }]
+    await store.close()

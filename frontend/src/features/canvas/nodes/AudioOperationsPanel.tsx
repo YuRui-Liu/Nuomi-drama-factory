@@ -539,6 +539,7 @@ function AudioVoiceSettingsPanel({ nodeId, data }: AudioVoiceSettingsPanelProps)
   const voiceLabel = data.voiceLabel ?? '加载中…';
   const voiceLanguage = data.voiceLanguage ?? '';
   const currentRef: AudioVoiceRef = data.voiceRef ?? { scope: 'project_narrator' };
+  const fixedVoiceVersion = currentRef.scope === 'character_voice_version';
   const [modalOpen, setModalOpen] = useState(false);
   const [copyState, setCopyState] = useState<'idle' | 'success' | 'error'>('idle');
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -608,14 +609,16 @@ function AudioVoiceSettingsPanel({ nodeId, data }: AudioVoiceSettingsPanelProps)
               {voiceLanguage}
             </span>
           )}
-          <button
-            type="button"
-            title="切换音色"
-            onClick={() => setModalOpen(true)}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-text-dark transition-colors hover:bg-white/[0.06]"
-          >
-            <Repeat className="h-3.5 w-3.5" />
-          </button>
+          {fixedVoiceVersion
+            ? <span className="max-w-36 text-right text-[11px] leading-4 text-text-muted">固定版本 · 返回角色声音节点改绑</span>
+            : <button
+              type="button"
+              title="切换音色"
+              onClick={() => setModalOpen(true)}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-text-dark transition-colors hover:bg-white/[0.06]"
+            >
+              <Repeat className="h-3.5 w-3.5" />
+            </button>}
         </div>
       </div>
       <VoiceSelectionModal
@@ -649,6 +652,8 @@ function describeVoiceRef(ref: AudioVoiceRef): string {
       return `${ref.identityId ?? '身份'}（自有声线）`;
     case 'identity_resolved':
       return `${ref.identityId ?? '身份'}（解析后）`;
+    case 'character_voice_version':
+      return `${ref.characterName ?? '角色'} · 固定版本 ${ref.versionId ?? '未知'}`;
     default:
       return ref.scope;
   }

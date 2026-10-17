@@ -94,6 +94,10 @@ export function NodeSelectionMenu({
     }
 
     const items: ReferenceGenerateAction[] = [
+      ...([
+        [CANVAS_NODE_TYPES.ideation, '立意'], [CANVAS_NODE_TYPES.screenplay, '专业剧本'],
+        [CANVAS_NODE_TYPES.directorWorkspace, '导演工作空间'], [CANVAS_NODE_TYPES.characterVoice, '角色声音'],
+      ] as const).filter(([type]) => allowedTypeSet.has(type)).map(([type, label]) => ({ key: type, label, Icon: FileText, type, disabled: false })),
       {
         key: 'text',
         label: '文本',

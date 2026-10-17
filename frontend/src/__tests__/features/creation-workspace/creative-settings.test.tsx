@@ -98,16 +98,25 @@ beforeEach(() => {
     revision: 1,
   });
 });
-const show = (selected: { id: string; type?: string }[] = []) =>
+const show = (selected: { id: string; type?: string }[] = [], defaultScope?: 'project' | 'context') =>
   render(
     <CreativeSettingsPanel
       owner={owner}
       selected={selected}
       runtime={runtime}
+      defaultScope={defaultScope}
       isCurrent={() => true}
     />,
   );
 describe('creative settings', () => {
+  it('uses project scope when embedded in project settings', async () => {
+    show([], 'project');
+
+    await waitFor(() =>
+      expect(api.getEffectiveConstraints).toHaveBeenCalledWith('p', { level: 'project' }),
+    );
+  });
+
   it('uses the original confirmation payload and exact baseline revision when a legacy proposal omits requested', async () => {
     vi.mocked(api.getConstraint).mockResolvedValue(agreement);
     vi.mocked(api.postSettingsOperation).mockResolvedValue({

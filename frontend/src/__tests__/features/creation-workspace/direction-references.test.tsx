@@ -25,6 +25,13 @@ vi.mock('@/features/freezone/canvasSyncRuntime', () => ({captureFreezoneCanvasRu
 const owner={user:'alice',project:'p'};
 const entry={kind:'style' as const,id:'custom',version:'1',title:'自定义水墨',available:true,proof:'catalog',configuration:{},metadata:{}};
 const inspect=(scope:api.DirectionScope):api.DirectionState=>({scope,proof:'scope',chain:[scope],local:{style:{revision:0,state:'inherit',snapshot_id:null},technique:{revision:0,state:'inherit',snapshot_id:null}},effective:{style:{state:'unset',origin_scope:null,snapshot_ref:null,configuration:null},technique:{state:'unset',origin_scope:null,snapshot_ref:null,configuration:null}}});
+const directionState=(scope:api.DirectionScope,state:'inherit'|'enabled'|'disabled',proof='catalog')=>{
+ const value=inspect(scope);
+ const snapshotId=state==='enabled'?'snapshot-custom':null;
+ value.local.style={revision:1,state,snapshot_id:snapshotId};
+ value.effective.style=state==='enabled'?{state:'enabled',origin_scope:scope,snapshot_ref:{snapshot_id:snapshotId,content_hash:proof},configuration:{},title:entry.title,version:entry.version}:state==='disabled'?{state:'disabled',origin_scope:scope,snapshot_ref:null,configuration:null}:{state:'unset',origin_scope:null,snapshot_ref:null,configuration:null};
+ return value;
+};
 const body:api.DirectionRequest={request_id:'one',kind:'style',action:'apply',scope:{level:'project'},expected_revision:0,scope_proof:'scope',selection:{id:'custom',version:'1',proof:'catalog'}};
 const applied:api.DirectionResult={request_id:'one',operation_id:'op',status:'applied',kind:'style',snapshot_ref:null,bindings:[],effective:[]};
 describe('fixed direction operations',()=>{
@@ -109,6 +116,7 @@ describe('fixed direction operations',()=>{
  it.each([['取消本级，继承上级','unset'],['禁用本级风格','disable']])('template picker %s is an explicit scoped operation',async(label,action)=>{
   vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue({flush:vi.fn().mockResolvedValue(true),isCurrent:()=>true} as never);
   vi.mocked(currentFreezoneCanvasScope).mockReturnValue({project:'p',canvasId:'c'} as never);
+  vi.mocked(api.getDirectionBindings).mockImplementation(async(_project,scope)=>directionState(scope,'enabled'));
   const change=vi.fn();render(<StylePickerPopover ownerNodeId="a" selectedId="legacy" onSelect={change} onClose={vi.fn()}/>);
   fireEvent.click(await screen.findByRole('button',{name:'继承与禁用设置'}));
   await waitFor(()=>expect(screen.getByRole('button',{name:label})).not.toBeDisabled());
@@ -160,6 +168,49 @@ describe('fixed direction operations',()=>{
   await waitFor(()=>expect(api.applyDirectionBindings).toHaveBeenCalled());
   expect(vi.mocked(api.applyDirectionBindings).mock.calls[0][1]).toMatchObject({scope:{level:'project'},selection:{id:'custom',proof:'catalog'}});
  });
+ it('starts project settings at project scope while flushing its captured canvas runtime',async()=>{
+  const flush=vi.fn().mockResolvedValue(true);
+  const workspaceRuntime={flush,isCurrent:()=>true};
+  render(<DirectionReferencePanel owner={owner} kind="style" canvasId="c" defaultProjectScope workspaceRuntime={workspaceRuntime} isCurrent={()=>true}/>);
+  await waitFor(()=>expect(api.getDirectionBindings).toHaveBeenCalledWith('p',{level:'project'}));
+  expect(screen.getByLabelText('影响范围')).toHaveValue('project');
+  expect(flush).toHaveBeenCalled();
+ });
+ it('disables apply only when every target already has the exact selected fixed version',async()=>{
+  vi.mocked(api.getDirectionBindings).mockImplementation(async(_project,scope)=>directionState(scope,'enabled'));
+  render(<DirectionReferencePanel owner={owner} kind="style" selectedId="custom" canvasId="c" nodeIds={['a','b']} isCurrent={()=>true}/>);
+  await waitFor(()=>expect(api.getDirectionBindings).toHaveBeenCalledTimes(2));
+  await waitFor(()=>expect(screen.getByRole('button',{name:'应用固定风格'})).toBeDisabled());
+  expect(api.getDirectionBindings).toHaveBeenCalledWith('p',{level:'node',canvas_id:'c',node_id:'a'});
+  expect(api.getDirectionBindings).toHaveBeenCalledWith('p',{level:'node',canvas_id:'c',node_id:'b'});
+ });
+ it('keeps apply enabled when any target is only inheriting the same effective version',async()=>{
+  vi.mocked(api.getDirectionBindings).mockImplementation(async(_project,scope)=>{
+   if(scope.level==='node'&&scope.node_id==='b'){
+    const inherited=directionState(scope,'inherit');
+    inherited.effective.style={state:'enabled',origin_scope:{level:'project'},snapshot_ref:{snapshot_id:'project-snapshot',content_hash:entry.proof},configuration:{},title:entry.title,version:entry.version};
+    return inherited;
+   }
+   return directionState(scope,'enabled');
+  });
+  render(<DirectionReferencePanel owner={owner} kind="style" selectedId="custom" canvasId="c" nodeIds={['a','b']} isCurrent={()=>true}/>);
+  await waitFor(()=>expect(screen.getByRole('button',{name:'应用固定风格'})).not.toBeDisabled());
+ });
+ it('keeps inherit and disabled as distinct no-op states',async()=>{
+  vi.mocked(api.getDirectionBindings).mockImplementation(async(_project,scope)=>directionState(scope,'disabled'));
+  const disabledView=render(<DirectionReferencePanel owner={owner} kind="style" selectedId="custom" isCurrent={()=>true}/>);
+  await waitFor(()=>expect(api.getDirectionBindings).toHaveBeenCalledTimes(1));
+  await waitFor(()=>expect(screen.getByRole('button',{name:'禁用本级风格'})).toBeDisabled());
+  expect(screen.getByRole('button',{name:'清除项目配置'})).toBeEnabled();
+  disabledView.unmount();
+
+  vi.mocked(api.getDirectionBindings).mockClear();
+  vi.mocked(api.getDirectionBindings).mockImplementation(async(_project,scope)=>directionState(scope,'inherit'));
+  render(<DirectionReferencePanel owner={owner} kind="style" selectedId="custom" isCurrent={()=>true}/>);
+  await waitFor(()=>expect(api.getDirectionBindings).toHaveBeenCalledTimes(1));
+  await waitFor(()=>expect(screen.getByRole('button',{name:'清除项目配置'})).toBeDisabled());
+  expect(screen.getByRole('button',{name:'禁用本级风格'})).toBeEnabled();
+ });
  it('uses one atomic request for explicit nodes and separates inherit from disable',async()=>{
   render(<DirectionReferencePanel owner={owner} kind="style" canvasId="c" nodeIds={['a','b']} isCurrent={()=>true}/>);
   await screen.findByText('小林、小雨');
@@ -183,6 +234,7 @@ describe('fixed direction operations',()=>{
   expect(request.targets?.[0].scope??request.scope).toEqual(level==='canvas'?{level:'canvas',canvas_id:'c'}:level==='group'?{level:'group',canvas_id:'c',group_id:'g'}:{level:'node',canvas_id:'c',node_id:'a'});
  });
  it('unsets the project separately from disabling it',async()=>{
+  vi.mocked(api.getDirectionBindings).mockImplementation(async(_project,scope)=>directionState(scope,'enabled'));
   render(<DirectionReferencePanel owner={owner} kind="style" isCurrent={()=>true}/>);
   await waitFor(()=>expect(screen.getByRole('button',{name:'清除项目配置'})).not.toBeDisabled());
   fireEvent.click(screen.getByRole('button',{name:'清除项目配置'}));

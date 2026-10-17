@@ -510,11 +510,13 @@ export function narrativeGroupRollbackPath(
 
 export function narrativeGroupActionPayload(input: {
   revision?: number;
+  directorRevisionId?: string;
   aspectRatio?: "9:16" | "16:9";
   selection?: PlannedNarrativeGroupGenerationSelection;
 } = {}) {
   const payload: {
     revision?: number;
+    director_revision_id?: string;
     aspect_ratio?: "9:16" | "16:9";
     use_style?: boolean;
     reference_resolution?: {
@@ -528,6 +530,7 @@ export function narrativeGroupActionPayload(input: {
     allow_unconstrained?: boolean;
   } = {};
   if (input.revision !== undefined) payload.revision = input.revision;
+  if (input.directorRevisionId) payload.director_revision_id = input.directorRevisionId;
   if (input.aspectRatio) payload.aspect_ratio = input.aspectRatio;
   if (input.selection) {
     payload.use_style = input.selection.useStyle;
@@ -593,16 +596,18 @@ export function useNarrativeGroups(project: string, episode: number) {
 export function useNarrativeGroupAction(project: string, episode: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ groupId, stage, action, revision, selection, aspectRatio }: {
+    mutationFn: ({ groupId, stage, action, revision, directorRevisionId, selection, aspectRatio }: {
       groupId: string;
       stage: NarrativeGridStage;
       action: NarrativeGroupAction;
       revision?: number;
+      directorRevisionId?: string;
       selection?: PlannedNarrativeGroupGenerationSelection;
       aspectRatio?: "9:16" | "16:9";
     }) => api.post(narrativeGroupActionPath(project, episode, groupId, stage, action), {
       json: narrativeGroupActionPayload({
         revision,
+        directorRevisionId,
         aspectRatio,
         selection: action === "split" ? undefined : selection,
       }),

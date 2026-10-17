@@ -1,5 +1,5 @@
 import { apiCall } from "@/api/client";
-import type { PropExtractionRun, AssetExtractionRun, CraftReport, CraftMemoryEntry } from "./types";
+import type { PropExtractionRun, AssetExtractionRun, CraftReport, CraftMemoryEntry, ScriptSceneIdentityUpdate } from "./types";
 import type { NarrativeEntity, NarrativeAsset, NarrativeAssetType, EntityInput, ScriptDocument, ScriptDocumentKind, ScriptRevision, GenerationRun, GenerationQueued, GenerationCandidate, ScriptProposal, RewriteJob, ConsistencyRun, ConsistencyIssue, HandoffPrepareRequest, ScriptHandoff } from "./types";
 
 const root = (project: string) => `projects/${encodeURIComponent(project)}/script-creation`;
@@ -33,8 +33,11 @@ export const scriptCreationApi = {
   get: (project: string, id: string) => apiCall<ScriptDocument>(docPath(project, id)),
   create: (project: string, body: { kind: ScriptDocumentKind; title: string; markdown?: string; episode_number?: number }, client_mutation_id: string = mutation()) =>
     apiCall<ScriptDocument>(`${root(project)}/documents`, { method: "post", retry: { limit: 0 }, json: { ...body, client_mutation_id } }),
-  save: (project: string, id: string, base_revision_id: string, markdown: string, client_mutation_id: string = mutation()) =>
-    apiCall<ScriptDocument>(docPath(project, id), { method: "put", retry: { limit: 0 }, json: { base_revision_id, markdown, client_mutation_id } }),
+  save: (project: string, id: string, base_revision_id: string, markdown: string, client_mutation_id: string = mutation(),
+    scene_identity_update?: ScriptSceneIdentityUpdate[]) =>
+    apiCall<ScriptDocument>(docPath(project, id), { method: "put", retry: { limit: 0 },
+      json: { base_revision_id, markdown, client_mutation_id,
+        ...(scene_identity_update ? { scene_identity_update } : {}) } }),
   revisions: (project: string, id: string) => apiCall<ScriptRevision[]>(`${docPath(project, id)}/revisions`),
   restore: (project: string, id: string, revision_id: string, base_revision_id: string, client_mutation_id: string = mutation()) =>
     apiCall<ScriptDocument>(`${docPath(project, id)}/restore`, { method: "post", retry: { limit: 0 }, json: { revision_id, base_revision_id, client_mutation_id } }),

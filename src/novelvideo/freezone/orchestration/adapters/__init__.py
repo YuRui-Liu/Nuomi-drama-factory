@@ -12,17 +12,23 @@ from pydantic import ValidationError
 from novelvideo.task_backend.limits import ProjectTaskLimitExceeded, ProjectUserTaskLimitExceeded, GlobalLaneQueueLimitExceeded
 
 from ..capabilities import catalog_by_type
-from ..models import OrchestrationError, RESULT_FIELDS, fingerprint, input_fingerprint
+from ..models import (OrchestrationError, RESULT_FIELDS, bound_narrative_group_reference,
+                      fingerprint, input_fingerprint)
 from ..projection import project_result
 from ..verification import local_media_path, verify_media
-from .requests import ROUTES, build_request, director_draft, ordered_upstream, project_director_inputs
+from .requests import (ROUTES, build_request, director_draft,
+                       ordered_upstream as ordered_upstream, project_director_inputs)
+from . import production, voice, dubbing, professional_edits
 
 LOCAL = {("textAnnotationNode", "validate"), ("beatContextNode", "validate"),
-         ("uploadNode", "validate"), ("groupNode", "validate")}
+         ("uploadNode", "validate"), ("groupNode", "validate"),
+         ("narrativeGroupStoryboardNode", "validate")}
 
 
 def available_operations() -> set[tuple[str, str]]:
-    return set(ROUTES) | LOCAL | {("videoDirectorNode", "generate"), ("skillNode", "run"), ("scriptNode", "plan_episode")}
+    return (set(ROUTES) | LOCAL | production.OPERATIONS | voice.OPERATIONS | dubbing.OPERATIONS
+            | professional_edits.OPERATIONS
+            | {("videoDirectorNode", "generate"), ("skillNode", "run"), ("scriptNode", "plan_episode")})
 
 
 def _plain(value):
@@ -39,7 +45,37 @@ class NodeAdapter:
     def operation(self, node):
         return node.get("data", {}).get("operation") or catalog_by_type()[node["type"]]["default_operation"]
 
+    def requires_external_submission(self, run, attempt):
+        node = self.node(run, attempt)
+        pair = (node["type"], self.operation(node))
+        local_operations = LOCAL | voice.LOCAL_OPERATIONS | dubbing.LOCAL_OPERATIONS | production.LOCAL_OPERATIONS
+        if pair in local_operations:
+            return False
+        # These adapters are dispatched before the generic reference-only
+        # short-circuit in submit(). Classify them from that same dispatch set
+        # so an explicit node.run cannot perform unbudgeted work.
+        dispatched_operations = (
+            production.OPERATIONS | voice.OPERATIONS | dubbing.OPERATIONS
+            | professional_edits.OPERATIONS
+        )
+        if pair in dispatched_operations:
+            return True
+        return not node.get("data", {}).get("referenceOnly")
+
     async def reconcile_submission(self, run, attempt):
+        node = None
+        if run.get("snapshot") and attempt.get("node_id"):
+            node = self.node(run, attempt)
+        if node is not None:
+            pair = (node['type'], self.operation(node))
+            if pair in dubbing.OPERATIONS:
+                return await dubbing.reconcile_submission(run, attempt)
+            if pair in professional_edits.OPERATIONS:
+                return await professional_edits.reconcile_submission(run, attempt)
+            if pair in voice.OPERATIONS:
+                return await voice.reconcile_submission(run, attempt)
+            if pair in production.OPERATIONS:
+                return await production.reconcile_submission(run, attempt)
         # Compatibility for the first journal version, which did not classify
         # local admission rejection. This exact exception occurs before enqueue;
         # provider errors are reported asynchronously through reconcile().
@@ -55,13 +91,29 @@ class NodeAdapter:
         node = self.node(run, attempt)
         operation = self.operation(node)
         kind, data = node["type"], node.get("data", {})
-        if (kind, operation) in LOCAL or data.get("referenceOnly"):
-            result = deepcopy(data)
-            if kind == "textAnnotationNode":
-                result["text"] = result.get("content", result.get("text", ""))
-            return {"local": True, "result": result}
         from novelvideo.api.routes import freezone
         try:
+            if (kind, operation) in dubbing.OPERATIONS:
+                return await dubbing.submit(run, attempt, node, operation)
+            if (kind, operation) in professional_edits.OPERATIONS:
+                return await professional_edits.submit(run, attempt, node, operation)
+            if (kind, operation) in voice.OPERATIONS:
+                return await voice.submit(run, attempt, node, operation)
+            if (kind, operation) in production.OPERATIONS:
+                return await production.submit(run, attempt, node, operation)
+            if kind == "narrativeGroupStoryboardNode" and operation == "validate":
+                reference = bound_narrative_group_reference(node)
+                if reference is None:
+                    raise OrchestrationError(
+                        "invalid_input",
+                        "Group storyboard node requires a positive episodeNumber, groupId, and directorRevisionId",
+                    )
+                return {"local": True, "result": {"narrativeGroupReference": reference}}
+            if (kind, operation) in LOCAL or data.get("referenceOnly"):
+                result = deepcopy(data)
+                if kind == "textAnnotationNode":
+                    result["text"] = result.get("content", result.get("text", ""))
+                return {"local": True, "result": result}
             if kind == "scriptNode" and operation == "plan_episode":
                 from novelvideo.ports import get_task_backend
                 ctx, *_ = await freezone._resolve_freezone_project(run["project_id"], run["actor"])
@@ -146,6 +198,14 @@ class NodeAdapter:
         node = self.node(run, attempt)
         if submitted.get("local"):
             return {"status": "succeeded", "result": submitted["result"]}
+        if submitted.get('dubbing') or submitted.get('audio_audition'):
+            return await dubbing.reconcile(run, submitted)
+        if submitted.get('professional_edit'):
+            return await professional_edits.reconcile(run, submitted)
+        if submitted.get('production_workflow'):
+            return await production.reconcile(run, submitted)
+        if submitted.get('voice_design'):
+            return await voice.reconcile(run, submitted)
         if submitted.get("plan"):
             from novelvideo.api.routes.freezone import _resolve_freezone_project
             from novelvideo.task_state import get_task_manager
@@ -186,6 +246,19 @@ class NodeAdapter:
         return {"status": "succeeded", "result": result}
 
     async def verify(self, run, attempt):
+        local_result = attempt.get("result") or {}
+        if ((attempt.get("submission") or {}).get("local")
+                and any(key in local_result for key in (
+                    "voiceDesignPreview", "dubbingPreparation", "narrativeGroupReference",
+                ))):
+            return [{"kind": "json", "sha256": fingerprint(local_result)}]
+        if ((attempt.get('submission') or {}).get('dubbing')
+                or (attempt.get('submission') or {}).get('audio_audition')):
+            return await dubbing.verify(run, attempt)
+        if (attempt.get('submission') or {}).get('professional_edit'):
+            return await professional_edits.verify(run, attempt)
+        if (attempt.get('submission') or {}).get('voice_design'):
+            return await voice.verify(run, attempt)
         result = attempt.get("result") or {}
         node = self.node(run, attempt)
         artifacts = []
@@ -200,16 +273,31 @@ class NodeAdapter:
             return artifacts
         if node["type"] == "groupNode":
             return [{"kind": "container", "sha256": fingerprint(node)}]
-        for key in ("text", "scriptResult", "storyResult", "outputs"):
+        for key in ("text", "scriptResult", "storyResult", "outputs", "workflowResult"):
             if result.get(key):
                 return [{"kind": "text" if key == "text" else "json", "sha256": fingerprint(result[key])}]
         if node["type"] == "beatContextNode" and result:
             return [{"kind": "json", "sha256": fingerprint(result)}]
         raise OrchestrationError("invalid_artifact", "Node produced no consumable output")
 
-    async def project(self, run, attempt):
+    async def project(self, run, attempt, *, authorize_projection=None):
         node = self.node(run, attempt)
         allowed = RESULT_FIELDS.get(node["type"], set())
         result = {key: value for key, value in (attempt.get("result") or {}).items() if key in allowed}
+        marker = run.get("agent_execution")
+        history_entry = None
+        if marker:
+            history_entry = {
+                "attempt_id": attempt["id"],
+                "status": "verified_projected",
+                "artifacts": deepcopy(attempt.get("artifacts", [])),
+                "previous_media": deepcopy(marker.get("previous_media", [])),
+            }
         project_result(self.project_dir, run["canvas_id"], node_id=node["id"],
-                       expected_input=run["input_fingerprints"][node["id"]], attempt_id=attempt["id"], result=result)
+                       expected_input=run["input_fingerprints"][node["id"]], attempt_id=attempt["id"],
+                       result=result, history_entry=history_entry,
+                       expected_result_fingerprint=marker.get("target_result_fingerprint") if marker else None,
+                       expected_media_fingerprint=marker.get("target_media_fingerprint") if marker else None,
+                       expected_source_output_fingerprints=marker.get("source_output_fingerprints") if marker else None,
+                        expected_dependency_edge_fingerprint=marker.get("dependency_edge_fingerprint") if marker else None,
+                        authorize_projection=authorize_projection if marker else None)

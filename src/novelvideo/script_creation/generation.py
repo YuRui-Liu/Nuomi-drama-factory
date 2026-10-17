@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable
 from pydantic import BaseModel, Field, field_validator
 
 from .prompts import STEP_LABELS, build_prompt, craft_guidance, target_synopsis
-from .store import DocumentConflict, DocumentNotFound, DocumentStore, DocumentValidation
+from .store import DocumentConflict, DocumentStore, DocumentValidation
 
 GENERATION_SYSTEM_PROMPT = '你是中文剧本创作专家。遵守当前文档类型、项目事实和风格要求。按本次明确指定的创作、审查或修订阶段执行；参考资料中的交互和交付流程不替代软件流程。剧本正文不得包含审查或交付状态。\n'
 
@@ -96,12 +96,35 @@ class GenerationService:
         return await self.store.generation_list()
 
     async def start(self, *, mode: str, brief_id: str, script_mode: str, episode_count: int,
-                    instruction: str, mutation_id: str, episode_number: int = 1) -> dict[str, Any]:
-        if mode not in {'bootstrap', 'continue'} or script_mode not in {'series', 'single'}:
+                    instruction: str, mutation_id: str, episode_number: int = 1,
+                    source_idea: dict[str, Any] | None = None,
+                    source_ideation_id: str | None = None,
+                    source_candidate_id: str | None = None,
+                    confirmed_revisions: dict[str, str] | None = None,
+                    plan_run_id: str | None = None) -> dict[str, Any]:
+        payload = await self.prepare(
+            mode=mode, brief_id=brief_id, script_mode=script_mode, episode_count=episode_count,
+            instruction=instruction, mutation_id=mutation_id, episode_number=episode_number,
+            source_idea=source_idea, source_ideation_id=source_ideation_id,
+            source_candidate_id=source_candidate_id, confirmed_revisions=confirmed_revisions,
+            plan_run_id=plan_run_id)
+        try:
+            return await self.store.generation_start(payload, mutation_id)
+        except DocumentConflict as exc:
+            raise GenerationConflict(str(exc)) from exc
+
+    async def prepare(self, *, mode: str, brief_id: str, script_mode: str, episode_count: int,
+                      instruction: str, mutation_id: str, episode_number: int = 1,
+                      source_idea: dict[str, Any] | None = None,
+                      source_ideation_id: str | None = None,
+                      source_candidate_id: str | None = None,
+                      confirmed_revisions: dict[str, str] | None = None,
+                      plan_run_id: str | None = None) -> dict[str, Any]:
+        if mode not in {'bootstrap', 'continue', 'planning', 'screenplay'} or script_mode not in {'series', 'single'}:
             raise GenerationValidation('invalid generation mode')
         if not mutation_id.strip() or episode_count < 1 or episode_count > 100 or episode_number < 1 or episode_number > episode_count:
             raise GenerationValidation('invalid episode count or mutation id')
-        if (script_mode == 'single' and episode_count != 1) or (mode == 'bootstrap' and episode_number != 1):
+        if (script_mode == 'single' and episode_count != 1) or (mode in {'bootstrap', 'planning', 'screenplay'} and episode_number != 1):
             raise GenerationValidation('episode count does not match generation mode')
         if len(instruction) > 8000:
             raise GenerationValidation('instruction too long')
@@ -120,9 +143,39 @@ class GenerationService:
             if episode_number > 1 and not any(doc.kind == 'episode_script' and doc.episode_number < episode_number
                        and not _blank_scaffold(doc.revision.markdown, doc.kind, doc.episode_number) for doc in docs):
                 raise GenerationValidation('saved previous episode script required')
-        kinds = (['outline', 'people', 'scenes', 'props'] +
-                 (['episode_synopsis'] if script_mode == 'series' else []) +
-                 ['episode_script']) if mode == 'bootstrap' else ['episode_script']
+        if mode in {'planning', 'screenplay'}:
+            if not source_idea or not source_idea.get('candidate_id') or not source_idea.get('revision_id'):
+                raise GenerationValidation('an adopted idea revision is required')
+            if source_ideation_id is None:
+                raise GenerationValidation('source ideation is required')
+        if mode == 'screenplay':
+            if not plan_run_id or not confirmed_revisions or brief_id not in confirmed_revisions:
+                raise GenerationValidation('confirmed planning revisions are required')
+            if confirmed_revisions.get(brief_id) != brief.current_revision_id:
+                raise GenerationConflict('brief revision changed after planning confirmation')
+            if confirmed_revisions.get(source_idea['candidate_id']) != source_idea['revision_id']:
+                raise GenerationValidation('confirmed idea revision does not match the adopted idea')
+            baseline_revisions = {}
+            for document_id, revision_id in confirmed_revisions.items():
+                if document_id == source_idea['candidate_id']:
+                    continue
+                document = await self.store.get(document_id)
+                if document.current_revision_id != revision_id:
+                    raise GenerationConflict('a confirmed planning revision has changed')
+                baseline_revisions[document_id] = revision_id
+        elif mode == 'planning':
+            baseline_revisions = {brief.id: brief.current_revision_id}
+        else:
+            baseline_revisions = {doc.id: doc.current_revision_id for doc in docs}
+        if mode == 'planning':
+            kinds = ['outline', 'people', 'scenes', 'props', 'episode_synopsis']
+        elif mode == 'screenplay':
+            kinds = ['episode_script']
+        elif mode == 'bootstrap':
+            kinds = (['outline', 'people', 'scenes', 'props'] +
+                     (['episode_synopsis'] if script_mode == 'series' else []) + ['episode_script'])
+        else:
+            kinds = ['episode_script']
         steps = [{'key': f'{kind}:{episode_number if kind == "episode_script" and mode == "continue" else 1 if kind == "episode_script" else 0}',
                   'kind': kind, 'title': (f'第 {episode_number if mode == "continue" else 1} 集' if kind == 'episode_script' and script_mode == 'series'
                                              else STEP_LABELS[kind]),
@@ -132,12 +185,13 @@ class GenerationService:
                  for kind in kinds]
         payload = {'mode': mode, 'brief_id': brief_id, 'brief_revision_id': brief.current_revision_id,
                    'script_mode': script_mode, 'episode_count': episode_count, 'episode_number': episode_number,
-                   'instruction': instruction, 'baseline_revisions': {doc.id: doc.current_revision_id for doc in docs},
+                   'instruction': instruction, 'baseline_revisions': baseline_revisions,
+                   'source_idea': source_idea, 'source_ideation_id': source_ideation_id,
+                   'source_candidate_id': source_candidate_id or (source_idea or {}).get('candidate_id'),
+                   'confirmed_revisions': confirmed_revisions, 'plan_run_id': plan_run_id,
+                   'phase': mode if mode in {'planning', 'screenplay'} else None,
                    'status': 'pending', 'task_id': None, 'steps': steps, 'error': None}
-        try:
-            return await self.store.generation_start(payload, mutation_id)
-        except DocumentConflict as exc:
-            raise GenerationConflict(str(exc)) from exc
+        return payload
 
     async def execute(self, run_id: str, *, runtime: Any, task_id: str,
                       cancel_check: Callable[[], Awaitable[None]] | None = None,
@@ -166,13 +220,18 @@ class GenerationService:
                 data['status'], data['error'] = 'needs_rebase', '参考文档已变化，请基于当前版本重新生成'
                 return await self.store.generation_update(run_id, data, expected_task_id=task_id)
             kind, number = step['kind'], step['episode_number']
-            references = [by_id[data['brief_id']]]
-            for ref_kind in ('outline', 'episode_synopsis', 'people', 'scenes', 'props'):
-                if ref_kind == kind:
-                    continue
-                ref = _slot(docs, ref_kind)
-                if ref is not None:
-                    references.append(ref)
+            if data['mode'] == 'screenplay':
+                references = [by_id[data['brief_id']]]
+                references.extend(by_id[document_id] for document_id in data['baseline_revisions']
+                                  if document_id != data['brief_id'])
+            else:
+                references = [by_id[data['brief_id']]]
+                for ref_kind in ('outline', 'episode_synopsis', 'people', 'scenes', 'props'):
+                    if ref_kind == kind:
+                        continue
+                    ref = _slot(docs, ref_kind)
+                    if ref is not None:
+                        references.append(ref)
             if kind == 'episode_script' and data['mode'] == 'continue':
                 references += sorted((doc for doc in docs if doc.kind == 'episode_script' and
                                        doc.episode_number is not None and doc.episode_number < number),
@@ -219,6 +278,20 @@ class GenerationService:
                 prompt = build_prompt(kind=kind, script_mode=data['script_mode'],
                                         episode_number=number or 1, episode_count=data['episode_count'],
                                         instruction=data['instruction'], references=references_for_prompt)
+                if data.get('source_idea'):
+                    prompt += ('\n\n本轮采用立意（固定版本）：\n' +
+                               str(data['source_idea'].get('one_line', '')) + '\n' +
+                               str(data['source_idea'].get('protagonist_conflict', '')) + '\n' +
+                               str(data['source_idea'].get('highlights', '')) + '\n' +
+                               str(data['source_idea'].get('final_choice', '')))
+                if data.get('confirmed_revisions'):
+                    prompt += '\n规划确认修订：' + repr(data['confirmed_revisions'])
+                    if kind == 'episode_script':
+                        prompt += (
+                            f'\n本轮只创作和审查第{number}集。已确认的分集梗概决定本集的情节范围和结尾；'
+                            '全剧立意、最终抉择及后续集情节是长线背景，不是要求本集提前兑现的清单。'
+                            '审查不得把已分配给后续集的事件当成本集遗漏，也不得为满足全剧结局改写已确认的本集范围。'
+                        )
                 method_id = method_hash('writer', kind)
                 route = getattr(selected_runtime, 'snapshot', None)
                 prompt += f'\n本轮候选依赖：{dependencies!r}\n冻结方法：{method_id}; 模型路由：{route!s}'

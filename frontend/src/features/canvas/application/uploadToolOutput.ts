@@ -16,7 +16,8 @@ import { readUrl } from '@/lib/url-params';
  */
 export async function uploadLocalImageToBackend(
   localImageUrl: string,
-  filename: string
+  filename: string,
+  targetProjectId?: string,
 ): Promise<string> {
   const trimmed = localImageUrl?.trim();
   if (!trimmed) {
@@ -27,7 +28,7 @@ export async function uploadLocalImageToBackend(
     return trimmed;
   }
 
-  const projectId = readUrl().project;
+  const projectId = targetProjectId ?? readUrl().project;
   if (!projectId) {
     console.warn('[upload-tool-output] no project in URL — keeping local URL', filename);
     return localImageUrl;

@@ -10,6 +10,8 @@
 
 **依据：** `docs/superpowers/specs/2026-10-17-ideation-workspace-design.md` 已批准；独立 HTML 只作视觉参考，不导入模拟业务逻辑。
 
+**执行记录（2026-10-17）：** 用户选择子代理分工实现。任务 1–4 的代码和定向回归已完成，43 项测试通过；任务 5 的真实页面布局、抽屉取消及焦点验收通过，最终类型检查退出 0。详细记录及真实模型验收边界见 `docs/superpowers/reports/2026-10-17-ideation-workspace.md`。共享工作区的实现文件未提交，以下含提交动作的原始检查项不批量勾选。
+
 ---
 
 ## 工作区和执行顺序
@@ -36,14 +38,14 @@
 - `frontend/src/features/canvas/nodes/IdeationNode.tsx`：挂载新工作区，保留节点摘要与连线。
 - `frontend/src/features/canvas/production/ProductionNodeShell.tsx`：可选工作区布局与关闭守卫，其他调用保持默认行为。
 - `frontend/src/features/canvas/domain/canvasNodes.ts`：仅在节点类型需要时声明立意草稿字段。
-- `frontend/src/__tests__/features/creation-workspace/creative-settings.test.tsx`：兼容旧入口并覆盖抽屉取消。
+- `frontend/src/features/script-creation/script-settings-content.test.tsx`：兼容旧入口并覆盖抽屉取消。
 - `frontend/src/__tests__/features/canvas/production-review-interactions.test.tsx`：更新旧交互断言，保留业务断言。
 
 ## 任务 1：提取受控设定内容
 
-- [ ] 阅读 ScriptSetter、script-setter-data、settings、types 和 creative-settings 测试，保留预设撤销、中文输入法、自定义题材、结构归一化规则。
-- [ ] 在 creative-settings 测试中增加：抽屉修改后取消不改变外层草稿；应用后改变；切换预设不覆盖故事想法。测试使用真实组件，通过 role/label 操作，不断言内部 state。
-- [ ] 在 frontend 目录运行 `pnpm exec vitest run src/__tests__/features/creation-workspace/creative-settings.test.tsx`，确认新增失败来自缺失行为。
+- [ ] 阅读 ScriptSetter、script-setter-data、settings、types 和 script-setter 与 script-settings-content 测试，保留预设撤销、中文输入法、自定义题材、结构归一化规则。
+- [ ] 在 script-setter 与 script-settings-content 测试中增加：抽屉修改后取消不改变外层草稿；应用后改变；切换预设不覆盖故事想法。测试使用真实组件，通过 role/label 操作，不断言内部 state。
+- [ ] 在 frontend 目录运行 `pnpm exec vitest run src/features/script-creation/script-settings-content.test.tsx`，确认新增失败来自缺失行为。
 - [ ] 创建内容组件，采用以下公共边界；将现有渲染和选择逻辑移入，不复制 catalog 数据。抽屉打开复制当前值到临时状态，应用才调用 onChange，取消清空临时状态并恢复焦点。
 
 ```tsx
@@ -130,7 +132,7 @@ saveBrief 为 hook 内私有函数：存在简报时调用 save，使用原 base
 - [ ] 从 frontend 执行以下定向验证，要求新增用例和受影响旧用例通过；出现无关既有失败时单独记录具体文件，不掩盖新增回归。
 
 ```powershell
-pnpm exec vitest run src/__tests__/features/creation-workspace/creative-settings.test.tsx src/__tests__/features/canvas/ideation-workspace.test.tsx src/__tests__/features/canvas/ideation-planning-settings.test.ts src/__tests__/features/canvas/production-review-interactions.test.tsx src/__tests__/features/canvas/creative-workflow-api.test.ts
+pnpm exec vitest run src/features/script-creation/script-settings-content.test.tsx src/__tests__/features/canvas/ideation-workspace.test.tsx src/__tests__/features/canvas/ideation-planning-settings.test.ts src/__tests__/features/canvas/production-review-interactions.test.tsx src/__tests__/features/canvas/creative-workflow-api.test.ts
 pnpm exec tsc -b --pretty false
 ```
 

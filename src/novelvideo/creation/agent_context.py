@@ -3,6 +3,9 @@
 Snapshots are context, not tool authorization. In particular text containing a
 URL is never resolved or opened by this module.
 """
+from math import isfinite
+from copy import deepcopy
+import json
 from types import SimpleNamespace
 
 from fastapi import HTTPException
@@ -20,6 +23,162 @@ from .operations import OperationError
 
 TEXT_FIELDS = frozenset({'text', 'content', 'prompt', 'title', 'label', 'displayName',
                         'description', 'negativePrompt', 'script', 'instructions'})
+_STATIC_PANEL_FIELDS = frozenset({'state', 'framing', 'setting', 'lighting'})
+_STATIC_SUBJECT_FIELDS = frozenset({'appearance_reference', 'screen_position', 'pose', 'gaze'})
+_STORYBOARD_FRAME_FIELDS = frozenset({'description', 'static_source_description'})
+_CAMERA_SELECTION_FIELDS = frozenset({'cameraBodyId', 'lensId', 'focalLengthMm', 'aperture'})
+_PRODUCTION_FIELDS = {
+    'screenplayNode': ('episodeNumber', 'documentId', 'documentRevisionId', 'planRunId', 'workflowId',
+                      'screenplayOperationInputs', 'workflowResult'),
+    'directorWorkspaceNode': ('episodeNumber', 'documentId', 'adoptedRevisionId', 'directorRevisionId',
+                             'productionGroupIds', 'handoffSelection', 'directorOperationInputs', 'directorOperationReceipt', 'workflowResult'),
+    'narrativeGroupStoryboardNode': ('episodeNumber', 'groupId', 'directorRevisionId', 'narrativeGroupReference'),
+    'characterVoiceNode': ('characterId', 'identityId', 'voiceVersionId', 'voiceDesign',
+                           'voiceDescriptionDraft', 'voiceDescription', 'auditionText', 'voiceDesignPreview'),
+    'audioNode': ('episodeNumber', 'groupId', 'dialogueIds', 'dubbingPerformanceDrafts', 'performance',
+                  'dubbingPreparation', 'failedDialogueIds', 'auditionDraft', 'auditionResult'),
+    'videoComposeNode': ('episodeNumber', 'draftTimeline'),
+}
+
+
+def production_node_context(node):
+    """Explicit professional inputs/results; never resolve embedded URLs or files."""
+    data = node.get('data', {})
+    result, omitted = {}, []
+    remaining = 100_000
+    for key in _PRODUCTION_FIELDS.get(node.get('type'), ()):
+        if key not in data:
+            continue
+        try:
+            encoded = json.dumps(data[key], ensure_ascii=False, allow_nan=False)
+        except (ValueError, TypeError, RecursionError):
+            omitted.append(key)
+            continue
+        if len(encoded) > remaining:
+            omitted.append(key)
+            continue
+        result[key] = deepcopy(data[key])
+        remaining -= len(encoded)
+    if omitted:
+        result['unavailable_fields'] = omitted
+        result['notice'] = '这些字段超过上下文大小或格式限制，未读取；不得推测其正文。请缩小读取范围。'
+    return result
+
+
+def _safe_text(value, *, maximum=12000):
+    return isinstance(value, str) and len(value) <= maximum
+
+
+def _editable_static_panel(value):
+    if not isinstance(value, dict):
+        return None
+    result = {key: value[key] for key in _STATIC_PANEL_FIELDS
+              if key in value and _safe_text(value[key], maximum=4000)}
+    subjects = value.get('subjects')
+    if isinstance(subjects, list) and len(subjects) <= 100:
+        result['subjects'] = [
+            {key: item[key] for key in _STATIC_SUBJECT_FIELDS
+             if key in item and _safe_text(item[key], maximum=2000)}
+            for item in subjects if isinstance(item, dict)
+        ]
+    visible_text = value.get('visible_text')
+    if isinstance(visible_text, list) and len(visible_text) <= 100 \
+            and all(_safe_text(item, maximum=1000) for item in visible_text):
+        result['visible_text'] = list(visible_text)
+    return result
+
+
+def editable_node_fields(node):
+    """Return only structured user-editable node inputs, excluding locators and controls."""
+    data = node.get('data', {})
+    kind = node.get('type')
+    result = {}
+    for field in ('prompt', 'negativePrompt'):
+        if _safe_text(data.get(field)):
+            result[field] = data[field]
+    selection = data.get('cameraSelection')
+    if kind in {'imageGenNode', 'imageEditNode', 'storyboardGenNode'} and isinstance(selection, dict):
+        camera = {key: selection[key] for key in _CAMERA_SELECTION_FIELDS
+                  if key in selection and (_safe_text(selection[key], maximum=200)
+                      or type(selection[key]) in {int, float} and isfinite(selection[key]))}
+        if camera:
+            result['cameraSelection'] = camera
+    if kind == 'storyboardGenNode':
+        frames = data.get('frames')
+        if isinstance(frames, list) and len(frames) <= 1000:
+            editable_frames = []
+            for frame in frames:
+                if not isinstance(frame, dict):
+                    continue
+                item = {key: frame[key] for key in _STORYBOARD_FRAME_FIELDS
+                        if key in frame and _safe_text(frame[key])}
+                duration = frame.get('duration_seconds')
+                if type(duration) in {int, float} and isfinite(duration) and duration > 0:
+                    item['duration_seconds'] = duration
+                panel = _editable_static_panel(frame.get('static_panel'))
+                if panel is not None:
+                    item['static_panel'] = panel
+                editable_frames.append(item)
+            result['frames'] = editable_frames
+    professional_fields = {
+        'screenplayNode': ('screenplayOperationInputs',),
+        'directorWorkspaceNode': ('directorOperationInputs', 'productionGroupIds', 'handoffSelection'),
+        'characterVoiceNode': ('voiceDesign', 'voiceDescriptionDraft', 'auditionText'),
+        'audioNode': ('dubbingPerformanceDrafts', 'auditionDraft'),
+    }
+    for field in professional_fields.get(kind, ()):
+        # Use the write contract itself so context never advertises a field as
+        # editable when the trusted service would reject that shape.
+        if field not in data:
+            continue
+        from .node_execution import _validate_change
+        try:
+            _validate_change(node, [field], data[field])
+        except (OperationError, ValueError, TypeError):
+            # Professional forms may expose only individual leaves, never an
+            # unrestricted object replacement. Advertise exactly those leaves.
+            budget = [200]
+            def accepted_leaves(value, path):
+                if len(path) > 5 or budget[0] <= 0:
+                    return None
+                budget[0] -= 1
+                try:
+                    _validate_change(node, path, value)
+                except (OperationError, ValueError, TypeError):
+                    if not isinstance(value, dict):
+                        return None
+                    accepted = {}
+                    for key, child in value.items():
+                        if not isinstance(key, str):
+                            continue
+                        found = accepted_leaves(child, [*path, key])
+                        if found is not None:
+                            accepted[key] = found
+                    return accepted or None
+                return deepcopy(value)
+            leaves = accepted_leaves(data[field], [field])
+            if leaves is not None:
+                result[field] = leaves
+            continue
+        result[field] = deepcopy(data[field])
+    if kind == 'videoComposeNode' and isinstance(data.get('draftTimeline'), dict):
+        draft = data['draftTimeline']
+        tracks = draft.get('tracks', [])
+        if (isinstance(tracks, list) and len(tracks) <= 100
+                and all(isinstance(track, dict) and isinstance(track.get('clips'), list)
+                        and len(track['clips']) <= 1000 and all(isinstance(clip, dict) for clip in track['clips'])
+                        for track in tracks)
+                and len(json.dumps(draft, ensure_ascii=False)) <= 100_000):
+            result['draftTimeline'] = {'tracks': [
+                {'clips': [{key: clip[key] for key in (
+                    'timelineStartMs', 'trimStartMs', 'trimEndMs', 'volume', 'muted', 'speed') if key in clip}
+                    for clip in track.get('clips', []) if isinstance(clip, dict)]}
+                for track in tracks if isinstance(track, dict)
+            ]}
+            subtitle = draft.get('subtitleTrack')
+            if isinstance(subtitle, dict):
+                result['draftTimeline']['subtitleTrack'] = deepcopy(subtitle)
+    return result
 
 
 def required_canvases(ctx, conn, body):
@@ -64,17 +223,24 @@ def conversation(ctx, username, canvas_id, conversation_id):
 
 def node_snapshot(node):
     data = node.get('data', {})
-    media_keys = set(RESULT_FIELDS.get(node['type'], set())) | {
+    result_fields = set(RESULT_FIELDS.get(node['type'], set()))
+    media_keys = result_fields | {
         'imageUrl', 'previewImageUrl', 'panoUrl', 'plyUrl', 'videoUrl', 'audioUrl',
         'sources', 'assetRef', 'assetMediaSelection', 'scene', 'scenesBySourceId', 'activeSourceId'}
     media = {key: data[key] for key in sorted(media_keys) if key in data}
-    return {'node_id': node['id'], 'node_type': node['type'],
+    snapshot = {'node_id': node['id'], 'node_type': node['type'],
             'parent_id': node.get('parentId'), 'input_fingerprint': input_fingerprint(node),
+            'result_fingerprint': digest({key: data[key] for key in sorted(result_fields) if key in data}),
             'media_evidence': {'status': 'not_evaluated', 'byte_stability': 'not_archived',
                                'fields': sorted(media), 'locator_fingerprint': digest(media),
                                'notice': '仅固定节点媒体字段证据；读取字节前须核验受控来源，不授予任意 URL 或文件访问'},
             'content': {k: v for k, v in node.get('data', {}).items()
-                        if k in TEXT_FIELDS and isinstance(v, str)}}
+                        if k in TEXT_FIELDS and isinstance(v, str)},
+            'editable_fields': editable_node_fields(node)}
+    production = production_node_context(node)
+    if production:
+        snapshot['production_context'] = production
+    return snapshot
 
 
 def graph_scope(ctx, canvas_id, scope):

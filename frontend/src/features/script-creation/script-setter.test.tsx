@@ -66,6 +66,48 @@ describe("ScriptSetter", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("returns focus to the tile trigger when Cancel closes the nested drawer", async () => {
+    render(<ScriptSetter initial={defaultSettings()} onSave={() => {}} onClose={() => {}} />);
+    const trigger = screen.getByRole("button", { name: "编辑角色设定" });
+    await userEvent.click(trigger);
+    const drawer = screen.getByRole("dialog", { name: "编辑角色设定" });
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "取消编辑" }));
+
+    expect(screen.queryByRole("dialog", { name: "编辑角色设定" })).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("keeps the nested popup mounted until its close animation completes", async () => {
+    let finishAnimation!: () => void;
+    let closing = false;
+    const finished = new Promise<void>(resolve => { finishAnimation = resolve; });
+    const animation = { finished, pending: true, playState: "running" } as unknown as Animation;
+    const original = Object.getOwnPropertyDescriptor(Element.prototype, "getAnimations");
+    Object.defineProperty(Element.prototype, "getAnimations", {
+      configurable: true,
+      value(this: Element) { return closing && this.classList.contains("ns-drawer") ? [animation] : []; },
+    });
+
+    try {
+      render(<ScriptSetter initial={defaultSettings()} onSave={() => {}} onClose={() => {}} />);
+      const trigger = screen.getByRole("button", { name: "编辑角色设定" });
+      await userEvent.click(trigger);
+      const drawer = screen.getByRole("dialog", { name: "编辑角色设定" });
+      closing = true;
+      await userEvent.click(within(drawer).getByRole("button", { name: "取消编辑" }));
+
+      expect(screen.getByRole("dialog", { name: "编辑角色设定" })).toBeInTheDocument();
+
+      await act(async () => { finishAnimation(); await finished; });
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "编辑角色设定" })).not.toBeInTheDocument());
+      expect(document.activeElement).toBe(trigger);
+    } finally {
+      if (original) Object.defineProperty(Element.prototype, "getAnimations", original);
+      else Reflect.deleteProperty(Element.prototype, "getAnimations");
+    }
+  });
+
   it("cancels without saving or mutating the initial settings", async () => {
     const initial = defaultSettings();
     const onSave = vi.fn(), onClose = vi.fn();

@@ -59,7 +59,11 @@ import { useSuperChat } from "@/features/superchat/use-superchat";
 import { CanvasReferences, toCanvasReferences, type ReferenceItem } from './canvas-references';
 import { ConversationPicker } from './conversation-picker';
 import { useAgentRuntime } from '@/features/agent-runtime/useAgentRuntime';
-import { AgentRuntimePanel } from '@/features/agent-runtime/AgentRuntimePanel';
+import { ManagedChatPanel } from '@/features/agent-runtime/ManagedChatPanel';
+import {
+  readSelectionDelegationDraft,
+  writeSelectionDelegationDraft,
+} from '@/features/agent-runtime/selectionDelegation';
 import { useAiAvatarUrl } from "@/features/superchat/ai-avatar";
 import { buildChatTaskLabel } from "@/features/superchat/task-notification-label";
 import { ComposerWaitingStatus } from "@/features/superchat/composer-waiting-status";
@@ -362,8 +366,6 @@ function ChatAvatarFrame({
   const isAssistant = role === "assistant";
   const isTool = role === "tool";
   const initial = label?.trim().charAt(0).toUpperCase() || (isAssistant ? "虾" : isTool ? "" : "U");
-  // Shared, fetch-once avatar source (see ai-avatar.ts) — null until ready so we
-  // don't kick off a raw-path request from every avatar before the blob lands.
   const avatarUrl = useAiAvatarUrl();
 
   return (
@@ -381,13 +383,10 @@ function ChatAvatarFrame({
     >
       {isAssistant ? (
         avatarUrl && (
-          <video
-            className="size-full object-cover"
+          <img
+            className="size-full object-contain"
             src={avatarUrl}
-            autoPlay
-            loop
-            muted
-            playsInline
+            alt=""
             aria-hidden="true"
           />
         )
@@ -2492,8 +2491,21 @@ function ConversationWorkspace({project, ...props}: SuperChatPanelProps & {proje
 function ManagedConversationPanel(props:SuperChatPanelProps) {
   const params=useParams({strict:false}) as {project?:string};
   const user=useAuthStore(s=>s.username);
-  const runtime=useAgentRuntime({user:user||'',project:params.project||'',canvas:props.canvasId||'',conversation:props.conversationId||''},true,props.active!==false);
-  return <ConversationPanel {...props} agentRuntime={runtime}/>;
+  const owner = useMemo(() => ({
+    user: user || '',
+    project: params.project || '',
+    canvas: props.canvasId || '',
+    conversation: props.conversationId || '',
+  }), [params.project, props.canvasId, props.conversationId, user]);
+  const runtime=useAgentRuntime(owner,true,props.active!==false);
+  return <ManagedChatPanel
+    owner={owner}
+    runtime={runtime}
+    active={props.active!==false}
+    reference={props.reference}
+    variant={props.variant}
+    onRequestClose={props.onRequestClose}
+  />;
 }
 
 function ConversationPanel({
@@ -2509,7 +2521,26 @@ function ConversationPanel({
   const { t } = useTranslation();
   const params = useParams({ strict: false }) as { project?: string };
   const username = useAuthStore((s) => s.username);
-  const [draft, setDraft] = useState("");
+  const selectionDraftOwner = useMemo(() =>
+    managedWorkspace && username && params.project && canvasId
+      ? {
+          user: username,
+          project: params.project,
+          canvas: canvasId,
+          conversation: conversationId,
+        }
+      : null,
+  [canvasId, conversationId, managedWorkspace, params.project, username]);
+  const [draft, setDraft] = useState(() =>
+    selectionDraftOwner
+      ? readSelectionDelegationDraft(selectionDraftOwner)?.goal ?? ""
+      : "",
+  );
+  useEffect(() => {
+    if (selectionDraftOwner) {
+      writeSelectionDelegationDraft(selectionDraftOwner, { goal: draft });
+    }
+  }, [draft, selectionDraftOwner]);
   const [canvasReferences, setCanvasReferences] = useState<ReferenceItem[]>([]);
   useEffect(() => { setCanvasReferences([]); }, [params.project]);
   useEffect(() => {
@@ -2559,6 +2590,13 @@ function ConversationPanel({
   });
   const isChatInitializing = !chat.historyReady && chat.messages.length === 0 && (chat.connecting || chat.connected);
   const agentRuntime = suppliedRuntime!;
+  const managedRecipient = managedWorkspace
+    ? agentRuntime.delegateAgentId === 'main'
+      ? agentRuntime.main?.current_agent?.effective.name || '项目主创'
+      : agentRuntime.adoptions.find((member) =>
+          member.adoption_id === agentRuntime.delegateAgentId,
+        )?.effective.name || '项目成员'
+    : '';
   const composerBusy = managedWorkspace ? agentRuntime.busy : chat.busy;
 
   const hasSendableContent = draft.trim().length > 0 || attachments.length > 0;
@@ -3297,7 +3335,6 @@ function ConversationPanel({
           </div>
         )}
 
-        {managedWorkspace && <AgentRuntimePanel runtime={agentRuntime}/>}
         {!managedWorkspace && active && canvasId && params.project && <CanvasReferences project={params.project} canvas={canvasId} items={canvasReferences} onChange={setCanvasReferences} />}
         {!managedWorkspace && chat.approvals.map((approval) => (
           <ApprovalCard
@@ -3562,7 +3599,7 @@ function ConversationPanel({
                 }
               }}
               dir="auto"
-              placeholder={managedWorkspace ? '交给主创：为选中内容提出文本方案…' : t("aiAssistant.placeholder")}
+              placeholder={managedWorkspace ? `交给${managedRecipient}：为选中内容提出文本方案…` : t("aiAssistant.placeholder")}
               className={cn(
                 "max-h-[220px] min-h-14 resize-none border-0 bg-transparent px-5 py-4 text-base shadow-none placeholder:text-muted-foreground/70 focus-visible:ring-0 dark:bg-transparent",
                 isFreezoneLayout && "min-h-11 px-3.5 py-3 text-sm",

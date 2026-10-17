@@ -10,6 +10,7 @@ export interface TreeNode {
 }
 
 const labels: Record<ScriptDocumentKind, string> = {
+  idea_candidate: "立意候选",
   brief: "创作简报", outline: "故事大纲", people: "人物小传", scenes: "场景设计",
   props: "道具设计", episode_synopsis: "分集梗概", episode_script: "分集剧本",
 };

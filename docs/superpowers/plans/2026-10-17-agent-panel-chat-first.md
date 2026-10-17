@@ -122,3 +122,23 @@ type DelegationComposerProps = {
 ## 自检映射
 
 默认面板与视觉由任务4、6覆盖；讨论／执行边界由任务1—3覆盖；委托范围与打开行为由任务4、5覆盖；权限由任务4、5覆盖；运行、错误和恢复由任务2—6覆盖；窄屏与焦点由任务4、6覆盖。无额外模型工具、整画布新委托、自动授权或无关后端重构。
+
+## 执行记录
+
+- 最终独立验证：`agent-runtime.test.tsx`、`chat-first-panel.test.tsx`、`selection-delegation.test.ts` 三文件 46/46 通过（64.21 秒）；最后新增节点定位/滚动提示 2 项定向通过，语音 owner/active 生命周期 1 项定向通过。最终 `node node_modules/typescript/bin/tsc -b --pretty false` 退出码 0；之后仅将授权区内部能力名称换成用户文案。
+- 质量审查确认语音 owner/inactive 清理与迟到回调隔离、常驻画布同步提示已修复。专业设计代理复核真实截图后补上同名节点短标识/点击定位与可滚动提示。根代理在实际 1024×768、1280×800、1600×900 视口验证无横向溢出、单层配置滚动、固定动作可达。截图和边界记录位于 `docs/design/agent-chat-first-2026-10-17/README.md`。
+- 最终限定文件 `git diff --check` 退出码 0。共享工作区包含其他功能修改，未批量暂存或提交；保留用户既有工作。验收没有真实付费模型/生成调用，真实麦克风硬件未测试。
+
+- UI 规格审查修复了运行/机组错误与未知请求恢复入口被折叠隐藏，以及旧委托响应关闭新节点选择配置的问题；独立复核通过。真实参考页面已验证两节点选区直接打开委托配置、关闭后焦点回到委托入口、机组以独立弹窗打开。
+- 首轮前端目录组合测试：18 文件、210 通过、10 失败；其中 UI 旧查询与异步等待已更新，随后核心面板两文件 38/38 通过。TypeScript 构建首轮退出码 0（约 107 秒）。最终语音生命周期和同步提示修复后需补定向验证。
+- 非本次修改范围的 `workspace-switcher.test.tsx` 焦点断言首轮失败，隔离复跑通过；`direction-references.test.tsx` 隔离复跑仍有 2 个应用按钮等待失败，且失败用例与首轮不同。该文件对应的风格配置实现正在共享工作区发生其他修改，本任务不覆盖这些改动，也不将整个目录测试宣称全部通过。
+
+- 后端讨论服务通过规格与质量两阶段审查。新增晚完成回复的历史排序回归，修复先截请求再展开消息的问题；无主创 API 测试明确清除绑定。两份讨论测试共 15 项通过，限定文件 diff 检查通过。讨论使用现有受支持的 `script` 计量类别，另以 `creation_agent_discussion` 记录任务子类型，不扩大全局类别白名单。
+- 前端讨论数据层已委派独立实现者，范围限定为 API、hook 和测试；面板接线待数据层审查后由下一位实现者负责。
+- 根代理组合验证：`uv run pytest tests/creation/test_discussions.py tests/creation/test_discussions_api.py tests/creation/test_agent_runs_api.py tests/creation/test_delegation_api.py tests/test_chat_canvas_conversations.py --basetemp .runlogs/pytest-chat-first-backend-final-20261017-01 -q --tb=short`，71 项通过，10 条已有弃用告警，退出码 0，用时 291.69 秒。
+- 实际浏览器验收继续使用隔离项目 `01M52RD5QXFD3DFRBKESJ34W18`（夜行者 · 界面校对）。开发 API 重启需要 `ST_EDITION=ce`、`NOVELVIDEO_DATA_ROOT=E:\Proj\Nuomi-drama-factory\.runlogs\pencil-reference-data`、`NOVELVIDEO_STATE_DIR=E:\Proj\Nuomi-drama-factory\.runlogs\pencil-reference-data\state`；项目登记库确认了这组原路径。恢复后画布及任务读取返回 200，不使用空的默认 state 目录代替参考数据。
+- 前端讨论 API/hook 完成两阶段审查；修复浏览器存储失败仍发送、旧挂载迟到响应覆盖新请求记录两项问题。定向测试 8 项通过。独立 UI 实现者已开始面板拆分、发送接线和选区意图通知（任务 4/5 与任务 3 的 UI 接线合并执行，避免同一组件重复改造）。
+- 用户已选择子代理分工实施。后端实现与前端只读结构探索已启动；代码修改按单一写入者安排，完成后先规格审查、再质量审查。
+- 记录当前 `feat/canvas` 共享工作区基线至 `.runlogs/chat-first-baseline-status.txt`，保留前置功能和其他未提交修改。
+- 基线 `tests/test_chat_canvas_conversations.py`：默认临时目录发生 WinError 5；改用独立 `--basetemp .runlogs/pytest-chat-first-baseline-20261017-01` 后 11 项通过（37.40 秒）。未调整系统权限或生产代码。
+- 前端探索确定更小的接入边界：新建 `frontend/src/features/agent-runtime/ManagedChatPanel.tsx`，仅替换 ManagedConversationPanel 的返回组件。保留 ConversationWorkspace 会话目录、打开会话和运行 hook；旧 ConversationPanel 保持原样，新面板不连接 useSuperChat WebSocket。新讨论历史独立保存，旧聊天缓存不删除；Agent 任务历史仍复用原接口。选区意图增加唯一 requestId 与接受通知，以保证首次打开配置一次且关闭后不被重复渲染打开。

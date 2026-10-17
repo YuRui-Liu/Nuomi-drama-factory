@@ -34,6 +34,14 @@ class MotivatedLight(DirectionModel):
     motivation: Text
 
 
+class PropBlocking(DirectionModel):
+    prop_id: Text
+    world_position: Text
+    facing: Text
+    held_by: Text
+    motion_path: Text
+
+
 class ShotCinematography(DirectionModel):
     source: Literal["director_plan", "director_world", "reference_observation"]
     source_ids: tuple[Text, ...] = Field(min_length=1)
@@ -41,6 +49,7 @@ class ShotCinematography(DirectionModel):
     camera_side: Text
     screen_direction: Text
     subjects: tuple[SubjectBlocking, ...] = ()  # Empty for establishing/prop shots.
+    props: tuple[PropBlocking, ...] = ()
     lights: tuple[MotivatedLight, ...] = Field(min_length=1)
     key_light_id: Text
     shadow_direction: Text
@@ -71,6 +80,12 @@ class ShotCinematography(DirectionModel):
                 f"{subject.subject_id}: world position {subject.world_position}; "
                 f"screen position {subject.screen_position}; body facing {subject.facing}; "
                 f"gaze target {subject.gaze_target}; motion path {subject.motion_path}."
+            )
+        for prop in self.props:
+            lines.append(
+                f"Prop {prop.prop_id}: world position {prop.world_position}; "
+                f"heading {prop.facing}; held by {prop.held_by}; "
+                f"motion path {prop.motion_path}."
             )
         for light in self.lights:
             lines.append(

@@ -59,6 +59,26 @@ def test_active_shot_intent_reaches_source_state_context_without_changing_source
     assert json.loads(runner._source_state_context(active, _segment(), ""))["source_shot_states"][0]["director_intent"] is None
 
 
+def test_cinematography_reaches_video_source_state_even_without_creative_contract():
+    cinematography = {
+        "source": "director_plan",
+        "source_ids": ["s1"],
+        "camera_side": "hallway; scene-map camera at x=50%, y=85%, heading 270°",
+        "subjects": [],
+        "lights": [],
+    }
+    shot = SimpleNamespace(
+        id="shot-1", visible_start_state="door closed", visible_end_state="door open",
+        source_span_ids=("s1",), intent=None, creative=None,
+        cinematography=SimpleNamespace(model_dump=lambda **_: cinematography),
+    )
+    active = SimpleNamespace(groups=(SimpleNamespace(shots=(shot,)),))
+
+    result = json.loads(runner._source_state_context(active, _segment(), "{}"))
+
+    assert result["source_shot_states"][0]["cinematography"] == cinematography
+
+
 def test_pair_keeps_ordered_intents_and_legacy_has_no_invented_intent(monkeypatch):
     monkeypatch.setattr(runner, "_snapshot_frame_sha256", lambda *args: "a" * 64)
     pair = runner._synthetic_pair_beat({"id": "shot-1", "director_intent": _intent().model_dump()},

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import type { Edge, Node, XYPosition } from '@xyflow/react';
+import type { GroupGridBinding, GridRun, GridFrameOrigin, GridFrameRecord } from '../production/grid/gridBinding';
 import type {
   DirectorControlFrameBundle,
   DirectorObjectLayer,
@@ -24,6 +25,11 @@ export const CANVAS_NODE_TYPES = {
   videoCompose: 'videoComposeNode',
   musicDesk: 'musicDeskNode',
   script: 'scriptNode',
+  ideation: 'ideationNode',
+  screenplay: 'screenplayNode',
+  directorWorkspace: 'directorWorkspaceNode',
+  narrativeGroupStoryboard: 'narrativeGroupStoryboardNode',
+  characterVoice: 'characterVoiceNode',
   pano360Viewer: 'pano360ViewerNode',
   threeDWorld: 'threeDWorldNode',
   skill: 'skillNode',
@@ -63,6 +69,8 @@ export interface NodeDisplayData {
 }
 
 export interface NodeImageData extends NodeDisplayData {
+  gridFrameOrigin?: GridFrameOrigin;
+  gridFrameRecord?: GridFrameRecord;
   imageUrl: string | null;
   previewImageUrl?: string | null;
   aspectRatio: string;
@@ -110,6 +118,12 @@ export interface VideoNodeData extends NodeDisplayData {
   widthPx?: number | null;
   heightPx?: number | null;
   durationMs?: number | null;
+  exportTimelineRevision?: string | null;
+  exportDraftRevision?: number;
+  exportManifestUrl?: string | null;
+  exportArtifactSha256?: string | null;
+  exportSubtitleSha256?: string | null;
+  exportSubtitlePath?: string | null;
   isUploading?: boolean;
   isAnalyzing?: boolean;
   analysisResult?: string | null;
@@ -190,6 +204,12 @@ export interface VideoComposeNodeData extends NodeDisplayData {
    * `ComposeTimelineState`，这里存 unknown 以免领域层反向依赖 compose 特性层。
    */
   draftTimeline?: unknown;
+  exportTimelineRevision?: string | null;
+  exportDraftRevision?: number;
+  exportManifestUrl?: string | null;
+  exportArtifactSha256?: string | null;
+  exportSubtitleSha256?: string | null;
+  exportSubtitlePath?: string | null;
   [key: string]: unknown;
 }
 
@@ -449,6 +469,10 @@ export interface ImageGenCameraSelection {
 }
 
 export interface ImageGenNodeData extends NodeImageData {
+  /** One contact sheet per run, separate from the multi-result image gallery. */
+  gridMode?: 'narrative-group';
+  gridBinding?: GroupGridBinding;
+  gridRuns?: GridRun[];
   prompt: string;
   model: string;
   size: ImageSize;
@@ -574,12 +598,16 @@ export interface AudioVoiceRef {
     | 'character_default'
     | 'character_age_group'
     | 'identity'
-    | 'identity_resolved';
+    | 'identity_resolved'
+    | 'character_voice_version';
   characterName?: string;
   identityId?: string;
   slot?: string;
   /** scope=user_custom 时必填：账号级我的音色 ID（来自 /freezone/audio/voices）。 */
   voiceId?: string;
+  /** 固定已采用角色声音版本，避免角色当前声线变化后替换配音输入。 */
+  characterId?: string;
+  versionId?: string;
 }
 
 export interface AudioNodeData extends NodeDisplayData {
@@ -790,7 +818,23 @@ export interface SkillNodeData extends NodeDisplayData {
   [key: string]: unknown;
 }
 
+/** Persistent content lives in project services; canvas stores references and drafts only. */
+export interface ProductionContentNodeData extends NodeDisplayData {
+  documentId?: string;
+  briefId?: string;
+  workflowId?: string;
+  episodeNumber?: number;
+  characterId?: string;
+  characterName?: string;
+  identityId?: string;
+  voiceVersionId?: string;
+  directorRevisionId?: string;
+  groupId?: string;
+  [key: string]: unknown;
+}
+
 export type CanvasNodeData =
+  | ProductionContentNodeData
   | UploadImageNodeData
   | ExportImageNodeData
   | BeatContextNodeData

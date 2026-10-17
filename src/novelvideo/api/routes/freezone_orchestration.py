@@ -205,7 +205,8 @@ async def start_run(project: str, body: CreateRun, user: dict = Depends(get_api_
             raise OrchestrationError("canvas_not_found", "Canvas does not exist")
         if body.expected_revision is not None and canvas['revision'] != body.expected_revision:
             raise OrchestrationError('input_conflict', 'Canvas changed after preview; inspect the new request')
-        order = execution_order(canvas["nodes"], canvas["edges"], body.target)
+        order = execution_order(canvas["nodes"], canvas["edges"], body.target,
+                               operation=body.operation)
         adapter = NodeAdapter(root)
         available = available_operations()
         for node in canvas["nodes"]:

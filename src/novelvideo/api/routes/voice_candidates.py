@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from novelvideo.api.auth import get_api_user
 from novelvideo.api.deps import make_static_url_for_context
 from novelvideo.media_capabilities.tts.candidate_store import VoiceCandidateStore
+from novelvideo.media_capabilities.tts.voice_versions import VoiceVersionStore
 from novelvideo.media_capabilities.tts.character_voice import (
     character_voice_snapshot, prepare_character_voice_request, voice_snapshot_digest,
 )
@@ -60,6 +61,55 @@ def _owned(candidates, candidate_id, name):
 async def list_voice_candidates(project: str, name: str, user: dict = Depends(get_api_user)):
     ctx, _, character, candidates = await resolve_voice_scope(project, name, user, read_only=True)
     return {"ok": True, "data": [candidate_view(ctx, candidates, row) for row in candidates.list(character.name)]}
+
+
+@router.get("/projects/{project}/characters/{name}/voice-versions")
+async def list_voice_versions(project: str, name: str, user: dict = Depends(get_api_user)):
+    """List immutable adopted voices and expose legacy references without adopting them."""
+    ctx, _, character, candidates = await resolve_voice_scope(project, name, user, read_only=True)
+    character_id = str(getattr(character, "character_id", "") or "")
+    if not character_id:
+        return {"ok": True, "data": {"character_id": "", "versions": [], "current": []}}
+
+    store = VoiceVersionStore(candidates.db_path)
+    versions = store.list_versions(character_id)
+    selected = {(item["identity_id"], item["slot"]) for item in versions if item["current"]}
+
+    def add_legacy(identity_id: str, slot: str, reference: dict) -> None:
+        if not reference or (identity_id, slot) in selected:
+            return
+        item = store.get_legacy_current(
+            character_id, identity_id=identity_id, slot=slot,
+            project_dir=candidates.project_dir, reference=reference,
+        )
+        if item:
+            versions.append(item)
+            selected.add((identity_id, slot))
+
+    add_legacy("", "default", {
+        "path": getattr(character, "reference_audio_path", "") or "",
+        "sha256": getattr(character, "reference_audio_sha256", "") or "",
+    })
+    for slot, reference in (getattr(character, "voice_samples_by_age_group", {}) or {}).items():
+        add_legacy("", str(slot), reference if isinstance(reference, dict) else {})
+    for identity in getattr(character, "identities", []) or []:
+        identity_id = str(getattr(identity, "identity_id", "") or "")
+        add_legacy(identity_id, "default", {
+            "path": getattr(identity, "reference_audio_path", "") or "",
+            "sha256": getattr(identity, "reference_audio_sha256", "") or "",
+        })
+        for slot, reference in (getattr(identity, "voice_samples_by_age_group", {}) or {}).items():
+            add_legacy(identity_id, str(slot), reference if isinstance(reference, dict) else {})
+
+    for item in versions:
+        item["url"] = make_static_url_for_context(
+            ctx, item["path"], local_path=candidates.project_dir / item["path"],
+        ) if item["path"] else ""
+    current = [
+        {"identity_id": item["identity_id"], "slot": item["slot"], "version_id": item["version_id"]}
+        for item in versions if item["current"]
+    ]
+    return {"ok": True, "data": {"character_id": character_id, "versions": versions, "current": current}}
 
 
 @router.post("/projects/{project}/characters/{name}/voice-candidates/{candidate_id}/recheck")

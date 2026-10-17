@@ -17,6 +17,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(routes, "runtime_settings", lambda: {"concurrency": 2, "source": "saved"})
     monkeypatch.setattr(routes, "launch", lambda *args: None)
     app = FastAPI()
+    app.state.project_dir = tmp_path
     app.include_router(routes.router, prefix="/api/v1")
     app.dependency_overrides[get_api_user] = lambda: {"id": "u", "username": "u"}
     return TestClient(app)
@@ -69,6 +70,34 @@ def test_api_create_patch_run_and_status(client):
     assert client.post(PREFIX + f"/runs/{run_id}/cancel").json()["data"]["cancel_requested"]
 
 
+def test_fixed_revision_operation_creates_target_only_run(client):
+    from novelvideo.freezone.canvas_store import read_canvas
+
+    client.post(PREFIX + "/canvases", json={"canvas_id": "fixed", "name": "fixed"})
+    patch = {"base_revision": 1, "request_id": "add", "operations": [
+        {"op": "add_node", "node": {"id": "idea", "type": "ideationNode",
+            "data": {"operation": "generate", "referenceOnly": True}}},
+        {"op": "add_node", "node": {"id": "screenplay", "type": "screenplayNode",
+            "data": {"operation": "plan", "referenceOnly": True}}},
+        {"op": "add_edge", "edge": {"id": "idea-screenplay", "source": "idea",
+            "target": "screenplay"}},
+    ]}
+    created = client.post(PREFIX + "/canvases/fixed/patch", json=patch)
+    assert created.status_code == 200, created.text
+
+    response = client.post(PREFIX + "/runs", json={"canvas_id": "fixed", "target": "screenplay",
+        "operation": "inspect", "request_id": "inspect"})
+    assert response.status_code == 202, response.text
+    run = response.json()["data"]
+    assert run["order"] == ["screenplay"]
+    target = next(node for node in run["snapshot"]["nodes"] if node["id"] == "screenplay")
+    assert target["data"]["operation"] == "inspect"
+    assert target["data"]["referenceOnly"] is True
+
+    saved = read_canvas(client.app.state.project_dir, "fixed")
+    assert next(node for node in saved["nodes"] if node["id"] == "screenplay")["data"]["operation"] == "plan"
+
+
 def test_api_conflict_and_permissions_are_not_hidden(client):
     client.post(PREFIX + "/canvases", json={"canvas_id": "canvas", "name": "test"})
     response = client.post(PREFIX + "/canvases/canvas/patch", json={"base_revision": 88, "request_id": "bad", "operations": []})
@@ -80,7 +109,12 @@ def test_api_conflict_and_permissions_are_not_hidden(client):
 def test_api_lists_all_nodes_including_blocked_operations(client):
     response = client.get(PREFIX + "/capabilities")
     assert response.status_code == 200
-    assert len(response.json()["data"]["nodes"]) == 19
+    nodes = response.json()["data"]["nodes"]
+    assert len(nodes) == 24
+    assert {"ideationNode", "screenplayNode", "directorWorkspaceNode",
+            "characterVoiceNode", "narrativeGroupStoryboardNode"} <= {
+        node["node_type"] for node in nodes
+    }
 
 
 def test_invalid_image_size_rejected_before_run_created(client):

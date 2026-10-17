@@ -133,12 +133,14 @@ async def _sse_token_still_valid(
 
 def _is_result_path_key(key: str) -> bool:
     lowered = str(key or "").lower()
-    if lowered in {"path", "paths"}:
+    if lowered in {"path", "paths", "grid_asset"}:
         return True
     return lowered.endswith("_path") or lowered.endswith("_paths")
 
 
 def _url_key_for_path_key(key: str) -> str:
+    if key == "grid_asset":
+        return "grid_url"
     if key == "path":
         return "url"
     if key == "paths":

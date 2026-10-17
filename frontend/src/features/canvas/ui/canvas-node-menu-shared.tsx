@@ -37,6 +37,10 @@ export const canvasMenuIconMap: Record<MenuIconKey, LucideIcon> = {
 };
 
 export const CANVAS_ADD_NODE_TYPES: readonly CanvasNodeType[] = [
+  CANVAS_NODE_TYPES.ideation,
+  CANVAS_NODE_TYPES.screenplay,
+  CANVAS_NODE_TYPES.directorWorkspace,
+  CANVAS_NODE_TYPES.characterVoice,
   CANVAS_NODE_TYPES.textAnnotation,
   CANVAS_NODE_TYPES.beatContext,
   CANVAS_NODE_TYPES.imageGen,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -112,30 +113,53 @@ class HandoffService:
         return int(row[0]) if row else 0
 
     @staticmethod
-    def _diff(old: str, new: str):
+    def _diff(old: str, new: str, *, old_scene_ids=None, new_scene_ids=None):
         old_lines, new_lines = old.splitlines(), new.splitlines()
         text = [{"operation": tag, "old_lines": [a + 1, b], "new_lines": [c + 1, d],
                  "before": old_lines[a:b], "after": new_lines[c:d]}
                 for tag, a, b, c, d in SequenceMatcher(
                     None, old_lines, new_lines, autojunk=False).get_opcodes() if tag != "equal"]
         try:
-            old_scenes = parse_screenplay_document(old).scenes if old.strip() else ()
-            new_scenes = parse_screenplay_document(new).scenes
-            old_hashes = [scene.content_hash for scene in old_scenes]
-            new_hashes = [scene.content_hash for scene in new_scenes]
-            scene_changes = [{"operation": tag,
-                              "old_scene_ids": [scene.id for scene in old_scenes[a:b]],
-                              "new_scene_ids": [scene.id for scene in new_scenes[c:d]]}
-                             for tag, a, b, c, d in SequenceMatcher(
-                                 None, old_hashes, new_hashes, autojunk=False).get_opcodes()
-                             if tag != "equal"]
-            needs_reparse = (not new_scenes or bool(old.strip() and not old_scenes)
-                             or any(old_hashes.count(h) > 1 or new_hashes.count(h) > 1
-                                    for h in set(old_hashes + new_hashes)))
+            old_scenes = (parse_screenplay_document(old, scene_identity_ids=old_scene_ids).scenes
+                          if old.strip() else ())
+            new_scenes = parse_screenplay_document(new, scene_identity_ids=new_scene_ids).scenes
+            old_by_id = {scene.id: scene for scene in old_scenes}
+            new_by_id = {scene.id: scene for scene in new_scenes}
+            old_ids, new_ids = list(old_by_id), list(new_by_id)
+            old_id_set, new_id_set = set(old_ids), set(new_ids)
+            common_old = [scene_id for scene_id in old_ids if scene_id in new_id_set]
+            common_new = [scene_id for scene_id in new_ids if scene_id in old_id_set]
+            in_order = set()
+            matcher = SequenceMatcher(None, common_old, common_new, autojunk=False)
+            for tag, a, b, c, d in matcher.get_opcodes():
+                if tag == "equal":
+                    in_order.update(common_old[a:b])
+            moved = [scene_id for scene_id in common_new if scene_id not in in_order]
+
+            def comparable_scene(scene):
+                heading = scene.heading.strip()
+                heading = re.sub(r"^\d+\s*[-－]\s*\d+\s*(?:[｜|·:：,，]\s*)?", "", heading)
+                heading = re.sub(r"^(?:场次\s*|第\s*)[（(]?\d+[）)]?\s*场?\s*", "", heading)
+                return (heading, tuple(block.text for block in scene.blocks))
+
+            changed = [scene_id for scene_id in common_new
+                       if comparable_scene(old_by_id[scene_id]) != comparable_scene(new_by_id[scene_id])]
+            added = [scene_id for scene_id in new_ids if scene_id not in old_id_set]
+            removed = [scene_id for scene_id in old_ids if scene_id not in new_id_set]
+            scene_changes = []
+            if added:
+                scene_changes.append({"operation": "insert", "old_scene_ids": [], "new_scene_ids": added})
+            if removed:
+                scene_changes.append({"operation": "delete", "old_scene_ids": removed, "new_scene_ids": []})
+            if moved:
+                scene_changes.append({"operation": "move", "old_scene_ids": moved, "new_scene_ids": moved})
+            if changed:
+                scene_changes.append({"operation": "replace", "old_scene_ids": changed, "new_scene_ids": changed})
+            needs_reparse = not new_scenes or bool(old.strip() and not old_scenes)
             reused = [] if needs_reparse else [
-                {"old_scene_id": old_scenes[old_hashes.index(scene.content_hash)].id,
-                 "new_scene_id": scene.id, "content_hash": scene.content_hash}
-                for scene in new_scenes if scene.content_hash in old_hashes
+                {"old_scene_id": scene_id, "new_scene_id": scene_id,
+                 "content_hash": new_by_id[scene_id].content_hash}
+                for scene_id in common_new
             ]
             old_dialogue = [block.text for scene in old_scenes for block in scene.blocks
                             if block.kind == "dialogue"]
@@ -159,6 +183,41 @@ class HandoffService:
                 "inferred_impacts": (["scene_semantics"] if scene_changes else []),
                 "needs_reparse": needs_reparse, "available_scene_ids": available,
                 "available_scenes": available_scenes}
+
+    @staticmethod
+    def _remap_candidate_scene_ids(diff, legacy_to_stable):
+        """Keep old-source IDs as historical evidence and expose stable candidate IDs."""
+        if not legacy_to_stable:
+            return
+        for change in diff["scenes"]:
+            change["new_scene_ids"] = [legacy_to_stable.get(scene_id, scene_id)
+                                       for scene_id in change["new_scene_ids"]]
+        for reused in diff["reused_scenes"]:
+            reused["new_scene_id"] = legacy_to_stable.get(
+                reused["new_scene_id"], reused["new_scene_id"])
+        diff["available_scene_ids"] = [legacy_to_stable.get(scene_id, scene_id)
+                                       for scene_id in diff["available_scene_ids"]]
+        for scene in diff["available_scenes"]:
+            scene["id"] = legacy_to_stable.get(scene["id"], scene["id"])
+
+    async def scene_identity_ids_for_source(self, episode: int, source_revision: int,
+                                            source_hash: str) -> list[str] | None:
+        """Return identities frozen by the confirmed handoff that wrote this source."""
+        async with self.documents._db() as db:
+            rows = await (await db.execute(
+                "SELECT data FROM script_handoffs WHERE project_id=? AND episode_number=? "
+                "ORDER BY created_at DESC,rowid DESC",
+                (self.project_id, episode),
+            )).fetchall()
+        for row in rows:
+            item = self._decode(row)
+            if (item.get("source_revision") != source_revision
+                    or item.get("source_hash") != source_hash):
+                continue
+            identities = item.get("snapshot", {}).get("scene_identity_ids")
+            if isinstance(identities, list) and identities:
+                return [str(value) for value in identities]
+        return None
 
     async def _fact_ack(self, db, document_id, refs, acknowledgement):
         mode = acknowledgement.get("mode")
@@ -302,14 +361,11 @@ class HandoffService:
                 fact_ack = await self._fact_ack(db, document_id, refs, fact_acknowledgement)
                 prior_source = await self._source(db, doc.episode_number)
                 old_text = prior_source["raw_content"] if prior_source else ""
-                diff = self._diff(old_text, doc.revision.markdown)
-                if mode == "selected" and (diff["needs_reparse"] or
-                        not set(scene_ids).issubset(diff["available_scene_ids"])):
-                    raise DocumentValidation("selected scene ids require a reliable current parse")
-                # Compare selected references only against a handoff that actually produced
-                # the previous source. An imported source has no trusted selection baseline.
+                # Only reuse old scene identities from the confirmed handoff that
+                # actually wrote the currently adopted project source.
                 prior_handoffs = await (await db.execute(
-                    "SELECT data FROM script_handoffs WHERE project_id=? AND episode_number=? ORDER BY created_at DESC,rowid DESC",
+                    "SELECT data FROM script_handoffs WHERE project_id=? AND episode_number=? "
+                    "ORDER BY created_at DESC,rowid DESC",
                     (self.project_id, doc.episode_number),
                 )).fetchall()
                 previous_snapshot = None
@@ -319,6 +375,42 @@ class HandoffService:
                             and prior_item.get("source_hash") == prior_source["content_hash"]):
                         previous_snapshot = prior_item["snapshot"]
                         break
+                old_scene_ids = ((previous_snapshot or {}).get("scene_identity_ids") or None)
+                scene_identity_ids = [item.id for item in doc.revision.scene_identities] or None
+                legacy_to_stable = {}
+                if scene_identity_ids:
+                    legacy_scenes = parse_screenplay_document(doc.revision.markdown).scenes
+                    if (len(legacy_scenes) == len(scene_identity_ids)
+                            and len({scene.id for scene in legacy_scenes}) == len(legacy_scenes)
+                            and len(set(scene_identity_ids)) == len(scene_identity_ids)):
+                        legacy_to_stable = {
+                            scene.id: scene_identity_ids[index]
+                            for index, scene in enumerate(legacy_scenes)
+                        }
+                # When the prior project source predates stable identities, compare
+                # both texts with the parser's legacy IDs, then translate only the
+                # current side to its frozen IDs. Once a handoff has written stable
+                # IDs for the prior source, compare stable IDs on both sides.
+                legacy_diff = old_scene_ids is None and bool(legacy_to_stable)
+                diff = (self._diff(old_text, doc.revision.markdown)
+                        if legacy_diff else
+                        self._diff(old_text, doc.revision.markdown,
+                                   old_scene_ids=old_scene_ids,
+                                   new_scene_ids=scene_identity_ids))
+                if legacy_diff:
+                    self._remap_candidate_scene_ids(diff, legacy_to_stable)
+                if mode == "selected":
+                    available_scene_ids = set(diff["available_scene_ids"])
+                    canonical_scene_ids = [
+                        scene_id if scene_id in available_scene_ids
+                        else legacy_to_stable.get(scene_id)
+                        for scene_id in scene_ids
+                    ]
+                    if (diff["needs_reparse"] or any(scene_id is None for scene_id in canonical_scene_ids)
+                            or len(set(canonical_scene_ids)) != len(canonical_scene_ids)):
+                        raise DocumentValidation("selected scene ids require a reliable current parse")
+                    scene_ids = canonical_scene_ids
+                    update_scope = {**update_scope, "scene_ids": sorted(scene_ids)}
                 old_refs = previous_snapshot["reference_revisions"] if previous_snapshot else {}
                 diff["references"] = [
                     {"document_id": ref_id, "before_revision": old_refs.get(ref_id),
@@ -359,6 +451,12 @@ class HandoffService:
                 snapshot = {"project_id": self.project_id, "episode_number": doc.episode_number,
                             "document_id": doc.id, "revision_id": revision_id,
                             "title": doc.title, "markdown": doc.revision.markdown,
+                            "scene_identity_ids": scene_identity_ids,
+                            "scene_identity_lineage": [
+                                {"id": item.id, "ordinal": item.ordinal,
+                                 "parent_ids": list(item.parent_ids)}
+                                for item in doc.revision.scene_identities
+                            ],
                             "content_hash": content_sha256(doc.revision.markdown),
                             "reference_revisions": reference_revisions,
                             "references": frozen_references, "entities": frozen,
@@ -372,6 +470,7 @@ class HandoffService:
                 identity_hash = _digest({"project_id": self.project_id, "episode": doc.episode_number,
                                          "revision": revision_id, "references": reference_revisions,
                                          "entities": frozen, "scope": update_scope, "fact_ack": fact_ack,
+                                         "scene_identity_ids": scene_identity_ids,
                                          "source_project_revision": source_project_revision,
                                          "previous_source": snapshot["previous_source"]})
                 existing = await (await db.execute(
@@ -472,6 +571,7 @@ class HandoffService:
                             "snapshot_id": handoff_id, "episode": item["episode_number"],
                             "source_revision": item["source_revision"],
                             "source_hash": item["source_hash"],
+                            "scene_identity_ids": snap.get("scene_identity_ids", []),
                             "reference_context": {"documents": snap["references"],
                                                   "entities": snap["entities"]},
                             "scene_ids": scope.get("scene_ids") if scope["mode"] == "selected" else None,

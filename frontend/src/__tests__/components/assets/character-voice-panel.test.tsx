@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 import i18next from "i18next";
 import { delay, http, HttpResponse } from "msw";
@@ -20,7 +20,7 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import { CharacterVoicePanel } from "@/components/assets/character-voice-panel";
-import type { Character } from "@/types/character";
+import type { Character, CharacterVoiceDesign, CharacterVoiceRecommendation } from "@/types/character";
 
 beforeEach(() => server.use(http.post("http://localhost:3000/api/v1/projects/:project/characters/:name/voice-recommendation", () =>
   HttpResponse.json({ ok: false, error: "推荐服务暂不可用" }, { status: 503 }))));
@@ -87,41 +87,153 @@ function renderPanel(character: Character) {
   );
 }
 
+function enableVoiceDescriptionPreparation(
+  texture: string,
+  options: { recommendationDelayMs?: number; recommendation?: CharacterVoiceRecommendation } = {},
+) {
+  server.use(
+    http.post("http://localhost:3000/api/v1/projects/demo/characters/:name/voice-recommendation", async ({ request }) => {
+      const body = await request.json() as { adjustment?: string; design?: CharacterVoiceDesign };
+      if (!body.adjustment) {
+        if (options.recommendationDelayMs) await delay(options.recommendationDelayMs);
+        return options.recommendation
+          ? HttpResponse.json({ ok: true, data: options.recommendation })
+          : HttpResponse.json({ ok: false, error: "推荐暂不可用" }, { status: 503 });
+      }
+      const base = body.design ?? { voice_spec: {}, performance: {} };
+      return HttpResponse.json({ ok: true, data: {
+        design: { ...base, voice_spec: { ...base.voice_spec, texture } },
+        voice_description: `待编译声音：${texture}`, audition_text: "解析台词", audition_source: "example",
+        rationale: "整理自由声音描述", source_digest: "draft-source", voice_facts: { vocalization_mode: "dialogue" },
+      } });
+    }),
+    http.post("*/voice-samples/default/prepare", async ({ request }) => {
+      const body = await request.json() as { audition_text: string; design: CharacterVoiceDesign; perceived_age?: string };
+      const voiceSpec = { ...body.design.voice_spec, texture };
+      if (body.perceived_age) voiceSpec.age_impression = body.perceived_age;
+      const design = { ...body.design, voice_spec: voiceSpec, audition_text: body.audition_text };
+      return HttpResponse.json({ ok: true, data: {
+        design, voice_description: `已编译声音：${texture}`, audition_text: body.audition_text,
+        voice_spec: voiceSpec, compiler_version: "test-compiler",
+      } });
+    }),
+  );
+}
+
 describe("CharacterVoicePanel", () => {
-  it("shows the backend validation reason when audition submission returns 422", async () => {
+  it("does not write an in-flight character A refinement after the selected node role switches to B", async () => {
+    emptySamplesFor("异步角色A", { voice_facts: { vocalization_mode: "dialogue" } });
+    emptySamplesFor("当前角色B", { voice_facts: { vocalization_mode: "dialogue" } });
+    let releaseRefinement!: () => void;
+    let signalRefinementStarted!: () => void;
+    let signalRefinementFinished!: () => void;
+    const refinementGate = new Promise<void>(resolve => { releaseRefinement = resolve; });
+    const refinementStarted = new Promise<void>(resolve => { signalRefinementStarted = resolve; });
+    const refinementFinished = new Promise<void>(resolve => { signalRefinementFinished = resolve; });
+    const selected = { project: "demo", nodeId: "voice-node-1", character: "异步角色A" };
+    const isCurrentRole = (name: string) => () => selected.project === "demo"
+      && selected.nodeId === "voice-node-1"
+      && selected.character === name;
+    const onNodeDataChange = vi.fn();
+    server.use(http.post("*/voice-recommendation", async ({ request }) => {
+      const body = await request.json() as { adjustment?: string };
+      if (!body.adjustment) return HttpResponse.json({ ok: false, error: "推荐暂不可用" }, { status: 503 });
+      signalRefinementStarted();
+      await refinementGate;
+      signalRefinementFinished();
+      return HttpResponse.json({ ok: true, data: {
+        design: { voice_spec: { texture: "A 的迟到结果" }, performance: {} },
+        voice_description: "A 的迟到结果", audition_text: "A 的迟到试听词", audition_source: "example",
+        rationale: "异步测试", source_digest: "a", voice_facts: { vocalization_mode: "dialogue" },
+      } });
+    }));
+
+    const view = render(
+      <CharacterVoicePanel
+        project="demo"
+        character={{ name: "异步角色A" }}
+        nodeVoiceDesign={{ voice_spec: {}, performance: {} }}
+        isNodeContextCurrent={isCurrentRole("异步角色A")}
+        onNodeDataChange={onNodeDataChange}
+      />,
+      { wrapper },
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "重新拟定声音方案" }));
+    await refinementStarted;
+
+    selected.character = "当前角色B";
+    view.rerender(
+      <CharacterVoicePanel
+        project="demo"
+        character={{ name: "当前角色B" }}
+        isNodeContextCurrent={isCurrentRole("当前角色B")}
+        onNodeDataChange={onNodeDataChange}
+      />,
+    );
+    await screen.findByRole("button", { name: "重新拟定声音方案" });
+    releaseRefinement();
+    await act(async () => {
+      await refinementFinished;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    });
+
+    expect(onNodeDataChange).not.toHaveBeenCalledWith(expect.objectContaining({
+      voiceDescription: "A 的迟到结果",
+      auditionText: "A 的迟到试听词",
+    }));
+    expect(screen.queryByText("A 的迟到结果")).not.toBeInTheDocument();
+  });
+
+  it("shows the backend validation reason when voice compilation returns 422", async () => {
     const errorToast = vi.spyOn(toast, "error");
     emptySamples({ voice_facts: { vocalization_mode: "dialogue" } });
+    enableVoiceDescriptionPreparation("老年沙哑");
     server.use(http.post("*/voice-samples/default/design", () =>
       HttpResponse.json({ ok: false, error: "声音年龄与所选槽位冲突" }, { status: 422 })));
     renderPanel({ name: "秦" });
     await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
     fireEvent.change(screen.getByLabelText("自定义声音描述"), { target: { value: "老年男声" } });
     fireEvent.change(screen.getByLabelText("试听文本"), { target: { value: "请跟我来。" } });
+    fireEvent.click(screen.getByRole("button", { name: "解析并查看声线字段差异" }));
+    fireEvent.click(await screen.findByRole("button", { name: "接受差异并重新编译" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "一键生成声音" }));
     await waitFor(() => expect(errorToast).toHaveBeenCalledWith("声音年龄与所选槽位冲突"));
     errorToast.mockRestore();
   });
 
-  it("clears stale automatic suggestions after a same-character role change fails to refresh", async () => {
-    emptySamples({ voice_facts: { vocalization_mode: "dialogue" } });
-    let calls = 0;
-    server.use(http.post("*/voice-recommendation", () => {
-      calls += 1;
-      return calls === 1 ? HttpResponse.json({ ok: true, data: {
-        voice_description: "旧身份声音", audition_text: "旧身份台词", audition_source: "dialogue",
-        rationale: "原文", source_digest: "old", voice_facts: { vocalization_mode: "dialogue" },
-      } }) : HttpResponse.json({ ok: false, error: "不可用" }, { status: 503 });
-    }));
-    const view = renderPanel({ name: "秦", role: "学生" });
+  it("does not submit a recommendation if the character role changes while it is loading", async () => {
+    emptySamplesFor("角色C", { voice_facts: { vocalization_mode: "dialogue" } });
+    let releaseRecommendation!: () => void;
+    let signalRecommendationStarted!: () => void;
+    let submitted: unknown;
+    const recommendationGate = new Promise<void>(resolve => { releaseRecommendation = resolve; });
+    const recommendationStarted = new Promise<void>(resolve => { signalRecommendationStarted = resolve; });
+    const errorToast = vi.spyOn(toast, "error");
+    server.use(
+      http.post("http://localhost:3000/api/v1/projects/demo/characters/:name/voice-recommendation", async () => {
+        signalRecommendationStarted();
+        await recommendationGate;
+        return HttpResponse.json({ ok: true, data: {
+          voice_description: "学生身份声音", audition_text: "学生身份台词", audition_source: "dialogue",
+          rationale: "按学生角色设定", source_digest: "old", voice_facts: { vocalization_mode: "dialogue" },
+        } });
+      }),
+      http.post("*/voice-samples/default/design", async ({ request }) => {
+        submitted = await request.json();
+        return HttpResponse.json({ task_id: "t1", scope: "default" });
+      }),
+    );
+    const view = renderPanel({ name: "角色C", role: "学生" });
     await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
-    fireEvent.click(await screen.findByRole("button", { name: "一键生成声音" }));
-    await screen.findByText("旧身份声音");
-    view.rerender(<CharacterVoicePanel project="demo" character={{ name: "秦", role: "教师" }} />);
-    await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
-    expect(calls).toBe(1);
-    expect(screen.getByLabelText("自定义声音描述")).toHaveValue("");
-    expect(screen.getByLabelText("试听文本")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "一键生成声音" }));
+    await recommendationStarted;
+    view.rerender(<CharacterVoicePanel project="demo" character={{ name: "角色C", role: "教师" }} />);
+    releaseRecommendation();
+    await waitFor(() => expect(errorToast).toHaveBeenCalled());
+    expect(submitted).toBeUndefined();
     expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled();
+    errorToast.mockRestore();
   });
 
   it("allows one-step speaking confirmation and keeps advanced settings collapsed", async () => {
@@ -133,30 +245,42 @@ describe("CharacterVoicePanel", () => {
     renderPanel({ name: "秦" });
     const confirm = await screen.findByRole("button", { name: "需要人声对白" });
     expect(screen.getByText("更多设置").closest("details")).not.toHaveAttribute("open");
-    fireEvent.change(screen.getByLabelText("自定义声音描述"), { target: { value: "温和清晰" } });
-    fireEvent.change(screen.getByLabelText("试听文本"), { target: { value: "请跟我来。" } });
     fireEvent.click(confirm);
     await waitFor(() => expect(saved).toMatchObject({ voice_facts: { vocalization_mode: "dialogue", provenance: "human" } }));
     await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
   });
 
-  it("requires a filled recommendation or manual fallback after recommendation failure", async () => {
-    emptySamples({ voice_facts: { vocalization_mode: "dialogue" } });
-    renderPanel({ name: "秦" });
+  it("requires explicit acceptance before generating from a free voice description", async () => {
+    emptySamplesFor("接受角色", { voice_facts: { vocalization_mode: "dialogue" } });
+    enableVoiceDescriptionPreparation("温和清晰");
+    let generated: unknown;
+    server.use(http.post("*/voice-samples/default/design", async ({ request }) => {
+      generated = await request.json();
+      return HttpResponse.json({ task_id: "t1", scope: "default" });
+    }));
+    renderPanel({ name: "接受角色" });
     await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
     const generate = screen.getByRole("button", { name: "一键生成声音" });
     expect(generate).toBeEnabled();
     fireEvent.change(screen.getByLabelText("自定义声音描述"), { target: { value: "温和清晰" } });
-    expect(generate).toBeEnabled();
     fireEvent.change(screen.getByLabelText("试听文本"), { target: { value: "请跟我来。" } });
-    expect(generate).toBeEnabled();
+    expect(generate).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "解析并查看声线字段差异" }));
+    fireEvent.click(await screen.findByRole("button", { name: "接受差异并重新编译" }));
+    await waitFor(() => expect(generate).toBeEnabled());
+    expect(screen.getByLabelText("自定义声音描述")).toHaveValue("");
+    fireEvent.click(generate);
+    await waitFor(() => expect(generated).toMatchObject({
+      design: { voice_spec: { texture: "温和清晰" }, audition_text: "请跟我来。" },
+      audition_text: "请跟我来。",
+    }));
   });
 
-  it("prepares an AI recommendation and audition without starting audio generation", async () => {
-    emptySamples({ voice_facts: { vocalization_mode: "dialogue" } });
+  it("uses an AI recommendation and audition only after one-click generation", async () => {
+    emptySamplesFor("推荐角色", { voice_facts: { vocalization_mode: "dialogue" } });
     let generated: unknown;
     server.use(
-      http.post("*/voice-recommendation", () => HttpResponse.json({ ok: true, data: {
+      http.post("http://localhost:3000/api/v1/projects/demo/characters/:name/voice-recommendation", () => HttpResponse.json({ ok: true, data: {
         voice_description: "沉稳、克制，语速适中", audition_text: "先别急，把事情说清楚。",
         audition_source: "dialogue", rationale: "依据角色处理冲突时的对白", source_digest: "s1",
         voice_facts: { vocalization_mode: "dialogue" },
@@ -165,39 +289,124 @@ describe("CharacterVoicePanel", () => {
         generated = await request.json(); return HttpResponse.json({ ok: true, scope: "voice" });
       }),
     );
-    renderPanel({ name: "秦" });
+    renderPanel({ name: "推荐角色" });
     await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(generated).toBeUndefined();
     fireEvent.click(screen.getByRole("button", { name: "一键生成声音" }));
-    expect(await screen.findByText("沉稳、克制，语速适中")).toBeVisible();
-    expect(screen.getByText("角色原文对白")).toBeVisible();
     await waitFor(() => expect(generated).toMatchObject({
       voice_description: "沉稳、克制，语速适中", audition_text: "先别急，把事情说清楚。",
     }));
   });
 
-  it("does not overwrite user edits when a slow recommendation arrives", async () => {
-    emptySamples({ voice_facts: { vocalization_mode: "dialogue" } });
+  it("preserves a free description while a slow recommendation arrives and requires acceptance", async () => {
+    emptySamplesFor("慢速角色", { voice_facts: { vocalization_mode: "dialogue" } });
     let submitted: unknown;
+    const errorToast = vi.spyOn(toast, "error");
     server.use(http.post("*/voice-samples/default/design", async ({ request }) => {
       submitted = await request.json(); return HttpResponse.json({ ok: true, scope: "default" });
     }));
-    server.use(http.post("*/voice-recommendation", async () => {
-      await delay(100);
-      return HttpResponse.json({ ok: true, data: { voice_description: "AI 建议", audition_text: "例句",
-        audition_source: "example", rationale: "创作建议", source_digest: "s1", voice_facts: { vocalization_mode: "dialogue" } } });
-    }));
-    renderPanel({ name: "秦" });
+    enableVoiceDescriptionPreparation("结构化用户声线", {
+      recommendationDelayMs: 100,
+      recommendation: {
+        design: { voice_spec: { texture: "AI 音色" }, performance: {} },
+        voice_description: "AI 建议", audition_text: "例句", audition_source: "example",
+        rationale: "创作建议", source_digest: "s1", voice_facts: { vocalization_mode: "dialogue" },
+      },
+    });
+    renderPanel({ name: "慢速角色" });
     await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "一键生成声音" }));
     fireEvent.change(screen.getByLabelText("自定义声音描述"), { target: { value: "用户的声线" } });
     fireEvent.change(screen.getByLabelText("试听文本"), { target: { value: "用户的台词" } });
-    await screen.findByText("AI 创作建议，可调整，不改变角色原文事实。");
     expect(screen.getByLabelText("自定义声音描述")).toHaveValue("用户的声线");
     expect(screen.getByLabelText("试听文本")).toHaveValue("用户的台词");
-    await waitFor(() => expect(submitted).toMatchObject({ voice_description: "用户的声线", audition_text: "用户的台词" }));
+    await waitFor(() => expect(errorToast).toHaveBeenCalledWith("请先审阅并接受自由描述对应的结构化声线差异"));
+    expect(submitted).toBeUndefined();
+    fireEvent.click(screen.getByRole("button", { name: "解析并查看声线字段差异" }));
+    fireEvent.click(await screen.findByRole("button", { name: "接受差异并重新编译" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
+    expect(screen.getByLabelText("自定义声音描述")).toHaveValue("");
+    errorToast.mockRestore();
   });
+
+  it.each(["local", "external"] as const)("does not accept a delayed compile after %s voice draft changes", async changeSource => {
+    const characterName = changeSource === "local" ? "本地延迟测试" : "外部延迟测试";
+    emptySamplesFor(characterName, { voice_facts: { vocalization_mode: "dialogue" } });
+    let releasePrepare!: () => void;
+    let signalPrepareStarted!: () => void;
+    let signalPrepareResponse!: () => void;
+    let prepareBody: unknown;
+    const prepareGate = new Promise<void>(resolve => { releasePrepare = resolve; });
+    const prepareStarted = new Promise<void>(resolve => { signalPrepareStarted = resolve; });
+    const prepareResponseSent = new Promise<void>(resolve => { signalPrepareResponse = resolve; });
+    const onNodeDataChange = vi.fn();
+    server.use(
+      http.post("*/voice-recommendation", async ({ request }) => {
+        const body = await request.json() as { adjustment?: string };
+        if (!body.adjustment) return HttpResponse.json({ ok: false, error: "推荐暂不可用" }, { status: 503 });
+        return HttpResponse.json({ ok: true, data: {
+          design: { voice_spec: { texture: "待编译音色" }, performance: {}, audition_text: "解析台词", audition_source: "example" },
+          voice_description: "待编译声音", audition_text: "解析台词", audition_source: "example",
+          rationale: "将草案整理为声线字段", source_digest: "s1", voice_facts: { vocalization_mode: "dialogue" },
+        } });
+      }),
+      http.post("*/voice-samples/default/prepare", async ({ request }) => {
+        prepareBody = await request.json();
+        signalPrepareStarted();
+        await prepareGate;
+        signalPrepareResponse();
+        return HttpResponse.json({ ok: true, data: {
+          design: { voice_spec: { texture: "过期编译音色" }, performance: {}, audition_text: "过期编译台词", audition_source: "custom" },
+          voice_description: "过期编译描述", audition_text: "过期编译台词",
+          voice_spec: { texture: "过期编译音色" }, compiler_version: "test-compiler",
+        } });
+      }),
+    );
+    const view = render(
+      <CharacterVoicePanel project="demo" character={{ name: characterName }} nodeVoiceDesign={{ voice_spec: {}, performance: {} }} onNodeDataChange={onNodeDataChange} />,
+      { wrapper },
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "一键生成声音" })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("自定义声音描述"), { target: { value: "待解析的声音描述" } });
+    fireEvent.change(screen.getByLabelText("试听文本"), { target: { value: "编译时试听文本" } });
+    fireEvent.click(screen.getByRole("button", { name: "解析并查看声线字段差异" }));
+    fireEvent.click(await screen.findByRole("button", { name: "接受差异并重新编译" }));
+    await prepareStarted;
+    expect(prepareBody).toMatchObject({ audition_text: "编译时试听文本", design: { voice_spec: { texture: "待编译音色" } } });
+
+    const expectedDraft = changeSource === "external" ? "外部最新的声音描述" : "用户最新的声音描述";
+    const expectedAudition = changeSource === "external" ? "外部最新的试听文本" : "用户最新的试听文本";
+    if (changeSource === "local") {
+      fireEvent.change(screen.getByLabelText("自定义声音描述"), { target: { value: expectedDraft } });
+      fireEvent.change(screen.getByLabelText("试听文本"), { target: { value: expectedAudition } });
+    } else {
+      view.rerender(
+        <CharacterVoicePanel
+          project="demo"
+          character={{ name: characterName }}
+          nodeVoiceDesign={{ voice_spec: { texture: "外部新声线" }, performance: {} }}
+          nodeVoiceDescriptionDraft={expectedDraft}
+          nodeAuditionText={expectedAudition}
+          onNodeDataChange={onNodeDataChange}
+        />,
+      );
+    }
+    await waitFor(() => {
+      expect(screen.getByLabelText("自定义声音描述")).toHaveValue(expectedDraft);
+      expect(screen.getByLabelText("试听文本")).toHaveValue(expectedAudition);
+    });
+    const callsBeforeResponse = onNodeDataChange.mock.calls.length;
+    releasePrepare();
+    await act(async () => {
+      await prepareResponseSent;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    });
+    expect(screen.getByLabelText("自定义声音描述")).toHaveValue(expectedDraft);
+    expect(screen.getByLabelText("试听文本")).toHaveValue(expectedAudition);
+    expect(onNodeDataChange).toHaveBeenCalledTimes(callsBeforeResponse);
+  });
+
   it("keeps the current voice before generation and facts, with candidates adopted locally", async () => {
     let recommendations = 0;
     let audioRequests = 0;
@@ -231,7 +440,11 @@ describe("CharacterVoicePanel", () => {
   });
 
   function emptySamples(extra = {}) {
-    server.use(http.get("http://localhost:3000/api/v1/projects/demo/characters/%E7%A7%A6/voice-samples", () => HttpResponse.json({ ok: true, data: { character: "秦", slots: [], ...extra } })));
+    emptySamplesFor("秦", extra);
+  }
+
+  function emptySamplesFor(character: string, extra = {}) {
+    server.use(http.get(`http://localhost:3000/api/v1/projects/demo/characters/${encodeURIComponent(character)}/voice-samples`, () => HttpResponse.json({ ok: true, data: { character, slots: [], ...extra } })));
   }
 
   it("explains missing legacy facts in Chinese without exposing raw unknown values", async () => {
@@ -253,26 +466,27 @@ describe("CharacterVoicePanel", () => {
   });
 
   it("resets unsaved facts and generation inputs when switching characters", async () => {
-    emptySamples();
+    emptySamplesFor("角色A");
     let body: unknown;
     server.use(
       http.get("http://localhost:3000/api/v1/projects/demo/characters/B/voice-samples", () => HttpResponse.json({ ok: true, data: { character: "B", slots: [] } })),
       http.patch("http://localhost:3000/api/v1/projects/demo/characters/B", async ({ request }) => { body = await request.json(); return HttpResponse.json({ ok: true, data: {} }); }),
     );
-    const view = renderPanel({ name: "秦" });
+    const view = renderPanel({ name: "角色A" });
     fireEvent.change(screen.getByLabelText("声音特征"), { target: { value: "A 的声线事实" } });
     fireEvent.change(screen.getByLabelText("发声模式"), { target: { value: "dialogue" } });
     fireEvent.change(screen.getByLabelText("自定义声音描述"), { target: { value: "A 的描述" } });
     fireEvent.change(screen.getByLabelText("听感年龄"), { target: { value: "老年" } });
     fireEvent.change(screen.getByLabelText("试听文本"), { target: { value: "A 的台词" } });
     view.rerender(<CharacterVoicePanel project="demo" character={{ name: "B" }} />);
-    expect(screen.getByLabelText("声音特征")).toHaveValue("");
-    expect(screen.getByLabelText("发声模式")).toHaveValue("unknown");
-    expect(screen.getByLabelText("自定义声音描述")).toHaveValue("");
-    expect(screen.getByLabelText("听感年龄")).toHaveValue("");
-    expect(screen.getByLabelText("试听文本")).toHaveValue("");
+    const visibleInput = (label: string) => screen.getAllByLabelText(label).find(input => !input.closest("[hidden]"))!;
+    expect(visibleInput("声音特征")).toHaveValue("");
+    expect(visibleInput("发声模式")).toHaveValue("unknown");
+    expect(visibleInput("自定义声音描述")).toHaveValue("");
+    expect(visibleInput("听感年龄")).toHaveValue("");
+    expect(visibleInput("试听文本")).toHaveValue("");
     expect(screen.getByRole("button", { name: "保存已核对的事实" })).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("声音特征"), { target: { value: "B 的声线事实" } });
+    fireEvent.change(visibleInput("声音特征"), { target: { value: "B 的声线事实" } });
     fireEvent.click(screen.getByRole("button", { name: "保存已核对的事实" }));
     await waitFor(() => expect(body).toEqual({ voice_facts: { voice_traits: "B 的声线事实", conflicts: [] } }));
   });
@@ -280,27 +494,36 @@ describe("CharacterVoicePanel", () => {
   it("sends an independent perceived age as voice_spec without overwriting source facts", async () => {
     emptySamples({ voice_facts: { vocalization_mode: "dialogue", age_group: "youth", provenance: "source" } });
     let body: unknown;
+    enableVoiceDescriptionPreparation("低沉沙哑");
     server.use(http.post("http://localhost:3000/api/v1/projects/demo/characters/%E7%A7%A6/voice-samples/default/design", async ({ request }) => { body = await request.json(); return HttpResponse.json({ task_id: "t1", scope: "default" }); }));
     renderPanel({ name: "秦" });
     fireEvent.change(await screen.findByLabelText("听感年龄"), { target: { value: "老年" } });
     fireEvent.change(screen.getByLabelText("自定义声音描述"), { target: { value: "低沉沙哑" } });
     fireEvent.change(screen.getByLabelText("试听文本"), { target: { value: "你好。" } });
+    fireEvent.click(screen.getByRole("button", { name: "解析并查看声线字段差异" }));
+    fireEvent.click(await screen.findByRole("button", { name: "接受差异并重新编译" }));
     await screen.findByText("青年（默认 · 必填）");
     const generate = screen.getByRole("button", { name: "一键生成声音" });
     await waitFor(() => expect(generate).toBeEnabled());
     fireEvent.click(generate);
-    await waitFor(() => expect(body).toEqual({ voice_spec: { age_impression: "老年", texture: "低沉沙哑" }, audition_text: "你好。" }));
+    await waitFor(() => expect(body).toMatchObject({
+      design: { voice_spec: { age_impression: "老年", texture: "低沉沙哑" }, audition_text: "你好。" },
+      perceived_age: "老年",
+      audition_text: "你好。",
+    }));
     expect(screen.getByLabelText("事实年龄")).toHaveValue("youth");
   });
 
-  it("keeps approved publication visible beside unavailable QC and prevents repeat approval", async () => {
+  it("keeps approved publication visible beside unavailable QC and requires confirmation to restore", async () => {
     emptySamples({ candidates: [{ candidate_id: "c1", slot: "default", status: "approved", url: "/candidate.wav", report: { status: "qc_unavailable", reason: "评估器不可用" } }] });
     renderPanel({ name: "秦" });
-    expect(await screen.findByText(/已采用/)).toBeInTheDocument();
+    expect(await screen.findByText(/历史采用/)).toBeInTheDocument();
     expect(screen.getByText(/质检不可用/)).toBeInTheDocument();
+    const restore = screen.getByRole("button", { name: "恢复为角色声音" });
+    expect(restore).toBeDisabled();
     fireEvent.change(screen.getByLabelText("采用理由"), { target: { value: "重复发布" } });
     fireEvent.click(screen.getByLabelText("我已试听，确认适合此角色"));
-    expect(screen.getByRole("button", { name: "采用为角色声音" })).toBeDisabled();
+    expect(restore).toBeEnabled();
   });
 
   it("requires explicit facts before generating a legacy character", async () => {
@@ -322,14 +545,20 @@ describe("CharacterVoicePanel", () => {
   it("sends custom description and audition text for the elder slot", async () => {
     emptySamples({ voice_facts: { vocalization_mode: "dialogue", conflicts: [] } });
     let body: unknown;
+    enableVoiceDescriptionPreparation("苍老沙哑");
     server.use(http.post("http://localhost:3000/api/v1/projects/demo/characters/%E7%A7%A6/voice-samples/elder/design", async ({ request }) => { body = await request.json(); return HttpResponse.json({ task_id: "t1", scope: "elder" }); }));
     renderPanel({ name: "秦" });
     fireEvent.change(await screen.findByLabelText("自定义声音描述"), { target: { value: "苍老沙哑" } });
     fireEvent.change(screen.getByLabelText("试听文本"), { target: { value: "孩子，别怕。" } });
+    fireEvent.click(screen.getByRole("button", { name: "解析并查看声线字段差异" }));
+    fireEvent.click(await screen.findByRole("button", { name: "接受差异并重新编译" }));
     fireEvent.click(screen.getByText("不同年龄的声音（可选）"));
     const buttons = await screen.findAllByRole("button", { name: "AI 设计音色" });
     fireEvent.click(buttons[buttons.length - 1]);
-    await waitFor(() => expect(body).toEqual({ voice_description: "苍老沙哑", audition_text: "孩子，别怕。" }));
+    await waitFor(() => expect(body).toMatchObject({
+      design: { voice_spec: { texture: "苍老沙哑" }, audition_text: "孩子，别怕。" },
+      audition_text: "孩子，别怕。",
+    }));
   });
 
   it("shows unavailable QC honestly and requires listening confirmation before publication", async () => {
@@ -361,7 +590,11 @@ describe("CharacterVoicePanel", () => {
     fireEvent.click(screen.getByLabelText("我已试听，确认适合此角色"));
     await waitFor(() => expect(screen.getByRole("button", { name: "采用为角色声音" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "采用为角色声音" }));
-    await waitFor(() => expect(approvalBody).toEqual({ reason: "试听符合老人特征", confirm: true }));
+    await waitFor(() => expect(approvalBody).toEqual({
+      reason: "试听符合老人特征",
+      confirm: true,
+      expected_reference: { path: "", sha256: "" },
+    }));
   });
 
   it("blocks conflicting facts even when dialogue is known", async () => {

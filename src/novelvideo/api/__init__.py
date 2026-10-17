@@ -97,6 +97,10 @@ from novelvideo.api.routes import (  # noqa: E402
 
 api_router = APIRouter(prefix="/api/v1")
 from .routes import music_desk
+from .routes import creative_workflow, director_workspace, dubbing
+api_router.include_router(creative_workflow.router, tags=["creative-workflow"])
+api_router.include_router(director_workspace.router, tags=["director-workspace"])
+api_router.include_router(dubbing.router, tags=["dubbing"])
 api_router.include_router(music_desk.router, tags=["music"])
 api_router.include_router(character_casting.router, tags=['characters'])
 api_router.include_router(character_reference_repair.router, tags=['characters'])

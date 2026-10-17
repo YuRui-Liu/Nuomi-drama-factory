@@ -135,6 +135,184 @@ async def test_child_only_narrows_and_revoke_blocks_descendants(service, ready):
         service.preview(body)
 
 
+async def test_execution_authorization_is_frozen_node_scoped_and_child_only_shrinks(service, ready):
+    agents = ready[2]
+    ref = await save(agents, configuration(capabilities=['context.read', 'proposal.create', 'node.patch', 'node.run']), request_id='auth-agent-save')
+    adoption = await agents.apply(command('adopt', {'ref': ref, 'proof': agents.library.version('agent', ref)['proof']}, 'auth-agent'))
+    grant = {
+        'allowed_node_ids': ['a', 'b'],
+        'allowed_node_operations': [
+            {'node_id': 'a', 'operation': 'patch'},
+            {'node_id': 'a', 'operation': 'validate'},
+            {'node_id': 'b', 'operation': 'validate'},
+        ],
+        'max_node_runs': 2,
+    }
+    allowed = ['context.read', 'proposal.create', 'node.patch', 'node.run']
+    parent = await create(service, selection(ready, agent={'kind': 'adoption',
+        'adoption_id': adoption['adoption_id'], 'revision': 1}, allowed_operations=allowed,
+        input_refs=[{'kind': 'canvas_node', 'canvas_id': ready[0], 'node_id': 'other'}],
+        execution_authorization=grant))
+    contract = parent['contract']
+    assert contract['execution_authorization'] == grant
+    assert contract['read_node_ids'] == ['a', 'b', 'other']
+    assert contract['authorization_id']
+    assert contract['root_delegation_id'] == parent['delegation_id']
+    assert contract['root_max_node_runs'] == 2
+    assert contract['node_run_budget_chain'] == [
+        {'delegation_id': parent['delegation_id'], 'max_node_runs': 2}]
+
+    # A child that receives its own explicit, narrower grant shares the root
+    # authorization identity and cannot widen nodes, operations, or run count.
+    from novelvideo.creation.delegations import Delegations
+    child_service = Delegations(service.ctx, username='alice', authority='agent', parent_id=parent['delegation_id'])
+    child_body = selection(ready, agent={'kind': 'adoption', 'adoption_id': adoption['adoption_id'], 'revision': 1},
+        scope={'kind': 'nodes', 'node_ids': ['a']},
+        parent_id=parent['delegation_id'], allowed_operations=['context.read', 'node.run'],
+        execution_authorization={
+            'allowed_node_ids': ['a'],
+            'allowed_node_operations': [{'node_id': 'a', 'operation': 'validate'}],
+            'max_node_runs': 1,
+        })
+    child = await create(child_service, child_body, 'auth-child')
+    assert child['contract']['execution_authorization'] == child_body['execution_authorization']
+    assert child['contract']['read_node_ids'] == ['a']
+    assert child['contract']['node_run_budget_chain'] == [
+        {'delegation_id': parent['delegation_id'], 'max_node_runs': 2},
+        {'delegation_id': child['delegation_id'], 'max_node_runs': 1}]
+    assert child['contract']['authorization_id'] == contract['authorization_id']
+    assert child['contract']['root_delegation_id'] == parent['delegation_id']
+
+    grandchild_service = Delegations(service.ctx, username='alice', authority='agent',
+                                     parent_id=child['delegation_id'])
+    grandchild_body = selection(ready, agent={'kind': 'adoption', 'adoption_id': adoption['adoption_id'], 'revision': 1},
+        scope={'kind': 'nodes', 'node_ids': ['a']}, parent_id=child['delegation_id'],
+        allowed_operations=['context.read', 'node.run'], execution_authorization={
+            'allowed_node_ids': ['a'],
+            'allowed_node_operations': [{'node_id': 'a', 'operation': 'validate'}],
+            'max_node_runs': 1,
+        })
+    grandchild = await create(grandchild_service, grandchild_body, 'auth-grandchild')
+    assert grandchild['contract']['node_run_budget_chain'] == [
+        {'delegation_id': parent['delegation_id'], 'max_node_runs': 2},
+        {'delegation_id': child['delegation_id'], 'max_node_runs': 1},
+        {'delegation_id': grandchild['delegation_id'], 'max_node_runs': 1}]
+
+    for child_grant in (
+        {**child_body['execution_authorization'], 'allowed_node_ids': ['b']},
+        {**child_body['execution_authorization'], 'allowed_node_operations': [
+            {'node_id': 'a', 'operation': 'patch'}]},
+        {**child_body['execution_authorization'], 'max_node_runs': 3},
+    ):
+        with pytest.raises(OperationError):
+            child_service.preview({**child_body, 'execution_authorization': child_grant})
+
+
+def test_execution_authorization_accepts_run_only_for_registered_skill_operation(service):
+    expanded = {'node_ids': ['skill'], 'nodes': [{'node_id': 'skill', 'node_type': 'skillNode'}]}
+    authorization = service._execution_authorization({
+        'allowed_node_ids': ['skill'],
+        'allowed_node_operations': [{'node_id': 'skill', 'operation': 'run'}],
+        'max_node_runs': 1,
+    }, expanded, ['node.run'])
+    assert authorization['allowed_node_operations'] == [{'node_id': 'skill', 'operation': 'run'}]
+
+    wrong_type = {'node_ids': ['text'], 'nodes': [{'node_id': 'text', 'node_type': 'textAnnotationNode'}]}
+    with pytest.raises(OperationError):
+        service._execution_authorization({
+            'allowed_node_ids': ['text'],
+            'allowed_node_operations': [{'node_id': 'text', 'operation': 'run'}],
+            'max_node_runs': 1,
+        }, wrong_type, ['node.run'])
+
+
+async def test_child_preview_freezes_only_parent_accepted_patch_transition(service, ready, ctx):
+    from novelvideo.creation.agent_tools import AgentTools
+
+    cid = ready[0]
+    edit_graph(ctx, cid, lambda graph: graph['nodes'][1].update(type='storyboardGenNode', data={
+        'prompt': '原始分镜', 'frames': [{'static_panel': {'state': '待定', 'framing': '中景',
+            'setting': '站台', 'lighting': '平光', 'visible_text': [], 'subjects': []}}]}))
+    agents = ready[2]
+    ref = await save(agents, configuration(capabilities=['context.read', 'node.patch']), request_id='accepted-patch-agent')
+    adoption = await agents.apply(command('adopt', {
+        'ref': ref, 'proof': agents.library.version('agent', ref)['proof']}, 'accepted-patch-adopt'))
+    parent_body = selection(ready, agent={'kind': 'adoption', 'adoption_id': adoption['adoption_id'], 'revision': 1},
+        scope={'kind': 'nodes', 'node_ids': ['a']}, allowed_operations=['context.read', 'node.patch'],
+        execution_authorization={'allowed_node_ids': ['a'],
+            'allowed_node_operations': [{'node_id': 'a', 'operation': 'patch'}], 'max_node_runs': 0})
+    parent = await create(service, parent_body, 'accepted-patch-parent')
+
+    async def resolve(role):
+        return ctx
+
+    tools = AgentTools(ctx, username='alice', canvas_id=cid, conversation_id=ready[1],
+        delegation_id=parent['delegation_id'], resolve_context=resolve)
+    revision = json.loads(canvas_path(ctx.state_dir, cid).read_text())['revision']
+    patch = await tools.execute({'request_id': 'accepted-lighting-patch', 'operation': 'node.patch',
+        'payload': {'node_id': 'a', 'expected_revision': revision,
+            'changes': [{'path': ['frames', 0, 'static_panel', 'lighting'], 'value': '冷色侧光'}]}})
+    output = patch['output']
+    assert output['state'] == 'patched'
+    assert output['changes'] == [{'path': ['frames', 0, 'static_panel', 'lighting'],
+                                  'before': '平光', 'after': '冷色侧光'}]
+
+    child_service = Delegations(service.ctx, username='alice', authority='agent', parent_id=parent['delegation_id'])
+    child_body = selection(ready, parent_id=parent['delegation_id'],
+        agent={'kind': 'adoption', 'adoption_id': adoption['adoption_id'], 'revision': 1},
+        scope={'kind': 'nodes', 'node_ids': ['a']}, allowed_operations=['context.read'])
+    child_preview = child_service.preview(child_body)
+    frozen = child_preview['contract']['expanded_scope']['nodes'][0]
+    assert frozen['input_fingerprint'] == output['accepted_after']['input_fingerprint']
+    assert child_preview['contract']['parent_transition_evidence'] == [{
+        'delegation_id': parent['delegation_id'], 'output_id': output['id'],
+        'operation_id': output['operation_id'], 'operation': 'node.patch', 'node_run_id': None}]
+
+    edit_graph(ctx, cid, lambda graph: graph['nodes'][1]['data']['frames'][0]['static_panel']
+               .update(lighting='人工外部修改'))
+    with pytest.raises(OperationError) as stale:
+        child_service.preview(child_body)
+    assert stale.value.code == 'stale_input'
+
+
+async def test_missing_execution_authorization_is_preparation_only_and_cannot_be_added_by_child(service, ready):
+    agents = ready[2]
+    ref = await save(agents, configuration(capabilities=['context.read', 'proposal.create', 'node.run']), request_id='prep-only-agent-save')
+    adoption = await agents.apply(command('adopt', {'ref': ref, 'proof': agents.library.version('agent', ref)['proof']}, 'prep-only-agent'))
+    parent = await create(service, selection(ready, agent={'kind': 'adoption',
+        'adoption_id': adoption['adoption_id'], 'revision': 1}, allowed_operations=['context.read', 'node.run']))
+    assert parent['contract']['execution_authorization'] is None
+    assert parent['contract']['authorization_id'] is None
+    from novelvideo.creation.delegations import Delegations
+    child_service = Delegations(service.ctx, username='alice', authority='agent', parent_id=parent['delegation_id'])
+    body = selection(ready, scope={'kind': 'nodes', 'node_ids': ['a']}, parent_id=parent['delegation_id'],
+        allowed_operations=['context.read', 'node.run'], execution_authorization={
+            'allowed_node_ids': ['a'],
+            'allowed_node_operations': [{'node_id': 'a', 'operation': 'validate'}],
+            'max_node_runs': 1,
+        })
+    with pytest.raises(OperationError):
+        child_service.preview(body)
+
+
+@pytest.mark.parametrize('grant', [
+    {'allowed_node_ids': ['other'], 'allowed_node_operations': [{'node_id': 'other', 'operation': 'validate'}], 'max_node_runs': 1},
+    {'allowed_node_ids': ['a'], 'allowed_node_operations': [{'node_id': 'b', 'operation': 'patch'}], 'max_node_runs': 1},
+    {'allowed_node_ids': ['a'], 'allowed_node_operations': [{'node_id': 'a', 'operation': 'shell'}], 'max_node_runs': 1},
+    {'allowed_node_ids': ['a'], 'allowed_node_operations': [{'node_id': 'a', 'operation': 'validate'}], 'max_node_runs': 33},
+    {'allowed_node_ids': ['a'], 'allowed_node_operations': [{'node_id': 'a', 'operation': 'run'}], 'max_node_runs': 1},
+])
+async def test_execution_authorization_rejects_scope_operation_and_budget_widening(service, ready, grant):
+    agents = ready[2]
+    ref = await save(agents, configuration(capabilities=['context.read', 'proposal.create', 'node.patch', 'node.run']), request_id='invalid-auth-agent-save')
+    adoption = await agents.apply(command('adopt', {'ref': ref, 'proof': agents.library.version('agent', ref)['proof']}, 'invalid-auth-agent'))
+    with pytest.raises(OperationError):
+        service.preview(selection(ready, agent={'kind': 'adoption',
+            'adoption_id': adoption['adoption_id'], 'revision': 1},
+            allowed_operations=['context.read', 'proposal.create', 'node.patch', 'node.run'],
+            execution_authorization=grant))
+
+
 async def test_wrong_user_cannot_read_or_replay_private_delegation(service, ready, ctx):
     result = await create(service, selection(ready))
     other = Delegations(SimpleNamespace(**{**vars(ctx),'requester_user_id':'bob'}), username='bob', authority='user')

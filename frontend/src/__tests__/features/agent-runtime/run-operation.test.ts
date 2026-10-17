@@ -197,3 +197,45 @@ it('known step result is checkpointed before the next step, which resumes withou
     vi.mocked(api.requestStep).mock.calls.filter((c) => c[1].kind === 'adopt'),
   ).toHaveLength(1);
 });
+
+it('keeps the frozen canvas baseline through a lost start response and re-associates it during recovery', async () => {
+  const baseline = {
+    revision: 4,
+    nodes: [{ id: 'lamp', data: { lighting: { intensity: 1 } } }],
+    edges: [],
+    metadata: { shotMetadata: {} },
+  };
+  vi.mocked(api.receiptStep).mockResolvedValue(null);
+  vi.mocked(api.requestStep).mockImplementation(async (_owner, step) => {
+    expect(readRunIntent(owner)?.canvasBaseline).toEqual(baseline);
+    if (step.kind === 'delegation') return { delegation_id: 'root-d' };
+    throw Error('run start response lost');
+  });
+  const operation = createRunOperation(owner, () => true);
+  const pending = await operation.run({
+    id: 'i',
+    label: '灯光调整',
+    canvasBaseline: baseline as never,
+    steps: [
+      { kind: 'delegation', request: { request_id: 'd' } },
+      { kind: 'start', request: { request_id: 's' } },
+    ],
+  });
+  expect(pending.status).toBe('pending');
+
+  vi.mocked(api.receiptStep).mockImplementation(async (_owner, step) =>
+    step.kind === 'start' ? { run: { id: 'r', state: 'queued' } } : null,
+  );
+  expect((await operation.run()).status).toBe('applied');
+  const { readDelegationCanvasBaseline, writeDelegationCanvasBaseline } = await import(
+    '@/features/agent-runtime/runOperation'
+  );
+  expect(readDelegationCanvasBaseline(owner, 'root-d')).toEqual(baseline);
+  const advanced = {
+    ...baseline,
+    revision: 5,
+    nodes: [{ id: 'lamp', data: { lighting: { intensity: 2 } } }],
+  };
+  expect(writeDelegationCanvasBaseline(owner, 'root-d', advanced as never)).toBe(true);
+  expect(readDelegationCanvasBaseline(owner, 'root-d')).toEqual(advanced);
+});

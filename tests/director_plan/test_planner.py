@@ -103,6 +103,8 @@ def test_creative_author_and_critic_share_instantaneous_keyframe_contract(monkey
         assert 'cinematography.subjects.gaze_target' in prompt
         assert 'opening instant only' in prompt
         assert 'end_cinematography' in prompt
+        assert 'creative.optics.end_focus_target MUST be non-null' in prompt
+        assert "same shot's source_span_ids" in prompt
         assert 'must_read' in prompt
         assert 'not simultaneously readable in a single still' in prompt
         assert 'closer view or sequential' in prompt

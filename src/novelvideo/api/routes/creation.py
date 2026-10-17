@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from novelvideo.api.auth import get_api_user
 from novelvideo.creation.models import OperationRequest
+from novelvideo.creation.discussions import DiscussionRequest, DiscussionScope, Discussions
 from novelvideo.creation.canvas_workspaces import CanvasCreate, CanvasWorkspace, canvas_response, list_canvases
 from novelvideo.creation.operations import OperationError, OperationService
 from novelvideo.creation.projection import ProjectionService
@@ -60,7 +61,7 @@ def errors():
     try:
         yield
     except OperationError as exc:
-        status = 403 if exc.code == 'scope_violation' else 503 if exc.code == 'capability_unavailable' else 422 if exc.code == 'invalid_contract' else 409
+        status = 403 if exc.code == 'scope_violation' else 503 if exc.code in {'capability_unavailable', 'runtime_unavailable'} else 422 if exc.code == 'invalid_contract' else 409
         raise HTTPException(status, exc.as_dict()) from exc
     except AssetReferenceError as exc:
         raise HTTPException(409, {'code': exc.code, 'message': str(exc)}) from exc
@@ -89,6 +90,33 @@ async def service_for(project, user, role):
     return actor, OperationService(ObjectStore(ctx.state_dir), project_id=ctx.project_id,
                                    output_dir=ctx.output_dir,
                                    authorize=lambda candidate, target: candidate == actor and target == ctx.project_id)
+
+
+def discussion_service_for(ctx, project, user, canvas_id, conversation_id):
+    async def resolve_context(role):
+        return await context_for(project, user, role)
+
+    return Discussions(ctx, username=user['username'], canvas_id=canvas_id,
+                       conversation_id=conversation_id, resolve_context=resolve_context)
+
+
+@router.get('/discussions')
+async def read_discussions(project: str, canvas_id: str, conversation_id: str,
+                           user: dict = Depends(get_api_user)):
+    with errors():
+        scope = DiscussionScope.model_validate({'canvas_id': canvas_id, 'conversation_id': conversation_id})
+        ctx = await context_for(project, user, 'viewer')
+        service = discussion_service_for(ctx, project, user, scope.canvas_id, scope.conversation_id)
+        return {'ok': True, 'data': await service.history()}
+
+
+@router.post('/discussions')
+async def submit_discussion(project: str, body: dict, user: dict = Depends(get_api_user)):
+    with errors():
+        request = DiscussionRequest.model_validate(body)
+        ctx = await context_for(project, user, 'viewer')
+        service = discussion_service_for(ctx, project, user, request.canvas_id, request.conversation_id)
+        return {'ok': True, 'data': await service.submit(request)}
 
 
 @router.get('/direction-catalog')

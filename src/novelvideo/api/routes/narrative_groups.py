@@ -254,6 +254,7 @@ class StoryboardContractRequest(BaseModel):
 class NarrativeGroupGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    director_revision_id: str | None = Field(default=None, min_length=1)
     aspect_ratio: Literal["9:16", "16:9"] | None = None
     use_style: bool = True
     provider_id: str | None = None
@@ -2177,8 +2178,15 @@ async def _enqueue_group_action(
     generation_request: NarrativeGroupGenerationRequest | None = None,
 ):
     resolved, groups, beats = await _resolve_groups(project, episode, user)
+    request = generation_request or NarrativeGroupGenerationRequest()
     try:
         source_group, selected_beats = _group_beats(groups, beats, group_id)
+        if request.director_revision_id is not None:
+            bound_plan = DirectorPlanStore(resolved.project_dir).load_active(episode)
+            if (bound_plan is None
+                    or bound_plan.revision_id != request.director_revision_id
+                    or source_group.director_revision_id != request.director_revision_id):
+                raise HTTPException(status_code=409, detail={"code": "DIRECTOR_REVISION_CHANGED"})
         if not split_only:
             from novelvideo.director_plan.execution import require_executable_shots
             plan = DirectorPlanStore(resolved.project_dir).load_active(episode)
@@ -2202,7 +2210,6 @@ async def _enqueue_group_action(
             status_code=404, detail=f"Narrative group '{group_id}' not found"
         ) from exc
 
-    request = generation_request or NarrativeGroupGenerationRequest()
     # Newly generated director storyboards must carry their actual cells into
     # video planning, including projects created before visual contracts existed.
     # Split-only recovery retains the original generation's provenance.
@@ -2356,6 +2363,7 @@ async def _enqueue_group_action(
             stage,
             regenerate=regenerate,
             regenerate_completed=not split_only,
+            expected_director_revision_id=request.director_revision_id,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -2381,6 +2389,8 @@ async def _enqueue_group_action(
         "style_snapshot": dict(source_group.effective_style_snapshot),
     }
     payload.update(storyboard_payload)
+    if request.director_revision_id is not None:
+        payload["director_revision_id"] = request.director_revision_id
     if reference_snapshot is not None:
         payload["reference_resolution"] = jsonable_encoder(asdict(reference_snapshot))
         payload["use_style"] = request.use_style

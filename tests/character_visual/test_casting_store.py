@@ -178,13 +178,14 @@ def test_claim_and_completion_fsync_metadata_and_directory(tmp_path, monkeypatch
         original(fd)
     monkeypatch.setattr(os, "fsync", sync)
     store.claim_generation("c1", task_id="task1")
-    assert syncs == ["file", "directory"]
+    expected_syncs = ["file"] if os.name == "nt" else ["file", "directory"]
+    assert syncs == expected_syncs
     syncs.clear()
     source = store.output_path("c1")
     source.parent.mkdir(parents=True)
     Image.new("RGB", (8, 8)).save(source)
     store.complete_generation("c1", source)
-    assert syncs == ["file", "directory", "file", "directory"]
+    assert syncs == expected_syncs * 2
 
 
 def test_verified_asset_read_rejects_tampering_after_restart(tmp_path):

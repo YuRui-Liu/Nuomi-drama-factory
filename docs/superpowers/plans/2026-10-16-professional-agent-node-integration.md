@@ -10,6 +10,20 @@
 
 ## 0. 依据、执行顺序和历史承接
 
+### 2026-10-17 业务接入执行批次
+
+用户明确要求“实现接通业务”，授权按已确认 §15.10 与七状态机组原型实施。沿用当前工作区；原 U 系列不作为实现依据。机组使用项目已采用 Agent 的持久配置，不额外建立专业 Agent 内容节点；任务和成员交接复用既有委派、运行及输出记录。
+
+本批视觉依据为 [2026-10-17 七状态机组原型](../../design/node-lighting-delegation-2026-10-17/README.md)。下文 P0 的 U 系列“待审阅”记录是历史状态，不能将其重新当作本批实现门槛，也不能采用被否定的布局。
+
+- [x] P1：18 岗专业预设及五项配置贯穿固定版本、采用和覆盖；旧 v1 快照保持兼容。目录、配置及旧工具的 73 项回归通过；实际浏览器完成灯光师 v1 采用。
+- [x] P2/P3（本批范围）：在既有委派与运行中增加受控节点修改及真实运行，校验成员、目标、版本、执行授权和幂等性；复用 RunStore / Scheduler。真实 API 正常链路与未知提交恢复／停止两例分批通过，模型与供应商边界使用测试替身，业务服务保持真实。
+- [x] P6（本批范围）：机组目录读取真实配置与能力；已有节点选择作为委托范围，共享记录显示真实成员输出及节点运行并可定位。60 项关联前端测试分批通过，类型检查、独立生产构建和 bundle 检查通过；实际浏览器验证灯光师采用与原节点范围。完整 P6 的后续任务投影范围仍按下文追踪。
+- [x] 验证目录和旧配置回归、跨范围拒绝、重复请求、版本冲突、停止与失败恢复；前端类型检查与关联交互测试。分批证据及既有 Windows 资产测试的 `os.O_NOFOLLOW` 兼容性失败见接入记录，不声明全仓测试通过。
+- [x] 独立规格审查、代码质量审查并修复实质问题；未运行真实付费媒体验收，不用测试替身冒充供应商实测。详见[本批接入与验收记录](../reports/2026-10-17-project-crew-integration.md)。
+
+基线 HEAD 为 a7bc5b9。已有其他任务修改 `frontend/src/routeTree.gen.ts`、`src/novelvideo/freezone/video_director/service.py`、`src/novelvideo/narrative_groups/reference_uploads.py` 及相关测试，保持原样。Python 测试使用 `.venv/Scripts/python.exe -m pytest`，不隐式重新同步锁文件中的私有镜像。
+
 产品依据：[主 PRD §15](../specs/2026-10-13-agent-canvas-prd.md)、[专业补充规格](../specs/2026-10-16-professional-agents-script-handoff-prd.md)、[专业契约](../specs/2026-10-16-manga-production-agent-contracts.md)。2026-10-16 用户已整体确认书面规格。
 
 本计划是[10 月 14 日恢复计划](2026-10-14-agent-canvas-resume.md)的增量，原计划已交付的 5—8B 不重写。任务 9—13 按下表细化，不能只实现新增目录而遗漏旧计划剩余项：
@@ -61,6 +75,8 @@
 | docs/superpowers/reports/2026-10-16-professional-agent-acceptance.md（新增） | 本轮实现、交互、真实产物证据及限制 |
 
 ## P0：现有节点能力地图与统一原型
+
+**2026-10-16 进展：** [能力地图](../reports/2026-10-16-professional-node-map.md)已覆盖 19 类节点／35 项操作；26 项是适配器声明，9 项未接入，不表示供应商实测。通过 Pencil MCP 新绘制 U01—U09，含 1440×900 与 1280×720，见[新原型与九页 PDF](../../design/agent-node-workspace-2026-10-16/README.md)。规格审查两项遗漏已修正并复审通过，随后质量审查通过。用户已反馈“布局需要调整”，正在收集具体调整要求；P0 视觉审阅未完成，P6 不采用当前布局实施。P1—P5 按已批准规格独立继续。原 P 系列及另一任务的 R 系列不属于本次新稿。
 
 **文件：** 新增 docs/superpowers/reports/2026-10-16-professional-node-map.md；修改 docs/superpowers/specs/2026-10-16-professional-agents-interaction-design.md；设计源 E:/Proj/nuomi.pen。
 

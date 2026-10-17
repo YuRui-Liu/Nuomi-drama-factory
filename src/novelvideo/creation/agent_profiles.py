@@ -1,5 +1,6 @@
 """User-owned Agent configuration; no executor or implicit tool grants."""
 import json
+from urllib.parse import urlsplit
 
 from .asset_adapter import registration_io
 from novelvideo.production_workflow.coordination import asset_project_lock
@@ -14,8 +15,15 @@ CAPABILITIES=(
     {'id':'proposal.create','title':'提出创作修改建议','runtime_permission':'proposal_only'},
     {'id':'ontology.draft','title':'提出对象定义草案','runtime_permission':'draft_only'},
     {'id':'media.propose','title':'提出媒体生成方案','runtime_permission':'requires_separate_execution_authorization'},
+    {'id':'node.patch','title':'提出节点局部修改','runtime_permission':'requires_scoped_edit_authorization'},
+    {'id':'node.run','title':'申请受限节点操作','runtime_permission':'requires_scoped_execution_authorization'},
 )
+LEGACY_CAPABILITIES=CAPABILITIES[:4]
 STUDIO_TEXT_FIELDS=frozenset({'description','instructions','method','notes','intent'})
+_REQUIRED_FIELDS=frozenset({'name','responsibilities','methods','references','skill_notes',
+    'capabilities','defaults','studio_refs'})
+_PROFESSIONAL_FIELDS=frozenset({'required_node_operations','delivery_requirements',
+    'examples','collaboration_rules'})
 
 
 def portable_studio_configuration(data):
@@ -29,7 +37,7 @@ class AgentProfiles(ProjectLibrary):
     domain='agent_profiles'
     kind='agent'
     source_fields=frozenset({'source'})
-    editable=frozenset({'name','responsibilities','methods','references','skill_notes','capabilities','defaults','studio_refs'})
+    editable=_REQUIRED_FIELDS|_PROFESSIONAL_FIELDS
 
     def builtin_catalog(self):
         from .builtin_agents import catalog
@@ -55,9 +63,50 @@ class AgentProfiles(ProjectLibrary):
         return self.resolve_source(ref,source=source)[0]
 
     @staticmethod
-    def capabilities():
-        return {'items':list(CAPABILITIES),'execution_enabled':False,
+    def capabilities(*,legacy=False):
+        selected=LEGACY_CAPABILITIES if legacy else CAPABILITIES
+        return {'items':[dict(item) for item in selected],'execution_enabled':False,
                 'notice':'技能说明不授予工具权限；执行须由后续运行时核验范围和授权'}
+
+    @staticmethod
+    def _text_list(values,label,*,maximum=50,item_maximum=4000):
+        require(isinstance(values,list) and len(values)<=maximum,f'{label}列表无效')
+        for value in values:
+            text(value,item_maximum)
+
+    @staticmethod
+    def _validate_node_operations(values):
+        from novelvideo.freezone.orchestration.capabilities import catalog_by_type
+
+        require(isinstance(values,list) and len(values)<=100,'节点操作需求列表无效')
+        catalog=catalog_by_type()
+        pairs=[]
+        for item in values:
+            exact(item,{'node_type','operation'})
+            text(item['node_type'],100)
+            text(item['operation'],100)
+            require(item['node_type'] in catalog and item['operation'] in {
+                operation['name'] for operation in catalog[item['node_type']]['operations']
+            },'未知节点操作需求')
+            pairs.append((item['node_type'],item['operation']))
+        require(len(pairs)==len(set(pairs)),'节点操作需求不能重复')
+
+    @staticmethod
+    def _validate_examples(values):
+        require(isinstance(values,list) and len(values)<=20,'示例列表无效')
+        for item in values:
+            exact(item,{'source_url','prompt_public','inputs_public','workflow_public'})
+            source_url=text(item['source_url'],2048)
+            try:
+                parsed=urlsplit(source_url)
+                hostname=parsed.hostname
+            except ValueError:
+                parsed=None
+                hostname=None
+            require(parsed is not None and parsed.scheme=='https' and bool(hostname) and parsed.username is None
+                    and parsed.password is None,'示例来源须为 HTTPS 地址')
+            for key in ('prompt_public','inputs_public','workflow_public'):
+                require(type(item[key]) is bool,'示例公开程度必须显式标记')
 
     def studio_resources(self):
         with self.read():
@@ -85,15 +134,23 @@ class AgentProfiles(ProjectLibrary):
     def preview(self,config):
         with self.read():
             pass  # Validate authorized project identity without initializing it.
-        exact(config,{'name','responsibilities','methods','references','skill_notes','capabilities','defaults','studio_refs'})
+        exact(config,_REQUIRED_FIELDS,_PROFESSIONAL_FIELDS)
+        config={
+            'required_node_operations':[], 'delivery_requirements':[],
+            'examples':[], 'collaboration_rules':[], **config,
+        }
         for key in ('name','responsibilities','methods'):
             text(config[key],200 if key=='name' else 12000)
         for key in ('references','skill_notes'):
-            require(isinstance(config[key],list) and len(config[key])<=50,'参考或技能说明列表无效')
-            for value in config[key]:
-                text(value,4000)
-        require(isinstance(config['capabilities'],list) and len(set(config['capabilities']))==len(config['capabilities'])
+            self._text_list(config[key],'参考或技能说明')
+        require(isinstance(config['capabilities'],list)
+                and all(isinstance(value,str) for value in config['capabilities'])
+                and len(set(config['capabilities']))==len(config['capabilities'])
                 and set(config['capabilities'])<={c['id'] for c in CAPABILITIES},'未知可信能力')
+        self._validate_node_operations(config['required_node_operations'])
+        self._text_list(config['delivery_requirements'],'交付要求')
+        self._text_list(config['collaboration_rules'],'协作规则')
+        self._validate_examples(config['examples'])
         require(isinstance(config['defaults'],dict) and set(config['defaults'])<={'style','technique'},'默认偏好类型无效')
         defaults={}
         for kind,selection in config['defaults'].items():
@@ -142,10 +199,22 @@ class AgentProfiles(ProjectLibrary):
         return {'defaults':configuration['defaults'],'studio_refs':configuration['studio_refs'],
                 'capabilities':configuration['capabilities']}
 
+    def personal_patch_preview(self,ref,changes):
+        fixed=self.library.version(self.kind,ref)
+        values=self.validate_override(changes)
+        require(all(value is not None for value in values.values()),
+                '个人字段修改请提供明确值，清空列表使用空列表')
+        content={**fixed['configuration'],**values}
+        for field in _PROFESSIONAL_FIELDS:
+            content.setdefault(field,[])
+        return {'configuration':content,'proof':digest([fixed,content])}
+
     def validate_override(self,changes):
         require(isinstance(changes,dict) and set(changes)<=self.editable,'覆盖字段不允许')
         skeleton={'name':'配置','responsibilities':'配置','methods':'配置','references':[],
-                  'skill_notes':[],'capabilities':[],'defaults':{},'studio_refs':[]}
+                  'skill_notes':[],'capabilities':[],'defaults':{},'studio_refs':[],
+                  'required_node_operations':[],'delivery_requirements':[],
+                  'examples':[],'collaboration_rules':[]}
         raw={**skeleton,**{k:v for k,v in changes.items() if v is not None}}
         frozen=self.preview(raw)['configuration']
         return {k:None if v is None else frozen[k] for k,v in changes.items()}

@@ -32,6 +32,9 @@ def controlled_path(root, relative):
 
 
 def sync_directory(path):
+    # Windows CRT has no directory descriptors; durable_write syncs the file.
+    if os.name == 'nt':
+        return
     fd = os.open(path, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
     try:
         os.fsync(fd)

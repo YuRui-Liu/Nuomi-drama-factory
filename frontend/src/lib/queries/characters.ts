@@ -405,6 +405,33 @@ export function useDesignCharacterVoiceSample(project: string, name: string) {
   });
 }
 
+export interface CharacterVoicePreparePreview {
+  design?: CharacterVoiceDesign | null;
+  voice_description: string;
+  audition_text: string;
+  voice_spec: Record<string, unknown>;
+  compiler_version: string;
+}
+
+export function usePrepareCharacterVoiceDesign(project: string, name: string) {
+  return useMutation({
+    mutationFn: async ({ slot, ...body }: {
+      slot: string;
+      audition_text: string;
+      design: CharacterVoiceDesign;
+      language?: string;
+      perceived_age?: string;
+    }) => {
+      const response = await api.post(
+        p`api/v1/projects/${project}/characters/${name}/voice-samples/${slot}/prepare`,
+        { json: body, timeout: ASSET_BUILD_SUBMIT_TIMEOUT_MS },
+      ).json<OkResponse<CharacterVoicePreparePreview> | ErrorResponse>();
+      if (!response.ok) throw new Error(response.error || "声音编译失败");
+      return response.data;
+    },
+  });
+}
+
 export function useCharacterVoiceRecommendation(project: string, character: Character, enabled: boolean) {
   const projectConfig = useProject(project).data?.data;
   return useQuery({

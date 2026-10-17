@@ -128,7 +128,8 @@ export function CreationWorkspace({ project }: { project: SupertaleProjectSummar
   const explicit = 'workspace' in search || 'episode' in search;
   return <div className="relative h-full w-full bg-bg-dark">
     <CanvasWorkspaceSwitcher canvases={registry.data ?? []} selectedId={active?.canvas_id} onSelect={id => { void select(id); }} onCreate={create} pending={creation.isPending}
-      error={createError} retry={createError && request.current ? () => { if (request.current) void submit(request.current); } : undefined} />
+      error={createError} retry={createError && request.current ? () => request.current ? submit(request.current) : Promise.resolve(false) : undefined}
+      registryError={registry.data !== undefined ? registry.error?.message : undefined} onRetryRegistry={() => { void registry.refetch(); }} />
     {leaveError && <div role="alert" className="absolute bottom-5 left-1/2 z-50 -translate-x-1/2 rounded-xl border border-red-400/30 bg-surface px-4 py-3 text-sm text-red-300">{leaveError}<button onClick={() => setLeaveError(undefined)} className="ml-3 underline">继续编辑</button></div>}
     {active?.status === 'applied' ? <ReactFlowProvider key={`${project.id}:${active.canvas_id}`}><FreezoneShell project={project} canvasId={active.canvas_id} managedWorkspace onWorkspaceState={onWorkspaceState} /></ReactFlowProvider> : <div className="flex h-full flex-col items-center justify-center gap-3 text-text-muted">
       <h2 className="text-lg text-text">{active ? active.status === 'running' ? '画布正在创建' : '画布创建存在冲突' : explicit ? '画布不存在' : '开始你的创作'}</h2>

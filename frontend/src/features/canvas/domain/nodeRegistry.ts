@@ -639,7 +639,25 @@ const skillNodeDefinition: CanvasNodeDefinition<SkillNodeData> = {
   }),
 };
 
+function productionDefinition(type: CanvasNodeType, label: string, icon: MenuIconKey): CanvasNodeDefinition {
+  return {
+    type, menuLabelKey: label, menuIcon: icon, visibleInMenu: true,
+    capabilities: { toolbar: false, promptInput: false },
+    connectivity: { sourceHandle: true, targetHandle: true, connectMenu: { fromSource: true, fromTarget: true } },
+    createDefaultData: () => ({ displayName: DEFAULT_NODE_DISPLAY_NAME[type], episodeNumber: 1 }),
+  };
+}
+
 export const canvasNodeDefinitions: Record<CanvasNodeType, CanvasNodeDefinition> = {
+  [CANVAS_NODE_TYPES.ideation]: productionDefinition(CANVAS_NODE_TYPES.ideation, 'node.menu.ideation', 'sparkles'),
+  [CANVAS_NODE_TYPES.screenplay]: productionDefinition(CANVAS_NODE_TYPES.screenplay, 'node.menu.screenplay', 'script'),
+  [CANVAS_NODE_TYPES.directorWorkspace]: productionDefinition(CANVAS_NODE_TYPES.directorWorkspace, 'node.menu.directorWorkspace', 'video'),
+  [CANVAS_NODE_TYPES.narrativeGroupStoryboard]: {
+    ...productionDefinition(CANVAS_NODE_TYPES.narrativeGroupStoryboard, 'node.menu.narrativeGroupStoryboard', 'video'),
+    visibleInMenu: false,
+    connectivity: { sourceHandle: true, targetHandle: true, connectMenu: { fromSource: false, fromTarget: false } },
+  },
+  [CANVAS_NODE_TYPES.characterVoice]: productionDefinition(CANVAS_NODE_TYPES.characterVoice, 'node.menu.characterVoice', 'audio'),
   [CANVAS_NODE_TYPES.musicDesk]: {
     type: CANVAS_NODE_TYPES.musicDesk, menuLabelKey: 'node.menu.musicDesk', menuIcon: 'audio', visibleInMenu: true,
     capabilities: {toolbar:false,promptInput:false},
@@ -689,8 +707,8 @@ export function nodeHasTargetHandle(type: CanvasNodeType): boolean {
 // 级默认规则约束。
 const UPSTREAM_SOURCE_WHITELIST: Partial<Record<CanvasNodeType, readonly CanvasNodeType[]>> = {
   [CANVAS_NODE_TYPES.musicDesk]: [CANVAS_NODE_TYPES.video,CANVAS_NODE_TYPES.videoCompose],
-  // 音频节点的上游只能是文本节点。
-  [CANVAS_NODE_TYPES.audio]: [CANVAS_NODE_TYPES.textAnnotation],
+  // 配音消费采用声音和剧本文档引用；普通语音仍接受文本。
+  [CANVAS_NODE_TYPES.audio]: [CANVAS_NODE_TYPES.textAnnotation, CANVAS_NODE_TYPES.characterVoice, CANVAS_NODE_TYPES.screenplay],
   [CANVAS_NODE_TYPES.videoDirector]: [
     CANVAS_NODE_TYPES.upload,
     CANVAS_NODE_TYPES.imageEdit,

@@ -17,6 +17,7 @@ import logging
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import UUID, uuid4
 
 import aiosqlite
 from rich.console import Console
@@ -132,6 +133,7 @@ class StoreClosedError(RuntimeError):
 SQLITE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS characters (
     name              TEXT PRIMARY KEY,
+    character_id      TEXT NOT NULL DEFAULT '',
     aliases_json      TEXT DEFAULT '[]',
     role              TEXT DEFAULT '',
     is_main           INTEGER DEFAULT 0,
@@ -147,6 +149,28 @@ CREATE TABLE IF NOT EXISTS characters (
     identities_json   TEXT DEFAULT '[]',
     created_at        TEXT DEFAULT (datetime('now')),
     updated_at        TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS character_voice_versions (
+    version_id TEXT PRIMARY KEY,
+    character_id TEXT NOT NULL,
+    identity_id TEXT NOT NULL DEFAULT '',
+    slot TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    audio_sha256 TEXT NOT NULL,
+    path TEXT NOT NULL DEFAULT '',
+    snapshot_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    UNIQUE(character_id, identity_id, slot, candidate_id)
+);
+
+CREATE TABLE IF NOT EXISTS character_voice_current (
+    character_id TEXT NOT NULL,
+    identity_id TEXT NOT NULL DEFAULT '',
+    slot TEXT NOT NULL,
+    version_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY(character_id, identity_id, slot)
 );
 
 CREATE TABLE IF NOT EXISTS episodes (
@@ -720,6 +744,7 @@ class SQLiteStore:
             await self._db.create_function("merge_voice_age", 4, merge_voice_age)
             await configure_sqlite_connection_async(self._db)
             await self._db.executescript(SQLITE_SCHEMA_SQL)
+            await self._ensure_character_id_column(self._db)
             await self._ensure_episode_planning_columns(self._db)
             await self._ensure_beat_current_columns(self._db)
             await self._ensure_scene_columns(self._db)
@@ -735,6 +760,32 @@ class SQLiteStore:
             # convergence facts — the schema above already creates
             # `sketch_failure_mode_hits`, which stays project-local.
         return self._db
+
+    async def _ensure_character_id_column(self, db: aiosqlite.Connection) -> None:
+        """Backfill a durable UUID for legacy rows and repair invalid duplicates."""
+        await _add_column_if_missing(db, "characters", "character_id", "TEXT NOT NULL DEFAULT ''")
+        async with db.execute("SELECT name, character_id FROM characters ORDER BY name") as cursor:
+            rows = await cursor.fetchall()
+        seen: set[str] = set()
+        for row in rows:
+            value = str(row["character_id"] or "")
+            try:
+                UUID(value)
+            except (ValueError, AttributeError):
+                value = ""
+            if not value or value in seen:
+                value = str(uuid4())
+                await db.execute("UPDATE characters SET character_id=? WHERE name=?", (value, row["name"]))
+            seen.add(value)
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_characters_character_id ON characters(character_id)"
+        )
+        await db.execute(
+            """CREATE TRIGGER IF NOT EXISTS fill_character_id_after_insert
+               AFTER INSERT ON characters WHEN NEW.character_id=''
+               BEGIN UPDATE characters SET character_id=lower(hex(randomblob(16)))
+               WHERE rowid=NEW.rowid; END"""
+        )
 
     async def _ensure_asset_registry(self, db: aiosqlite.Connection) -> None:
         """Give asset lifetimes stable IDs, including writes from other connections."""
@@ -1953,13 +2004,18 @@ class SQLiteStore:
         db = await self._ensure_db()
         incoming_voice_facts_json = character.voice_facts_json
         await self._merge_stored_voice_facts(db, character)
+        async with db.execute("SELECT character_id FROM characters WHERE name=?", (character.name,)) as cursor:
+            existing_id = await cursor.fetchone()
+        character_id = str(existing_id["character_id"] or "") if existing_id else ""
+        if not character_id:
+            character_id = str(uuid4())
         await db.execute(
-            """INSERT INTO characters (name, aliases_json, role, is_main, extraction_locked,
+            """INSERT INTO characters (name, character_id, aliases_json, role, is_main, extraction_locked,
                gender, age_group,
                body_type, fish_voice_id, description, face_prompt, appearance_details, identities_json,
                reference_audio_path, reference_audio_sha256, reference_audio_updated_at,
                voice_samples_by_age_group_json, voice_facts_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(name) DO UPDATE SET
                aliases_json=excluded.aliases_json, role=excluded.role,
                is_main=excluded.is_main, extraction_locked=excluded.extraction_locked,
@@ -1977,6 +2033,7 @@ class SQLiteStore:
                updated_at=datetime('now')""",
             (
                 character.name,
+                character_id,
                 json.dumps(character.aliases, ensure_ascii=False),
                 character.role,
                 1 if character.is_main else 0,
@@ -1997,11 +2054,12 @@ class SQLiteStore:
             ),
         )
         await db.commit()
-        async with db.execute("SELECT voice_facts_json,age_group FROM characters WHERE name=?", (character.name,)) as cursor:
+        async with db.execute("SELECT voice_facts_json,age_group,character_id FROM characters WHERE name=?", (character.name,)) as cursor:
             row = await cursor.fetchone()
         if row is not None:
             character.voice_facts_json = row["voice_facts_json"]
             character.age_group = row["age_group"] or ""
+            character.character_id = row["character_id"] or ""
         self._characters[character.name] = character
         updated_alias_index = {k: v for k, v in self._alias_index.items() if v != character.name}
         self._alias_index.clear()
@@ -2709,6 +2767,7 @@ class SQLiteStore:
         return [
             NovelCharacter(
                 name=row["name"],
+                character_id=row["character_id"] if "character_id" in row.keys() else "",
                 aliases=json.loads(row["aliases_json"] or "[]"),
                 role=row["role"] or "",
                 is_main=bool(row["is_main"]),

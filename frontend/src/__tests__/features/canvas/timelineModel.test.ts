@@ -14,7 +14,9 @@ import {
   compactVideoTracks,
   packTrackClips,
   reorderIndexForDrag,
+  subtitleCueExceedsVideoOutputMs,
   timelineDurationMs,
+  videoTimelineEndMs,
   type ComposeClip,
   type ComposeTimelineState,
   type ComposeTrack,
@@ -35,6 +37,7 @@ function clip(overrides: Partial<ComposeClip> = {}): ComposeClip {
     volume: overrides.volume ?? 1,
     muted: overrides.muted ?? false,
     speed: overrides.speed ?? 1,
+    dubbingSource: overrides.dubbingSource,
   };
 }
 
@@ -103,6 +106,26 @@ describe("timelineModel", () => {
       clip({ id: "b", trimStartMs: 0, trimEndMs: 1000, speed: 1 }),
     ]);
     expect(packed.map((c) => c.timelineStartMs)).toEqual([0, 2000]);
+  });
+
+  it("packs three 3x clips without rounding their shared fractional boundaries", () => {
+    const packed = packTrackClips(
+      ["a", "b", "c"].map((id) =>
+        clip({ id, trimStartMs: 0, trimEndMs: 5000, speed: 3 }),
+      ),
+    );
+
+    expect(packed.map((item) => item.timelineStartMs)).toEqual([
+      0,
+      5000 / 3,
+      (5000 * 2) / 3,
+    ]);
+    expect(overlappingVideoClipIds({
+      resolution: "1080p",
+      tracks: [videoTrack(packed)],
+    })).toEqual(new Set());
+    expect(buildComposePayload({ resolution: "1080p", tracks: [videoTrack(packed)] })
+      .tracks[0].items.map((item) => item.timelineStart)).toEqual([0, 5 / 3, 10 / 3]);
   });
 
   it("reorderIndexForDrag picks insertion slot by dragged-clip center", () => {
@@ -186,6 +209,18 @@ describe("timelineModel", () => {
     expect(timelineDurationMs(state)).toBe(8000);
   });
 
+  it("rejects subtitle cues that extend partially or fully beyond the rendered video", () => {
+    const state: ComposeTimelineState = {
+      resolution: "1080p",
+      tracks: [videoTrack([clip({ trimStartMs: 0, trimEndMs: 5000 })])],
+    };
+
+    expect(videoTimelineEndMs(state)).toBe(5000);
+    expect(subtitleCueExceedsVideoOutputMs(state, 5000)).toBe(false);
+    expect(subtitleCueExceedsVideoOutputMs(state, 5100)).toBe(true);
+    expect(subtitleCueExceedsVideoOutputMs(state, 5500)).toBe(true);
+  });
+
   it("activeClipAt resolves the hit clip and source time", () => {
     const track = videoTrack([
       clip({ id: "a", timelineStartMs: 0, trimStartMs: 0, trimEndMs: 2000 }),
@@ -224,6 +259,39 @@ describe("timelineModel", () => {
       sourceStart: 1,
       sourceEnd: 4,
       volume: 0.8,
+    });
+  });
+
+  it("freezes source node, adopted dubbing identity, and persisted fps in compose payload", () => {
+    const audio = clip({
+      id: "voice-clip",
+      nodeId: "audio-node-1",
+      kind: "audio",
+      dubbingSource: {
+        takeId: "take-1",
+        dialogueId: "dialogue-1",
+        groupId: "group-1",
+      },
+    });
+    const payload = buildComposePayload({
+      resolution: "720p",
+      fps: 24,
+      fpsOrigin: "user",
+      tracks: [
+        videoTrack([clip()]),
+        { id: "track_audio", kind: "audio", clips: [audio] },
+      ],
+    });
+
+    expect(payload.fps).toBe(24);
+    expect(payload.fpsOrigin).toBe("user");
+    expect(payload.tracks[1].items[0]).toMatchObject({
+      sourceNodeId: "audio-node-1",
+      dubbingSource: {
+        takeId: "take-1",
+        dialogueId: "dialogue-1",
+        groupId: "group-1",
+      },
     });
   });
 
@@ -292,6 +360,31 @@ describe("timelineModel", () => {
     const ids = overlappingVideoClipIds(state);
     expect([...ids].sort()).toEqual(["a", "b"]);
     expect(ids.has("c")).toBe(false);
+  });
+
+  it("uses the renderer's 0.001ms tolerance when detecting video overlap", () => {
+    const first = clip({ id: "first", timelineStartMs: 0, trimEndMs: 5000, speed: 3 });
+    const second = clip({
+      id: "second",
+      timelineStartMs: 5000 / 3 - 0.01,
+      trimEndMs: 5000,
+      speed: 3,
+    });
+    expect(overlappingVideoClipIds({
+      resolution: "1080p",
+      tracks: [videoTrack([first, second])],
+    })).toEqual(new Set(["first", "second"]));
+
+    const withinTolerance = clip({
+      id: "within-tolerance",
+      timelineStartMs: 5000 / 3 - 0.0005,
+      trimEndMs: 5000,
+      speed: 3,
+    });
+    expect(overlappingVideoClipIds({
+      resolution: "1080p",
+      tracks: [videoTrack([first, withinTolerance])],
+    })).toEqual(new Set());
   });
 
   it("hasExportableClips reflects non-zero clips", () => {

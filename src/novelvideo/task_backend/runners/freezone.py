@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -728,14 +729,38 @@ async def _run_freezone_video_compose_async(
         background_color=str(payload.get("background_color") or "#000000"),
         keep_original_audio=bool(payload.get("keep_original_audio", True)),
         tracks=list(payload.get("tracks") or []),
+        subtitle_tracks=list(payload.get("subtitle_tracks") or []),
+        draft_revision=int(payload.get("draft_revision") or 0),
+        export_manifest=(
+            dict(payload["export_manifest"])
+            if isinstance(payload.get("export_manifest"), dict)
+            else None
+        ),
+        project_id=ctx.project_id if isinstance(payload.get("export_manifest"), dict) else None,
     )
     rel = output_path.relative_to(project_dir).as_posix()
-    return {
+    result = {
         "job_id": job_id,
         "output_format": "mp4",
         "output_path": str(output_path),
         "output_url": make_static_url_for_context(ctx, rel),
     }
+    manifest = payload.get("export_manifest")
+    if isinstance(manifest, dict):
+        manifest_path = output_path.with_suffix(".manifest.json")
+        result["export_manifest"] = manifest
+        result["timeline_revision"] = manifest.get("timeline_revision")
+        result["draft_revision"] = manifest.get("draft_revision")
+        result["manifest_url"] = make_static_url_for_context(
+            ctx,
+            manifest_path.relative_to(project_dir).as_posix(),
+        )
+        try:
+            sidecar = json.loads(manifest_path.read_text(encoding="utf-8"))
+            result["artifact"] = sidecar.get("artifact")
+        except (OSError, json.JSONDecodeError):
+            result["artifact"] = None
+    return result
 
 
 def run_freezone_video_erase(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:

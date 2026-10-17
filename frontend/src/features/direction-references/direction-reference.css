@@ -1,0 +1,72 @@
+.direction-dialog {
+  padding: 24px;
+  gap: 12px;
+}
+
+.direction-dialog [data-slot='dialog-title'] { padding-right: 28px; }
+.direction-dialog [data-slot='dialog-description'] { font-size: 13px; line-height: 1.6; }
+
+.direction-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--background);
+}
+.direction-tabs button { min-height: 36px; border-radius: 7px; }
+.direction-tabs button[aria-pressed='true'] { background: var(--muted); box-shadow: 0 1px 3px #0002; }
+.direction-tabs button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+.direction-panel > p:first-child { font-size: 12px; line-height: 1.7; }
+.direction-panel fieldset { display: flex; flex-direction: column; gap: 14px; }
+.direction-panel fieldset > * { margin-block: 0; }
+.direction-field { display: flex; flex-direction: column; gap: 8px; font-size: 12px; font-weight: 500; }
+.direction-field select {
+  appearance: none;
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background-color: var(--background);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23949ba5' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding: 0 38px 0 12px;
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  transition: border-color 150ms, box-shadow 150ms;
+}
+.direction-field select:hover:not(:disabled) { border-color: var(--ring); }
+.direction-field select:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.direction-targets-title { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 12px; font-weight: 500; }
+.direction-targets-title span { color: var(--muted-foreground); font-weight: 400; }
+.direction-node-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: 152px; overflow: auto; padding: 3px; }
+.direction-node-option { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; cursor: pointer; overflow-wrap: anywhere; transition: background 150ms, border-color 150ms; }
+.direction-node-option:hover { background: var(--muted); }
+.direction-node-option:has(:checked) { background: var(--accent); border-color: var(--ring); }
+.direction-node-option:has(:focus-visible) { outline: 2px solid var(--ring); outline-offset: 1px; }
+.direction-node-option input { appearance: none; display: grid; place-content: center; flex: 0 0 16px; width: 16px; height: 16px; margin: 0; border: 1px solid var(--muted-foreground); border-radius: 4px; background: var(--background); }
+.direction-node-option input:checked { background: var(--foreground); border-color: var(--foreground); }
+.direction-node-option input:checked::after { content: ''; width: 8px; height: 5px; border-left: 2px solid var(--background); border-bottom: 2px solid var(--background); transform: translateY(-1px) rotate(-45deg); }
+.direction-panel fieldset:disabled .direction-node-option { cursor: default; }
+.direction-current { border: 1px solid var(--border); border-radius: 8px; background: var(--muted); padding: 12px 14px; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.direction-current p + p { margin-top: 4px; }
+.direction-actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 18px; border-top: 1px solid var(--border); }
+.direction-actions button { min-height: 38px; height: auto; padding: 8px 12px; border-radius: 8px; font-size: 12px; }
+.direction-refresh { border: 0; background: transparent; color: var(--muted-foreground); padding: 6px 0; font-size: 12px; cursor: pointer; }
+.direction-refresh:hover { color: var(--foreground); }
+.direction-refresh:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+.direction-refresh:disabled { opacity: .5; cursor: default; }
+@media (max-width: 480px) {
+  .direction-dialog { padding: 18px; }
+  .direction-node-list { grid-template-columns: 1fr; }
+  .direction-actions button:first-child { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .direction-panel *, .direction-tabs button { transition: none; }
+}
