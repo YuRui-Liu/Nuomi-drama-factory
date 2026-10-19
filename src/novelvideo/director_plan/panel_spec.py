@@ -142,7 +142,13 @@ def compile_panel_spec(shot, group) -> PanelSpec:
     if not geo_layout:
         missing("geo_layout")
 
-    count = f"画面内恰好 {len(subjects)} 人" if subjects else "画面内无人物"
+    if subjects:
+        count = f"画面内恰好 {len(subjects)} 人"
+    elif cinematography is None:
+        # 没有摄影机事实时不能宣称画面里没有人：只声明未给出的数量。
+        count = "人物数量未声明"
+    else:
+        count = "画面内无人物"
     if props:
         count = f"{count}，道具 {len(props)} 件"
 

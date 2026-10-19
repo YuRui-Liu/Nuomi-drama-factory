@@ -156,6 +156,22 @@ def test_missing_directions_are_reported_not_invented():
     assert spec.sections["props"] == "无额外道具"
 
 
+def test_missing_blocking_never_claims_an_empty_frame():
+    bare = SimpleNamespace(
+        id="S03",
+        shot_size="近景",
+        camera_angle="平视",
+        composition="",
+        action="抬手",
+        visible_start_state="手停在近前",
+        visible_end_state="手未接触",
+        cinematography=None,
+    )
+    spec = compile_panel_spec(bare, SimpleNamespace(geo_layout="PLATFORM = 圆形石台"))
+    assert "画面内无人物" not in spec.prompt_text
+    assert "人物数量未声明" in spec.sections["count"]
+
+
 def test_compiles_plain_mapping_beats():
     beat = {
         "shot_size": "近景",
