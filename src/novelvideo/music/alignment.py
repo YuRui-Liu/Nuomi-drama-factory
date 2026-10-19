@@ -1,6 +1,7 @@
-"""C 切片（智能配乐）音频模式与分组音频计划契约。
+"""音频模式、分组音频计划契约与互斥校验。
 
-本模块只冻结枚举与字段名，对齐逻辑由 C 切片实现。
+枚举与字段名由波次 0 冻结；`validate_audio_plan` 校验同一分组只能选择
+一种音频来源（原声 / 配音 / 混合）。
 """
 
 from __future__ import annotations
@@ -23,3 +24,17 @@ class GroupAudioPlan(BaseModel):
     audio_mode: AudioMode = AudioMode.DUB
     replaced_line_ids: list[str] = Field(default_factory=list)
     music_enabled: bool = False
+
+
+class AudioIssue(BaseModel):
+    code: str
+    message: str
+
+
+def validate_audio_plan(plan: GroupAudioPlan) -> list[AudioIssue]:
+    issues: list[AudioIssue] = []
+    if plan.audio_mode is AudioMode.HYBRID and not plan.replaced_line_ids:
+        issues.append(AudioIssue(code="audio_mode_conflict", message="hybrid requires replaced_line_ids"))
+    if plan.audio_mode is AudioMode.ORIGINAL and plan.replaced_line_ids:
+        issues.append(AudioIssue(code="audio_mode_conflict", message="original mode cannot replace lines"))
+    return issues
