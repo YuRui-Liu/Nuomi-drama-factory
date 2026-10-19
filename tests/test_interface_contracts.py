@@ -9,6 +9,7 @@ from novelvideo.creation.asset_design import (
     Wardrobe,
 )
 from novelvideo.director_plan.panel_spec import PanelSpec, compile_panel_spec
+from novelvideo.freezone.video_director.segment_planner import SegmentDraft, SegmentPlan
 
 
 def test_brief_requires_asset_identity():
@@ -54,3 +55,16 @@ def test_panel_spec_has_fixed_sections():
 def test_compile_panel_spec_signature_frozen():
     with pytest.raises(NotImplementedError):
         compile_panel_spec(None, None)
+
+
+def test_segment_defaults():
+    seg = SegmentDraft(
+        segment_id="G01-S01",
+        source_rows=[1],
+        duration_seconds=6.0,
+        frame_mode="first",
+        first_frame="cell-1.png",
+    )
+    plan = SegmentPlan(group_id="G01", segments=[seg])
+    assert plan.segments[0].last_frame is None
+    assert plan.segments[0].references == []
