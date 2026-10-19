@@ -108,6 +108,20 @@ def _read_brief(store: AssetBriefStore, ref: str) -> AssetDesignBrief:
         _fail("brief_not_found", f"brief not found: {ref}", EXIT_INPUT)
 
 
+def _default_documents(root: Path, brief: AssetDesignBrief) -> dict[int, str]:
+    """没给 --document 时按项目约定找 `<root>/episodes/{episode:03d}/script.md`。"""
+
+    documents: dict[int, str] = {}
+    for fact in brief.facts:
+        episode = fact.source.episode
+        if episode in documents:
+            continue
+        path = root / "episodes" / f"{episode:03d}" / "script.md"
+        if path.exists():
+            documents[episode] = path.read_text(encoding="utf-8")
+    return documents
+
+
 def _load_documents(root: Path, specs: list[str]) -> dict[int, str]:
     """`--document 1=script.md` -> {1: 正文}；相对路径按项目根解析。"""
 
@@ -195,6 +209,9 @@ def compile_asset(
     document: list[str] = typer.Option(
         [], "--document", help="剧本正文，形如 1=script.md，可重复；相对项目根。"
     ),
+    asset_exists: bool = typer.Option(
+        False, "--asset-exists", help="资产已存在时跳过准入门禁；新资产必须已确认。"
+    ),
 ) -> None:
     store, _kind, _asset_id, _variant = _store_and_ref(root, ref)
     brief = _read_brief(store, ref)
@@ -207,13 +224,19 @@ def compile_asset(
                 EXIT_ISSUE,
             )
         _fail("style_missing", "one of --style-fragment or --style-id is required", EXIT_ISSUE)
-    try:
-        documents = _load_documents(store.root, document)
-    except (OSError, ValueError) as exc:
-        _fail("document_invalid", str(exc), EXIT_INPUT)
-
     payload = brief.model_dump(mode="json")
-    issues: list[Issue] = list(resolve_fact_sources(payload, documents))
+    if document:
+        try:
+            documents = _load_documents(store.root, document)
+        except (OSError, ValueError) as exc:
+            _fail("document_invalid", str(exc), EXIT_INPUT)
+    else:
+        documents = _default_documents(store.root, brief)
+
+    issues: list[Issue] = (
+        [] if asset_exists else admission_gate.check_admission(payload, asset_exists=False)
+    )
+    issues.extend(resolve_fact_sources(payload, documents))
     issues.extend(validate_brief(brief, documents=documents, style_fragment=fragment))
     params: dict[str, object] = {}
     if aspect.strip():
@@ -297,7 +320,10 @@ def admit(
     root: str = typer.Option(..., "--root"),
     confirmed_by: str = typer.Option("", "--confirmed-by", help="确认人（user 等）。"),
     basis: str = typer.Option("", "--basis", help="确认依据：剧本明示 / 用户指定 / 美术补充。"),
+    decision: str = typer.Option("accept", "--decision", help="准入结论：accept | reject。"),
 ) -> None:
+    if decision not in ("accept", "reject"):
+        _fail("decision_invalid", "--decision must be accept or reject", EXIT_ISSUE)
     store, kind, asset_id, variant = _store_and_ref(root, ref)
     brief = _read_brief(store, ref)
     path = _proposal_path(store, kind, asset_id, variant)
@@ -316,6 +342,22 @@ def admit(
     if identity != (kind, asset_id, variant):
         _fail("proposal_invalid", "proposal identity does not match ref", EXIT_ISSUE)
 
+    if decision == "reject":
+        proposal["decision"] = "reject"
+        if confirmed_by.strip():
+            proposal["decided_by"] = confirmed_by.strip()
+        if basis.strip():
+            proposal["decision_basis"] = basis.strip()
+        _write_json(path, proposal)
+        _emit({"path": _relative(store, path), "decision": "reject", "proposal": proposal})
+        return
+
+    if not confirmed_by.strip() or not basis.strip():
+        _fail(
+            "brief_admission_missing",
+            "admission requires --confirmed-by and --basis",
+            EXIT_ISSUE,
+        )
     brief.admission = Admission(
         confirmed=True, confirmed_by=confirmed_by.strip(), basis=basis.strip()
     )
@@ -323,11 +365,16 @@ def admit(
     if issues:
         _fail(issues[0].code, issues[0].message, EXIT_ISSUE)
     saved = store.write(brief, expected_hash=None)
+    proposal["decision"] = "accept"
+    proposal["decided_by"] = confirmed_by.strip()
+    proposal["decision_basis"] = basis.strip()
+    _write_json(path, proposal)
     _emit(
         {
             "path": saved["path"],
             "hash": saved["hash"],
             "admission": brief.admission.model_dump(mode="json"),
+            "decision": "accept",
         }
     )
 

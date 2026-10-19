@@ -96,6 +96,7 @@ def test_compile_success_and_style_duplicate_blocks(tmp_path):
             "3D 国漫，柔和全局光",
             "--aspect",
             "3:2",
+            "--asset-exists",
         ],
     )
     assert result.exit_code == 0
@@ -115,6 +116,7 @@ def test_compile_success_and_style_duplicate_blocks(tmp_path):
             str(tmp_path),
             "--style-fragment",
             "3D 国漫",
+            "--asset-exists",
         ],
     )
     assert blocked.exit_code == 2
@@ -138,6 +140,7 @@ def test_compile_resolves_fact_sources(tmp_path):
         "3D 国漫",
         "--document",
         "1=script.md",
+        "--asset-exists",
     ]
 
     result = runner.invoke(assets_app, args)
@@ -149,6 +152,67 @@ def test_compile_resolves_fact_sources(tmp_path):
     assert blocked.exit_code == 2
     error = json.loads(blocked.stdout)["error"]
     assert [issue["code"] for issue in error["issues"]] == ["brief_source_missing"]
+
+
+def test_compile_blocks_unconfirmed_asset(tmp_path):
+    _seed(tmp_path, _brief())
+
+    blocked = runner.invoke(
+        assets_app,
+        ["compile", "character/lin-du", "--root", str(tmp_path), "--style-fragment", "3D 国漫"],
+    )
+    assert blocked.exit_code == 2
+    assert [issue["code"] for issue in json.loads(blocked.stdout)["error"]["issues"]] == [
+        "brief_admission_missing"
+    ]
+
+    existing = runner.invoke(
+        assets_app,
+        [
+            "compile",
+            "character/lin-du",
+            "--root",
+            str(tmp_path),
+            "--style-fragment",
+            "3D 国漫",
+            "--asset-exists",
+        ],
+    )
+    assert existing.exit_code == 0
+
+    _seed(
+        tmp_path,
+        _brief(admission={"confirmed": True, "confirmed_by": "user", "basis": "剧本明示"}),
+    )
+    confirmed = runner.invoke(
+        assets_app,
+        ["compile", "character/lin-du", "--root", str(tmp_path), "--style-fragment", "3D 国漫"],
+    )
+    assert confirmed.exit_code == 0
+
+
+def test_compile_loads_project_script_by_default(tmp_path):
+    brief = _brief(
+        facts=[Fact(field="age", value="约40岁", source=FactSource(episode=1, quote="四十来岁的男人"))]
+    )
+    _seed(tmp_path, brief)
+    (tmp_path / "episodes/001").mkdir(parents=True)
+    (tmp_path / "episodes/001/script.md").write_text("门外站着一个四十来岁的男人。", encoding="utf-8")
+
+    result = runner.invoke(
+        assets_app,
+        [
+            "compile",
+            "character/lin-du",
+            "--root",
+            str(tmp_path),
+            "--style-fragment",
+            "3D 国漫",
+            "--asset-exists",
+        ],
+    )
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["data"]["issues"] == []
 
 
 def test_pano_slice_success_and_invalid_ref(tmp_path):
@@ -298,3 +362,49 @@ def test_admit_requires_proposal_and_writes_admission(tmp_path):
     assert stored.admission.confirmed_by == "user"
     assert stored.admission.basis == "剧本明示"
     assert payload["data"]["hash"] == store.hash(stored)
+    assert payload["data"]["decision"] == "accept"
+    proposal = json.loads(
+        (tmp_path / "assets/character/lin-du/proposal.v1.json").read_text(encoding="utf-8")
+    )
+    assert proposal["decision"] == "accept"
+    assert proposal["decided_by"] == "user"
+
+
+def test_admit_reject_records_decision_without_granting(tmp_path):
+    store = AssetBriefStore(tmp_path)
+    _seed(tmp_path, _brief())
+    runner.invoke(
+        assets_app,
+        [
+            "propose",
+            "character/lin-du",
+            "--root",
+            str(tmp_path),
+            "--name",
+            "林渡",
+            "--reason",
+            "第一集出场",
+            "--reuse-check",
+            "库内无同角色设计",
+        ],
+    )
+
+    rejected = runner.invoke(
+        assets_app,
+        ["admit", "character/lin-du", "--root", str(tmp_path), "--decision", "reject"],
+    )
+    assert rejected.exit_code == 0
+    payload = json.loads(rejected.stdout)
+    assert payload["data"]["decision"] == "reject"
+    proposal = json.loads(
+        (tmp_path / "assets/character/lin-du/proposal.v1.json").read_text(encoding="utf-8")
+    )
+    assert proposal["decision"] == "reject"
+    assert store.read("character/lin-du").admission.confirmed is False
+
+    invalid = runner.invoke(
+        assets_app,
+        ["admit", "character/lin-du", "--root", str(tmp_path), "--decision", "maybe"],
+    )
+    assert invalid.exit_code == 2
+    assert json.loads(invalid.stdout)["error"]["code"] == "decision_invalid"
