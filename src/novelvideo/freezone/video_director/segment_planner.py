@@ -109,3 +109,31 @@ def split_segments(
         buffer.append(row)
     flush()
     return SegmentPlan(group_id=group_id, segments=segments)
+
+
+def apply_frame_mode_guard(segment: dict) -> tuple[dict, list[dict]]:
+    """Deterministically keep a segment honest about its frame mode.
+
+    A model may only lose the last-frame mode; it is never upgraded. Missing,
+    mismatched, or identical frames downgrade to first-frame mode and record a
+    frame_mode_fallback warning instead of failing silently.
+    """
+    issues: list[dict] = []
+    guarded = dict(segment)
+    if guarded.get("frame_mode") == "first_last":
+        first = guarded.get("first_frame")
+        last = guarded.get("last_frame")
+        if not first or not last or first == last:
+            guarded["frame_mode"] = "first"
+            guarded["last_frame"] = None
+            issues.append(
+                {
+                    "code": "frame_mode_fallback",
+                    "severity": "warning",
+                    "message": (
+                        "last frame unavailable or identical; "
+                        "downgraded to first-frame mode"
+                    ),
+                }
+            )
+    return guarded, issues
