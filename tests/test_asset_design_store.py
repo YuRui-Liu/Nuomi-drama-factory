@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from novelvideo.creation.asset_design.models import AssetDesignBrief
 from novelvideo.creation.asset_design.store import AssetBriefStore
 

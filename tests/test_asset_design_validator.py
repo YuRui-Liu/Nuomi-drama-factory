@@ -1,4 +1,4 @@
-from novelvideo.creation.asset_design.models import AssetDesignBrief, Consistency
+from novelvideo.creation.asset_design.models import AssetDesignBrief
 from novelvideo.creation.asset_design.validator import validate_brief
 
 
