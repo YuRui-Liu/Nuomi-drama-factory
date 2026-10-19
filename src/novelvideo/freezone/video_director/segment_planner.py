@@ -32,7 +32,8 @@ class TechniqueRef(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    version: int
+    # The curated catalogue versions are semver strings such as "1.0.0".
+    version: str = Field(min_length=1)
 
 
 class CaseRef(BaseModel):
