@@ -36,8 +36,9 @@ def adjacent_keyframe_context(beats, shot_ids) -> str:
             endpoint = ({key: direction[key] for key in ('axis', 'camera_side') if direction.get(key)}
                         if isinstance(direction, Mapping) else {})
             if isinstance(direction, Mapping):
+                # 邻居只提供屏幕事实；世界坐标只用于推导左右，不写进提示词。
                 endpoint['subjects'] = [{key: subject[key] for key in (
-                    'subject_id', 'world_position', 'screen_position', 'facing', 'gaze_target')
+                    'subject_id', 'screen_position', 'facing', 'gaze_target')
                     if subject.get(key)} for subject in direction.get('subjects', ())
                     if isinstance(subject, Mapping)]
             rows.append({'shot_id': identifier, 'anchor': anchor,
@@ -46,7 +47,8 @@ def adjacent_keyframe_context(beats, shot_ids) -> str:
     if not rows:
         return ''
     return ('Adjacent source states are continuity context, not additional panels. '
-            + SPATIAL_KEYFRAME_RULE + '\n' + json.dumps(rows, ensure_ascii=False))
+            + SPATIAL_KEYFRAME_RULE + '\n'
+            + _scrub_world_coordinates(json.dumps(rows, ensure_ascii=False)))
 
 
 # 世界坐标只用于推导屏幕事实，绝不进入成品文本。

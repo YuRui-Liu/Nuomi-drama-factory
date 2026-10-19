@@ -101,6 +101,22 @@ def test_v1_keyframe_keeps_optics_and_screen_facts():
     assert "later runs outside" not in text
 
 
+def test_adjacent_context_keeps_screen_facts_without_world_coordinates():
+    from novelvideo.narrative_groups.image_prompt import adjacent_keyframe_context
+
+    current = _legacy_beat()
+    current.update(id="a")
+    following = _legacy_beat()
+    following.update(id="b", visible_start_state="partner looks toward door")
+    context = adjacent_keyframe_context([current, following], ["a"])
+    assert "partner looks toward door" in context
+    assert "画面左" in context and "朝右" in context  # 屏幕事实保留
+    assert "world_position" not in context
+    assert "0.7" not in context
+    assert COORDINATE_ARRAY.search(context) is None
+    assert "not additional panels" in context
+
+
 def _draft() -> DirectorPlanDraft:
     shots = []
     for index in range(5):
