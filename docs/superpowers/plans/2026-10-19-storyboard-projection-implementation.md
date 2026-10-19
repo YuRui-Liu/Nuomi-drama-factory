@@ -27,46 +27,51 @@
 
 ---
 
-### 任务 1：组的 GEO 空间图字段
+### 任务 1：GEO 与手法意图字段
 
 **文件：**
-- 修改：`src/novelvideo/director_plan/models.py`
+- 修改：`src/novelvideo/director_plan/models.py`（`NarrativeGroupPlan`、`ShotPlan`）
 - 测试：`tests/test_director_plan_projection.py`
 
 - [ ] **步骤 1：编写失败的测试**
 
 ```python
-from types import SimpleNamespace
+from novelvideo.director_plan.models import NarrativeGroupPlan, ShotPlan
 
-def test_group_has_geo_layout_default():
-    group = SimpleNamespace(id="G01")
-    # 该测试在实现后改为 DirectorPlanGroup(id="G01")；此处只断言字段存在性约定
-    assert getattr(group, "geo_layout", "") == ""
+def test_group_and_shot_have_new_fields():
+    assert "geo_layout" in NarrativeGroupPlan.model_fields
+    assert "technique_intent" in ShotPlan.model_fields
 ```
 
 - [ ] **步骤 2：运行测试验证失败**
 
-运行：`uv run pytest tests/test_director_plan_projection.py -k geo -v`
-预期：FAIL，`geo_layout` 不存在
+运行：`uv run pytest tests/test_director_plan_projection.py -k fields -v`
+预期：FAIL，字段不存在
 
 - [ ] **步骤 3：编写最少实现**
 
-在 `DirectorPlanGroup` 字段里加：
+`NarrativeGroupPlan` 加：
 
 ```python
     geo_layout: str = Field(default="", description="Scene-level spatial map; no characters or action.")
 ```
 
+`ShotPlan` 加：
+
+```python
+    technique_intent: str = Field(default="", description="Retrieval anchor for technique/case matching.")
+```
+
 - [ ] **步骤 4：运行测试验证通过**
 
-运行：`uv run pytest tests/test_director_plan_projection.py -k geo -v`
+运行：`uv run pytest tests/test_director_plan_projection.py -k fields -v`
 预期：PASS
 
 - [ ] **步骤 5：Commit**
 
 ```bash
 git add src/novelvideo/director_plan/models.py tests/test_director_plan_projection.py
-git commit -m "feat(director): add scene geo layout field"
+git commit -m "feat(director): add geo layout and technique intent fields"
 ```
 
 ---
@@ -227,8 +232,10 @@ def project_plan_rows(revision) -> list[dict]:
             cinematography = shot.cinematography
             creative = getattr(shot, "creative", None)
             performance = [
-                {"id": item.subject_id, "expression": item.emotion, "action": item.action, "intensity": item.intensity}
-                for item in (getattr(creative, "performance", None).characters if creative and getattr(creative, "performance", None) else [])
+                {"id": item.subject_id, "expression": item.visible_behavior,
+                 "action": item.start_behavior, "gaze": item.gaze, "intensity": ""}
+                for item in (getattr(creative, "performance", None).characters
+                             if creative and getattr(creative, "performance", None) else [])
             ]
             rows.append({
                 "shot_no": len(rows) + 1,

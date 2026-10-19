@@ -160,10 +160,11 @@ git commit -m "feat(h3): guard frame mode with deterministic fallback"
 from novelvideo.technique_library.binding import bind_experience
 
 def test_only_compatible_ids(monkeypatch):
-    monkeypatch.setattr("novelvideo.technique_library.binding.search",
-                        lambda **kw: {"results": [{"case_id": "case-1", "source_id": "src-1",
-                                                   "provenance": "author", "compatible_technique_ids": ["t-1"]}],
-                                      "techniques": [{"id": "t-1", "version": 2}, {"id": "t-2", "version": 1}]})
+    monkeypatch.setattr("novelvideo.technique_library.binding.search_experience",
+                        lambda query, mode, duration_seconds, limit=5: {
+                            "results": [{"case_id": "case-1", "source_id": "src-1",
+                                         "provenance": "author", "compatible_technique_ids": ["t-1"]}],
+                            "techniques": [{"id": "t-1", "version": 2}, {"id": "t-2", "version": 1}]})
     ref, case = bind_experience(intent="克制的惊讶", mode="ref_plus_first", duration=6, user_technique=None)
     assert ref == {"id": "t-1", "version": 2}
     assert case["case_id"] == "case-1"
@@ -179,10 +180,10 @@ def test_only_compatible_ids(monkeypatch):
 ```python
 # src/novelvideo/technique_library/binding.py
 from __future__ import annotations
-from novelvideo.technique_library.experience import search
+from novelvideo.technique_library.experience import search_experience
 
 def bind_experience(*, intent: str, mode: str, duration: float, user_technique: dict | None):
-    found = search(query=intent, mode=mode, duration_seconds=duration, limit=5)
+    found = search_experience(intent, mode, duration, 5)
     cases = found.get("results", [])
     if not cases:
         if user_technique:

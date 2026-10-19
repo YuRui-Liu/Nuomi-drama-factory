@@ -151,12 +151,14 @@ from novelvideo.music.smart_scoring import plan_group_music
 
 def test_uses_match_when_available(monkeypatch):
     monkeypatch.setattr("novelvideo.music.smart_scoring.match_assets",
-                        lambda **kw: [{"id": "m1", "duration_ms": 20000}])
-    plan = plan_group_music(group={"id": "G01"}, mood="压抑", duration_ms=13000, enabled=True)
+                        lambda assets, query='', duration_ms=0, instrumental_only=False: [{"id": "m1", "duration_ms": 20000}])
+    plan = plan_group_music(group={"id": "G01"}, mood="压抑", duration_ms=13000,
+                            enabled=True, assets=[{"name": "压抑氛围", "vocals": "none"}])
     assert plan["source"] == "library"
 
 def test_disabled_returns_none():
-    assert plan_group_music(group={"id": "G01"}, mood="压抑", duration_ms=13000, enabled=False) is None
+    assert plan_group_music(group={"id": "G01"}, mood="压抑", duration_ms=13000,
+                            enabled=False, assets=[]) is None
 ```
 
 - [ ] **步骤 2：运行测试验证失败**
@@ -169,10 +171,11 @@ def test_disabled_returns_none():
 ```python
 from novelvideo.music.matching import match_assets
 
-def plan_group_music(*, group: dict, mood: str, duration_ms: int, enabled: bool) -> dict | None:
+def plan_group_music(*, group: dict, mood: str, duration_ms: int, enabled: bool,
+                     assets: list[dict]) -> dict | None:
     if not enabled:
         return None
-    matches = match_assets([], query=mood, duration_ms=duration_ms, instrumental_only=True)
+    matches = match_assets(assets, query=mood, duration_ms=duration_ms, instrumental_only=True)
     if matches:
         return {"group_id": group["id"], "source": "library", "asset": matches[0], "duck": True}
     return {"group_id": group["id"], "source": "generate", "prompt": mood,
