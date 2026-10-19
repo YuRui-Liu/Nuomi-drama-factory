@@ -291,6 +291,9 @@ class VideoComposeRequest(BaseModel):
     add_subtitles: bool = True
     add_bgm: bool = False
     resolution: str = "720x1280"
+    client_mutation_id: str | None = Field(default=None, min_length=1, max_length=128)
+    director_revision_id: str | None = Field(default=None, min_length=1, max_length=128)
+    production_group_ids: list[str] | None = None
 
 
 # ── TTS ───────────────────────────────────────────────────────────────────────
@@ -1771,6 +1774,10 @@ class FreezoneStoryScriptRow(BaseModel):
     dialogue: str = Field(default="", description="对白")
     shot_prompt: str = Field(default="", description="分镜提示词")
     video_motion_prompt: str = Field(default="", description="视频运动提示词")
+    director: dict | None = Field(
+        default=None,
+        description="计划投影：framing/blocking/lights/performance/props/continuity/panel_spec",
+    )
 
 
 class FreezoneStoryScriptGenerateData(BaseModel):
