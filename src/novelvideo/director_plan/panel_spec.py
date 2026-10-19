@@ -95,8 +95,22 @@ def _join(parts: list[str], separator: str = "；") -> str:
     return separator.join(part for part in parts if part)
 
 
+def resolve_cinematography(shot):
+    """按 keyframe_anchor 选出本格真正被拍下的空间快照。
+
+    锚点在 creative 上：anchor=end 且结束快照存在时用 end_cinematography，
+    否则（start、缺 creative、缺结束快照）沿用 shot.cinematography。
+    """
+    creative = _raw(shot, "creative")
+    anchor = _field(creative, "keyframe_anchor")
+    end_direction = _raw(creative, "end_cinematography")
+    if anchor == "end" and end_direction is not None:
+        return end_direction
+    return _raw(shot, "cinematography")
+
+
 def compile_panel_spec(shot, group) -> PanelSpec:
-    cinematography = _raw(shot, "cinematography")
+    cinematography = resolve_cinematography(shot)
     subjects = _items(cinematography, "subjects")
     props = _items(cinematography, "props")
     lights = _items(cinematography, "lights")
