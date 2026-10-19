@@ -67,6 +67,45 @@ async def project_asset_catalog(ctx):
         await store.close()
 
 
+def _panel_language(shot, group) -> str:
+    """逐镜拍摄语言；景别/机位/构图已在本行首句陈述，故跳过 shot 段。"""
+    from novelvideo.director_plan.panel_spec import (
+        compile_panel_spec, render_panel_sections, strip_world_coordinates,
+    )
+    spec = compile_panel_spec(shot, group)
+    return strip_world_coordinates(render_panel_sections(spec, exclude=('shot',)))[0]
+
+
+def _intent_text(intent) -> str:
+    if intent is None:
+        return ''
+    return '；'.join(part for part in (
+        intent.narrative_purpose, intent.audience_attention,
+        intent.emotional_effect, intent.continuity_strategy) if part)
+
+
+def _creative_film_language(creative) -> str:
+    """已采纳创作决策的拍摄语言摘要；坐标只留在计划里，不写进提示词。"""
+    if creative is None:
+        return ''
+    anchor = creative.keyframe_anchor
+    optics = creative.optics
+    if optics.focal_length_mm is not None:
+        lens = f'{optics.focal_length_mm:g}mm {optics.sensor_basis or ""}'.strip()
+    elif optics.field_of_view_degrees is not None:
+        lens = f'视角{optics.field_of_view_degrees:g}°'
+    else:
+        lens = optics.mode
+    composition = creative.composition
+    framing = creative.framing
+    return '；'.join(part for part in (
+        f'光学：{lens}，{optics.depth_of_field}，焦点{optics.focus_target}',
+        f'构图：{getattr(composition, f"{anchor}_composition")}，视觉中心{composition.attention_center}',
+        f'画框：{getattr(framing, f"{anchor}_frame")}',
+        f'必须读到：{"、".join(framing.must_read)}',
+    ) if part)
+
+
 def source_spans(script):
     from .planning import source_scenes
     scenes = source_scenes(script)
@@ -119,15 +158,17 @@ def project_draft(script, draft, asset_catalog=()):
                     **({k: asset[k] for k in ('image_url', 'version_id', 'asset_sha256') if k in asset} if asset else {})}
                 if asset_id not in asset_ids:
                     asset_ids.append(asset_id)
-            description = '\n'.join([
+            # 拍摄语言由共享编译器产出：不再把世界坐标 JSON 塞进图像提示词。
+            description = '\n'.join(part for part in (
                 f'镜头 {shot.id}；{shot.shot_size}；{shot.camera_angle}；{shot.composition}',
                 f'起始画面：{shot.visible_start_state}', f'动作：{shot.action}',
                 f'结束画面：{shot.visible_end_state}', f'运镜：{shot.camera_motion}',
-                f'导演意图：{shot.intent.model_dump_json() if shot.intent else group.objective}',
+                f'导演意图：{_intent_text(shot.intent) or group.objective}',
                 f'原文对白：{" / ".join(spans[key].dialogue_text for key in shot.dialogue_source_ids) or "无"}',
-                f'导演决策：{shot.creative.model_dump_json() if shot.creative else ""}',
-                f'空间与灯光：{shot.cinematography.model_dump_json() if shot.cinematography else ""}',
-            ])
+                f'创作决策：{_creative_film_language(shot.creative)}' if shot.creative else '',
+                '拍摄语言：',
+                _panel_language(shot, group),
+            ) if part)
             projected = {'id': shot.id, 'description': description, 'duration_seconds': shot.duration_seconds}
             if shot.static_panel is not None:
                 static = shot.static_panel.model_dump(mode='json')

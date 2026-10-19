@@ -74,7 +74,8 @@ def _items(source: Any, name: str) -> list[Any]:
     return list(value)
 
 
-def _strip_world_coordinates(text: str) -> tuple[str, list[str]]:
+def strip_world_coordinates(text: str) -> tuple[str, list[str]]:
+    """移除世界坐标数组与坐标键名，返回（清洗后文本, 命中的坐标片段）。"""
     leaks: list[str] = []
 
     def drop_array(match: re.Match[str]) -> str:
@@ -107,7 +108,7 @@ def compile_panel_spec(shot, group) -> PanelSpec:
         issues.append(f"panel_spec_missing_field: {name}")
 
     def clean(text: str) -> str:
-        cleaned, found = _strip_world_coordinates(text)
+        cleaned, found = strip_world_coordinates(text)
         leaks.extend(found)
         return cleaned
 
@@ -216,7 +217,23 @@ def compile_panel_spec(shot, group) -> PanelSpec:
         "continuity": clean(continuity),
     }
     issues.extend(f"panel_coordinate_leak: {leak}" for leak in leaks)
-    prompt_text = "\n".join(
-        f"{name}: {value}" for name, value in sections.items() if value
-    )
+    prompt_text = render_panel_sections(PanelSpec(sections=sections))
     return PanelSpec(sections=sections, prompt_text=prompt_text, negatives=[], issues=issues)
+
+
+def render_panel_sections(spec: PanelSpec, *, exclude: tuple[str, ...] = ()) -> str:
+    """按固定段落顺序渲染拍摄语言；集成方可用 exclude 跳过已单独陈述的段落。"""
+    return "\n".join(
+        f"{name}: {value}"
+        for name, value in spec.sections.items()
+        if value and name not in exclude
+    )
+
+
+def panel_spec_from_beat(beat: Mapping[str, Any]) -> PanelSpec:
+    """把 generation beat（映射）编译成 panel 拍摄语言，供宫格与画布投影共用。
+
+    beat 同时携带镜头事实（visible_start_state 等）、cinematography 与组级
+    geo_layout，因此同一映射即可充当 shot 与 group 两侧的输入。
+    """
+    return compile_panel_spec(beat, beat)

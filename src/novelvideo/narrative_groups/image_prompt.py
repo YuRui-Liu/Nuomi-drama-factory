@@ -49,6 +49,28 @@ def adjacent_keyframe_context(beats, shot_ids) -> str:
             + SPATIAL_KEYFRAME_RULE + '\n' + json.dumps(rows, ensure_ascii=False))
 
 
+# 世界坐标只用于推导屏幕事实，绝不进入成品文本。
+_WORLD_SPACE_FIELDS = frozenset({"world_position", "world_origin"})
+
+
+def _panel_language(beat: Mapping[str, Any]) -> str:
+    """用共享编译器把 beat 渲染成拍摄语言；景别/机位/构图已单独陈述。"""
+    from novelvideo.director_plan.panel_spec import (
+        panel_spec_from_beat,
+        render_panel_sections,
+        strip_world_coordinates,
+    )
+
+    spec = panel_spec_from_beat(beat)
+    return strip_world_coordinates(render_panel_sections(spec, exclude=("shot",)))[0]
+
+
+def _scrub_world_coordinates(text: str) -> str:
+    from novelvideo.director_plan.panel_spec import strip_world_coordinates
+
+    return strip_world_coordinates(text)[0]
+
+
 def panel_description(beat: Mapping[str, Any]) -> str:
     if beat.get("creative_contract_version") == 1:
         from novelvideo.director_plan.keyframes import project_keyframe
@@ -60,6 +82,12 @@ def panel_description(beat: Mapping[str, Any]) -> str:
         facts["framing"] = {key: value for key, value in facts["framing"].items()
                             if key != "must_read"}
         facts.pop("exposure_priority", None)
+        # 世界坐标不能到达图像模型：只保留屏幕投影后的站位与朝向。
+        facts["subjects"] = [
+            {key: value for key, value in subject.items() if key not in _WORLD_SPACE_FIELDS}
+            for subject in facts.get("subjects", ())
+            if isinstance(subject, Mapping)
+        ]
         return "\n".join((
             f"Freeze the explicitly selected {projection.anchor} instant only. Do not depict other instants, motion paths, or cut instructions.",
             "The selected state and framing.frame govern which events and light sources exist NOW. "
@@ -68,7 +96,7 @@ def panel_description(beat: Mapping[str, Any]) -> str:
             "even if lighting notes describe a later flame. Do not show subsequent contact, falls, aftermath or inserts. "
             "Each cell is ONE uninterrupted camera image with NO internal panels, montage, close-up boxes or before/after views.",
             "Director keyframe facts (supporting notes apply only when consistent with the selected instant): "
-            + json.dumps(facts, ensure_ascii=False),
+            + _scrub_world_coordinates(json.dumps(facts, ensure_ascii=False)),
             SPATIAL_KEYFRAME_RULE,
             "Preserve the mapped identity and wardrobe references. Reference composition must not override these director decisions. "
             "Do not turn dialogue into writing; render only writing explicitly present in the selected visible state.",
@@ -100,21 +128,12 @@ def panel_description(beat: Mapping[str, Any]) -> str:
     if beat.get("detected_identities"):
         lines.append("Character identity context (visibility follows the opening state): "
                      + json.dumps(beat["detected_identities"], ensure_ascii=False))
-    direction = beat.get("cinematography")
-    if isinstance(direction, Mapping):
-        # Motion paths, gaze transitions and cut intentions belong to video.
-        facts = {key: direction[key] for key in (
-            "axis", "camera_side", "lights", "key_light_id", "shadow_direction", "exposure_priority",
-        ) if direction.get(key)}
-        facts["subjects"] = [
-            {key: subject[key] for key in (
-                "subject_id", "world_position", "screen_position", "facing", "gaze_target",
-            ) if subject.get(key)}
-            for subject in direction.get("subjects", ())
-            if isinstance(subject, Mapping)
-        ]
-        lines.append("Spatial and lighting context, only where consistent with the opening state: "
-                     + json.dumps(facts, ensure_ascii=False))
+    if isinstance(beat.get("cinematography"), Mapping):
+        # 轴线、站位、灯光与道具统一由 panel_spec 编译成拍摄语言，不再拼世界坐标 JSON。
+        lines.append(
+            "Spatial and lighting context, only where consistent with the opening state:\n"
+            + _panel_language(beat)
+        )
     lines.append(
         "Preserve each mapped identity reference's face and wardrobe, and the established "
         "prop size and appearance. Do not turn dialogue into visible writing. "
