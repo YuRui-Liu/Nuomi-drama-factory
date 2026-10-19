@@ -63,3 +63,38 @@ def test_dialogue_entry_may_be_a_mapping():
         duration=6,
     )
     assert issues[0]["code"] == "prompt_spec_conflict"
+
+
+def test_duration_mention_must_match_spec():
+    mismatched = crosscheck_prompt(
+        prompt="镜头持续 8s，随后切走。", spec={"duration": 6}, duration=6
+    )
+    assert [issue["code"] for issue in mismatched] == ["prompt_spec_conflict"]
+    assert "8" in mismatched[0]["message"] and "6" in mismatched[0]["message"]
+
+    assert crosscheck_prompt(prompt="镜头持续 6 秒。", spec={"duration": 6}, duration=6) == []
+    assert crosscheck_prompt(
+        prompt="The shot lasts 6 seconds.", spec={"duration": 6}, duration=6
+    ) == []
+    # 没写时长、或写的是时间点而不是时长，都不报。
+    assert crosscheck_prompt(prompt="他缓缓抬头。", spec={"duration": 6}, duration=6) == []
+    assert crosscheck_prompt(prompt="第 2 秒他抬头。", spec={"duration": 6}, duration=6) == []
+
+
+def test_frame_mode_mention_must_match_spec():
+    last_frame_on_first_mode = crosscheck_prompt(
+        prompt="以末帧收束，停在嘴角。", spec={"frame_mode": "first"}, duration=6
+    )
+    assert [issue["code"] for issue in last_frame_on_first_mode] == ["prompt_spec_conflict"]
+
+    first_only_on_locked_mode = crosscheck_prompt(
+        prompt="Start from the first frame only.", spec={"frame_mode": "first_last"}, duration=6
+    )
+    assert [issue["code"] for issue in first_only_on_locked_mode] == ["prompt_spec_conflict"]
+
+    assert crosscheck_prompt(
+        prompt="从首帧走到尾帧。", spec={"frame_mode": "first_last"}, duration=6
+    ) == []
+    assert crosscheck_prompt(
+        prompt="从首帧开始，镜头缓慢推近。", spec={"frame_mode": "first"}, duration=6
+    ) == []

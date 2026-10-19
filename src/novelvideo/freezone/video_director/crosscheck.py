@@ -61,7 +61,90 @@ def crosscheck_prompt(*, prompt: str, spec: dict, duration: float) -> list[dict]
                     "message": "camera side contradicts panel spec",
                 }
             )
+
+    issues.extend(_duration_issues(prompt, spec, duration))
+    issues.extend(_frame_mode_issues(prompt, spec))
     return issues
+
+
+_DURATION_MENTION = re.compile(
+    r"(?P<prefix>第\s*)?(?<!\d)(?P<value>\d+(?:\.\d+)?)\s*"
+    r"(?:秒|seconds?|secs?|s(?![a-z]))",
+    re.IGNORECASE,
+)
+_LAST_FRAME_MENTIONS = (
+    re.compile(r"\blast\s+frame\b", re.IGNORECASE),
+    re.compile(r"尾帧"),
+    re.compile(r"末帧"),
+)
+_FIRST_FRAME_ONLY_MENTIONS = (
+    re.compile(r"\bonly\s+(?:the\s+)?first\s+frame\b", re.IGNORECASE),
+    re.compile(r"\bfirst\s+frame\s+only\b", re.IGNORECASE),
+    re.compile(r"(?:只|仅)(?:用|使用)?首帧"),
+)
+
+
+def _expected_duration(spec: dict, duration: float) -> float:
+    for key in ("duration", "duration_seconds"):
+        value = spec.get(key)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return float(duration)
+
+
+def _duration_issues(prompt: str, spec: dict, duration: float) -> list[dict]:
+    expected = _expected_duration(spec, duration)
+    issues: list[dict] = []
+    seen: set[float] = set()
+    for match in _DURATION_MENTION.finditer(prompt):
+        # 第 N 秒是时间点，不是段时长。
+        if match.group("prefix"):
+            continue
+        value = float(match.group("value"))
+        if value in seen:
+            continue
+        seen.add(value)
+        if abs(value - expected) > 1e-6:
+            issues.append(
+                {
+                    "code": "prompt_spec_conflict",
+                    "severity": "error",
+                    "message": (
+                        f"prompt duration {value:g}s contradicts "
+                        f"spec duration {expected:g}s"
+                    ),
+                }
+            )
+    return issues
+
+
+def _frame_mode_issues(prompt: str, spec: dict) -> list[dict]:
+    frame_mode = spec.get("frame_mode")
+    if frame_mode == "first" and any(
+        pattern.search(prompt) for pattern in _LAST_FRAME_MENTIONS
+    ):
+        return [
+            {
+                "code": "prompt_spec_conflict",
+                "severity": "error",
+                "message": "prompt references a last frame but spec is first-frame mode",
+            }
+        ]
+    if frame_mode == "first_last" and any(
+        pattern.search(prompt) for pattern in _FIRST_FRAME_ONLY_MENTIONS
+    ):
+        return [
+            {
+                "code": "prompt_spec_conflict",
+                "severity": "error",
+                "message": "prompt forces a first-frame-only read but spec locks first and last frames",
+            }
+        ]
+    return []
 
 
 __all__ = ["crosscheck_prompt"]
