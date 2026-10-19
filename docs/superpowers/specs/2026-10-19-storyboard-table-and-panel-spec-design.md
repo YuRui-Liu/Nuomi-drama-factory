@@ -82,6 +82,7 @@ scriptNode 分镜表（10 列 + director 块 + group_id/segment_index + panel_sp
 {
   "group_id": "G01",
   "segment_index": 1,
+  "technique_intent": "克制的惊讶反应",
   "framing": {"shot_size": "近景", "angle": "平视", "composition": "左三分构图"},
   "blocking": {
     "axis": "A-B", "camera_side": "左侧", "screen_direction": "左→右",
@@ -96,6 +97,7 @@ scriptNode 分镜表（10 列 + director 块 + group_id/segment_index + panel_sp
 ```
 
 约束：
+- `technique_intent` 只作为 C 侧手法/案例检索的查询锚点，**不进入** `panel_spec.prompt_text`；检索、适配校验、引用绑定与出处记录全部归 C 规格。
 - 计划由现有 `directorWorkspaceNode prepare`（或 CLI 等价命令）生成；表只引用其 `revisionId`，不要求画布常驻导演工作台节点。
 - `panel_spec` 是编译产物，投影时生成并随行保存；编辑后重新投影即刷新。
 - 旧行没有 `director` 时，表格回退到 10 个字符串列，不报错。
