@@ -1,5 +1,3 @@
-import pytest
-
 from novelvideo.creation.asset_design import (
     AssetDesignBrief,
     CompileResult,
@@ -55,8 +53,10 @@ def test_panel_spec_has_fixed_sections():
 
 
 def test_compile_panel_spec_signature_frozen():
-    with pytest.raises(NotImplementedError):
-        compile_panel_spec(None, None)
+    # 波次 0 冻结签名，B 切片实现编译逻辑；签名仍是 (shot, group) -> PanelSpec。
+    spec = compile_panel_spec(None, None)
+    assert isinstance(spec, PanelSpec)
+    assert spec.negatives == [] and spec.sections  # 固定段落始终存在，缺失字段只记 issue
 
 
 def test_segment_defaults():
