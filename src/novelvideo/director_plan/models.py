@@ -23,6 +23,7 @@ from ulid import ULID
 from .cinematography import ShotCinematography
 from .creative_contract import GroupCreativeContext, ShotCreativeDecisions, creative_shot_errors
 from .revision_feedback import FeedbackHistory
+from .professional_models import ProfessionalRunReceipt
 from novelvideo.storyboard_prompt import StaticPanel
 
 
@@ -358,6 +359,9 @@ class ShotPlan(FrozenModel):
     shot_size: str = "medium"
     camera_angle: str = "eye_level"
     composition: str = ""
+    technique_intent: str = Field(
+        default="", description="Retrieval anchor for technique/case matching."
+    )
     camera_motion: str = "static"
     dialogue_source_ids: tuple[str, ...] = ()
     dramatic_beat_ids: tuple[str, ...] = ()
@@ -395,6 +399,9 @@ class NarrativeGroupPlan(FrozenModel):
     dramatic_beat_ids: tuple[str, ...] = ()
     scene_anchor: str
     time_anchor: str
+    geo_layout: str = Field(
+        default="", description="Scene-level spatial map; no characters or action."
+    )
     objective: str
     visible_turn: str
     relation_to_previous: Literal[
@@ -500,6 +507,11 @@ class DirectorPlanRevision(FrozenModel):
     creative_contract_version: Literal[1] | None = None
     creative_feedback: FeedbackHistory | None = None
     author_chain_id: str | None = None
+    professional_status: Literal[
+        "not_requested", "pending", "complete", "partial", "unknown"
+    ] = "not_requested"
+    professional_decision: str = "No specialist contribution was requested."
+    professional_runs: tuple[ProfessionalRunReceipt, ...] = ()
     revision_id: str
     parent_revision_id: str | None = None
     episode: int = Field(gt=0)
@@ -547,10 +559,18 @@ class DirectorPlanRevision(FrozenModel):
         semantic_revision_id: str | None = None,
         parent_revision_id: str | None = None,
         creative_contract_version: Literal[1] | None = None,
+        professional_status: Literal[
+            "not_requested", "pending", "complete", "partial", "unknown"
+        ] = "not_requested",
+        professional_decision: str = "No specialist contribution was requested.",
+        professional_runs: tuple[ProfessionalRunReceipt, ...] = (),
     ) -> Self:
         return cls(
             revision_id=str(ULID()),
             creative_contract_version=creative_contract_version,
+            professional_status=professional_status,
+            professional_decision=professional_decision,
+            professional_runs=professional_runs,
             parent_revision_id=parent_revision_id,
             episode=episode,
             status="draft",
