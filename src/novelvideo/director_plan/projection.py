@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from novelvideo.director_plan.panel_spec import compile_panel_spec
+from novelvideo.director_plan.panel_spec import compile_panel_spec, resolve_cinematography
 
 
 def _raw(source: Any, name: str) -> Any:
@@ -67,7 +67,8 @@ def project_plan_rows(revision) -> list[dict]:
 
 def _project_shot(shot, group, *, group_id: str, segment_index: int, shot_no: int) -> dict:
     spec = compile_panel_spec(shot, group)
-    cinematography = _raw(shot, "cinematography")
+    # 与 panel_spec 同一份空间快照：end 锚点的格子描述结束状态，不是起始状态。
+    cinematography = resolve_cinematography(shot)
     start_state = _text(shot, "visible_start_state")
     end_state = _text(shot, "visible_end_state")
     performance = _performance_entries(_raw(shot, "creative"))
@@ -90,6 +91,14 @@ def _project_shot(shot, group, *, group_id: str, segment_index: int, shot_no: in
             "motivation": _text(light, "motivation"),
         }
         for light in _items(cinematography, "lights")
+    ]
+    props = [
+        {
+            "id": _text(prop, "prop_id"),
+            "facing": _text(prop, "facing"),
+            "held_by": _text(prop, "held_by"),
+        }
+        for prop in _items(cinematography, "props")
     ]
     visual_description = " → ".join(
         part
@@ -131,7 +140,7 @@ def _project_shot(shot, group, *, group_id: str, segment_index: int, shot_no: in
             },
             "lights": lights,
             "performance": performance,
-            "props": [],
+            "props": props,
             "continuity": {
                 "start_state": start_state,
                 "end_state": end_state,

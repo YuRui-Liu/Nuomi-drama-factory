@@ -229,4 +229,131 @@ def test_legacy_shot_without_directing_facts_still_projects():
     assert row["dialogue"] == "line-2"
     assert row["director"]["lights"] == []
     assert row["director"]["blocking"]["subjects"] == []
+    assert row["director"]["props"] == []
     assert row["director"]["panel_spec"]["issues"]
+
+
+def _prop_shot():
+    return SimpleNamespace(
+        id="S05",
+        shot_size="近景",
+        camera_angle="平视",
+        composition="",
+        action="抬手",
+        visible_start_state="手停在近前",
+        visible_end_state="手未接触",
+        duration_seconds=4.0,
+        dialogue_source_ids=[],
+        creative=None,
+        cinematography=SimpleNamespace(
+            axis="A-B",
+            camera_side="左侧",
+            screen_direction="左→右",
+            subjects=[],
+            props=[
+                SimpleNamespace(
+                    prop_id="背包",
+                    world_position=[0.2, 0, 0.9],
+                    facing="朝右",
+                    held_by="林渡",
+                    motion_path="原地不动",
+                )
+            ],
+            lights=[],
+            key_light_id="",
+        ),
+    )
+
+
+def test_director_block_lists_props_without_world_coordinates():
+    group = SimpleNamespace(id="G05", geo_layout="PLATFORM = 圆形石台", shots=[_prop_shot()])
+    row = project_plan_rows(SimpleNamespace(groups=[group]))[0]
+    assert row["director"]["props"] == [{"id": "背包", "facing": "朝右", "held_by": "林渡"}]
+    assert row["director"]["panel_spec"]["sections"]["props"] == "道具 背包，朝向朝右，林渡持握"
+    assert "0.2" not in str(row["director"]["props"])
+
+
+def test_end_anchor_row_describes_the_same_snapshot_as_panel_spec():
+    start = SimpleNamespace(
+        axis="A-B",
+        camera_side="左侧",
+        screen_direction="左→右",
+        subjects=[
+            SimpleNamespace(
+                subject_id="林渡",
+                screen_position="画面左",
+                facing="朝右",
+                gaze_target="画外右后",
+            )
+        ],
+        props=[],
+        lights=[
+            SimpleNamespace(
+                light_id="L1",
+                source_type="主光",
+                direction="右后侧逆光",
+                color_temperature="冷",
+                relative_intensity="低",
+                motivation="天光",
+            )
+        ],
+        key_light_id="L1",
+    )
+    end = SimpleNamespace(
+        axis="B-A",
+        camera_side="右侧",
+        screen_direction="右→左",
+        subjects=[
+            SimpleNamespace(
+                subject_id="林渡",
+                screen_position="画面右",
+                facing="朝左",
+                gaze_target="画外左前",
+            )
+        ],
+        props=[
+            SimpleNamespace(
+                prop_id="背包",
+                world_position=[0.2, 0, 0.9],
+                facing="朝左",
+                held_by="林渡",
+                motion_path="原地不动",
+            )
+        ],
+        lights=[
+            SimpleNamespace(
+                light_id="L2",
+                source_type="补光",
+                direction="左前侧柔光",
+                color_temperature="暖",
+                relative_intensity="中",
+                motivation="门缝",
+            )
+        ],
+        key_light_id="L2",
+    )
+    shot = SimpleNamespace(
+        id="S06",
+        shot_size="近景",
+        camera_angle="平视",
+        composition="左三分",
+        action="抬手",
+        visible_start_state="手停在近前",
+        visible_end_state="手未接触",
+        duration_seconds=5.0,
+        dialogue_source_ids=[],
+        technique_intent="克制的惊讶",
+        cinematography=start,
+        creative=SimpleNamespace(keyframe_anchor="end", end_cinematography=end),
+    )
+    group = SimpleNamespace(id="G06", geo_layout="PLATFORM = 圆形石台", shots=[shot])
+    row = project_plan_rows(SimpleNamespace(groups=[group]))[0]
+    director = row["director"]
+    assert director["blocking"]["subjects"][0]["screen_position"] == "画面右"
+    assert director["blocking"]["axis"] == "B-A"
+    assert row["axis"] == "B-A"
+    assert row["key_light"] == "L2"
+    assert director["lights"][0]["id"] == "L2"
+    assert director["props"] == [{"id": "背包", "facing": "朝左", "held_by": "林渡"}]
+    assert "画面右" in director["panel_spec"]["sections"]["blocking"]
+    assert "0.2" not in str(row)
