@@ -1,3 +1,5 @@
+import pytest
+
 from novelvideo.creation.asset_design import (
     AssetDesignBrief,
     CompileResult,
@@ -6,6 +8,7 @@ from novelvideo.creation.asset_design import (
     Issue,
     Wardrobe,
 )
+from novelvideo.director_plan.panel_spec import PanelSpec, compile_panel_spec
 
 
 def test_brief_requires_asset_identity():
@@ -39,3 +42,15 @@ def test_compile_result_defaults():
     assert result.compiled == {}
     assert result.prompt_text == ""
     assert result.issues == []
+
+
+def test_panel_spec_has_fixed_sections():
+    spec = PanelSpec(sections={"count": "画面内恰好 2 人", "shot": "近景，平视"})
+    assert spec.sections["count"].startswith("画面内")
+    assert spec.prompt_text == ""
+    assert spec.negatives == []
+
+
+def test_compile_panel_spec_signature_frozen():
+    with pytest.raises(NotImplementedError):
+        compile_panel_spec(None, None)
