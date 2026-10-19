@@ -74,6 +74,6 @@ design 是**本岗位的创作决定**，只写"长什么样"。
 
 - 函数：`creation.asset_design.validator.validate_brief(brief, documents=..., style_fragment=...)`，错误码 `brief_style_duplicate`、`brief_noise_term`、`brief_fact_conflict` 阻断，`brief_anchor_thin` 仅警告。
 - 编译：`creation.asset_design.compiler.compile_brief(brief, style_fragment=..., params=...)`，同输入必得同 `prompt_text` 与指纹；改了 brief 就重新编译，不复用旧提示词。
-- CLI：`canvas assets validate <kind>/<id> --root <项目目录>`（随 `assets_app` 一起挂载后可用）；输出是 JSON 信封，`ok: false` 时按 `error.code` 定位。
+- CLI：`nuomi --project PROJECT canvas assets validate <kind>/<id> --canvas CANVAS --style-fragment "..."`；写入用 `brief write`，编译用 `compile`。输出是 JSON 信封，`ok: false` 时按 `error.code` 定位。
 
 审稿结论写法：先列阻断项（错误码 + 具体字段 + 改法），再列建议项，最后给"通过 / 需修改"。不写"看起来还行"这类无法复核的结论。
