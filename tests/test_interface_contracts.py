@@ -10,6 +10,8 @@ from novelvideo.creation.asset_design import (
 )
 from novelvideo.director_plan.panel_spec import PanelSpec, compile_panel_spec
 from novelvideo.freezone.video_director.segment_planner import SegmentDraft, SegmentPlan
+from novelvideo.audio.voice_design import VoiceDesignBrief
+from novelvideo.music.alignment import AudioMode, GroupAudioPlan
 
 
 def test_brief_requires_asset_identity():
@@ -68,3 +70,14 @@ def test_segment_defaults():
     plan = SegmentPlan(group_id="G01", segments=[seg])
     assert plan.segments[0].last_frame is None
     assert plan.segments[0].references == []
+
+
+def test_voice_brief_fields():
+    brief = VoiceDesignBrief(character_id="lin-du", instruct_zh="男性，约40岁，中低音域，干涩音色")
+    assert brief.language == "Chinese"
+    assert brief.negatives == []
+
+
+def test_audio_mode_default():
+    plan = GroupAudioPlan(group_id="G01")
+    assert plan.audio_mode == AudioMode.DUB
