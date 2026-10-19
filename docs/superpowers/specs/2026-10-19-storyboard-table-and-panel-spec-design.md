@@ -74,6 +74,8 @@ scriptNode 分镜表（10 列 + director 块 + group_id/segment_index + panel_sp
 
 ## 6. 分镜表结构
 
+**场景级 GEO 空间图（新增）**：每个叙事组所属场景带一份 `geo_layout`，只含地标、左右、机位侧、不可越过的轴线，**不含人物与动作**；逐镜原样编译进 panel_spec，不得改写。
+
 **摘要列（10）**：镜号、时长、画面（起点→动作→终点）、景别、机位、轴线、主光、表演、对白、声音。
 
 **行内 `director` 块**：
@@ -119,6 +121,8 @@ compile_panel_spec(shot, group) -> {sections, prompt_text, negatives, issues}
 7. `continuity`：起始状态、结束状态、与相邻格的交接。
 
 规则：
+- **人数头**：panel_spec 首行写明本格可见人数与计数物件（如“画面内恰好 2 人”），计数物件用正向锁。
+- **屏幕方向只从机位说**：禁用“角色左边/右边”，只用“画面左/画面右”，位置以地标 + 米数表达。
 - **禁止世界坐标数字**：坐标只用于推导“左/右/前景/背景”，成品文本不得出现 `[0.7, 0, 0.3]` 这类值；出现即 `panel_coordinate_leak`。
 - **只组装**：字段缺失记 issue，不补写。
 - **确定性**：同输入同输出，字段顺序固定，可 golden 单测。
@@ -194,5 +198,6 @@ compile_panel_spec(shot, group) -> {sections, prompt_text, negatives, issues}
 - `frontend/src/features/canvas/production/lightweightEpisodeChain.ts`
 - `docs/superpowers/specs/2026-10-19-asset-design-brief-professional-pipeline-design.md`（A 规格）
 - `skills/nuomi-canvas-production/references/storyboard-direction.md`
+- `docs/research/2026-10-19-professional-agent-external-references.md`（外部专业参考）
 
 自检：范围限定在“计划 → 表 → panel 规格”；未把 H3 判定写进 B；未在旧行上造结构；风格仍由软件设置提供；错误无强制放行。

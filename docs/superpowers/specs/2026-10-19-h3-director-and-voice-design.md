@@ -137,6 +137,18 @@ OptimizedDirector → 契约校验 + 跨源交叉校验
 - 提交使用唯一 request id；提交结果未知时先查原 attempt，不重复提交。
 - 失败按批重试；已成功批次不重复提交，也不因相邻批改动而重跑；局部重做只做受影响批，并生成新的批次指纹。
 
+## 10.1 段提示词的台词与表演规则（外部依据）
+
+来源：Higgsfield Hell Grind、LibTV。规则直接进入优化器提示词与交叉校验：
+
+- **台词结构固定**：声音与情绪 → 引号台词 → 物理动作 → 面部反应；台词只出现在音频段，动作段不出现台词。
+- **未说话角色写“嘴部静止”**：每个可见但无台词的角色都要有正向的静止嘴部描述，否则模型会给它加台词或含糊声。
+- **跨接缝**：新生成的开头带上上一段结尾的台词尾句；段尾情绪不瞬间关闭。
+- **每段开头 1 秒宽景**（场景第一段）：只有位置关系，无台词无动作，用于锁定站位；宽景不等于空镜。
+- **表演用肌肉与身体写**，不写“悲伤/愤怒”；静止写成被压住的张力；每 1–2 秒一个微事件。
+- **动作只用正向描述**：排除元素用正向穷举，不写“不要 X”。
+- **SFX only**：H3 段默认只要环境/动作声，音乐留给 D 阶段。
+
 ## 11. 配音师（V2）
 
 1. 从剧本人物事实与既有 `VoiceFacts` 生成 `VoiceSpec` brief（年龄印象、音高、音色、共鸣、咬字、语速、口音、情绪基线、负向）。
@@ -144,6 +156,31 @@ OptimizedDirector → 契约校验 + 跨源交叉校验
 3. 按叙事组对白调用 IndexTTS2 克隆配音；对白逐字来自剧本，不改写。
 4. 对齐：每句配音时长与段时长比较，超出即 `dubbing_overrun`（warning），提示缩短或延长段；不自动截断对白。
 5. 试听与采用记录写入生产日志；不混音、不生成音乐。
+
+### 11.1 Qwen3 音色设计提示词
+
+由角色身份、年龄、性格与剧情状态生成自然语言 `instruct`，固定字段顺序：
+
+```
+{性别}，{年龄}岁，{音域/音高}，{音色质感}，{共鸣}，{咬字}，{语速}，{口音/地域}，
+情绪基线：{基线}；本剧状态：{随剧情变化的限制}。避免：{负向，如播音腔/过度甜美/气声}。
+```
+
+英文同构（与 Qwen 官方示例一致）：`{Gender}, {age} years old, {register} range, {texture} timbre, {resonance} resonance, {articulation} articulation, {pace} pacing, {accent} accent; emotional baseline: {baseline}; in this story: {state constraint}. Avoid: {negatives}.`
+
+规则：年龄、性别、音域必填；情绪只写“当前状态”，不把场景情绪写死成音色；负向用于排除播音腔、过度甜美、气声等。
+
+### 11.2 设计后再克隆
+
+采用官方推荐路径：Qwen3 VoiceDesign 生成一段短参考音 → 用该参考音建立克隆提示 → 多句复用，不每句重算特征。
+
+### 11.3 IndexTTS2 克隆的表演分层
+
+身份与表演分两层：
+- **身份层**：参考音 + 克隆提示，固定不变；
+- **表演层**：语速（`speakingRate`，建议 0.9–1.1）与句内停顿（`maxInternalPauseDuration`），不做强情绪权重。
+
+原因：身份优先时强情绪控制会降低说话人相似度；场景情绪通过语速、停顿、重音与会话上下文表达，而不是篡改音色。
 
 ## 12. 错误码
 
@@ -189,5 +226,6 @@ OptimizedDirector → 契约校验 + 跨源交叉校验
 - `skills/nuomi-canvas-production/references/h3-experience.md`
 - `docs/superpowers/specs/2026-10-19-asset-design-brief-professional-pipeline-design.md`（A）
 - `docs/superpowers/specs/2026-10-19-storyboard-table-and-panel-spec-design.md`（B）
+- `docs/research/2026-10-19-professional-agent-external-references.md`（外部专业参考）
 
 自检：未引入补帧与未证实模式；手法检索在拆段之后；提示词由模型写但有确定性交叉校验；配音不改写对白、不混音；并行上限读既有设置。

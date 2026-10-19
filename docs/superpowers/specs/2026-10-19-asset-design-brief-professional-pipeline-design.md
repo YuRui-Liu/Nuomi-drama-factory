@@ -147,6 +147,17 @@ CompileResult{compiled, prompt_text, style_fragment, 指纹, issues}
 - 变体 brief 不得改动基础 `consistency.anchors`，只能追加。
 - `admission.confirmed` 只是文件旁证，硬凭证在本体确认记录；两者缺一即拒绝编译。
 
+### 6.1 定版图与参考图规则（外部依据）
+
+来源：Higgsfield Hell Grind 生产手册、LibTV prompt 铁律。只吸收结构性结论。
+
+- **角色定版图默认三面板**：脸部特写、正面全身、背面全身；全图**只有一处可读的脸**。可选变体：正面全身去掉头部，避免远景从模糊小脸取脸。
+- **定版图保持“无聊”**：中性灰底、平光、不烘焙电影感；质感由软件风格与镜头提示词承担，否则角色会把某种光感带进每一场。
+- **点改不整图二次过模型**：衣服、伤、血等局部变化在定版图上做点改后**用蒙版叠回原图**；整图二次生成会毁纹理并让表情变“塑料”。
+- **场景定版用 3/4 视角**，留一个锚点物（柱、灯、沙发），全场只允许一套光逻辑（一个光源、一个投影方向）。
+- **每张参考图声明角色**：`reference_roles[]` 写明“取什么、不取什么”，例如“只取空间与材质，不继承构图、角度与调色”。
+- **描述符逐字复用**：编译出的资产描述符在每次生成中原样使用，不缩写、不换词。
+
 ## 7. 本体论边界
 
 本体只承担四件事，不存设计正文（定义字段仅简单类型、最多 50 个、不可含嵌套与 `_id` 后缀）。
@@ -286,5 +297,6 @@ golden fixture：`tests/fixtures/asset_design/lin_du.brief.v1.json`。
 - `src/novelvideo/freezone/skill_registry.py`（`freezone.scene_360` 输入契约）
 - `skills/nuomi-canvas-production/SKILL.md`、`references/cli.md`
 - `docs/superpowers/specs/2026-10-19-canvas-codex-production-design.md`
+- `docs/research/2026-10-19-professional-agent-external-references.md`（外部专业参考）
 
 自检：范围限定在资产链；brief 内容与本体身份已分离；风格与参数不进 brief；错误无放行通道；未把集级候选清单写成资产目录写入口。
