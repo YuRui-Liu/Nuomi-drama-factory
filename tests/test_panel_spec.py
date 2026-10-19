@@ -92,9 +92,9 @@ def test_golden_sections_for_one_shot():
         "axis": "轴线 A-B；机位在 左侧；屏幕运动 左→右；屏幕方向只从机位描述",
         "blocking": "林渡 在画面左，朝右，视线画外右后",
         "lighting": "主光 L1 来自右后侧逆光，冷，强度低，动机天光；关键光 L1；投影朝右后；曝光优先：面部",
-        "performance": "表演：抬手；起始：手停在近前；结束：手未接触",
+        "performance": "起始：手停在近前",
         "props": "道具 背包，朝向朝右，林渡持握",
-        "continuity": "场景空间图：PLATFORM = 圆形石台；机位始终在东侧，不越轴。；动作只写正向，不写禁止",
+        "continuity": "场景空间图：PLATFORM = 圆形石台；机位始终在东侧，不越轴。；起点后动作留给视频",
     }
     assert spec.negatives == []
     assert spec.issues == []
@@ -105,6 +105,16 @@ def test_prompt_text_is_deterministic_and_ordered():
     second = compile_panel_spec(shot(), group())
     assert first == second
     assert [line.split(":")[0] for line in first.prompt_text.splitlines()] == SECTION_ORDER
+
+
+def test_still_prompt_never_describes_later_action_or_the_end_state():
+    """起点帧 prompt 只描述起点状态与拍摄语言；后续动作与结束状态留给视频。"""
+    spec = compile_panel_spec(shot(), group())
+    assert "手未接触" not in spec.prompt_text
+    assert "抬手" not in spec.prompt_text
+    for value in spec.sections.values():
+        assert "手未接触" not in value
+    assert "起点后动作留给视频" in spec.sections["continuity"]
 
 
 def test_technique_intent_is_a_retrieval_anchor_not_panel_text():

@@ -135,9 +135,8 @@ def compile_panel_spec(shot, group) -> PanelSpec:
     key_light_id = _field(cinematography, "key_light_id")
     shadow_direction = _field(cinematography, "shadow_direction")
     exposure_priority = _field(cinematography, "exposure_priority")
-    action = _field(shot, "action")
+    # 静帧只看起点：本镜动作与结束状态属于视频，不进入 panel 成品文本。
     start_state = _field(shot, "visible_start_state")
-    end_state = _field(shot, "visible_end_state")
 
     if not shot_size:
         missing("shot_size")
@@ -151,8 +150,6 @@ def compile_panel_spec(shot, group) -> PanelSpec:
         missing("lights")
     if not start_state:
         missing("visible_start_state")
-    if not end_state:
-        missing("visible_end_state")
     if not geo_layout:
         missing("geo_layout")
 
@@ -205,11 +202,7 @@ def compile_panel_spec(shot, group) -> PanelSpec:
     lighting_parts = light_entries + (["；".join(part for part in light_extras if part)] if any(light_extras) else [])
     lighting = _join(lighting_parts) or "沿用场景光逻辑"
 
-    performance = _join([
-        f"表演：{action}" if action else "",
-        f"起始：{start_state}" if start_state else "",
-        f"结束：{end_state}" if end_state else "",
-    ])
+    performance = f"起始：{start_state}" if start_state else ""
 
     prop_entries = [
         "，".join(part for part in (
@@ -223,7 +216,7 @@ def compile_panel_spec(shot, group) -> PanelSpec:
 
     continuity = _join([
         f"场景空间图：{geo_layout}" if geo_layout else "",
-        "动作只写正向，不写禁止",
+        "起点后动作留给视频",
     ])
 
     sections = {
