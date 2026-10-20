@@ -73,6 +73,66 @@ def _plan(
     )
 
 
+def _with_directions(shot: ShotPlan) -> ShotPlan:
+    """Attach the production directions the current prompt contract requires.
+
+    The default prompt version enforces source-attributed blocking and lighting,
+    so a draft without them is invalid before any migration can be proposed.
+    """
+    from novelvideo.director_plan.cinematography import (
+        MotivatedLight,
+        ShotCinematography,
+        SubjectBlocking,
+    )
+    from novelvideo.director_plan.models import AssetRequirement
+
+    source_id = shot.source_span_ids[0]
+    return shot.model_copy(
+        update={
+            "cinematography": ShotCinematography(
+                source="director_plan",
+                source_ids=(source_id,),
+                axis="hallway axis",
+                camera_side="door side",
+                screen_direction="left to right",
+                subjects=(
+                    SubjectBlocking(
+                        subject_id=shot.subject,
+                        world_position="two steps from the door",
+                        screen_position="left third of frame",
+                        facing="toward the door",
+                        gaze_target="the door handle",
+                        motion_path="stops at the door",
+                    ),
+                ),
+                lights=(
+                    MotivatedLight(
+                        light_id="hall-lamp",
+                        source_type="practical",
+                        world_position="ceiling above the door",
+                        direction="down across the face",
+                        color_temperature="warm",
+                        relative_intensity="key",
+                        attachment="fixed",
+                        motivation="the visible hall lamp",
+                    ),
+                ),
+                key_light_id="hall-lamp",
+                shadow_direction="toward the corridor wall",
+                exposure_priority="keep the face readable against the bright window",
+                transition_intent="cut on the stop",
+            ),
+            "asset_requirements": (
+                AssetRequirement(
+                    kind="character_identity",
+                    entity_key=shot.subject,
+                    evidence_source_ids=(source_id,),
+                ),
+            ),
+        }
+    )
+
+
 def _asset(asset_id: str = "asset-1", *, style_hash: str = "style-a") -> LegacyShotAsset:
     return LegacyShotAsset(
         asset_id=asset_id,
@@ -196,7 +256,7 @@ def test_conflicting_high_candidates_are_all_downgraded_to_review() -> None:
 
 @pytest.mark.asyncio
 async def test_service_persists_explainable_migration_on_review_revision() -> None:
-    new_group = _plan("new", (_shot("new-shot"),)).groups[0]
+    new_group = _plan("new", (_with_directions(_shot("new-shot")),)).groups[0]
 
     class Store:
         def __init__(self) -> None:
