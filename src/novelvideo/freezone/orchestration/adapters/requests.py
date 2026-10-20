@@ -6,6 +6,7 @@ import math
 from copy import deepcopy
 
 from ..models import OrchestrationError
+from novelvideo.freezone.image_camera import FREEZONE_IMAGE_CAMERA_OPTIONS
 
 ROUTES = {
     ("imageGenNode", "generate"): ("freezone_gen", "FreezoneGenRequest"),
@@ -47,10 +48,13 @@ def build_request(node: dict, operation: str, upstream: list[dict], *, canvas_id
     images = [r["imageUrl"] for r in results if r.get("imageUrl")]
     videos = [r.get("videoUrl") or r.get("resultVideoUrl") for r in results if r.get("videoUrl") or r.get("resultVideoUrl")]
     texts = [r["text"] for r in results if r.get("text")]
-    for r in results:
-        if r.get("scriptResult"):
-            import json
-            texts.append(json.dumps(r["scriptResult"], ensure_ascii=False))
+    if kind != "storyboardGenNode":
+        # Grid frames already carry the compiled shot language; dumping the
+        # upstream table would leak unrelated rows into the grid prompt.
+        for r in results:
+            if r.get("scriptResult"):
+                import json
+                texts.append(json.dumps(r["scriptResult"], ensure_ascii=False))
     prompt = "\n\n".join([str(data.get("prompt") or "")] + texts).strip()
     body = {"prompt": prompt, "canvas_id": canvas_id, "node_id": node["id"]}
     for source, target in (("aspectRatio", "aspect_ratio"), ("model", "model"), ("imageSize", "image_size"),
@@ -126,9 +130,21 @@ def build_request(node: dict, operation: str, upstream: list[dict], *, canvas_id
             body["style"] = {"template_id": data["styleTemplateId"]} if data["styleTemplateId"] else None
         if "cameraSelection" in data:
             camera = data.get("cameraSelection") or {}
-            body["camera"] = {target: camera[source] for source, target in (
-                ("cameraBodyId", "camera_body"), ("lensId", "lens"),
-                ("focalLengthMm", "focal_length_mm"), ("aperture", "aperture")) if camera.get(source) is not None} or None
+            camera_labels = {
+                "cameraBodyId": {item["id"]: item["label"]
+                                 for item in FREEZONE_IMAGE_CAMERA_OPTIONS["camera_bodies"]},
+                "lensId": {item["id"]: item["label"]
+                           for item in FREEZONE_IMAGE_CAMERA_OPTIONS["lenses"]},
+            }
+            values = {}
+            for source, target in (("cameraBodyId", "camera_body"), ("lensId", "lens"),
+                                   ("focalLengthMm", "focal_length_mm"), ("aperture", "aperture")):
+                value = camera.get(source)
+                if value is None:
+                    continue
+                labels = camera_labels.get(source, {})
+                values[target] = labels.get(value, value) if isinstance(value, str) else value
+            body["camera"] = values or None
         if data.get("extensionStyleId"):
             from novelvideo.services.style_service import StyleService
             from novelvideo.extension_styles import FRAGMENT_KEYS
