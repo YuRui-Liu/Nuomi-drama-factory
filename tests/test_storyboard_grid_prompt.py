@@ -1,9 +1,9 @@
-"""Grid prompts must use frames, never the whole upstream storyboard table."""
+"""Lightweight grid prompts carry style, references and explicit empty cells."""
 
 from novelvideo.freezone.orchestration.adapters.requests import build_request
 
 
-def test_grid_prompt_ignores_upstream_script_result():
+def test_grid_prompt_injects_style_references_and_empty_cells():
     node = {
         "id": "grid",
         "type": "storyboardGenNode",
@@ -12,14 +12,15 @@ def test_grid_prompt_ignores_upstream_script_result():
             "gridCols": 3,
             "aspectRatio": "16:9",
             "model": "gpt-image-2",
-            "frames": [{"description": "分镜一：林渡护喉，丧尸贴近。"}],
+            "stylePrompt": "3D 国漫动画电影风格，柔和全局光",
+            "referenceNote": "参考图1 林渡：只取面部与服装",
+            "referenceUrls": ["/static/a.png", "/static/b.png"],
+            "frames": [{"description": f"分镜{i}"} for i in range(1, 6)],
         },
     }
-    upstream = [{"node_id": "table", "result": {"scriptResult": {"rows": [
-        {"shot_no": 1, "visual_description": "LEAKED_ROW"},
-    ]}}}]
-    _, body = build_request(node, "generate", upstream, canvas_id="c", attempt_id="a")
+    _, body = build_request(node, "generate", [], canvas_id="c", attempt_id="a")
     prompt = body["prompt"]
-    assert "LEAKED_ROW" not in prompt
-    assert "分镜一" in prompt
-    assert prompt.startswith("生成 2 行 3 列分镜图")
+    assert "3D 国漫动画电影风格" in prompt
+    assert "参考图1 林渡" in prompt
+    assert "第 6 至 6 格留空为纯黑" in prompt
+    assert body["reference_urls"] == ["/static/a.png", "/static/b.png"]

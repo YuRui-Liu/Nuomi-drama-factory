@@ -76,6 +76,9 @@ def build_request(node: dict, operation: str, upstream: list[dict], *, canvas_id
             if images:
                 body.update(base_url=images[0], extra_reference_urls=images[1:])
         else:
+            extra = data.get("referenceUrls") or []
+            if isinstance(extra, list):
+                images.extend(str(url) for url in extra if url)
             body["reference_urls"] = images
     elif kind == "scriptNode":
         body["source_text"] = data.get("sourceText") or data.get("text") or "\n".join(texts)
@@ -110,9 +113,18 @@ def build_request(node: dict, operation: str, upstream: list[dict], *, canvas_id
         else:
             rows = data.get("gridRows", data.get("rows", 2))
             cols = data.get("gridCols", data.get("cols", 2))
-            notes = "\n".join(f"分镜{i + 1}：{frame['description']}" for i, frame in
-                              enumerate(data.get("frames", [])) if frame.get("description", "").strip())
-            body["prompt"] = f"生成 {rows} 行 {cols} 列分镜图，每格等大、无边框、无间隙、无文字、无编号、无字幕；按从左到右从上到下叙事，保持角色一致。\n{prompt}\n{notes}".strip()
+            cells = int(rows) * int(cols)
+            frames = [frame for frame in data.get("frames", [])
+                      if str(frame.get("description", "")).strip()]
+            notes = "\n".join(f"分镜{i + 1}：{frame['description']}" for i, frame in enumerate(frames))
+            if len(frames) < cells:
+                notes += f"\n第 {len(frames) + 1} 至 {cells} 格留空为纯黑，不画任何内容。"
+            style = str(data.get("stylePrompt") or "").strip()
+            reference_note = str(data.get("referenceNote") or "").strip()
+            body["prompt"] = "\n".join(part for part in (
+                f"生成 {rows} 行 {cols} 列分镜图，每格等大、无边框、无间隙、无文字、无编号、无字幕；按从左到右从上到下叙事，保持角色一致。",
+                style, reference_note, prompt, notes,
+            ) if part).strip()
     if kind in {"imageNode", "imageGenNode", "storyboardGenNode"}:
         # Visible node controls are authoritative over legacy request overrides.
         for source, target in (("model", "model"), ("size", "image_size"), ("quality", "quality")):
