@@ -260,6 +260,18 @@ class H3ReferenceWire(BaseModel):
     non_diegetic_music: _NonEmptyString
 
     @model_validator(mode="after")
+    def validate_shot_markers(self) -> Self:
+        description = self.detailed_description
+        shot_sequence = tuple(
+            int(number) for number in re.findall(r"\[Shot (\d+)\]", description)
+        )
+        if not shot_sequence or shot_sequence[0] != 1:
+            raise ValueError("reference detailed_description must contain [Shot 1]")
+        if any(left >= right for left, right in zip(shot_sequence, shot_sequence[1:])):
+            raise ValueError("reference shot sequence must be strictly increasing")
+        return self
+
+    @model_validator(mode="after")
     def validate_reference_semantics(self) -> Self:
         issues = inspect_h3_reference_semantics(
             self.subject_definitions,
