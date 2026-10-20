@@ -76,6 +76,14 @@ class ReferenceSnapshotInvalid(RuntimeError):
         super().__init__(self.error_code)
 
 
+# Fields the grid runner itself writes for the selection frozen into a snapshot.
+# Their presence marks a selection this payload must match exactly; any other
+# shape is a legacy request field that the snapshot has already superseded.
+_FROZEN_SELECTION_FIELDS = frozenset(
+    {"selected_binding_ids", "upload_ids", "reference_revision"}
+)
+
+
 def _snapshot_generation_input(
     payload: Mapping[str, Any], snapshot: Mapping[str, Any]
 ) -> GroupGenerationInput:
@@ -280,6 +288,71 @@ def _snapshot_generation_input(
             "mapping_missing": missing_mappings,
             **({"out_of_scope": out_of_scope} if out_of_scope else {}),
         }
+        raw_selection = payload.get("reference_selection")
+        if raw_selection is not None and not isinstance(raw_selection, Mapping):
+            raise ValueError
+        # Only the frozen selection that produced this snapshot carries the exact
+        # binding/upload revision. A legacy selection dict is stale by definition:
+        # the snapshot already won the decision, so it is ignored rather than
+        # revalidated against frozen images it never produced.
+        if isinstance(raw_selection, Mapping) and (
+            _FROZEN_SELECTION_FIELDS.intersection(raw_selection)
+        ):
+            selected_binding_ids = raw_selection.get("selected_binding_ids")
+            upload_ids = raw_selection.get("upload_ids")
+            reference_revision = raw_selection.get("reference_revision")
+            if (
+                not isinstance(selected_binding_ids, (list, tuple))
+                or any(not isinstance(item, str) or not item.strip() for item in selected_binding_ids)
+                or len(selected_binding_ids) != len(set(selected_binding_ids))
+                or not isinstance(upload_ids, (list, tuple))
+                or any(not isinstance(item, str) or not item.strip() for item in upload_ids)
+                or len(upload_ids) != len(set(upload_ids))
+                or not isinstance(reference_revision, str)
+                or not reference_revision.strip()
+            ):
+                raise ValueError
+            frozen_binding_ids: list[str] = []
+            frozen_upload_ids: list[str] = []
+            frozen_bindings: list[dict[str, str]] = []
+            for raw in images:
+                if not isinstance(raw, Mapping):
+                    raise ValueError
+                source = str(raw.get("source") or "")
+                if source == "matched":
+                    binding_id = str(raw.get("binding_id") or "").strip()
+                    version_id = str(raw.get("version_id") or "").strip()
+                    sha256 = str(raw.get("sha256") or "").strip()
+                    asset_slot_id = str(raw.get("asset_slot_id") or "").strip()
+                    relative_path = str(raw.get("relative_path") or "").strip()
+                    if not all((binding_id, version_id, sha256, asset_slot_id, relative_path)):
+                        raise ValueError
+                    frozen_binding_ids.append(binding_id)
+                    frozen_bindings.append({
+                        "binding_id": binding_id,
+                        "version_id": version_id,
+                        "sha256": sha256,
+                        "asset_slot_id": asset_slot_id,
+                        "relative_path": relative_path,
+                    })
+                elif source == "upload":
+                    upload_id = str(raw.get("source_id") or "").strip()
+                    if not upload_id:
+                        raise ValueError
+                    frozen_upload_ids.append(upload_id)
+                else:
+                    raise ValueError
+            if (
+                frozen_binding_ids != list(selected_binding_ids)
+                or frozen_upload_ids != list(upload_ids)
+            ):
+                raise ValueError
+            audit["reference_selection"] = {
+                "selected_binding_ids": list(selected_binding_ids),
+                "upload_ids": list(upload_ids),
+                "reference_revision": reference_revision,
+                "bindings": frozen_bindings,
+            }
         if asset_references:
             audit["asset_references"] = asset_references
     except (KeyError, TypeError, ValueError, InvalidReferenceUpload):
