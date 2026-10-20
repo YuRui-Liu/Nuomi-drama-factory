@@ -1095,11 +1095,16 @@ async def _execute_single(envelope: dict[str, Any], ctx: ProjectContext, *, spli
         if payload.get("storyboard_contract_version") == 1 and split_only:
             from novelvideo.narrative_groups.storyboard_sources import StoryboardSplitInput
 
-            split_input = StoryboardSplitInput.model_validate(payload.get("storyboard_split_input"))
-            payload.update(split_input.restore(
-                Path(ctx.output_dir), project_id=str(payload["project_id"]),
-                episode=episode, group_id=group_id,
-            ))
+            # A frozen input is authoritative when present. Without one the retry
+            # falls back to the recorded grid, so a genuinely missing asset fails
+            # inside the splitter instead of being reported as a success.
+            saved_split_input = payload.get("storyboard_split_input")
+            if saved_split_input is not None:
+                split_input = StoryboardSplitInput.model_validate(saved_split_input)
+                payload.update(split_input.restore(
+                    Path(ctx.output_dir), project_id=str(payload["project_id"]),
+                    episode=episode, group_id=group_id,
+                ))
         if split_only:
             if split_input is None:
                 payload["grid_asset"] = saved["grid_asset"]

@@ -2249,13 +2249,37 @@ async def _enqueue_group_action(
                         packs.append({**batch, "storyboard_split_input": snapshot.model_dump(mode="json")})
                     storyboard_payload["generation_batches"] = packs
                 else:
-                    snapshot = StoryboardSplitInput.model_validate(
-                        source_group.stages["render"].provider_parameters.get("storyboard_split_input"))
-                    if snapshot.shot_ids != source_group.production_beat_ids:
-                        raise ValueError("split retry shot mapping changed")
-                    storyboard_payload.update(snapshot.restore(Path(resolved.output_dir),
-                        project_id=str(resolved.ctx.project_id), episode=episode, group_id=group_id))
-                    storyboard_payload["storyboard_split_input"] = snapshot.model_dump(mode="json")
+                    saved_input = (
+                        source_group.stages["render"].provider_parameters.get(
+                            "storyboard_split_input"
+                        )
+                    )
+                    if saved_input is not None:
+                        snapshot = StoryboardSplitInput.model_validate(saved_input)
+                        if snapshot.shot_ids != source_group.production_beat_ids:
+                            raise ValueError("split retry shot mapping changed")
+                        storyboard_payload.update(snapshot.restore(Path(resolved.output_dir),
+                            project_id=str(resolved.ctx.project_id), episode=episode, group_id=group_id))
+                        storyboard_payload["storyboard_split_input"] = snapshot.model_dump(mode="json")
+                    else:
+                        # A stage result recorded outside the grid runner has no frozen
+                        # split input. Rebuild the retry from the recorded generation
+                        # batch so the runner re-splits the real grid and fails there if
+                        # it is gone, instead of reporting a split it cannot prove.
+                        batch = next(
+                            (item for item in source_group.generation_batches
+                             if tuple(str(shot) for shot in item.get("shot_ids") or ())
+                             == source_group.production_beat_ids),
+                            None,
+                        )
+                        if batch is None:
+                            raise ValueError("split retry requires a recorded generation")
+                        storyboard_payload["batch_id"] = str(batch.get("id") or "")
+                        storyboard_payload["model"] = str(batch.get("model") or "")
+                        if batch.get("aspect_ratio"):
+                            storyboard_payload["aspect_ratio"] = str(batch["aspect_ratio"])
+                        if batch.get("resolution"):
+                            storyboard_payload["image_size"] = str(batch["resolution"])
             except (ValueError, OSError) as exc:
                 raise HTTPException(status_code=422, detail={"code": "STORYBOARD_SPLIT_INPUT_INVALID"}) from exc
         elif source_group.generation_batches:
