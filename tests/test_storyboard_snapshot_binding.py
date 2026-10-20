@@ -151,8 +151,9 @@ def test_api_freezes_selected_source_or_rejects_before_enqueue(tmp_path, monkeyp
             observed.extend(render["cell_assets"])
             raise StopBeforeProvider
 
-        monkeypatch.setattr(runner, "_workflow_definition_for_payload", lambda _: SimpleNamespace(
-            id="runninghub:minimax-h3", adapter_key="minimax-h3", reference_policy=None))
+        definition = payload["workflow_definition"]
+        monkeypatch.setattr(runner, "_workflow_definition_for_payload",
+                            lambda _: SimpleNamespace(**definition))
         monkeypatch.setattr(runner, "_video_workflow_adapters", lambda: SimpleNamespace(resolve=lambda _: object()))
         monkeypatch.setattr(runner, "_load_canonical_beats", lambda *_: asyncio.sleep(0, result=[{"id": "beat-1"}]))
         monkeypatch.setattr(runner, "_build_segments", build_segments)
@@ -168,11 +169,12 @@ def test_api_freezes_selected_source_or_rejects_before_enqueue(tmp_path, monkeyp
             StoryboardPromptBlocked, StoryboardPromptDecision,
         )
         _patch_test_workflow(monkeypatch, runner)
+        from novelvideo.narrative_groups.execution_contract import freeze_execution_contract
         payload = {**payload, "workflow_parameters": {**payload.get("workflow_parameters", {}),
                                                      "continuity_policy": policy}}
-        monkeypatch.setattr(runner, "_workflow_definition_for_payload", lambda _: SimpleNamespace(
-            id="runninghub:minimax-h3", adapter_key="minimax-h3", provider="runninghub",
-            reference_policy=None, supported_modes=("i2va", "fl2va")))
+        payload["execution_contract"] = freeze_execution_contract(payload)
+        monkeypatch.setattr(runner, "_workflow_definition_for_payload",
+                            lambda _: SimpleNamespace(**definition))
         monkeypatch.setattr(runner, "_assert_stage_revision", lambda *_: None)
         monkeypatch.setattr(runner, "_load_active_director_plan", lambda *_: None)
         monkeypatch.setattr(runner, "_prepare_continuity", lambda **_: {})
