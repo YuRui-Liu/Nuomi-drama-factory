@@ -702,6 +702,7 @@ class SQLiteStore:
         self._drained = asyncio.Event()
         self._drained.set()
         self._lease_depth_by_task: dict[Any, int] = {}
+        self._db_init_lock = asyncio.Lock()
 
         if output_dir:
             self.project_dir = output_dir
@@ -733,33 +734,52 @@ class SQLiteStore:
     async def _ensure_db(self) -> aiosqlite.Connection:
         if self._closed or (self._closing and self._current_task_lease_depth() <= 0):
             raise StoreClosedError(self.project_dir)
-        if self._db is None:
+        db = self._db
+        if db is not None:
+            return db
+        # Bootstrap exactly once. Concurrent first calls would otherwise share
+        # this connection and nest the BEGIN IMMEDIATE issued by the schema
+        # helpers ("cannot start a transaction within a transaction").
+        async with self._db_init_lock:
+            db = self._db
+            if db is not None:
+                return db
+            if self._closed or (self._closing and self._current_task_lease_depth() <= 0):
+                raise StoreClosedError(self.project_dir)
             if self._closing:
                 raise StoreClosedError(self.project_dir)
-            self._db = await aiosqlite.connect(self.db_path)
-            self._db.row_factory = aiosqlite.Row
-            from novelvideo.character_voice_facts import merge_voice_facts_json, merge_voice_age
+            db = await aiosqlite.connect(self.db_path)
+            try:
+                db.row_factory = aiosqlite.Row
+                from novelvideo.character_voice_facts import merge_voice_facts_json, merge_voice_age
 
-            await self._db.create_function("merge_voice_facts", 2, merge_voice_facts_json)
-            await self._db.create_function("merge_voice_age", 4, merge_voice_age)
-            await configure_sqlite_connection_async(self._db)
-            await self._db.executescript(SQLITE_SCHEMA_SQL)
-            await self._ensure_character_id_column(self._db)
-            await self._ensure_episode_planning_columns(self._db)
-            await self._ensure_beat_current_columns(self._db)
-            await self._ensure_scene_columns(self._db)
-            await self._ensure_indextts2_columns(self._db)
-            await self._ensure_character_extraction_columns(self._db)
-            await self._db.commit()
-            await self._ensure_asset_registry(self._db)
-            # Phase 2 DB split: failure-mode *definitions* live in the
-            # user-shared verification.db (not this project DB). They are
-            # seeded lazily by `failure_registry.load_negative_clause_for_project`
-            # / `open_defs_db_for_project` the first time any caller needs
-            # them. This project DB holds only per-project hits +
-            # convergence facts — the schema above already creates
-            # `sketch_failure_mode_hits`, which stays project-local.
-        return self._db
+                await db.create_function("merge_voice_facts", 2, merge_voice_facts_json)
+                await db.create_function("merge_voice_age", 4, merge_voice_age)
+                await configure_sqlite_connection_async(db)
+                await db.executescript(SQLITE_SCHEMA_SQL)
+                await self._ensure_character_id_column(db)
+                await self._ensure_episode_planning_columns(db)
+                await self._ensure_beat_current_columns(db)
+                await self._ensure_scene_columns(db)
+                await self._ensure_indextts2_columns(db)
+                await self._ensure_character_extraction_columns(db)
+                await db.commit()
+                await self._ensure_asset_registry(db)
+                # Phase 2 DB split: failure-mode *definitions* live in the
+                # user-shared verification.db (not this project DB). They are
+                # seeded lazily by `failure_registry.load_negative_clause_for_project`
+                # / `open_defs_db_for_project` the first time any caller needs
+                # them. This project DB holds only per-project hits +
+                # convergence facts — the schema above already creates
+                # `sketch_failure_mode_hits`, which stays project-local.
+            except BaseException:
+                await db.close()
+                raise
+            if self._closing or self._closed:
+                await db.close()
+                raise StoreClosedError(self.project_dir)
+            self._db = db
+            return db
 
     async def _ensure_character_id_column(self, db: aiosqlite.Connection) -> None:
         """Backfill a durable UUID for legacy rows and repair invalid duplicates."""
