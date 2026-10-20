@@ -78,19 +78,23 @@ def panel_description(beat: Mapping[str, Any]) -> str:
         from novelvideo.director_plan.keyframes import project_keyframe
 
         projection = project_keyframe(beat)
-        # These two fields describe what must read across the whole video,
-        # including later inserts. They are not a still-image shot list.
+        # must_read describes what has to read across the whole video, including
+        # later inserts. It is not a still-image shot list.
         facts = dict(projection.facts)
         facts["framing"] = {key: value for key, value in facts["framing"].items()
                             if key != "must_read"}
-        facts.pop("exposure_priority", None)
+        # Exposure priority still governs THIS instant's light balance, so keep it
+        # as readable text instead of dropping it with the cross-shot notes.
+        exposure_priority = _scrub_world_coordinates(
+            str(facts.pop("exposure_priority", "") or "").strip()
+        )
         # 世界坐标不能到达图像模型：只保留屏幕投影后的站位与朝向。
         facts["subjects"] = [
             {key: value for key, value in subject.items() if key not in _WORLD_SPACE_FIELDS}
             for subject in facts.get("subjects", ())
             if isinstance(subject, Mapping)
         ]
-        return "\n".join((
+        lines = [
             f"Freeze the explicitly selected {projection.anchor} instant only. Do not depict other instants, motion paths, or cut instructions.",
             "The selected state and framing.frame govern which events and light sources exist NOW. "
             "Supporting lighting and optics notes may describe requirements across the whole video: "
@@ -99,6 +103,10 @@ def panel_description(beat: Mapping[str, Any]) -> str:
             "Each cell is ONE uninterrupted camera image with NO internal panels, montage, close-up boxes or before/after views.",
             "Director keyframe facts (supporting notes apply only when consistent with the selected instant): "
             + _scrub_world_coordinates(json.dumps(facts, ensure_ascii=False)),
+        ]
+        if exposure_priority:
+            lines.append("Exposure priority for this instant: " + exposure_priority + ".")
+        lines.extend((
             SPATIAL_KEYFRAME_RULE,
             "Preserve the mapped identity and wardrobe references. Reference composition must not override these director decisions. "
             "Do not turn dialogue into writing; render only writing explicitly present in the selected visible state.",
@@ -106,6 +114,7 @@ def panel_description(beat: Mapping[str, Any]) -> str:
             "No inset frames, split screens, montage, reaction close-ups, or later consequences. "
             "Freeze this state, without advancing it: " + str(facts["state"]),
         ))
+        return "\n".join(lines)
     override = str(beat.get("image_prompt_override") or "").strip()
     start = str(beat.get("visible_start_state") or "").strip()
     if not start:
