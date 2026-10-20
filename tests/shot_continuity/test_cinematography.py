@@ -37,6 +37,9 @@ def shot(**updates):
         "id": "s1", "source_span_ids": ["span-1"], "subject": "lin",
         "action": "climb", "visible_start_state": "foot planted",
         "visible_end_state": "next step", "duration_seconds": 4,
+        "asset_requirements": [
+            {"kind": "character_identity", "entity_key": "lin"},
+        ],
         "cinematography": photography(), **updates,
     })
 
