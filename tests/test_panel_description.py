@@ -147,7 +147,7 @@ def test_canvas_projection_description_uses_panel_language():
     script = "第一场 房间 夜\n门锁着\n【本集完】"
     blueprint = project_draft(script, _draft())
     description = blueprint["groups"][0]["shots"][0]["description"]
-    assert "画面内无人物" in description
+    assert "人物数量未声明" in description
     assert "场景空间图：PLATFORM = 圆形石台" in description
     assert "起始画面：door closed" in description
     assert "world_position" not in description

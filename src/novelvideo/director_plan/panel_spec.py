@@ -95,6 +95,33 @@ def _join(parts: list[str], separator: str = "；") -> str:
     return separator.join(part for part in parts if part)
 
 
+def cast_names(shot, cinematography) -> list[str]:
+    """本格可见人物的并集（去重，保持首次出现顺序）。
+
+    覆盖三个来源：摄影机站位 subjects、静帧面板 subjects、人物类资产需求。
+    场景与道具需求永不计入人数。
+    """
+    names: list[str] = []
+
+    def add(value: Any) -> None:
+        name = str(value).strip() if value is not None else ""
+        if name and name not in names:
+            names.append(name)
+
+    for subject in _items(cinematography, "subjects"):
+        add(_raw(subject, "subject_id"))
+    static_panel = _raw(shot, "static_panel")
+    if static_panel is None:
+        static_panel = _raw(_raw(shot, "creative"), "static_panel")
+    for subject in _items(static_panel, "subjects"):
+        add(_raw(subject, "entity_id"))
+    for requirement in _items(shot, "asset_requirements"):
+        kind = str(_raw(requirement, "kind") or "")
+        if kind.startswith("character_"):
+            add(_raw(requirement, "entity_key"))
+    return names
+
+
 def resolve_cinematography(shot):
     """按 keyframe_anchor 选出本格真正被拍下的空间快照。
 
@@ -153,13 +180,12 @@ def compile_panel_spec(shot, group) -> PanelSpec:
     if not geo_layout:
         missing("geo_layout")
 
-    if subjects:
-        count = f"画面内恰好 {len(subjects)} 人"
-    elif cinematography is None:
-        # 没有摄影机事实时不能宣称画面里没有人：只声明未给出的数量。
-        count = "人物数量未声明"
+    cast = cast_names(shot, cinematography)
+    if cast:
+        count = f"画面内恰好 {len(cast)} 人：" + "、".join(cast)
     else:
-        count = "画面内无人物"
+        # 三个来源都为空时无法断言人数，更不能凭空写 0 人。
+        count = "人物数量未声明"
     if props:
         count = f"{count}，道具 {len(props)} 件"
 

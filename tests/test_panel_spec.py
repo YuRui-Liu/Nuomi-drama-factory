@@ -87,7 +87,7 @@ def test_sections_are_fixed_and_coordinate_free():
 def test_golden_sections_for_one_shot():
     spec = compile_panel_spec(shot(), group())
     assert spec.sections == {
-        "count": "画面内恰好 1 人，道具 1 件",
+        "count": "画面内恰好 1 人：林渡，道具 1 件",
         "shot": "近景；平视；左三分",
         "axis": "轴线 A-B；机位在 左侧；屏幕运动 左→右；屏幕方向只从机位描述",
         "blocking": "林渡 在画面左，朝右，视线画外右后",
@@ -300,6 +300,72 @@ def test_end_anchor_without_end_snapshot_falls_back_to_the_opening_snapshot():
     spec = compile_panel_spec(shot, group())
     assert "画面左" in spec.sections["blocking"]
     assert "轴线 A-B" in spec.sections["axis"]
+
+
+def test_cast_union_counts_characters_from_every_source():
+    """真实 E1 计划：cinematography 只有丧尸，资产需求里还有林渡 → 2 人。"""
+    value = shot()
+    value.cinematography.subjects = [
+        SimpleNamespace(
+            subject_id="丧尸",
+            screen_position="画面右",
+            facing="朝左",
+            gaze_target="画外左",
+            world_position=[0.2, 0, 0.9],
+        )
+    ]
+    value.asset_requirements = [
+        SimpleNamespace(kind="character_identity", entity_key="林渡"),
+        SimpleNamespace(kind="scene_base", entity_key="广播间"),
+        SimpleNamespace(kind="prop", entity_key="笔记本"),
+    ]
+    spec = compile_panel_spec(value, group())
+    assert spec.sections["count"].startswith("画面内恰好 2 人")
+    assert "林渡" in spec.sections["count"] and "丧尸" in spec.sections["count"]
+    assert "广播间" not in spec.sections["count"]
+    assert "笔记本" not in spec.sections["count"]
+    assert "0.2" not in spec.prompt_text
+
+
+def test_cast_union_deduplicates_the_same_person():
+    value = shot()
+    value.static_panel = SimpleNamespace(
+        subjects=[SimpleNamespace(entity_id="林渡", appearance_reference="asset-1")]
+    )
+    value.asset_requirements = [
+        SimpleNamespace(kind="character_state", entity_key="林渡"),
+        SimpleNamespace(kind="character_identity", entity_key="丧尸"),
+    ]
+    spec = compile_panel_spec(value, group())
+    assert spec.sections["count"].startswith("画面内恰好 2 人")
+    assert spec.sections["count"].count("林渡") == 1
+
+
+def test_cast_union_reads_a_static_panel_declared_through_creative():
+    value = shot()
+    value.cinematography.subjects = []
+    value.creative = SimpleNamespace(
+        keyframe_anchor="start",
+        end_cinematography=None,
+        static_panel=SimpleNamespace(subjects=[SimpleNamespace(entity_id="林渡")]),
+    )
+    spec = compile_panel_spec(value, group())
+    assert spec.sections["count"].startswith("画面内恰好 1 人")
+    assert "林渡" in spec.sections["count"]
+
+
+def test_scene_and_prop_requirements_are_never_counted_as_people():
+    value = shot()
+    value.cinematography.subjects = []
+    value.asset_requirements = [
+        SimpleNamespace(kind="scene_base", entity_key="广播间"),
+        SimpleNamespace(kind="scene_state", entity_key="断电的广播间"),
+        SimpleNamespace(kind="prop", entity_key="笔记本"),
+    ]
+    spec = compile_panel_spec(value, group())
+    assert spec.sections["count"].startswith("人物数量未声明")
+    assert "广播间" not in spec.sections["count"]
+    assert "笔记本" not in spec.prompt_text
 
 
 def test_compiles_plain_mapping_beats():
