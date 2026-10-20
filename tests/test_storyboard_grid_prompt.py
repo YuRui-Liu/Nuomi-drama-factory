@@ -20,7 +20,9 @@ def test_grid_prompt_injects_style_references_and_empty_cells():
     }
     _, body = build_request(node, "generate", [], canvas_id="c", attempt_id="a")
     prompt = body["prompt"]
+    assert prompt.startswith("Subject:")
     assert "3D 国漫动画电影风格" in prompt
     assert "参考图1 林渡" in prompt
     assert "第 6 至 6 格留空为纯黑" in prompt
+    assert "Use case:" in prompt and "Constraints:" in prompt
     assert body["reference_urls"] == ["/static/a.png", "/static/b.png"]

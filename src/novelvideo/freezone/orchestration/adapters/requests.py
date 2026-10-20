@@ -121,9 +121,22 @@ def build_request(node: dict, operation: str, upstream: list[dict], *, canvas_id
                 notes += f"\n第 {len(frames) + 1} 至 {cells} 格留空为纯黑，不画任何内容。"
             style = str(data.get("stylePrompt") or "").strip()
             reference_note = str(data.get("referenceNote") or "").strip()
+            constraints = "无文字、无水印、无边框、无编号、无字幕；不要真人实拍照片质感。"
             body["prompt"] = "\n".join(part for part in (
-                f"生成 {rows} 行 {cols} 列分镜图，每格等大、无边框、无间隙、无文字、无编号、无字幕；按从左到右从上到下叙事，保持角色一致。",
-                style, reference_note, prompt, notes,
+                "Subject:",
+                f"{rows} 行 {cols} 列分镜联系表，共 {cells} 格；每格等大、按从左到右从上到下叙事，保持同一角色身份与服装。",
+                "",
+                "Important details:",
+                f"风格：{style}" if style else "",
+                reference_note,
+                prompt,
+                notes,
+                "",
+                "Use case:",
+                "3D 动画电影分镜联系表，动画电影制作预览图。",
+                "",
+                "Constraints:",
+                constraints,
             ) if part).strip()
     if kind in {"imageNode", "imageGenNode", "storyboardGenNode"}:
         # Visible node controls are authoritative over legacy request overrides.
