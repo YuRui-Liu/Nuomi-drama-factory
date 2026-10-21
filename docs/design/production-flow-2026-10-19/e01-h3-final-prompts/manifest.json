@@ -1,0 +1,113 @@
+{
+ "total_actual": 94.29166666666667,
+ "batches": [
+  {
+   "batch": "g1b1",
+   "group": "g1",
+   "shots": "镜头1-2",
+   "requested": 11.0,
+   "actual": 11.75,
+   "frames": 282,
+   "attempt_id": "635b28fa46b84a4cac46827e1b109087",
+   "video_url": "/static/projects/01M57PERGF7FHMF0QYWH1SD133/freezone/_outputs/video_director/635b28fa46b84a4cac46827e1b109087.mp4?v=1792518306213321523",
+   "stage": "completed",
+   "technique": "无（compatible_technique_ids 为空）"
+  },
+  {
+   "batch": "g1b2",
+   "group": "g1",
+   "shots": "镜头3-4",
+   "requested": 10.0,
+   "actual": 10.333333333333334,
+   "frames": 248,
+   "attempt_id": "fece3027768a452892bad659d1ed6455",
+   "video_url": "/static/projects/01M57PERGF7FHMF0QYWH1SD133/freezone/_outputs/video_director/fece3027768a452892bad659d1ed6455.mp4?v=1792517891460717144",
+   "stage": "completed",
+   "technique": "无（compatible_technique_ids 为空）"
+  },
+  {
+   "batch": "g1b3",
+   "group": "g1",
+   "shots": "镜头5",
+   "requested": 4.0,
+   "actual": 4.458333333333333,
+   "frames": 107,
+   "attempt_id": "51e9d1c8f4b44c6099f4f8954dceda97",
+   "video_url": "/static/projects/01M57PERGF7FHMF0QYWH1SD133/freezone/_outputs/video_director/51e9d1c8f4b44c6099f4f8954dceda97.mp4?v=1792517096373178558",
+   "stage": "completed",
+   "technique": "无（compatible_technique_ids 为空）"
+  },
+  {
+   "batch": "g2b1",
+   "group": "g2",
+   "shots": "镜头6",
+   "requested": 9.0,
+   "actual": 9.416666666666666,
+   "frames": 226,
+   "attempt_id": "e2e3b8c6815240d69ae01e95dbaca2dc",
+   "video_url": "/static/projects/01M57PERGF7FHMF0QYWH1SD133/freezone/_outputs/video_director/e2e3b8c6815240d69ae01e95dbaca2dc.mp4?v=1792518729338860648",
+   "stage": "completed",
+   "technique": "无（compatible_technique_ids 为空）"
+  },
+  {
+   "batch": "g2b2",
+   "group": "g2",
+   "shots": "镜头7",
+   "requested": 8.0,
+   "actual": 8.0,
+   "frames": 192,
+   "attempt_id": "1c35c2c9666d4a4b831066b084b93918",
+   "video_url": "/static/projects/01M57PERGF7FHMF0QYWH1SD133/freezone/_outputs/video_director/1c35c2c9666d4a4b831066b084b93918.mp4?v=1792517866487140048",
+   "stage": "completed",
+   "technique": "无（compatible_technique_ids 为空）"
+  },
+  {
+   "batch": "g2b3",
+   "group": "g2",
+   "shots": "镜头8-9",
+   "requested": 13.0,
+   "actual": 13.875,
+   "frames": 333,
+   "attempt_id": "8b5ee2a292f6484ab336297a95bee4c5",
+   "video_url": "/static/projects/01M57PERGF7FHMF0QYWH1SD133/freezone/_outputs/video_director/8b5ee2a292f6484ab336297a95bee4c5.mp4?v=1792591312112404030",
+   "stage": "completed",
+   "technique": "无（compatible_technique_ids 为空）"
+  },
+  {
+   "batch": "g3b1",
+   "group": "g3",
+   "shots": "镜头10-11",
+   "requested": 14.0,
+   "actual": 14.583333333333334,
+   "frames": 350,
+   "attempt_id": "a15a0c16fa194b0c995b679a9b1b1c1d",
+   "video_url": "/static/projects/01M57PERGF7FHMF0QYWH1SD133/freezone/_outputs/video_director/a15a0c16fa194b0c995b679a9b1b1c1d.mp4?v=1792591312481744990",
+   "stage": "completed",
+   "technique": "无（compatible_technique_ids 为空）"
+  },
+  {
+   "batch": "g3b2",
+   "group": "g3",
+   "shots": "镜头12-13",
+   "requested": 14.0,
+   "actual": 14.583333333333334,
+   "frames": 350,
+   "attempt_id": "9f6223e1ab9647d48a563512e6cd3be0",
+   "video_url": "/static/projects/01M57PERGF7FHMF0QYWH1SD133/freezone/_outputs/video_director/9f6223e1ab9647d48a563512e6cd3be0.mp4?v=1792591313766884325",
+   "stage": "completed",
+   "technique": "无（compatible_technique_ids 为空）"
+  },
+  {
+   "batch": "g3b3",
+   "group": "g3",
+   "shots": "镜头14",
+   "requested": 7.0,
+   "actual": 7.291666666666667,
+   "frames": 175,
+   "attempt_id": "5d14f21c70264219986bb66851b7fe38",
+   "video_url": "/static/projects/01M57PERGF7FHMF0QYWH1SD133/freezone/_outputs/video_director/5d14f21c70264219986bb66851b7fe38.mp4?v=1792591313903955394",
+   "stage": "completed",
+   "technique": "two-person-gaze@1.0.0（检索采用；提交快照未绑定，见备注）"
+  }
+ ]
+}
