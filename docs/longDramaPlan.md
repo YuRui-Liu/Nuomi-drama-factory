@@ -21,7 +21,10 @@
 - 实时 MCP：tools/list 可发现 productionRead／productionExecute，productionRead 返回与 HTTP 一致的第二版及第一版采用记录。没有界面连接也能读取已授权服务器工作区。
 - 已有检查：nodeShared typecheck、MCP typecheck 和 server build 通过。server typecheck 仅剩原有 .hutch/devkit/api/config/ElectrobunConfig 缺失；不生成占位声明掩盖错误。
 - 计划命令修正：providers 包没有 typecheck script，执行既有编译器 `bun run tsc --project packages/providers/tsconfig.json`，不新增检查命令。
-- 尚未实现持久生成任务、媒体证据通路、工作台及 E1 制作，不将本阶段视为 E1 验收通过。
+- 尚未完成持久生成任务实机验证、媒体证据通路、工作台及 E1 制作，不将本阶段视为 E1 验收通过。
+- 任务 3 进展：新增可选供应商生命周期及 productionTask prepare/submit/read/refresh/cancel，按方案版本、请求 ID、素材摘要和供应商配置固定任务；未知提交不自动重试，下载失败可查询原任务继续。旧临时媒体任务未改动。尚无已接通的生命周期供应商，真实提交与重启恢复尚未验证。
+- 本机 Toonflow 的 mediaProviderConfigs 为空，MCP 默认关闭；开发验证仅在临时配置服务启用 MCP。真实 RunningHub 验证需用户指定配置来源，不在对话打印凭据。
+- 任务 3 验证：providers 编译器检查与 server build 通过；重启临时服务后成果及采用记录仍可读取。向未实现生命周期的现有 metaso 提交 prepare 返回 400，未产生付费请求；不能据此声称真实生成恢复已验证。
 
 ## 里程碑与顺序
 

@@ -85,7 +85,7 @@ async function downloadAsset(url: string, signal?: AbortSignal) {
   return { bytes: Buffer.concat(chunks, size), mimeType: response.headers.get("content-type") ?? "" };
 }
 
-async function assetBytes(asset: MediaAsset, mediaType: "image" | "video" | "audio", signal?: AbortSignal) {
+export async function assetBytes(asset: MediaAsset, mediaType: "image" | "video" | "audio", signal?: AbortSignal) {
   if (!asset || asset.mediaType !== mediaType) invalid("供应商返回的媒体类型不正确");
   let bytes: Uint8Array;
   let mimeType = asset.mimeType ?? "";
@@ -109,7 +109,7 @@ async function assetBytes(asset: MediaAsset, mediaType: "image" | "video" | "aud
   return { bytes, mimeType };
 }
 
-async function prepareRequest<T>(directory: string | undefined, mediaType: "image" | "video" | "audio", request: MediaGenerationRequest,
+export async function prepareRequest<T>(directory: string | undefined, mediaType: "image" | "video" | "audio", request: MediaGenerationRequest,
   read: (cwd: string, reference: MediaReference, type: string, signal?: AbortSignal) => Promise<T>, signal?: AbortSignal) {
   const references = async (items: MediaReference[] | undefined, type: string) => {
     if (!items?.length) return items ? [] : undefined;
@@ -134,7 +134,7 @@ async function prepareRequest<T>(directory: string | undefined, mediaType: "imag
   };
 }
 
-async function configuredProvider(request: MediaGenerationRequest, mediaType: "image" | "video" | "audio", signal?: AbortSignal, directory?: string) {
+export async function configuredProvider(request: MediaGenerationRequest, mediaType: "image" | "video" | "audio", signal?: AbortSignal, directory?: string) {
   const info = await getMediaProvider(request.providerId);
   if (!info.models.some(model => model.id === request.modelId && model.type === mediaType)) invalid("所选媒体模型不存在或类型不匹配，请重新选择");
   const configurations = record(conf.get("settings", {}).mediaProviderConfigs);

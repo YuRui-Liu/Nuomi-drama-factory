@@ -8,6 +8,8 @@ import metaso from "./src/media/metaso";
 import compshare from "./src/media/compshare";
 
 export type Provider = ProviderDefinition;
+export type ProviderTaskRequest = MediaTaskRequest;
+export type ProviderTaskSnapshot = MediaTaskSnapshot;
 export type ProviderPrice = NonNullable<Awaited<ReturnType<NonNullable<Provider["getPrice"]>>>>;
 export type ProviderPriceRequest = Parameters<NonNullable<Provider["getPrice"]>>[0];
 export type ProviderPriceReference = NonNullable<ProviderPriceRequest["images"]>[number];

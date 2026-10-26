@@ -185,6 +185,17 @@ type GenerateMedia<TRequest, TConfig = Record<string, unknown>> = (
   request: TRequest,
 ) => Promise<MediaAsset[]>;
 
+type MediaTaskRequest =
+  | { type: "image"; request: ImageRequest }
+  | { type: "video"; request: VideoRequest }
+  | { type: "audio"; request: AudioRequest };
+
+type MediaTaskSnapshot =
+  | { status: "running" }
+  | { status: "completed"; assets: MediaAsset[] }
+  | { status: "failed"; message: string }
+  | { status: "cancelled" };
+
 interface ProviderUpdateInfo {
   hasUpdate: boolean;
   latestVersion: string;
@@ -227,6 +238,11 @@ interface ProviderDefinition<TRules extends readonly ProviderFormRule[] = readon
   generateImage?: GenerateMedia<ImageRequest, ProviderConfig<TRules>>;
   generateVideo?: GenerateMedia<VideoRequest, ProviderConfig<TRules>>;
   generateAudio?: GenerateMedia<AudioRequest, ProviderConfig<TRules>>;
+  /** 可恢复生成的可选接口。提交只返回远端任务编号；宿主持久化后分别查询和下载。 */
+  submitMediaTask?: (this: ProviderContext<ProviderConfig<TRules>>, input: MediaTaskRequest) => Promise<{ taskId: string }>;
+  queryMediaTask?: (this: ProviderContext<ProviderConfig<TRules>>, taskId: string) => Promise<MediaTaskSnapshot>;
+  /** 返回仅代表取消请求已发出，实际终态仍通过 queryMediaTask 查询。 */
+  cancelMediaTask?: (this: ProviderContext<ProviderConfig<TRules>>, taskId: string) => Promise<void>;
   /** 可选的供应商媒体预处理；未实现时保持原请求。 */
   processMedia?: (this: ProviderContext<ProviderConfig<TRules>>, request: ImageRequest | VideoRequest | AudioRequest) => Promise<ImageRequest | VideoRequest | AudioRequest>;
 }
