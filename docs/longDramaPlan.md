@@ -26,6 +26,8 @@
 - 本机 Toonflow 的 mediaProviderConfigs 为空，MCP 默认关闭；开发验证仅在临时配置服务启用 MCP。真实 RunningHub 验证需用户指定配置来源，不在对话打印凭据。
 - 任务 3 验证：providers 编译器检查与 server build 通过；重启临时服务后成果及采用记录仍可读取。向未实现生命周期的现有 metaso 提交 prepare 返回 400，未产生付费请求；不能据此声称真实生成恢复已验证。
 - 任务 4 进展：加入 productionMedia，以 MCP 原生 image/audio 内容返回实际文件及 SHA-256，复用工作区路径边界和格式识别，限制单文件 10MB。server build 通过，typecheck 仍仅报告既有 Electrobun 声明缺失；尚未完成客户端真实视听验证，视频抽帧和完整对白覆盖也尚未验证。
+- 用户已授权复用 Nuomi 的 RunningHub 账号与音色工作流。启动脚本指向 /Users/liuyuxiang05/Liu/nuomi-drama-data，配置显示 runninghub-main 已启用，音色设计为 2059260167811850242，克隆为 2058388078015901697；H3 按用户指定改用 2114738928094892033。密钥在 macOS 钥匙串，本次读取未完成，未迁移凭据或提交云端生成。
+- 任务 7 进展：加入 RunningHub 音色设计生命周期适配器及内置安装注册，提交前检查远端图的 14/15 文本字段；查询与取消只使用原任务编号。providers 类型检查、真实供应商 VM 加载和 server build 通过。尚未验证云端图、真实生成、克隆与 H3，不将上述结果视为接口实测通过。
 
 ## 里程碑与顺序
 
