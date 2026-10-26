@@ -25,6 +25,7 @@
 - 任务 3 进展：新增可选供应商生命周期及 productionTask prepare/submit/read/refresh/cancel，按方案版本、请求 ID、素材摘要和供应商配置固定任务；未知提交不自动重试，下载失败可查询原任务继续。旧临时媒体任务未改动。尚无已接通的生命周期供应商，真实提交与重启恢复尚未验证。
 - 本机 Toonflow 的 mediaProviderConfigs 为空，MCP 默认关闭；开发验证仅在临时配置服务启用 MCP。真实 RunningHub 验证需用户指定配置来源，不在对话打印凭据。
 - 任务 3 验证：providers 编译器检查与 server build 通过；重启临时服务后成果及采用记录仍可读取。向未实现生命周期的现有 metaso 提交 prepare 返回 400，未产生付费请求；不能据此声称真实生成恢复已验证。
+- 任务 4 进展：加入 productionMedia，以 MCP 原生 image/audio 内容返回实际文件及 SHA-256，复用工作区路径边界和格式识别，限制单文件 10MB。server build 通过，typecheck 仍仅报告既有 Electrobun 声明缺失；尚未完成客户端真实视听验证，视频抽帧和完整对白覆盖也尚未验证。
 
 ## 里程碑与顺序
 

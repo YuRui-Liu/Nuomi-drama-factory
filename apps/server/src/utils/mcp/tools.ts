@@ -6,6 +6,7 @@ import { productionExecuteSchema, productionReadSchema } from "@toonflow/node-sh
 import * as production from "@/utils/production/operations";
 import { taskCommandSchema } from "@/utils/production/taskSchema";
 import { executeTask } from "@/utils/production/tasks";
+import { detectMimeType } from "@/utils/media/priceReference";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CanvasContext } from "@toonflow/tools-scaffold/runtime";
 import type { McpTool } from "@toonflow/mcp";
@@ -122,6 +123,25 @@ export async function getMcpTools(): Promise<McpTool[]> {
   tools.push(wrapTool("productionTask", "持久制作任务：prepare 固定采用方案与素材；submit 在用户授权后提交；read 读取本地记录；refresh 查询原任务并保存结果；cancel 请求取消。仅支持明确提供恢复接口的供应商。needsReview 且无远端编号时禁止重提。", z.toJSONSchema(taskCommandSchema, { io: "input" }), async (args, target) => {
     const { directory } = await resolveTarget(target);
     return executeTask(directory!, args);
+  }));
+  const mediaSchema = z.strictObject({ path: z.string().min(1).max(4096) });
+  tools.push(wrapTool("productionMedia", "读取工作区实际图片或音频，以 MCP 原生媒体内容返回，供视听检查。单文件最多 10MB；视频须先通过现有 FFmpeg 工具提取帧和音轨。读取成功不代表验收通过；客户端无法感知媒体时必须记录未验证。", z.toJSONSchema(mediaSchema), async (args, target, signal) => {
+    const { path } = mediaSchema.parse(args);
+    const { directory } = await resolveTarget(target);
+    const source = await resolveWorkspacePath(directory!, path);
+    const info = await stat(source.path);
+    const maxBytes = 10 * 1024 * 1024;
+    if (!info.isFile() || info.size === 0 || info.size > maxBytes) throw new Error("媒体须为不超过 10MB 的非空普通文件");
+    const bytes = await readFile(source.path, { signal });
+    if (bytes.length > maxBytes) throw new Error("媒体超过 10MB，请先提取较短音频或缩小图片");
+    const mimeType = detectMimeType(bytes, "");
+    const type = ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(mimeType) ? "image"
+      : ["audio/wav", "audio/mpeg", "audio/flac", "audio/aac", "audio/ogg"].includes(mimeType) ? "audio" : undefined;
+    if (!type) throw new Error("不支持直接读取该媒体格式；视频请先提取帧和音轨");
+    return { content: [
+      { type: "text", text: JSON.stringify({ path, mimeType, bytes: bytes.length, sha256: new Bun.CryptoHasher("sha256").update(bytes).digest("hex") }) },
+      { type, mimeType, data: bytes.toString("base64") },
+    ] };
   }));
   for (const [name, schema] of Object.entries(uiSchemas)) {
     tools.push(wrapTool(name, uiDescriptions[name as keyof typeof uiSchemas], z.toJSONSchema(schema), async (input, target, signal) => {
