@@ -51,6 +51,13 @@ description: 通过 Toonflow MCP 操作工作区、实时画布、节点、文�
 
 ## 文件与文档
 
+### 版本化制作成果
+
+- 通过 `productionRead` 查询制作记录：`list` 分页返回摘要，`read` 必须给出具体 `{ id, revision }`，`listAffected` 查询某对象的下游候选及采用修订。所有操作使用已有 `target.directory` 绑定工作区。
+- 通过 `productionExecute` 的 `saveRevision` 保存结构化成果。首次创建 `expectedRevision: 0`，后续必须传上次读取的版本；正文中的素材／规划引用同时登记到 `dependencies`。冲突后重新读取，不能盲目覆盖。
+- `saveRevision` 不改变采用结果。`adopt` 必须提供当前 `expectedAdoption`（从未采用时为 null）和真实确认／委托依据；采用前上游依赖必须仍是采用版本。保存新候选不意味着已经批准生成或通过验收。
+- 工具只负责保存、读取与采用，不负责产生故事、提交媒体任务或进行视听检查。没有实际媒体证据时不能将制作验收记为通过。不要直接编辑 production 目录绕过版本和依赖校验。
+
 - 文件工具的路径相对于绑定的工作区；以工具返回的规范化目录为准。
 - `workspaceFiles` 支持 `list`、`mkdir`、`rename`、`remove`、`readBinary`、`writeBinary`。二进制用 Base64 传输，解码后的文件不超过 20 MiB；写入默认 `exclusive: true`，需要覆盖时必须符合用户请求并显式设置为 `false`。
 - 打开的画布和文档会拒绝原始文件修改。文档使用 `getDocument` 读取当前 `text`，再以 `writeDocument` 提交新文本和 `expectedText: 原文`；遇到原文变化时重新读取并合并，不盲目重试覆盖。普通文件的文本读写复用已启用的文件工具。

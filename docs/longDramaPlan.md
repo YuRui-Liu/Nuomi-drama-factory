@@ -1,6 +1,6 @@
 # Toonflow 长漫剧与 Codex E1 验收实现计划
 
-> 面向 AI 代理的执行者：使用 executing-plans 技能逐任务执行，以复选框跟踪进度。当前文档是实现计划，不是已完成记录。用户确认本计划的执行后再修改业务代码。
+> 面向 AI 代理的执行者：使用 executing-plans 技能逐任务执行，以复选框跟踪进度。用户已批准执行；完成状态以执行记录及实际验证为准。
 
 **目标：** Codex 从一句话创意开始，经关键阶段确认，完成 E1 真实成片、视听验收和局部返修，再以 E2 验证跨集复用。
 
@@ -10,7 +10,18 @@
 
 **规格：** [longDramaDesign.md](./longDramaDesign.md)，用户已确认，含 Codex 全流程操作和 E1 验收硬要求。
 
-**仓库规则优先：** 不新增任何测试／自检代码、测试依赖或测试命令；使用已有类型检查、构建及手动实际验证。文档使用小驼峰名称。业务代码实施时复核最新工作区，不覆盖现有 packages/mcp/src/stdio.ts 未提交改动，不提交参考目录 OpenMontage/、runnninghub/ 的无关内容。当前只编写计划，不创建实现分支或切换工作区。
+**仓库规则优先：** 不新增任何测试／自检代码、测试依赖或测试命令；使用已有类型检查、构建及手动实际验证。文档使用小驼峰名称。业务代码实施时复核最新工作区，不覆盖现有 packages/mcp/src/stdio.ts 未提交改动，不提交参考目录 OpenMontage/、runnninghub/ 的无关内容。
+
+### 执行记录（2026-10-27）
+
+- 用户已批准在当前目录新建功能分支，执行分支为 codex/longDrama，保留 stdio.ts 原有改动。
+- 任务 1：源码核对与 RunningHub 官方查询文档已完成；当前只有临时服务的实时 MCP 能力证据，尚未验证用户云端 H3 图及付费模式，G0 不标全部通过。音色设计参考映射为节点 14=text、15=instruct；IndexTTS2 必须区分单选择器图和多分支图。
+- 任务 2：已实现共享结构、不可变修订、采用冲突与依赖追踪。提前接入任务 4 的只读／写入 HTTP、MCP 入口，以便通过真实公开接口验证，不创建自检脚本。
+- 手动 HTTP：新建→采用→第二修订成功；旧 expectedRevision 返回 409；第二版保存后采用仍指向第一版；工作区越界请求返回 403。临时数据目录为 /private/tmp/toonflowLongDramaData，不改用户配置。
+- 实时 MCP：tools/list 可发现 productionRead／productionExecute，productionRead 返回与 HTTP 一致的第二版及第一版采用记录。没有界面连接也能读取已授权服务器工作区。
+- 已有检查：nodeShared typecheck、MCP typecheck 和 server build 通过。server typecheck 仅剩原有 .hutch/devkit/api/config/ElectrobunConfig 缺失；不生成占位声明掩盖错误。
+- 计划命令修正：providers 包没有 typecheck script，执行既有编译器 `bun run tsc --project packages/providers/tsconfig.json`，不新增检查命令。
+- 尚未实现持久生成任务、媒体证据通路、工作台及 E1 制作，不将本阶段视为 E1 验收通过。
 
 ## 里程碑与顺序
 
@@ -259,4 +270,4 @@ export type H3Segment = {
 | 连续两集、E2 复用 | 12 |
 | 不新增测试模块、真实验证如实报告 | 所有任务 |
 
-本计划不宣称任何业务任务已完成。当前阶段到计划文档交付为止。
+仅按执行记录声明已经完成并验证的范围；未完成任务继续保留。

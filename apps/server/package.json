@@ -26,6 +26,7 @@
     "typecheck": "tsc"
   },
   "dependencies": {
+    "@toonflow/node-shared": "workspace:*",
     "@babel/parser": "^7.29.8",
     "@breezystack/lamejs": "^1.2.7",
     "@earendil-works/pi-ai": "0.85.1",

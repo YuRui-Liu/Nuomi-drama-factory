@@ -52,6 +52,7 @@
         "@toonflow/file": "workspace:*",
         "@toonflow/i18n": "workspace:*",
         "@toonflow/mcp": "workspace:*",
+        "@toonflow/node-shared": "workspace:*",
         "@toonflow/providers": "workspace:*",
         "@toonflow/teams-scaffold": "workspace:*",
         "@toonflow/tool-asset-operator": "workspace:*",
@@ -385,6 +386,7 @@
         "@tabler/icons-vue": "^3.46.0",
         "vue-draggable-plus": "^0.6.1",
         "x-sender": "1.4.6",
+        "zod": "^4.6.2",
       },
       "devDependencies": {
         "@toonflow/nodes-scaffold": "workspace:*",

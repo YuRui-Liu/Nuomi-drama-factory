@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./production/schemas": "./src/production/schemas.ts",
+    "./production/types": "./src/production/types.ts",
+    "./production/operations": "./src/production/operations.ts",
     "./promptInput": "./src/components/promptInput.vue",
     "./referenceItem": "./src/components/referenceItem.vue",
     "./mediaHistory": "./src/components/mediaHistory.vue",
@@ -23,6 +26,7 @@
     "element-plus": "^2.14.5"
   },
   "dependencies": {
+    "zod": "^4.6.2",
     "@tabler/icons-vue": "^3.46.0",
     "vue-draggable-plus": "^0.6.1",
     "x-sender": "1.4.6"

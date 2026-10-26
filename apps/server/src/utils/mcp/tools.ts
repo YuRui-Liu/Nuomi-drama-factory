@@ -2,6 +2,8 @@ import { t } from "@/lib/i18n";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { realpath, stat, mkdir, readdir, lstat, rm, rmdir, readFile } from "@toonflow/file";
 import { z } from "zod";
+import { productionExecuteSchema, productionReadSchema } from "@toonflow/node-shared/production/operations";
+import * as production from "@/utils/production/operations";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CanvasContext } from "@toonflow/tools-scaffold/runtime";
 import type { McpTool } from "@toonflow/mcp";
@@ -107,6 +109,14 @@ export async function getMcpTools(): Promise<McpTool[]> {
       return { connections: listConnections(), workspaceRoot, ...(pluginError ? { pluginError } : {}) };
     },
   }];
+  tools.push(wrapTool("productionRead", "读取版本化制作成果：list 分页返回摘要，read 返回指定修订及采用状态，listAffected 查询下游影响。不会启动生成。", z.toJSONSchema(productionReadSchema, { io: "input" }), async (args, target) => {
+    const { directory } = await resolveTarget(target);
+    return production.read(directory!, args);
+  }));
+  tools.push(wrapTool("productionExecute", "保存制作成果新修订或采用指定修订。保存必须提供 expectedRevision，首次创建为 0；采用必须提供读取到的 expectedAdoption 及真实用户确认或委托依据。只记录成果，不发起媒体生成，不自动替换旧采用。", z.toJSONSchema(productionExecuteSchema, { io: "input" }), async (args, target) => {
+    const { directory } = await resolveTarget(target);
+    return production.execute(directory!, args);
+  }));
   for (const [name, schema] of Object.entries(uiSchemas)) {
     tools.push(wrapTool(name, uiDescriptions[name as keyof typeof uiSchemas], z.toJSONSchema(schema), async (input, target, signal) => {
       const args = schema.parse(input);
