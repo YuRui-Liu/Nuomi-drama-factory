@@ -43,7 +43,26 @@ async function validateContent(directory: string, manifest: ProductionManifest, 
     unique(content.scenes.flatMap(scene => scene.shots.map(shot => shot.id)), "镜头 ID");
     unique(content.scenes.flatMap(scene => scene.shots.flatMap(shot => shot.dialogue.map(line => line.id))), "对白 ID");
   }
-  if (content.kind === "h3Plan") unique(content.segments.map(item => item.id), "生成段 ID");
+  if (content.kind === "h3Plan") {
+    unique(content.segments.map(item => item.id), "生成段 ID");
+    for (const segment of content.segments) {
+      const durations = { video: 0, voice: 0 };
+      for (const reference of segment.references) {
+        const source = (await readRecord(directory, manifest, reference.asset)).content;
+        if (!("media" in source)) failure("H3 参考必须指向媒体成果", 400);
+        const expectedType = reference.role === "video" ? "video/" : reference.role === "voice" ? "audio/" : "image/";
+        if (!source.media.mimeType.startsWith(expectedType)) failure(`H3 ${reference.role} 槽位的媒体类型不匹配`, 400);
+        const target = await resolveWorkspacePath(directory, source.media.path);
+        if (!(await lstat(target.path)).isFile()) failure("H3 参考媒体文件不存在", 400);
+        if (reference.role === "video" || reference.role === "voice") {
+          const duration = source.media.durationSeconds;
+          if (duration === undefined || duration < 2 || duration > 15) failure("H3 音视频参考须有 2–15 秒的时长记录；提交前仍须实测媒体", 400);
+          durations[reference.role] += duration;
+        }
+      }
+      if (durations.video > 15 || durations.voice > 15) failure("H3 视频参考或音频参考的总时长不能超过 15 秒", 400);
+    }
+  }
   for (const path of mediaPaths(content)) {
     const target = await resolveWorkspacePath(directory, path);
     if (!(await lstat(target.path)).isFile()) failure("成果引用必须是实际文件", 400);

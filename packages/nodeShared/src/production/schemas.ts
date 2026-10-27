@@ -22,10 +22,41 @@ const h3Segment = z.strictObject({
   dialogueIds: z.array(text).max(100),
   references: z.array(z.strictObject({ role: z.enum(["firstFrame", "lastFrame", "subject", "video", "voice"]), asset: productionRefSchema })).max(12),
   requestedSeconds: z.number().min(4).max(15),
-  effectiveFrames: z.number().int().positive().max(360),
+  effectiveFrames: z.number().int().min(96).max(360),
   fps: z.literal(24),
   prompt: text,
   description: text,
+}).superRefine((segment, context) => {
+  const issue = (path: string, message: string) => context.addIssue({ code: "custom", path: [path], message });
+  const count = (role: string) => segment.references.filter(reference => reference.role === role).length;
+  const first = count("firstFrame");
+  const last = count("lastFrame");
+  const subjects = count("subject");
+  const videos = count("video");
+  const voices = count("voice");
+  if (segment.mode === "ref2va") {
+    if (first || last || !segment.references.length) issue("references", "全参考模式需要参考素材，不接受首尾帧槽位");
+    if (subjects > 9 || videos > 3 || voices > 3) issue("references", "全参考模式最多 9 张图片、3 段视频、3 段音频，总计不超过 12 项");
+  } else {
+    const expected = { t2va: [0, 0], i2va: [1, 0], fl2va: [1, 1], l2va: [0, 1] }[segment.mode];
+    if (first !== expected[0] || last !== expected[1] || subjects || videos || voices) issue("references", `${segment.mode} 的首尾帧素材数量不匹配，或包含不支持的参考槽位`);
+  }
+  for (const key of ["sourceShotIds", "dialogueIds"] as const) {
+    if (new Set(segment[key]).size !== segment[key].length) issue(key, "同一生成段不能重复引用镜头或对白 ID");
+  }
+  const fields = segment.mode === "ref2va"
+    ? ["subject_definitions", "summary", "retention_analysis", "detailed_description", "overall_soundscape", "non_diegetic_music"]
+    : ["integrated_multimodal_description", "overall_soundscape", "non_diegetic_music"];
+  const headings = [...segment.prompt.matchAll(/^(subject_definitions|summary|retention_analysis|detailed_description|integrated_multimodal_description|overall_soundscape|non_diegetic_music):[ \t]*/gm)];
+  if (headings.map(match => match[1]).join(",") !== fields.join(",")) {
+    issue("prompt", "H3 提示词必须按顺序包含该模式的全部字段，且不能重复");
+  } else {
+    for (let index = 0; index < headings.length; index++) {
+      const heading = headings[index]!;
+      const body = segment.prompt.slice(heading.index! + heading[0].length, headings[index + 1]?.index);
+      if (!body.trim()) issue("prompt", `H3 提示词字段 ${heading[1]} 不能为空`);
+    }
+  }
 });
 
 export const productionContentSchema = z.discriminatedUnion("kind", [

@@ -30,6 +30,12 @@
 - 任务 7 进展：加入 RunningHub 音色设计生命周期适配器及内置安装注册，提交前检查远端图的 14/15 文本字段；查询与取消只使用原任务编号。providers 类型检查、真实供应商 VM 加载和 server build 通过。尚未验证云端图、真实生成、克隆与 H3，不将上述结果视为接口实测通过。
 - 任务 7 后续：补齐公共音频请求 voiceDescription 到供应商 prompt 的传递，朗读文本仍传 text；通过实际参数解析与准备函数确认二者独立保留。新增 IndexTTS2 中性克隆配音：读取远端图，单选择器图固定中性分支，多分支图裁剪到目标输出依赖，校验唯一执行器和输出后上传参考音频；未知字段拒绝，不静默忽略。暂不开放情绪分支。
 - 本轮 providers、toolScaffold、mediaGeneration 类型检查、供应商 VM 加载及 server build 通过。server typecheck 仍受既有 Electrobun 声明缺失阻断。钥匙串重试 55 秒仍未完成授权，读取进程已超时退出；没有云端生成、上传或凭据迁移，克隆适配仍待真实工作流验证。
+- 任务 8 进展：复核 MiniMax 官方基础与全参考提示词指南，公共 H3 结构加入五模式素材槽位、参考数量、字段顺序及非空、镜头/对白 ID 去重校验。24fps 单段限制为 96–360 帧；这仅是时长边界，不表示已确认导演台合法帧格。业务保存核对参考成果类型、文件存在及记录时长范围；提交前仍需实际媒体探测。
+- 任务 8 本轮验证：临时工作区通过同一业务保存入口保存一个 T2VA 规划；直接解析缺首帧、367 帧且提示词无结构的请求，分别返回三项明确错误。nodeShared typecheck 和 server build 通过；server typecheck 仍仅报既有 Electrobun 声明缺失。尚未完成五模式公开接口验证、提示词编译、工作台、批次总帧数及真实生成验证。
+
+H3 提示词依据：
+- https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md
+- https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md
 
 ## 里程碑与顺序
 
