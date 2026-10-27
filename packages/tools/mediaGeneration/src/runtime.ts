@@ -43,6 +43,7 @@ export const audioGenerationSchema = z.strictObject({
   providerId: sharedFields.providerId,
   modelId: sharedFields.modelId,
   prompt: sharedFields.prompt,
+  voiceDescription: z.string().trim().min(1).max(10000).optional().describe("独立的音色设计描述；prompt 仍是试听或朗读文本"),
   outputDirectory: sharedFields.outputDirectory,
   images: sharedFields.images,
   audios: z.array(audioReference).max(64).optional(),

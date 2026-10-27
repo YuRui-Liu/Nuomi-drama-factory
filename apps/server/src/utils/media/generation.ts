@@ -121,7 +121,7 @@ export async function prepareRequest<T>(directory: string | undefined, mediaType
   };
   const images = await references(request.images, "image");
   if (mediaType === "audio") return {
-    type: "audio" as const, model: request.modelId, text: request.prompt, images, audios: await references(request.audios, "audio"),
+    type: "audio" as const, model: request.modelId, text: request.prompt, prompt: request.voiceDescription, images, audios: await references(request.audios, "audio"),
     voice: request.voice, speed: request.speed, volume: request.volume, pitch: request.pitch, language: request.language, format: request.format, sampleRate: request.sampleRate,
   };
   if (mediaType === "image") return { type: "image" as const, model: request.modelId, prompt: request.prompt, images, ratio: request.ratio, size: request.size };

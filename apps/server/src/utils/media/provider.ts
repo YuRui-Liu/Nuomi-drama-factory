@@ -385,7 +385,7 @@ export async function loadMediaProviderSource(source: string, config: Record<str
   const { id } = parseProvider(source);
   // ACT: VM 只隔离可信供应商的全局上下文；不可信代码需要独立进程等更强隔离。
   const context = createContext({
-    Buffer, URL, URLSearchParams, TextEncoder, TextDecoder, Blob,
+    Buffer, URL, URLSearchParams, TextEncoder, TextDecoder, Blob, FormData,
     AbortController, AbortSignal, setTimeout, clearTimeout,
   }, { codeGeneration: { strings: false, wasm: false } });
   const rejectImport = () => { throw new Error("供应商不能导入模块，请使用 this.tool 中的宿主工具"); };

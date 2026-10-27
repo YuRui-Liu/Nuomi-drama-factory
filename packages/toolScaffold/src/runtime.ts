@@ -98,6 +98,8 @@ export interface MediaReference {
 }
 
 export interface MediaGenerationRequest {
+  /** 音色设计描述，与 prompt 中的朗读文本分开传递。 */
+  voiceDescription?: string;
   providerId: string;
   modelId: string;
   prompt: string;

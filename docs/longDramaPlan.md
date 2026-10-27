@@ -28,6 +28,8 @@
 - 任务 4 进展：加入 productionMedia，以 MCP 原生 image/audio 内容返回实际文件及 SHA-256，复用工作区路径边界和格式识别，限制单文件 10MB。server build 通过，typecheck 仍仅报告既有 Electrobun 声明缺失；尚未完成客户端真实视听验证，视频抽帧和完整对白覆盖也尚未验证。
 - 用户已授权复用 Nuomi 的 RunningHub 账号与音色工作流。启动脚本指向 /Users/liuyuxiang05/Liu/nuomi-drama-data，配置显示 runninghub-main 已启用，音色设计为 2059260167811850242，克隆为 2058388078015901697；H3 按用户指定改用 2114738928094892033。密钥在 macOS 钥匙串，本次读取未完成，未迁移凭据或提交云端生成。
 - 任务 7 进展：加入 RunningHub 音色设计生命周期适配器及内置安装注册，提交前检查远端图的 14/15 文本字段；查询与取消只使用原任务编号。providers 类型检查、真实供应商 VM 加载和 server build 通过。尚未验证云端图、真实生成、克隆与 H3，不将上述结果视为接口实测通过。
+- 任务 7 后续：补齐公共音频请求 voiceDescription 到供应商 prompt 的传递，朗读文本仍传 text；通过实际参数解析与准备函数确认二者独立保留。新增 IndexTTS2 中性克隆配音：读取远端图，单选择器图固定中性分支，多分支图裁剪到目标输出依赖，校验唯一执行器和输出后上传参考音频；未知字段拒绝，不静默忽略。暂不开放情绪分支。
+- 本轮 providers、toolScaffold、mediaGeneration 类型检查、供应商 VM 加载及 server build 通过。server typecheck 仍受既有 Electrobun 声明缺失阻断。钥匙串重试 55 秒仍未完成授权，读取进程已超时退出；没有云端生成、上传或凭据迁移，克隆适配仍待真实工作流验证。
 
 ## 里程碑与顺序
 
