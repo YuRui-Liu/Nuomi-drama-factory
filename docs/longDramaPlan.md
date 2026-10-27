@@ -37,6 +37,20 @@ H3 提示词依据：
 - https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md
 - https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md
 
+### E1 真实制作执行记录（2026-10-27）
+
+- 用户指定 Grsai 出图，并确认《别开门》：雨夜古城兄妹隔门重逢，信封警告“别开门”；约 24 秒、二维电影感国风横屏、独立配音。首轮范围为两张参考图、两种音色、两句对白、两段 H3，失败不自动重复付费。
+- Nuomi 的 Grsai 与 RunningHub 钥匙串凭据已成功读取，通过本地忽略配置保存；没有把密钥写入源码。官方 Grsai 异步生成及查询接口已核对，新增可恢复图片适配。
+- 正式工作区：data/workspaces/longDramaE1。通过公开 MCP 建目录和保存简报，通过公开 HTTP 业务入口保存并采用全剧、E1、剧本；不是临时验证工作区。服务端口 31573，MCP 端口 31574。
+- 两张 Grsai 图片与两种 RunningHub 音色已真实完成、下载；图像已实际查看。哥哥图仅用作身份参考，不沿用其较宽门缝构图。两句独立克隆对白已提交，远端任务号分别 2114894639977943041、2114894642704252930；仍需查询结果。
+- 通过 MCP FFprobe/FFmpeg 读取音色元信息和转换试听媒体，通过 productionMedia 返回原生音频，但当前 Codex 模型明确不支持音频输入。不能宣称已听取或声音验收通过，音色采用仅作为已授权制作的输入选择。
+- 云端读取确认音色设计图 5 节点，克隆图是多分支版本，新版 H3 图 20 节点。新增图片全参考 H3 执行，清除样例时间轴与参考，仅单段提交；按 Nuomi 帧格 17k+5 计算并再次限制不超过 360 帧，实际云端兼容性仍待首次生成。prepare/submit 核对采用规划、提示词、素材顺序、片段编号与帧数。
+- providers 类型检查、真实 VM 加载与 server build 通过；server typecheck 仍仅报既有 Electrobun 声明缺失。未把代码构建或供应商任务成功当作 E1 验收通过。
+
+Grsai 接口依据：
+- https://qmy27nhsd9.apifox.cn/452409160e0
+- https://qmy27nhsd9.apifox.cn/452409577e0
+
 ## 里程碑与顺序
 
 | 关卡 | 任务 | 可交付结果 |

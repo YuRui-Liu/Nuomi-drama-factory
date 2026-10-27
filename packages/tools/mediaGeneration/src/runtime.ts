@@ -27,6 +27,7 @@ export const imageGenerationSchema = z.strictObject({
 });
 export const videoGenerationSchema = z.strictObject({
   ...sharedFields,
+  h3SegmentId: z.string().trim().min(1).max(256).optional(),
   videos: z.array(videoReference).max(64).optional(),
   audios: z.array(audioReference).max(64).optional(),
   firstFrame: imageReference.optional(),

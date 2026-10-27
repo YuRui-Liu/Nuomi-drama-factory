@@ -45,9 +45,26 @@ async function load(directory: string, id: string) {
   }
 }
 
-async function approvedPlan(directory: string, task: Pick<ProductionTask, "plan">) {
+async function approvedPlan(directory: string, task: Pick<ProductionTask, "plan" | "input">) {
   const result = await readProduction(directory, { action: "read", ref: task.plan });
   if (!("record" in result) || !result.record || result.adoption?.selected.revision !== task.plan.revision || result.staleDependencies?.length) failure("生成方案尚未采用或依赖已变化");
+  if (task.input.type === "video" && task.input.request.providerId === "runninghub") {
+    const request = task.input.request;
+    const content = result.record.content;
+    if (content.kind !== "h3Plan") failure("H3 视频任务必须绑定已采用的 H3 规划");
+    const segment = content.segments.find(item => item.id === request.h3SegmentId);
+    if (!segment || segment.mode !== "ref2va" || request.modelId !== "h3RefDirector" || segment.prompt !== request.prompt || segment.requestedSeconds !== request.duration) failure("H3 请求与采用的规划段不一致");
+    const frames = 17 * Math.ceil((segment.requestedSeconds * 24 - 5) / 17) + 5;
+    if (segment.effectiveFrames !== frames || frames > 360) failure("H3 规划帧数与执行帧格不一致或超过 15 秒");
+    const images = [];
+    for (const reference of segment.references) {
+      if (reference.role !== "subject") failure("当前 H3 执行器只接受图片全参考");
+      const source = await readProduction(directory, { action: "read", ref: reference.asset });
+      if (!("record" in source) || !source.record || !("media" in source.record.content)) failure("H3 引用缺少媒体成果");
+      images.push({ path: source.record.content.media.path, mimeType: source.record.content.media.mimeType });
+    }
+    if (JSON.stringify(images) !== JSON.stringify(request.images ?? [])) failure("H3 执行素材或顺序与采用规划不一致");
+  }
 }
 
 export async function executeTask(directory: string, input: unknown) {
