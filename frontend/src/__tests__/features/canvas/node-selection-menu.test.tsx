@@ -37,7 +37,7 @@ describe("NodeSelectionMenu", () => {
     const select = vi.fn();
     render(<NodeSelectionMenu position={{ x: 12, y: 16 }} onSelect={select} onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "配乐台" }));
-    await waitFor(() => expect(select).toHaveBeenCalledWith("musicDeskNode", expect.any(Object)));
+    await waitFor(() => expect(select).toHaveBeenCalledWith("musicDeskNode", expect.any(Object), undefined));
   });
   it("shows standalone shot context in the add-node menu", () => {
     render(
@@ -49,5 +49,8 @@ describe("NodeSelectionMenu", () => {
     );
 
     expect(screen.getByText("镜头上下文")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "文本" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "音频" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "上传资源" })).toBeInTheDocument();
   });
 });

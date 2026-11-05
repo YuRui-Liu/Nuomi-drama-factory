@@ -10,23 +10,24 @@ import { useEffect } from 'react';
 import userEvent from '@testing-library/user-event';
 import { creationCanvasesKey } from '@/lib/queries/creation';
 const shellState = vi.hoisted(() => ({ unhydratedError: false }));
+vi.mock('@/hooks/use-media-query', () => ({ useMediaQuery: () => true }));
 
 vi.mock('@/api/client', async (original) => {
   const actual = await original<typeof import('@/api/client')>();
   return { ...actual, apiCall: (path: string, options?: Parameters<typeof actual.apiCall>[1]) => actual.apiCall(path, { ...options, prefix: 'http://localhost/api/v1' }) };
 });
 vi.mock('@/features/freezone/FreezoneShell', () => ({
-  FreezoneShell: ({ canvasId, managedWorkspace, onWorkspaceState }: { canvasId: string; managedWorkspace?: boolean; onWorkspaceState?: (state: { canvasId: string; hydrated: boolean; status: 'error' }) => void }) => {
+  FreezoneShell: ({ canvasId, managedWorkspace, workspaceScope, onWorkspaceState }: { canvasId: string; managedWorkspace?: boolean; workspaceScope?: { kind: string; episodeNumber: number | null } | null; onWorkspaceState?: (state: { canvasId: string; hydrated: boolean; status: 'error' }) => void }) => {
     useEffect(() => { if (shellState.unhydratedError) onWorkspaceState?.({ canvasId, hydrated: false, status: 'error' }); }, [canvasId, onWorkspaceState]);
-    return <div data-testid="canvas">{canvasId}:{String(managedWorkspace)}</div>;
+    return <div data-testid="canvas" data-workspace-kind={workspaceScope?.kind} data-episode-number={workspaceScope?.episodeNumber ?? ''}>{canvasId}:{String(managedWorkspace)}</div>;
   },
 }));
 
 const base = 'http://localhost/api/v1/projects/p/creation';
 const records = [
-  { canvas_id: 'concept-server', kind: 'concept', episode_id: null, title: '构思一', status: 'applied' },
-  { canvas_id: 'episode-server', kind: 'episode', episode_id: 'ep-semantic', title: '第一集', status: 'applied' },
-  { canvas_id: 'free-server', kind: 'free', episode_id: null, title: '自由一', status: 'applied' },
+  { canvas_id: 'concept-server', kind: 'concept', episode_id: null, episode_number: null, title: '构思一', status: 'applied' },
+  { canvas_id: 'episode-server', kind: 'episode', episode_id: 'ep-semantic', episode_number: 1, title: '第一集', status: 'applied' },
+  { canvas_id: 'free-server', kind: 'free', episode_id: null, episode_number: null, title: '自由一', status: 'applied' },
 ];
 let dispose: (() => void) | undefined;
 beforeEach(() => {
@@ -54,14 +55,20 @@ async function mount(search = '', browser = false) {
 }
 
 async function openSwitcher() {
-  const trigger = await screen.findByRole('button', { name: /^(构思一|第一集|自由一|选择或新建画布)$/ });
-  if (trigger.getAttribute('aria-expanded') !== 'true') fireEvent.click(trigger);
+  await screen.findByRole('complementary', { name: '画布工作区' });
 }
 
 async function openCreateDialog() {
-  await openSwitcher();
-  fireEvent.click(screen.getByRole('button', { name: '新建画布' }));
+  fireEvent.click(await screen.findByRole('button', { name: '新建画布' }));
 }
+
+it('passes canonical episode registry scope into the workspace shell', async () => {
+  await mount('?workspace=episode-server');
+
+  const canvas = await screen.findByTestId('canvas');
+  expect(canvas).toHaveAttribute('data-workspace-kind', 'episode');
+  expect(canvas).toHaveAttribute('data-episode-number', '1');
+});
 
 function gate() {
   let resolve!: () => void;
@@ -192,9 +199,9 @@ it('searches, collapses groups, and switches with the keyboard after exactly one
   const user = userEvent.setup();
   await openSwitcher();
   await screen.findByRole('button', { name: '自由一' });
-  expect(screen.getAllByRole('button', { name: '构思一' })).toHaveLength(2);
-  await user.type(screen.getByLabelText('搜索画布'), '自由');
   expect(screen.getAllByRole('button', { name: '构思一' })).toHaveLength(1);
+  await user.type(screen.getByLabelText('搜索画布'), '自由');
+  expect(screen.queryByRole('button', { name: '构思一' })).not.toBeInTheDocument();
   const group = screen.getByRole('button', { name: '自由画布' });
   await user.click(group);
   expect(screen.queryByRole('button', { name: '自由一' })).not.toBeInTheDocument();
@@ -259,7 +266,9 @@ it.each(['free', 'episode'])('creates %s without an existing episode, using the 
   fireEvent.change(screen.getByLabelText('画布名称'), { target: { value: '新创作' } });
   fireEvent.click(screen.getByRole('button', { name: '创建并打开' }));
   expect(await screen.findByTestId('canvas')).toHaveTextContent('created-server');
-  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  await openCreateDialog();
+  expect(screen.getByLabelText('画布名称')).toHaveValue('');
   expect(requests).toEqual([expect.objectContaining({ title: '新创作', request_id: expect.any(String) })]);
 });
 it.each(['running', 'conflict'])('does not load an incomplete %s creation', async (status) => {

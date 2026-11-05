@@ -98,6 +98,18 @@ export function prefetchFreezoneImageModels(project: string): void {
   ensureLoaded(project);
 }
 
+/**
+ * The API catalog orders its configured Grsai model first. New image nodes
+ * read that already-warmed project snapshot synchronously; this never starts
+ * a request from the canvas store.
+ */
+export function getConfiguredFreezoneImageModel(
+  project: string | null | undefined,
+): ModelOption | null {
+  if (!project) return null;
+  return states.get(project)?.models.find((model) => model.providerId === 'grsai') ?? null;
+}
+
 function subscribe(project: string | null, callback: () => void) {
   if (!project) return () => {};
   let bucket = listeners.get(project);

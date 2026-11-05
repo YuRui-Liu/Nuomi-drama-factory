@@ -11,12 +11,11 @@ from . import screenplay
 
 OPERATIONS = {('ideationNode', 'generate'), ('screenplayNode', 'plan'),
               ('directorWorkspaceNode', 'prepare'),
-              ('directorWorkspaceNode', 'produce'),
-              ('directorWorkspaceNode', 'retry_production'),
-              ('directorWorkspaceNode', 'render_groups'),
-              ('directorWorkspaceNode', 'retry_render_groups'),
               ('directorWorkspaceNode', 'preview_handoff'),
               ('directorWorkspaceNode', 'inspect')} | screenplay.OPERATIONS
+# Historical receipts remain recoverable, but new canvas runs use group nodes.
+LEGACY_OPERATIONS = {('directorWorkspaceNode', operation) for operation in
+                     ('produce', 'retry_production', 'render_groups', 'retry_render_groups')}
 LOCAL_OPERATIONS = {('screenplayNode', 'inspect'), ('directorWorkspaceNode', 'inspect'),
                     ('directorWorkspaceNode', 'preview_handoff')}
 
@@ -121,6 +120,9 @@ async def reconcile_submission(run, attempt):
 
 
 async def submit(run, attempt, node, operation):
+    if (node['type'], operation) in LEGACY_OPERATIONS:
+        raise OrchestrationError('unsupported_operation',
+                                 'Create a production graph to run group rendering, video and episode composition')
     from novelvideo.api.routes import creative_workflow as api
     data = node.get('data', {})
     project, actor, mutation = run['project_id'], run['actor'], attempt['id']
@@ -147,16 +149,6 @@ async def submit(run, attempt, node, operation):
         if revision.episode != episode:
             raise OrchestrationError('scope_violation', 'Director revision episode does not match')
         return {'local': True, 'result': {'workflowResult': revision.model_dump(mode='json')}}
-    if node['type'] == 'directorWorkspaceNode' and operation in {'produce', 'retry_production', 'render_groups', 'retry_render_groups'}:
-        from novelvideo.api.routes import director_workspace as director
-        episode, body, scope = _production_request(node, attempt, operation)
-        response = await director.start_director_workspace_production(project, episode, body, actor)
-        receipt = response['data']
-        if not receipt.get('task_id') or receipt.get('scope') != scope:
-            raise OrchestrationError('submission_unknown', 'Production task receipt does not match frozen scope')
-        return {'production_workflow': True, 'workflow_kind': 'group_production',
-                'task_id': receipt['task_id'], 'episode': episode, 'scope': scope,
-                'revision_id': body.revision_id, 'group_ids': sorted(body.group_ids), 'through': body.through}
     if (node['type'], operation) == ('ideationNode', 'generate'):
         body = api.CreateIdeationBody(brief_document_id=data.get('briefId', ''),
             brief_revision_id=data.get('briefRevisionId', ''), generate=True,
@@ -257,9 +249,14 @@ async def reconcile(run, submission):
         stages = value.get('stages', {})
         required = ['director_version', 'asset_breakdown', 'group_plan']
         errors = [stage.get('error') or f"{key}: {stage.get('status')}" for key, stage in stages.items()
-                  if stage.get('status') in {'failed', 'needs_review', 'partial'}]
+                  if stage.get('status') in {'failed', 'partial'}]
         if errors:
             return {'status': 'failed', 'error': '; '.join(str(error) for error in errors)}
+        if any(stage.get('status') == 'needs_review' for stage in stages.values()):
+            # A validated semantic or plan candidate awaits an explicit human
+            # activation/continue action. Keep reconciling this exact handoff
+            # receipt; it is not evidence that the accepted operation failed.
+            return {'status': 'needs_review'}
         complete = all(stages.get(key, {}).get('status') == 'completed' for key in required)
         status = 'completed' if complete else 'running'
     else:

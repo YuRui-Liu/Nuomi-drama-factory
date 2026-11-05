@@ -570,6 +570,22 @@ def test_director_stage_overlay_loads_inherits_and_saves(monkeypatch, tmp_path):
     assert body["data"]["overlay"]["beat"] == 3
     assert [item["beat"] for item in body["data"]["same_scene_beats"]] == [3, 4]
 
+    output_camera = {
+        "azim": 82,
+        "elev": 18,
+        "distance": 5.5,
+        "focalPoint": [1, 2, 3],
+        "fov": 48,
+    }
+    lights = [{
+        "id": "key-light",
+        "label": "主光",
+        "color": "#ffe0b2",
+        "intensity": 1.4,
+        "position": [2, 4, 1],
+        "direction": [-1, -1, 0],
+        "enabled": True,
+    }]
     save_response = client.post(
         "/api/v1/projects/demo/episodes/1/beats/4/director-stage/overlay",
         json={
@@ -579,10 +595,13 @@ def test_director_stage_overlay_loads_inherits_and_saves(monkeypatch, tmp_path):
                 "savedAt": 2,
                 "world": {"activeSourceId": "legacy:pano:pano360:/static/demo/pano_360.png"},
                 "camera": {"azim": 1, "elev": 2, "distance": 3, "focalPoint": [0, 0, 0]},
+                "outputCamera": output_camera,
+                "lights": lights,
                 "actors": [{"label": "陆辰", "color": "#38bdf8"}],
                 "props": [{"label": "手机", "color": "#a78bfa"}],
                 "stagings": [],
             },
+            "camera": output_camera,
             "source": {
                 "source_id": "legacy:pano:pano360:/static/demo/pano_360.png",
                 "source_type": "pano360",
@@ -599,7 +618,7 @@ def test_director_stage_overlay_loads_inherits_and_saves(monkeypatch, tmp_path):
                     "label": "360 图",
                     "pano_url": "/static/demo/pano_360.png",
                 },
-                "camera": {"mode": "pano", "frame_aspect": "2:3", "state": {"azim": 1}},
+                "camera": {"mode": "pano", "frame_aspect": "2:3", "state": output_camera},
                 "layer": {"source_id": "legacy:pano:pano360:/static/demo/pano_360.png"},
             },
             "actors": [{"identity_id": "陆辰_default", "name": "陆辰", "marker_color": "#38bdf8"}],
@@ -621,6 +640,10 @@ def test_director_stage_overlay_loads_inherits_and_saves(monkeypatch, tmp_path):
     assert saved["data"]["overlay"]["source"]["source_type"] == "pano360"
     assert saved["data"]["overlay"]["frame_meta"]["source"]["source_id"] == "legacy:pano:pano360:/static/demo/pano_360.png"
     assert saved["data"]["overlay"]["snapshot"]["world"]["activeSourceId"] == "legacy:pano:pano360:/static/demo/pano_360.png"
+    assert saved["data"]["overlay"]["snapshot"]["outputCamera"] == output_camera
+    assert saved["data"]["overlay"]["snapshot"]["lights"] == lights
+    assert saved["data"]["overlay"]["frame_meta"]["camera"]["state"] == output_camera
+    assert saved["data"]["overlay"]["camera"] == output_camera
     assert saved["data"]["overlay"]["actors"] == [
         {"identity_id": "陆辰_default", "name": "陆辰", "marker_color": "#38bdf8"}
     ]
@@ -678,6 +701,22 @@ def test_director_stage_control_frame_export_writes_images_and_meta(monkeypatch,
     Image.new("RGB", (2, 2), color=(255, 255, 255)).save(png, format="PNG")
     png_bytes = png.getvalue()
     png_data_url = "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+    output_camera = {
+        "azim": 82,
+        "elev": 18,
+        "distance": 5.5,
+        "focalPoint": [1, 2, 3],
+        "fov": 48,
+    }
+    lights = [{
+        "id": "key-light",
+        "label": "主光",
+        "color": "#ffe0b2",
+        "intensity": 1.4,
+        "position": [2, 4, 1],
+        "direction": [-1, -1, 0],
+        "enabled": True,
+    }]
     response = client.post(
         "/api/v1/projects/demo/episodes/1/beats/4/director-stage/control-frame",
         json={
@@ -724,6 +763,8 @@ def test_director_stage_control_frame_export_writes_images_and_meta(monkeypatch,
             },
             "snapshot": {
                 "camera": {"azim": 1},
+                "outputCamera": output_camera,
+                "lights": lights,
                 "actors": [{"label": "陆辰"}],
                 "props": [{"label": "账单"}],
             },
@@ -755,8 +796,9 @@ def test_director_stage_control_frame_export_writes_images_and_meta(monkeypatch,
     assert meta["camera"] == {
         "mode": "sog",
         "frame_aspect": "16:9",
-        "state": {"azim": 1},
+        "state": output_camera,
     }
+    assert meta["lights"] == lights
     assert meta["layer"]["actors"][0]["placement"] == {
         "space": "world",
         "position": [0, 0, 0],

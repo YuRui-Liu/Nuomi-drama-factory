@@ -37,6 +37,7 @@ import {
 import { readLastVideoModel } from './lastVideoModel';
 import { createDirectorDraft } from './videoDirectorDraft';
 import { defaultSettings } from '@/features/script-creation/settings';
+import { defaultCoreArtifactKind } from './coreArtifacts';
 
 export type MenuIconKey = 'upload' | 'sparkles' | 'layout' | 'text' | 'video' | 'audio' | 'script' | 'pano360' | 'threeDWorld' | 'videoCompose';
 
@@ -82,6 +83,7 @@ const uploadNodeDefinition: CanvasNodeDefinition<UploadImageNodeData> = {
     },
   },
   createDefaultData: () => ({
+    artifactKind: 'asset',
     displayName: DEFAULT_NODE_DISPLAY_NAME[CANVAS_NODE_TYPES.upload],
     imageUrl: null,
     previewImageUrl: null,
@@ -144,6 +146,7 @@ const imageGenNodeDefinition: CanvasNodeDefinition<ImageGenNodeData> = {
     },
   },
   createDefaultData: () => ({
+    artifactKind: 'asset',
     displayName: DEFAULT_NODE_DISPLAY_NAME[CANVAS_NODE_TYPES.imageGen],
     imageUrl: null,
     previewImageUrl: null,
@@ -151,8 +154,8 @@ const imageGenNodeDefinition: CanvasNodeDefinition<ImageGenNodeData> = {
     isSizeManuallyAdjusted: false,
     requestAspectRatio: AUTO_REQUEST_ASPECT_RATIO,
     prompt: '',
-    model: DEFAULT_SHARED_MODEL_ID,
-    size: '2K' as ImageSize,
+    model: 'gpt-image-2',
+    size: '1K' as ImageSize,
     count: 1,
     styleTemplateId: null,
     extensionStyleId: null,
@@ -347,6 +350,7 @@ const storyboardGenNodeDefinition: CanvasNodeDefinition<StoryboardGenNodeData> =
     },
   },
   createDefaultData: () => ({
+    artifactKind: 'grid',
     displayName: DEFAULT_NODE_DISPLAY_NAME[CANVAS_NODE_TYPES.storyboardGen],
     gridRows: 2,
     gridCols: 2,
@@ -383,6 +387,7 @@ const videoNodeDefinition: CanvasNodeDefinition<VideoNodeData> = {
     },
   },
   createDefaultData: () => ({
+    artifactKind: 'shot',
     displayName: DEFAULT_NODE_DISPLAY_NAME[CANVAS_NODE_TYPES.video],
     videoUrl: null,
     previewImageUrl: null,
@@ -429,6 +434,7 @@ const audioNodeDefinition: CanvasNodeDefinition<AudioNodeData> = {
     },
   },
   createDefaultData: () => ({
+    artifactKind: 'dubbing',
     displayName: DEFAULT_NODE_DISPLAY_NAME[CANVAS_NODE_TYPES.audio],
     audioUrl: null,
     sourceFileName: null,
@@ -493,6 +499,7 @@ const videoComposeNodeDefinition: CanvasNodeDefinition<VideoComposeNodeData> = {
     },
   },
   createDefaultData: () => ({
+    artifactKind: 'composition',
     displayName: DEFAULT_NODE_DISPLAY_NAME[CANVAS_NODE_TYPES.videoCompose],
     resultVideoUrl: null,
     previewImageUrl: null,
@@ -512,6 +519,7 @@ const videoDirectorNodeDefinition: CanvasNodeDefinition<VideoDirectorNodeData> =
     connectMenu: { fromSource: true, fromTarget: false },
   },
   createDefaultData: () => ({
+    artifactKind: 'director',
     displayName: DEFAULT_NODE_DISPLAY_NAME[CANVAS_NODE_TYPES.videoDirector],
     draft: createDirectorDraft(),
     activeInputMode: 'ref',
@@ -660,29 +668,46 @@ const agentNodeDefinition: CanvasNodeDefinition<AgentNodeData> = {
 };
 
 function productionDefinition(type: CanvasNodeType, label: string, icon: MenuIconKey): CanvasNodeDefinition {
+  const artifactKind = defaultCoreArtifactKind(type);
   return {
     type, menuLabelKey: label, menuIcon: icon, visibleInMenu: true,
     capabilities: { toolbar: false, promptInput: false },
     connectivity: { sourceHandle: true, targetHandle: true, connectMenu: { fromSource: true, fromTarget: true } },
-    createDefaultData: () => ({ displayName: DEFAULT_NODE_DISPLAY_NAME[type], episodeNumber: 1 }),
+    createDefaultData: () => ({ ...(artifactKind ? { artifactKind } : {}), displayName: DEFAULT_NODE_DISPLAY_NAME[type], episodeNumber: 1 }),
   };
 }
 
 export const canvasNodeDefinitions: Record<CanvasNodeType, CanvasNodeDefinition> = {
   [CANVAS_NODE_TYPES.ideation]: productionDefinition(CANVAS_NODE_TYPES.ideation, 'node.menu.ideation', 'sparkles'),
   [CANVAS_NODE_TYPES.screenplay]: productionDefinition(CANVAS_NODE_TYPES.screenplay, 'node.menu.screenplay', 'script'),
-  [CANVAS_NODE_TYPES.directorWorkspace]: productionDefinition(CANVAS_NODE_TYPES.directorWorkspace, 'node.menu.directorWorkspace', 'video'),
+  [CANVAS_NODE_TYPES.directorWorkspace]: {
+    ...productionDefinition(CANVAS_NODE_TYPES.directorWorkspace, 'node.menu.directorWorkspace', 'video'),
+    visibleInMenu: false,
+    connectivity: { sourceHandle: true, targetHandle: true, connectMenu: { fromSource: false, fromTarget: false } },
+  },
   [CANVAS_NODE_TYPES.narrativeGroupStoryboard]: {
     ...productionDefinition(CANVAS_NODE_TYPES.narrativeGroupStoryboard, 'node.menu.narrativeGroupStoryboard', 'video'),
     visibleInMenu: false,
     connectivity: { sourceHandle: true, targetHandle: true, connectMenu: { fromSource: false, fromTarget: false } },
+  },
+  [CANVAS_NODE_TYPES.narrativeGroupVideo]: {
+    ...productionDefinition(CANVAS_NODE_TYPES.narrativeGroupVideo, 'node.menu.narrativeGroupVideo', 'video'),
+    visibleInMenu: false,
+    connectivity: { sourceHandle: true, targetHandle: true, connectMenu: { fromSource: false, fromTarget: false } },
+    createDefaultData: () => ({ displayName: DEFAULT_NODE_DISPLAY_NAME[CANVAS_NODE_TYPES.narrativeGroupVideo], episodeNumber: 1, operation: 'video' }),
+  },
+  [CANVAS_NODE_TYPES.episodeCompose]: {
+    ...productionDefinition(CANVAS_NODE_TYPES.episodeCompose, 'node.menu.episodeCompose', 'videoCompose'),
+    visibleInMenu: false,
+    connectivity: { sourceHandle: false, targetHandle: true, connectMenu: { fromSource: false, fromTarget: false } },
+    createDefaultData: () => ({ artifactKind: 'composition', displayName: DEFAULT_NODE_DISPLAY_NAME[CANVAS_NODE_TYPES.episodeCompose], episodeNumber: 1, operation: 'compose', resultVideoUrl: null }),
   },
   [CANVAS_NODE_TYPES.characterVoice]: productionDefinition(CANVAS_NODE_TYPES.characterVoice, 'node.menu.characterVoice', 'audio'),
   [CANVAS_NODE_TYPES.musicDesk]: {
     type: CANVAS_NODE_TYPES.musicDesk, menuLabelKey: 'node.menu.musicDesk', menuIcon: 'audio', visibleInMenu: true,
     capabilities: {toolbar:false,promptInput:false},
     connectivity: {sourceHandle:true,targetHandle:true,connectMenu:{fromSource:true,fromTarget:true}},
-    createDefaultData: () => ({displayName:'配乐台',resultVideoUrl:null}),
+    createDefaultData: () => ({artifactKind:'music',displayName:'配乐台',resultVideoUrl:null}),
   },
   [CANVAS_NODE_TYPES.upload]: uploadNodeDefinition,
   [CANVAS_NODE_TYPES.imageEdit]: imageEditNodeDefinition,

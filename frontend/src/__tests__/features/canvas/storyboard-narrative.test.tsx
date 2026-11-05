@@ -30,6 +30,15 @@ it('keeps the configured catalog model instead of overwriting it with OpenRouter
   expect(useCanvasStore.getState().nodes[0].data.model).toBe('gpt-image-2');
   expect(screen.getByText('gpt-image-2')).toBeVisible();
 });
+it('preserves an explicit saved aspect ratio that is absent from the current catalog', () => {
+  data.requestAspectRatio = '8:9';
+  data.imageUrl = '/existing-storyboard.png';
+
+  render(<StoryboardGenNode id="board" data={data} />);
+
+  expect(useCanvasStore.getState().nodes[0].data.requestAspectRatio).toBe('8:9');
+  expect(useCanvasStore.getState().nodes[0].data.imageUrl).toBe('/existing-storyboard.png');
+});
 it('keeps plain prepared shot descriptions independent when frame IDs are absent', () => {
   delete data.group_id;
   data.frames = [1, 2, 3, 4].map((i) => ({ description: `Independent shot ${i}` })) as never;

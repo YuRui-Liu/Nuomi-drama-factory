@@ -8,7 +8,7 @@ import { ApiError } from "@/api/client";
 import { applyCreationOperation, getCreationOperation } from '@/api/creation';
 import { readPendingCanvasOperation } from '@/features/freezone/externalCanvasOperation';
 import type { AssetBindRequest } from '@/features/creation-workspace/contracts';
-import { runExternalCanvasOperation, resolveExternalCanvasConflict } from '@/features/freezone/canvasSyncRuntime';
+import { runExternalCanvasOperation, resolveExternalCanvasConflict, reportFreezoneCanvasConflict } from '@/features/freezone/canvasSyncRuntime';
 vi.mock('@/api/creation', () => ({ applyCreationOperation: vi.fn(), getCreationOperation: vi.fn() }));
 import {
   FREEZONE_HYDRATE_RELEASE_GRACE_MS,
@@ -238,6 +238,26 @@ describe("useCanvasSync hydrate lifecycle", () => {
     expect((journal.local.nodes[0] as typeof originalNode).data.imageUrl).toBe('/local');
     expect((journal.remote!.nodes[0] as typeof originalNode).data.imageUrl).toBe('/fixed');
     expect(await flushFreezoneCanvasRuntime('project-a', canvas)).toBe(false);
+    expect(putFreezoneCanvas).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
+  it('stashes local work and opens the conflict state for a true agent merge conflict', async () => {
+    const canvas = 'agent-merge-conflict';
+    const hook = await openExternal(canvas);
+    act(() => {
+      useCanvasStore.setState({
+        nodes: [{ ...originalNode, data: { imageUrl: '/local' } }] as never,
+        userEditsSinceHydrate: 1,
+      });
+      expect(reportFreezoneCanvasConflict('project-a', canvas, 'Agent changes conflict')).toBe(true);
+    });
+
+    await waitFor(() => expect(hook.result.current.status).toBe('conflict'));
+    expect(hook.result.current.error).toBe('Agent changes conflict');
+    expect(hook.result.current.readConflictSnapshot()?.nodes).toEqual([
+      { ...originalNode, data: { imageUrl: '/local' } },
+    ]);
     expect(putFreezoneCanvas).not.toHaveBeenCalled();
     hook.unmount();
   });
@@ -1047,6 +1067,71 @@ describe("useCanvasSync hydrate lifecycle", () => {
     expect(useCanvasStore.getState().nodes).toHaveLength(3);
     expect(hook.result.current.status).toBe("ready");
 
+    hook.unmount();
+  });
+
+  it("flushes an in-flight save without queuing a duplicate PUT", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ nodes: [originalNode], edges: [], revision: 1 });
+    let release!: (value: { saved: boolean; revision: number }) => void;
+    vi.mocked(putFreezoneCanvas).mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+
+    const hook = renderHook(() => useCanvasSync("project-a", "flush-joins-inflight"));
+    await act(async () => { await Promise.resolve(); });
+    expect(hook.result.current.status).toBe("ready");
+    act(() => useCanvasStore.setState({
+      nodes: useCanvasStore.getState().nodes.map((node) => ({ ...node, position: { x: 12, y: 0 } })),
+      userEditsSinceHydrate: 1,
+    }));
+    await act(async () => { vi.advanceTimersByTime(800); await Promise.resolve(); });
+    expect(putFreezoneCanvas).toHaveBeenCalledTimes(1);
+
+    let flush!: Promise<boolean | null>;
+    act(() => { flush = flushFreezoneCanvasRuntime("project-a", "flush-joins-inflight"); });
+    await act(async () => { await Promise.resolve(); });
+    expect(putFreezoneCanvas).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      release({ saved: true, revision: 2 });
+      expect(await flush).toBe(true);
+    });
+    expect(putFreezoneCanvas).toHaveBeenCalledTimes(1);
+    hook.unmount();
+  });
+
+  it("flushes edits made while an older PUT is in flight", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ nodes: [originalNode], edges: [], revision: 1 });
+    const releases: Array<(value: { saved: boolean; revision: number }) => void> = [];
+    vi.mocked(putFreezoneCanvas).mockImplementation(() => new Promise((resolve) => { releases.push(resolve); }));
+
+    const hook = renderHook(() => useCanvasSync("project-a", "flush-newer-inflight"));
+    await act(async () => { await Promise.resolve(); });
+    expect(hook.result.current.status).toBe("ready");
+    act(() => useCanvasStore.setState({
+      nodes: useCanvasStore.getState().nodes.map((node) => ({ ...node, position: { x: 12, y: 0 } })),
+      userEditsSinceHydrate: 1,
+    }));
+    await act(async () => { vi.advanceTimersByTime(800); await Promise.resolve(); });
+    expect(putFreezoneCanvas).toHaveBeenCalledTimes(1);
+    act(() => useCanvasStore.setState({
+      nodes: useCanvasStore.getState().nodes.map((node) => ({ ...node, position: { x: 40, y: 0 } })),
+    }));
+
+    let flush!: Promise<boolean | null>;
+    act(() => { flush = flushFreezoneCanvasRuntime("project-a", "flush-newer-inflight"); });
+    await act(async () => {
+      releases[0]({ saved: true, revision: 2 });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(putFreezoneCanvas).toHaveBeenCalledTimes(2);
+    expect((vi.mocked(putFreezoneCanvas).mock.calls[1][2].nodes[0] as { position: { x: number } }).position.x).toBe(40);
+    await act(async () => {
+      releases[1]({ saved: true, revision: 3 });
+      expect(await flush).toBe(true);
+    });
     hook.unmount();
   });
 

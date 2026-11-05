@@ -18,12 +18,13 @@ import { readUrl } from '@/lib/url-params';
 import { applyCaseReference } from './applyCaseReference';
 import { StoryboardAdaptation } from './StoryboardAdaptation';
 import { CANVAS_NODE_TYPES, type StoryboardGenNodeData } from '../domain/canvasNodes';
+import { isLightweightStoryboardNode, isLightweightStoryboardStale } from '../production/lightweightVideoPipeline';
 
 type Task = ReturnType<typeof useVideoDirectorTask>;
 
-export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose }: {
+export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose, blockLightweightProduction = false }: {
   nodeId: string; data: VideoDirectorNodeData; task: Task;
-  onDraftChange: (draft: DirectorDraft) => void; onClose: () => void;
+  onDraftChange: (draft: DirectorDraft) => void; onClose: () => void; blockLightweightProduction?: boolean;
 }) {
   const { t } = useTranslation();
   const tr = (key: string, defaultValue: string) => t(`node.videoDirector.editor.${key}`, { defaultValue });
@@ -47,6 +48,9 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
   const mode = resolveDirectorInputMode(data);
   const incoming = edges.filter((edge) => edge.target === nodeId);
   const board = nodes.find((node) => node.type === CANVAS_NODE_TYPES.storyboardGen && incoming.some((edge) => edge.source === node.id));
+  const lightweightGridStale = blockLightweightProduction || !!board && isLightweightStoryboardNode(board) && isLightweightStoryboardStale(board, nodes);
+  const lightweightBlockedReason = lightweightGridStale
+    ? '剧本表或宫格图已更新。请先在宫格节点更新图像，再准备或生成视频。' : undefined;
   const binding = resolveDirectorBindings(draft, nodes, incoming, mode, data.storyboardPreparation);
   const effective = projectDirectorDraft(binding.draft, mode);
   const capabilities = task.capabilities;
@@ -71,7 +75,11 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
         {task.error && <p role="alert" className="mb-3 text-sm text-red-300">{task.error}</p>}
         {board && <StoryboardAdaptation data={data} sourceNodeId={board.id}
           source={board.data as StoryboardGenNodeData} prepare={task.prepare} busy={task.isPreparing} conflict={task.preparationConflict} referenceError={binding.errors.references}
-          onSourceChange={(patch) => useCanvasStore.getState().updateNodeData(board.id, patch)} />}
+          blockedReason={lightweightBlockedReason}
+          onSourceChange={(patch) => useCanvasStore.getState().updateNodeData(board.id, {
+            ...patch,
+            ...(isLightweightStoryboardNode(board) ? { needsUpdate: true } : {}),
+          })} />}
         <p className="mb-3 text-sm">{t('node.videoDirector.activeRouteLabel', {
           route: mode === 'ref' ? t('node.videoDirector.editor.refRoute') : t('node.videoDirector.editor.framesRoute'),
         })}</p>
@@ -157,7 +165,7 @@ export function VideoDirectorPanel({ nodeId, data, task, onDraftChange, onClose 
         <DirectorHistory attempts={task.attempts} activeId={data.activeAttemptId} onRetry={task.retry} onRefresh={() => void task.refresh()} />
       </div>
       <div className="flex items-center gap-3 border-t border-white/10 px-5 py-3 text-sm">
-        <button type="button" className="rounded bg-cyan-600 px-4 py-2 text-white disabled:opacity-50" disabled={!capabilities || generating || task.isPreparing} onClick={generate}>{task.isPreparing ? '正在准备分镜…' : tr('generate', '生成视频')}</button>
+        <button type="button" className="rounded bg-cyan-600 px-4 py-2 text-white disabled:opacity-50" disabled={!capabilities || generating || task.isPreparing || lightweightGridStale} onClick={generate}>{task.isPreparing ? '正在准备分镜…' : tr('generate', '生成视频')}</button>
         {pending && <button type="button" onClick={task.recoverPending}>{tr('recover', '恢复待提交请求')}</button>}
         <span className="text-text-muted">{active ? directorStageLabel(active.stage, t) : pending ? tr('submitting', '提交中') : ''}</span>
       </div>

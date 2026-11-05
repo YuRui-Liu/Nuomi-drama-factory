@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections import Counter
 from datetime import datetime, timezone
 from typing import Mapping
 
@@ -23,6 +22,15 @@ from .models import (
     CanvasBaseWire, CanvasReferenceWire, DirectorDraft, FrozenTechniqueProjection, OptimizedDirector,
     OptimizedSegment,
 )
+from .prepared_validation import (
+    check_dialogue_identity,
+    check_reference_identity,
+    director_draft_fingerprint,
+    locked_dialogue,
+    reference_facts,
+)
+
+_locked_dialogue = locked_dialogue
 
 
 class _OptimizedBaseResponse(BaseModel):
@@ -55,118 +63,6 @@ class TechniqueConflictError(ValueError):
     """A selected card cannot be reconciled with frozen source facts."""
 
 
-_EXPLICIT_DIALOGUE = re.compile(
-    r"(?<!\w)(?P<speaker>(?:[A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+){1,2}|"
-    r"[^\W\d_][\w-]{0,39}))\s*"
-    r"(?P<verb>(?:says?|said|asks?|asked|whispers?|whispered|shouts?|shouted|"
-    r"replies|replied|说道|低声说|回答|说|问|喊|答)\s*[:：]?|[:：])\s*"
-    r"(?P<quote>\"[^\"\n]*\"|“[^”\n]*”|‘[^’\n]*’|「[^」\n]*」|『[^』\n]*』|'[^'\n]*')",
-    flags=re.IGNORECASE,
-)
-_SUBJECT_TAG = re.compile(r"<Subject ([1-9][0-9]*)>")
-_PICTURE_TAG = re.compile(r"<Picture ([1-9][0-9]*)>")
-_NON_SPEAKER_LABELS = frozenset({"camera", "shot", "style", "title", "music", "sfx", "镜头", "画面", "字幕", "音乐", "音效"})
-
-
-def _locked_dialogue(prompt: str) -> list[dict[str, str]]:
-    """Extract only source text with an explicit speaker plus quoted speech."""
-    names = re.findall(r'<Picture [1-9][0-9]*>是([^：:\n，,]{1,20})[：:]', prompt)
-    return [{"speaker": _bound_speaker(_speaker_for_match(match), names), "quote": match.group("quote")}
-            for match in _EXPLICIT_DIALOGUE.finditer(prompt)
-            if _speaker_for_match(match).casefold() not in _NON_SPEAKER_LABELS]
-
-
-def _bound_speaker(value, names):
-    for name in sorted(names, key=len, reverse=True):
-        if value == name:
-            return name
-        if value.startswith(name) and value[len(name):].startswith((
-                '画外', '看着', '坚定', '轻声', '低声', '大声', '高声', '平静', '温柔', '哭着', '笑着')):
-            return name
-    return value
-
-
-def _speaker_for_match(match: re.Match[str]) -> str:
-    speaker = match.group("speaker")
-    if match.group("verb") in (":", "："):
-        for suffix in ("低声说", "说道", "回答", "说", "问", "喊", "答"):
-            if speaker.endswith(suffix) and len(speaker) > len(suffix):
-                return speaker[:-len(suffix)]
-    return speaker
-
-
-def _check_dialogue_identity(wire: CanvasBaseWire | CanvasReferenceWire,
-                             locks: list[dict[str, str]]) -> None:
-    if not locks:
-        return
-    fields = ((wire.integrated_multimodal_description, wire.overall_soundscape)
-              if isinstance(wire, CanvasBaseWire) else
-              (wire.detailed_description, wire.overall_soundscape))
-    required = Counter((lock["speaker"], lock["quote"]) for lock in locks)
-    observed = Counter((_bound_speaker(_speaker_for_match(match), [lock['speaker'] for lock in locks]), match.group("quote"))
-                       for field in fields for match in _EXPLICIT_DIALOGUE.finditer(field))
-    for (speaker, quote), occurrences in required.items():
-        if observed[(speaker, quote)] < occurrences:
-            raise ValueError(f"optimized dialogue differs from source: {speaker}")
-
-
-def _check_reference_identity(wire: CanvasReferenceWire,
-                              facts: list[dict[str, object]]) -> None:
-    """Validate Picture/Subject identities against actual attached input order."""
-    by_subject: dict[str, list[dict[str, object]]] = {}
-    for fact in facts:
-        by_subject.setdefault(str(fact["subject_tag"]), []).append(fact)
-    lines = [line.strip() for line in wire.subject_definitions.splitlines() if line.strip()]
-    if len(lines) != len(by_subject):
-        raise ValueError("reference subject count differs from input images")
-    for line, (subject, subject_facts) in zip(lines, by_subject.items(), strict=True):
-        labels = _SUBJECT_TAG.findall(line)
-        if not line.startswith(subject) or labels != [subject[9:-1]]:
-            raise ValueError("reference subject numbering differs from input images")
-        picture_matches = list(_PICTURE_TAG.finditer(line))
-        pictures = [match.group() for match in picture_matches]
-        expected = [str(fact["picture_tag"]) for fact in subject_facts]
-        if pictures != expected:
-            raise ValueError("reference picture order or subject mapping differs from input images")
-        for picture_index, fact in enumerate(subject_facts):
-            label = fact["variant_label"]
-            if label:
-                start = (picture_matches[picture_index - 1].end()
-                         if picture_index else len(subject))
-                preceding_picture_span = line[start:picture_matches[picture_index].start()]
-                if str(label) not in preceding_picture_span:
-                    raise ValueError("reference variant label differs from input image")
-    expected_numbers = {int(str(fact["picture_tag"])[9:-1]) for fact in facts}
-    all_text = "\n".join((wire.subject_definitions, wire.summary,
-                          wire.detailed_description, wire.overall_soundscape,
-                          wire.non_diegetic_music))
-    if any(int(number) not in expected_numbers for number in _PICTURE_TAG.findall(all_text)):
-        raise ValueError("reference output invented a picture")
-
-
-def _reference_facts(draft: DirectorDraft) -> list[dict[str, object]]:
-    seen: set[str] = set()
-    subjects: dict[str, int] = {}
-    facts: list[dict[str, object]] = []
-    for reference in draft.references:
-        if reference.image_id in seen:
-            continue
-        seen.add(reference.image_id)
-        subject_key = reference.character_id or f"image:{reference.image_id}"
-        subject_number = subjects.setdefault(subject_key, len(subjects) + 1)
-        facts.append({
-            "picture_tag": f"<Picture {len(facts) + 1}>",
-            "subject_tag": f"<Subject {subject_number}>",
-            "image_id": reference.image_id,
-            "asset_id": reference.asset_id,
-            "character_id": reference.character_id,
-            "variant_id": reference.variant_id,
-            "variant_label": reference.variant_label,
-            "asset_kind": reference.asset_kind,
-        })
-    return facts
-
-
 async def optimize(
     runtime: StructuredTextRuntime,
     draft: DirectorDraft,
@@ -191,8 +87,8 @@ async def optimize(
         segment_id: FrozenTechniqueProjection.model_validate(projection).model_dump(mode="json")
         for segment_id, projection in selected.items()
     }
-    reference_facts = _reference_facts(draft)
-    reference_ids = [str(fact["image_id"]) for fact in reference_facts]
+    reference_identity_facts = reference_facts(draft)
+    reference_ids = [str(fact["image_id"]) for fact in reference_identity_facts]
     result: list[OptimizedSegment] = []
     for source_index, (source, aligned) in enumerate(zip(
         draft.segments, validation.timeline, strict=True
@@ -209,7 +105,7 @@ async def optimize(
             "segment_id": source.id,
             "mode": mode,
             "source_prompt": source.prompt,
-            "locked_dialogue": _locked_dialogue(source.prompt),
+            "locked_dialogue": locked_dialogue(source.prompt),
             "neighbor_segments": [
                 {"segment_id": neighbor.id, "source_prompt": neighbor.prompt,
                  "requested_duration_seconds": neighbor.duration_seconds}
@@ -220,12 +116,12 @@ async def optimize(
             "frames": aligned.frames,
             "aspect_ratio": draft.aspect_ratio,
             "resolution": draft.resolution,
-            "references": reference_facts if reference_ids else [],
+            "references": reference_identity_facts if reference_ids else [],
             "subject_definition_template": "\n".join(
                 subject + ": " + "; ".join(
                     f"{fact.get('variant_label') or ''} {fact['picture_tag']}".strip()
-                    for fact in reference_facts if fact['subject_tag'] == subject)
-                for subject in dict.fromkeys(str(fact['subject_tag']) for fact in reference_facts)
+                    for fact in reference_identity_facts if fact['subject_tag'] == subject)
+                for subject in dict.fromkeys(str(fact['subject_tag']) for fact in reference_identity_facts)
             ),
             "frame_images": [
                 {"attachment_index": len(reference_ids) + index + 1,
@@ -234,6 +130,8 @@ async def optimize(
                 for index, image_id in enumerate(frame_ids)
             ],
         }
+        if draft.continuity_context is not None and source_index == 0:
+            source_data["continuity_context"] = draft.continuity_context.model_dump(mode="json")
         technique = projections.get(source.id)
         if technique is not None:
             source_data["technique"] = technique
@@ -246,9 +144,13 @@ async def optimize(
         )
         prompt = ("Return a structured H3 wire for this one target segment. Copy segment_id exactly. "
                   "Neighbor segments are continuity context, not extra outputs or images. "
-                  "Use the images in the exact order listed. Copy locked_dialogue speaker and quote "
-                  "into the wire together exactly, including the original quote marks. "
-                  "Do not treat other quoted source text as dialogue.\n")
+                  "When continuity_context is supplied, preserve its explicit prior end state, "
+                  "current opening state, intent, and shared-space facts for this batch-opening target. "
+                  "Use the images in the exact order listed. Preserve each locked_dialogue speaker, "
+                  "utterance, and explicit language exactly. Put every locked line exactly once in "
+                  "the description as <d>[Language] spoken words</d>, without its outer source "
+                  "quotation marks; keep the original words and punctuation inside the tag. "
+                  "Do not put dialogue in overall_soundscape or treat other quoted source text as speech.\n")
         if technique is not None:
             prompt += (
                 "Priority and precedence: source_prompt, attached images and their order/identity, "
@@ -278,13 +180,13 @@ async def optimize(
         # existing path; never guess a person's identity from an image or avatar.
         bindings = dict(re.findall(r'<Picture ([1-9][0-9]*)>是([^：:\n，,]{1,20})[：:]', source.prompt))
         named_refs = {fact['image_id']: bindings.get(str(index + 1))
-                      for index, fact in enumerate(reference_facts)}
+                      for index, fact in enumerate(reference_identity_facts)}
         if reference_ids and all(named_refs.values()) and technique is None:
             plan_input = {**source_data, 'identity_bindings': named_refs}
 
             @model_validator(mode='after')
             def validate_plan(plan):
-                compile_reference_plan(plan, reference_facts, named_refs,
+                compile_reference_plan(plan, reference_identity_facts, named_refs,
                                        source_data['locked_dialogue'], aligned.duration_seconds)
                 return plan
 
@@ -302,13 +204,13 @@ async def optimize(
                         'locked_dialogue 由程序原样合成，不在 action、subjects、soundscape 重复或改写台词。'
                         'music 无配乐时为 N/A。存在 technique 时遵守其兼容的导演要求，冲突时拒绝改写源事实。'),
                     prompt=json.dumps(plan_input, ensure_ascii=False))
-                wire = compile_reference_plan(plan_type.model_validate(plan), reference_facts, named_refs,
+                wire = compile_reference_plan(plan_type.model_validate(plan), reference_identity_facts, named_refs,
                                               source_data['locked_dialogue'], aligned.duration_seconds)
             except Exception as exc:
                 exc.director_segment_id = source.id
                 raise
-            _check_dialogue_identity(wire, source_data['locked_dialogue'])
-            _check_reference_identity(wire, reference_facts)
+            check_dialogue_identity(wire, source_data['locked_dialogue'])
+            check_reference_identity(wire, reference_identity_facts)
             result.append(OptimizedSegment(segment_id=source.id, mode=mode,
                 requested_duration_seconds=source.duration_seconds,
                 duration_seconds=aligned.duration_seconds, frames=aligned.frames,
@@ -320,7 +222,7 @@ async def optimize(
         @model_validator(mode='after')
         def validate_dialogue(response):
             if response.wire is not None:
-                _check_dialogue_identity(response.wire, source_data['locked_dialogue'])
+                check_dialogue_identity(response.wire, source_data['locked_dialogue'])
             return response
 
         response_type = create_model('DialogueLocked' + response_type.__name__,
@@ -341,9 +243,9 @@ async def optimize(
             raise ValueError(f"optimized segment mode mismatch: {source.id}")
         if abs(wire.duration_seconds - aligned.duration_seconds) > 1e-9:
             raise ValueError(f"optimized segment duration mismatch: {source.id}")
-        _check_dialogue_identity(wire, source_data["locked_dialogue"])
+        check_dialogue_identity(wire, source_data["locked_dialogue"])
         if isinstance(wire, CanvasReferenceWire):
-            _check_reference_identity(wire, reference_facts)
+            check_reference_identity(wire, reference_identity_facts)
         result.append(OptimizedSegment(
             segment_id=source.id, mode=mode,
             requested_duration_seconds=source.duration_seconds,
@@ -354,6 +256,7 @@ async def optimize(
         revision=draft.revision, route=validation.route,
         profile_id=H3_PROMPT_PROFILE_ID, profile_version=H3_PROMPT_PROFILE_VERSION,
         optimized_at=datetime.now(timezone.utc), segments=tuple(result),
+        draft_fingerprint=director_draft_fingerprint(draft),
     )
 
 

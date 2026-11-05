@@ -35,7 +35,7 @@ async def api(ctx, monkeypatch):
         })
 
         async def model(ctx, route, prompt, *, request_id):
-            return {'message': f'只讨论，不执行：{request_id}'}
+            return {'intent': 'reply', 'message': f'只讨论，不执行：{request_id}'}
 
         monkeypatch.setattr(discussions, 'run_message', model)
     app = FastAPI()
@@ -55,7 +55,7 @@ def _body(ready, **changes):
     }
 
 
-async def test_chat_first_discussion_and_history_do_not_require_main_agent(api, ready, service):
+async def test_discussion_uses_read_only_default_when_project_has_no_selected_main(api, ready, service):
     client, _ = api
     await service.apply(command('main.clear', {'expected_binding_revision': 1}, 'clear-before-discussion'))
     assert service.main_agent()['adoption_id'] is None
@@ -63,19 +63,53 @@ async def test_chat_first_discussion_and_history_do_not_require_main_agent(api, 
     response = await client.post(base, json=_body(ready))
 
     assert response.status_code == 200, response.text
-    data = response.json()['data']
-    assert data['status'] == 'completed'
-    assert data['message'] == '只讨论，不执行：chat-1'
+    receipt = response.json()['data']
+    assert receipt['status'] == 'completed'
+    assert receipt['speaker']['kind'] == 'default_discussion'
+    assert receipt['speaker']['adoption_id'] is None
+    assert receipt['speaker']['adoption_revision'] is None
+    assert service.main_agent()['adoption_id'] is None
     history = await client.get(base, params={
         'canvas_id': ready[0], 'conversation_id': ready[1],
     })
     assert history.status_code == 200, history.text
     history_data = history.json()['data']
-    assert history_data['availability']['available'] is True
-    assert [entry['role'] for entry in history_data['messages']] == ['user', 'assistant']
-    assert [entry['message'] for entry in history_data['messages']] == [
-        '帮我分析当前画布。', '只讨论，不执行：chat-1',
-    ]
+    assert history_data['availability'] == {'available': True, 'code': 'configured_not_verified'}
+    assert history_data['messages'][-1]['speaker']['kind'] == 'default_discussion'
+
+
+async def test_discussion_history_keeps_old_assistant_identity_unrecorded(api, ready, service, monkeypatch):
+    from novelvideo.creation.discussions import Discussions
+    client, _ = api
+    await service.apply(command('main.clear', {'expected_binding_revision': 1}, 'clear-for-history-compat'))
+    discussion = Discussions(service.ctx, username='alice', canvas_id=ready[0],
+                             conversation_id=ready[1], resolve_context=lambda _: None)
+    conn = discussion._connect()
+    try:
+        conn.execute('''CREATE TABLE creation_discussions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id TEXT NOT NULL, project_id TEXT NOT NULL,
+            canvas_id TEXT NOT NULL, conversation_id TEXT NOT NULL, request_id TEXT NOT NULL,
+            payload_hash TEXT NOT NULL, message TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending','completed','submission_unknown')),
+            reply TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            UNIQUE(owner_id, project_id, canvas_id, conversation_id, request_id))''')
+        conn.execute('''INSERT INTO creation_discussions
+            (owner_id,project_id,canvas_id,conversation_id,request_id,payload_hash,message,status,reply,created_at,updated_at)
+            VALUES ('alice','p',?,?,?,'legacy-hash','旧提问','completed','旧回复','2026-01-01','2026-01-01')''',
+            (ready[0], ready[1], 'legacy-1'))
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = await client.get('/projects/p/creation/discussions', params={
+        'canvas_id': ready[0], 'conversation_id': ready[1],
+    })
+    assert response.status_code == 200, response.text
+    messages = response.json()['data']['messages']
+    assert messages[0]['speaker'] is None
+    assert messages[0]['speaker_recorded'] is False
+    assert messages[1]['speaker'] is None
+    assert messages[1]['speaker_recorded'] is False
 
 
 async def test_discussion_rejects_execute_fields_and_wrong_user_or_canvas(api, ready):
@@ -115,7 +149,7 @@ async def test_model_text_cannot_invoke_operation_or_agent_execution_services(ap
         pytest.fail('discussion must not call an execution service')
 
     async def model(*args, **kwargs):
-        return {'message': '文本建议：可以考虑 node.run，但我没有执行任何操作。'}
+        return {'intent': 'reply', 'message': '文本建议：可以考虑 node.run，但我没有执行任何操作。'}
 
     monkeypatch.setattr(routes.OperationService, '__init__', forbidden)
     monkeypatch.setattr(agent_tools.AgentTools, '__init__', forbidden)

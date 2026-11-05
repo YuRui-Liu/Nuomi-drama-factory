@@ -75,6 +75,47 @@ interface ConnectVoiceNodeInput {
   version: VoiceVersionRecord;
 }
 
+/** Fix a chosen adopted version and create or focus its linked audio node in one action. */
+export function useVoiceVersionInAudio(
+  input: ConnectVoiceNodeInput,
+): string | null {
+  if (
+    !isVoiceVersionRecord(input.version)
+    || !input.projectId.trim()
+    || !input.sourceNodeId.trim()
+    || !input.characterName.trim()
+  ) {
+    return null;
+  }
+
+  const store = useCanvasStore.getState();
+  const source = store.nodes.find(node => node.id === input.sourceNodeId);
+  if (
+    !source
+    || source.type !== CANVAS_NODE_TYPES.characterVoice
+    || source.data.characterId !== input.version.character_id
+  ) {
+    return null;
+  }
+
+  store.updateNodeData(source.id, {
+    referenceOnly: true,
+    characterId: input.version.character_id,
+    identityId: input.version.identity_id,
+    slot: input.version.slot,
+    voiceVersionId: input.version.version_id,
+    voiceReference: {
+      character_id: input.version.character_id,
+      identity_id: input.version.identity_id,
+      slot: input.version.slot,
+      version_id: input.version.version_id,
+      audio_sha256: input.version.audio_sha256,
+    },
+  });
+
+  return connectVoiceNodeToAudio(input, useCanvasStore.getState());
+}
+
 /** Create or reuse an empty audio node for a fixed adopted version. This only changes the canvas graph. */
 export function connectVoiceNodeToAudio(
   input: ConnectVoiceNodeInput,
@@ -110,7 +151,7 @@ export function connectVoiceNodeToAudio(
     audioUrl: null,
     audioKind: 'speech',
     voiceRef,
-    voiceLabel: `${input.characterName} · ${input.version.slot} · ${input.version.version_id}`,
+    voiceLabel: `${input.characterName} · ${input.version.slot}`,
     voiceVersionId: input.version.version_id,
     sourceVoiceNodeId: source.id,
     projectId: input.projectId,

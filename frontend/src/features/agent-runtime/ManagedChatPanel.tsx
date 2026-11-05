@@ -22,8 +22,12 @@ import {
   type SelectionDelegationOwner,
 } from './selectionDelegation';
 import { AgentRunStatus } from './AgentRunStatus';
-import { DelegationComposer } from './DelegationComposer';
 import { ProjectCrewDialog } from './ProjectCrewDialog';
+import { ConversationMembers } from './ConversationMembers';
+import { CollaborationTaskCards } from './CollaborationTaskCards';
+import { useCanvasStore } from '@/stores/canvasStore';
+import { useShallow } from 'zustand/react/shallow';
+import { useQueryClient } from '@tanstack/react-query';
 
 type Runtime = ReturnType<typeof useAgentRuntime>;
 type RecognitionLike = {
@@ -46,11 +50,38 @@ function createSpeechRecognition(): RecognitionLike | null {
 }
 
 function discussionUnavailableText(code: string) {
+  if (code === 'missing_main') return '请在项目机组中选择项目主创后开始讨论。';
   if (code === 'runtime_unconfigured') return '讨论模型尚未配置。配置模型后可继续讨论。';
   if (code === 'runtime_unavailable') return '当前运行方式暂不支持讨论。';
   if (code === 'project_unavailable') return '当前项目暂不可访问。';
   if (code === 'conversation_unavailable') return '当前会话暂不可访问。';
   return '当前讨论服务暂不可用。';
+}
+
+function discussionAvailabilityLabel(availability: { available: boolean; code: string } | null, loading: boolean) {
+  if (availability?.code === 'configured_not_verified') return '讨论模型已配置 · 尚未验证';
+  if (availability?.available) return '讨论配置待验证';
+  return loading ? '正在读取讨论能力' : '讨论能力待处理';
+}
+
+function taskRuntimeAvailabilityLabel(runtime: Runtime['runtime']) {
+  if (!runtime) return '任务运行状态待确认';
+  if (runtime.code === 'configured_not_verified') return '文本模型已配置 · 尚未验证';
+  if (runtime.available) return '任务运行配置待验证';
+  return runtime.code === 'runtime_unconfigured' ? '文本模型待配置' : '任务运行待配置';
+}
+
+function discussionDiagnosticText(diagnostic: {
+  outcome: string;
+  code: string;
+  http_status: number | null;
+} | null | undefined) {
+  if (diagnostic?.outcome !== 'provider_rejected' || diagnostic.code !== 'provider_http_error') return null;
+  const status = diagnostic.http_status;
+  if (typeof status === 'number' && Number.isInteger(status) && status >= 400 && status <= 599) {
+    return `文本服务拒绝请求（HTTP ${status}）；请检查文本服务设置。`;
+  }
+  return '文本服务拒绝了请求；请检查文本服务设置。';
 }
 
 export function ManagedChatPanel({
@@ -76,6 +107,12 @@ export function ManagedChatPanel({
     conversation: owner.conversation,
   }), [owner.canvas, owner.conversation, owner.project]);
   const discussion = useAgentDiscussion(discussionOwner, active);
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (!active || runtime.main?.binding_revision == null) return;
+    void queryClient.invalidateQueries({ queryKey: ['agent-discussion', username, owner.project, owner.canvas, owner.conversation] });
+    void queryClient.invalidateQueries({ queryKey: ['discussion-members', username, owner.project, owner.canvas, owner.conversation] });
+  }, [active, runtime.main?.binding_revision, username, owner.project, owner.canvas, owner.conversation, queryClient]);
   const draftOwner = useMemo<SelectionDelegationOwner>(() => ({
     user: username || owner.user,
     project: owner.project,
@@ -106,49 +143,20 @@ export function ManagedChatPanel({
   const discussionMessages = discussion.messages;
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
-  const delegationEntryRef = useRef<HTMLButtonElement | null>(null);
-  const delegationPanelRef = useRef<HTMLDivElement | null>(null);
   const composing = useRef(false);
   const recognitionRef = useRef<RecognitionLike | null>(null);
   const speechOwnerIdentity = useRef(draftIdentity);
-  const handledIntent = useRef<string | null>(null);
   const [recording, setRecording] = useState(false);
-  const [showDelegation, setShowDelegation] = useState(false);
-  const showDelegationRef = useRef(showDelegation);
-  showDelegationRef.current = showDelegation;
   const [crewOpen, setCrewOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [attachmentError, setAttachmentError] = useState('');
   const [draftError, setDraftError] = useState('');
+  const [targetAdoptionId, setTargetAdoptionId] = useState<string | null>(null);
+  const [selectionKind, setSelectionKind] = useState<'canvas' | 'nodes' | 'group'>('canvas');
+  const [groupId, setGroupId] = useState('');
+  const selectedNodeIds = useCanvasStore(useShallow((state) => state.nodes.filter((node) => node.selected).map((node) => node.id).sort()));
+  const groups = useCanvasStore(useShallow((state) => state.nodes.filter((node) => node.type === 'groupNode')));
   const canConfigure = !isTeamRuntime() || role === 'admin';
-  const delegationRecipient = runtime.delegateAgentId === 'main'
-    ? runtime.main?.current_agent?.effective.name || '项目主创未配置'
-    : runtime.adoptions.find((member) => member.adoption_id === runtime.delegateAgentId)?.effective.name || '项目成员';
-  const currentGrants = Object.entries(runtime.nodeOperationGrants).flatMap(([nodeId, operations]) =>
-    operations.map((operation) => ({ nodeId, operation })),
-  );
-  const patchGrantCount = currentGrants.filter((grant) => grant.operation === 'patch').length;
-  const runnableGrants = [...new Set(currentGrants.filter((grant) => grant.operation !== 'patch').map((grant) => grant.operation))];
-  const permissionSummary = [
-    patchGrantCount ? `可修改 ${patchGrantCount} 个节点` : '',
-    runnableGrants.length ? `可运行 ${runnableGrants.join('、')}` : '',
-  ].filter(Boolean).join(' · ') || '仅准备方案';
-  const delegationContextKey = JSON.stringify([
-    draftIdentity,
-    runtime.acceptedSelectionIntent?.requestId ?? null,
-    runtime.nodes.map((node) => node.id),
-    runtime.delegateAgentId,
-    runtime.main?.adoption_id,
-    runtime.main?.current_agent?.revision,
-    Object.entries(runtime.nodeOperationGrants)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([nodeId, operations]) => [nodeId, [...operations].sort()]),
-    runtime.maxNodeRuns,
-    runtime.limit,
-    runtime.specialists,
-  ]);
-  const latestDelegationContext = useRef(delegationContextKey);
-  latestDelegationContext.current = delegationContextKey;
 
   useEffect(() => {
     const container = scrollRef.current;
@@ -156,13 +164,6 @@ export function ManagedChatPanel({
     const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
     if (nearBottom) container.scrollTop = container.scrollHeight;
   }, [discussionMessages]);
-
-  useEffect(() => {
-    const intent = runtime.acceptedSelectionIntent;
-    if (!intent || handledIntent.current === intent.requestId) return;
-    handledIntent.current = intent.requestId;
-    setShowDelegation(true);
-  }, [runtime.acceptedSelectionIntent]);
 
   const clearDraftIfUnchanged = useCallback((submitted: string, submittedIdentity: string) => {
     const current = latestDraft.current;
@@ -198,31 +199,22 @@ export function ManagedChatPanel({
     const original = draft;
     if (!original.trim() || discussion.busy || !active) return;
     setDraftError('');
-    const sent = await discussion.send(original);
-    if (sent) clearDraftIfUnchanged(original, draftIdentity);
-  }, [active, clearDraftIfUnchanged, discussion, draft, draftIdentity]);
-
-  const closeDelegation = useCallback(() => {
-    setShowDelegation(false);
-    requestAnimationFrame(() => delegationEntryRef.current?.focus({ preventScroll: true }));
-  }, []);
-
-  const startDelegation = useCallback(async (goal: string) => {
-    const original = goal;
-    const submittedContext = latestDelegationContext.current;
-    const sent = await runtime.send(original, false);
-    if (!sent) return false;
-    const currentDraft = latestDraft.current;
-    if (
-      latestDelegationContext.current === submittedContext &&
-      currentDraft.identity === draftIdentity &&
-      currentDraft.value === original
-    ) {
-      clearDraftIfUnchanged(original, draftIdentity);
-      if (showDelegationRef.current) closeDelegation();
+    const selection = selectionKind === 'nodes'
+      ? { kind: 'nodes' as const, node_ids: useCanvasStore.getState().nodes.filter((node) => node.selected).map((node) => node.id).sort() }
+      : selectionKind === 'group'
+        ? { kind: 'group' as const, group_id: groupId }
+        : { kind: 'canvas' as const };
+    if (selection.kind === 'nodes' && selection.node_ids.length === 0) {
+      setDraftError('请先选中至少一个节点，或将本次范围改为整张画布。');
+      return;
     }
-    return true;
-  }, [clearDraftIfUnchanged, closeDelegation, draftIdentity, runtime]);
+    if (selection.kind === 'group' && !selection.group_id) {
+      setDraftError('请选择本次任务要冻结的节点组。');
+      return;
+    }
+    const sent = await discussion.send(original, { targetAdoptionId, selection });
+    if (sent) clearDraftIfUnchanged(original, draftIdentity);
+  }, [active, clearDraftIfUnchanged, discussion, draft, draftIdentity, groupId, selectionKind, targetAdoptionId]);
 
   const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || composing.current || event.keyCode === 229) return;
@@ -281,28 +273,6 @@ export function ManagedChatPanel({
     }
   };
 
-  const onDelegationKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      closeDelegation();
-      return;
-    }
-    if (event.key !== 'Tab') return;
-    const focusable = [...(delegationPanelRef.current?.querySelectorAll<HTMLElement>(
-      'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
-    ) ?? [])].filter((element) => !element.hasAttribute('hidden'));
-    if (!focusable.length) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
-
   return (
     <div className={`relative flex h-full min-h-0 flex-col overflow-hidden text-foreground ${variant === 'freezone' ? 'bg-transparent' : 'bg-[#0b0e10]'}`}>
       <header className="flex h-[58px] shrink-0 items-center gap-3 border-b border-white/[0.06] px-4">
@@ -312,9 +282,9 @@ export function ManagedChatPanel({
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-sm font-semibold">项目助手</h2>
           <p className="truncate text-[11px] text-muted-foreground">
-            {discussion.availability?.available ? '讨论可用' : discussion.loading ? '正在读取讨论能力' : '讨论能力待处理'}
+            {discussionAvailabilityLabel(discussion.availability, discussion.loading)}
             {' · '}
-            {runtime.runtime?.available ? '任务运行可用' : '任务运行待配置'}
+            {taskRuntimeAvailabilityLabel(runtime.runtime)}
           </p>
         </div>
         <Button type="button" size="icon-sm" variant="ghost" aria-label="项目机组" title="项目机组" onClick={() => setCrewOpen(true)}>
@@ -339,21 +309,51 @@ export function ManagedChatPanel({
             <span className="truncate">{reference.kind === 'asset' ? '资产' : '节点'} · {reference.label}</span>
           </div>
         )}
+        <div className="mx-auto mb-4 max-w-2xl space-y-3">
+          <ConversationMembers
+            project={owner.project}
+            canvas={owner.canvas}
+            conversation={owner.conversation}
+            adoptions={runtime.adoptions}
+            active={active}
+            onTargetChange={setTargetAdoptionId}
+          />
+          <section aria-label="本次消息范围" className="rounded-xl border border-white/10 bg-white/[0.025] p-3 text-xs">
+            <label className="grid gap-1 text-muted-foreground">
+              本次消息范围
+              <select aria-label="选择本次消息范围" value={selectionKind} onChange={(event) => setSelectionKind(event.target.value as typeof selectionKind)} disabled={!active} className="min-h-9 rounded-md border border-white/10 bg-[#111518] px-2 text-foreground">
+                <option value="canvas">整张画布（默认）</option>
+                <option value="nodes">当前选中的节点</option>
+                <option value="group">指定节点组</option>
+              </select>
+            </label>
+            {selectionKind === 'nodes' && <p className="mt-2 text-muted-foreground">发送时冻结当前选择的 {selectedNodeIds.length} 个节点及其版本。</p>}
+            {selectionKind === 'group' && <label className="mt-2 grid gap-1 text-muted-foreground">选择节点组<select aria-label="选择节点组" value={groupId} onChange={(event) => setGroupId(event.target.value)} disabled={!active} className="min-h-9 rounded-md border border-white/10 bg-[#111518] px-2 text-foreground"><option value="">选择一个组</option>{groups.map((group) => <option key={group.id} value={group.id}>{String(group.data.displayName || group.data.label || '未命名组')}</option>)}</select></label>}
+          </section>
+        </div>
         {discussionMessages.length === 0 && !discussion.loading ? (
           <div className="mx-auto flex min-h-[42vh] max-w-xs flex-col items-center justify-center gap-3 text-center text-sm text-muted-foreground">
             <MessageCircle className="size-6 opacity-60" aria-hidden="true" />
-            <p>可以先讨论项目内容。选择画布节点后，也能明确发起节点委托。</p>
+            <p>可以直接和项目主创讨论；也可以点名会话成员，或冻结画布、节点组和选中节点范围。</p>
           </div>
         ) : (
           <ol aria-label="讨论消息" className="mx-auto flex max-w-2xl flex-col gap-4">
             {discussionMessages.map((message) => (
               <li key={`${message.request_id}:${message.role}`} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <article className={`max-w-[88%] whitespace-pre-wrap break-words rounded-2xl px-4 py-3 text-sm leading-6 ${message.role === 'user' ? 'bg-primary/15 text-foreground' : 'bg-white/[0.04] text-foreground'}`}>
+                  {message.role === 'assistant' && <p className="mb-1 text-[10px] font-medium text-primary">{message.speaker_recorded === true && message.speaker ? `${typeof message.speaker.profile.name === 'string' ? message.speaker.profile.name : '会话成员'} · ${message.speaker.kind === 'default_discussion' ? '默认创作助手' : message.speaker.kind === 'main' ? '项目主创' : '会话成员'}` : '历史回复 · 成员身份未记录'}</p>}
                   <p>{message.message}</p>
                   {message.status !== 'completed' && (
-                    <p role="status" className="mt-2 text-xs text-amber-300">
-                      {message.status === 'submission_unknown' ? '提交结果尚未确认' : '等待助手回复'}
-                    </p>
+                    <>
+                      <p role="status" className="mt-2 text-xs text-amber-300">
+                        {message.status === 'submission_unknown' ? '提交结果尚未确认' : '等待助手回复'}
+                      </p>
+                      {message.status === 'submission_unknown' && discussionDiagnosticText(message.diagnostic) && (
+                        <p role="status" className="mt-1 text-xs text-amber-200">
+                          {discussionDiagnosticText(message.diagnostic)}
+                        </p>
+                      )}
+                    </>
                   )}
                 </article>
               </li>
@@ -370,36 +370,28 @@ export function ManagedChatPanel({
         {discussion.error && <p role="alert" className="mx-auto mt-3 max-w-2xl text-xs text-destructive">{discussion.error}</p>}
       </div>
 
+      <CollaborationTaskCards project={owner.project} canvas={owner.canvas} conversation={owner.conversation} active={active} />
+
       <AgentRunStatus runtime={runtime} compact />
 
       <div className="relative z-10 shrink-0 border-t border-white/[0.06] bg-[#0b0e10] px-3 pb-3 pt-2">
-        <div className="mb-2 flex min-h-[34px] items-center">
-          <Button
-            ref={delegationEntryRef}
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-[34px] rounded-full border-white/10 px-3 text-xs focus-visible:ring-2 focus-visible:ring-primary"
-            onClick={() => setShowDelegation(true)}
-          >
-            创建节点委托{runtime.nodes.length > 0 ? ` · ${runtime.nodes.length}` : ''}
-          </Button>
-          {runtime.nodes.length > 0 && (
-            <span className="ml-2 min-w-0 truncate text-[11px] text-muted-foreground">
-              负责人：{delegationRecipient} · {runtime.nodes.length} 个节点
-              {' · '}{permissionSummary}
-            </span>
-          )}
-        </div>
         {(draftError || attachmentError) && (
           <p role="alert" className="mb-2 px-1 text-xs text-amber-300">{draftError || attachmentError}</p>
         )}
         {discussion.availability && !discussion.availability.available && (
           <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg bg-amber-300/[0.08] px-3 py-2 text-xs text-amber-200">
             <span>{discussionUnavailableText(discussion.availability.code)}</span>
-            {canConfigure && (
+            {discussion.availability.code === 'missing_main' ? (
+              <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => setCrewOpen(true)}>
+                选择项目主创
+              </Button>
+            ) : canConfigure && discussion.availability.code === 'runtime_unconfigured' ? (
               <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => setSettingsOpen(true)}>
                 配置模型
+              </Button>
+            ) : (
+              <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => void discussion.refresh()}>
+                刷新状态
               </Button>
             )}
           </div>
@@ -428,7 +420,7 @@ export function ManagedChatPanel({
             onPaste={reportUnsupportedFiles}
             onDrop={reportUnsupportedFiles}
             onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); }}
-            placeholder="与助手讨论项目内容…"
+            placeholder="向主创讨论，或点名会话成员…"
             rows={2}
             maxLength={12000}
             className="max-h-36 min-h-12 min-w-0 flex-1 resize-y bg-transparent px-2 py-1.5 text-sm leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0"
@@ -456,37 +448,8 @@ export function ManagedChatPanel({
             {discussion.busy ? '…' : '↑'}
           </Button>
         </div>
-        <p className="mt-1 px-2 text-[10px] text-muted-foreground">Enter 发送讨论 · Shift+Enter 换行</p>
+        <p className="mt-1 px-2 text-[10px] text-muted-foreground">Enter 发送讨论；创作请求会准备对应任务卡 · Shift+Enter 换行</p>
       </div>
-
-      {showDelegation && (
-        <div
-          ref={delegationPanelRef}
-          role="dialog"
-          aria-modal="true"
-          aria-label="节点委托配置"
-          onKeyDown={onDelegationKeyDown}
-          className="absolute inset-x-3 bottom-[112px] z-30 flex max-h-[66%] flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#111518] shadow-2xl shadow-black/50"
-        >
-          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold">创建节点委托</h3>
-              <p className="text-[11px] text-muted-foreground">确认目标、范围和本次授权后再发起。</p>
-            </div>
-            <Button type="button" size="icon-sm" variant="ghost" aria-label="关闭委托配置" onClick={closeDelegation}>
-              <X className="size-4" aria-hidden="true" />
-            </Button>
-          </div>
-          <DelegationComposer
-            runtime={runtime}
-            goal={draft}
-            onGoalChange={(value) => setDraft(value)}
-            onSubmit={startDelegation}
-            onClose={closeDelegation}
-            onOpenCrew={() => setCrewOpen(true)}
-          />
-        </div>
-      )}
 
       <ProjectCrewDialog runtime={runtime} open={crewOpen} onOpenChange={setCrewOpen} />
       {canConfigure && <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />}

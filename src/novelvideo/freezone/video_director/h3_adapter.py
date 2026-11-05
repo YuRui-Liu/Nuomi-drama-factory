@@ -9,19 +9,16 @@ from typing import Mapping
 from novelvideo.media_capabilities.video.h3_reference_payload import (
     H3_REFERENCE_TASK_TYPE, H3_REFERENCE_TIMELINE_MODE,
 )
-from novelvideo.media_capabilities.video.h3_prompt_profile import (
-    H3_PROMPT_PROFILE_ID, H3_PROMPT_PROFILE_VERSION,
-)
 from novelvideo.media_capabilities.video.h3_timeline import (
     H3CompiledTimeline, H3DirectorSegment, H3TimelineEntry,
 )
-from novelvideo.media_capabilities.video.h3_wire import compile_h3_wire
 from novelvideo.media_capabilities.video.runtime import (
     _director_semantic_values, _director_timeline_payload,
 )
 
 from .capabilities import validate_generation
 from .models import DirectorDraft, OptimizedDirector
+from .prepared_validation import validate_optimized_director
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,28 +45,11 @@ def compile_director_payload(
 ) -> DirectorPayload:
     """Compile one immutable attempt; reject stale or partial optimizations."""
     validation = validate_generation(draft, reference_limit=reference_limit)
-    if (optimized.profile_id != H3_PROMPT_PROFILE_ID or
-        optimized.profile_version != H3_PROMPT_PROFILE_VERSION):
-        raise ValueError("optimized H3 profile does not match current writing rules")
-    if optimized.revision != draft.revision:
-        raise ValueError("optimized revision does not match draft revision")
-    if optimized.route != validation.route:
-        raise ValueError("optimized route does not match draft route")
-    if len(optimized.segments) != len(draft.segments):
-        raise ValueError("optimized segment count does not match draft")
-
+    validate_optimized_director(draft, optimized, validation)
     entries = []
     for index, (source, result, aligned) in enumerate(zip(
         draft.segments, optimized.segments, validation.timeline, strict=True
     )):
-        expected_mode = 'ref2va' if validation.route == 'h3_ref' else {"i2v": "i2va", "fl2v": "fl2va"}[aligned.mode]
-        if result.segment_id != source.id or result.mode != expected_mode or result.wire.mode != expected_mode:
-            raise ValueError(f"optimized identity or mode mismatch at segment {index}")
-        if (result.frames != aligned.frames or
-            abs(result.duration_seconds - aligned.duration_seconds) > 1e-9 or
-            abs(result.wire.duration_seconds - aligned.duration_seconds) > 1e-9 or
-            result.prompt != compile_h3_wire(result.wire)):
-            raise ValueError(f"optimized timing or wire mismatch at segment {index}")
         entries.append(H3TimelineEntry(
             segment=H3DirectorSegment(
                 segment_id=source.id, beat_number=index + 1,
@@ -115,4 +95,24 @@ def compile_director_payload(
     return DirectorPayload(validation.route, timeline_data, semantic_values)
 
 
-__all__ = ["DirectorPayload", "compile_director_payload"]
+def compile_director_preview(
+    draft: DirectorDraft,
+    optimized: OptimizedDirector,
+    *,
+    reference_limit: int = 5,
+) -> DirectorPayload:
+    """Compile deterministic H3 payload with stable image-ID placeholders."""
+    validation = validate_generation(draft, reference_limit=reference_limit)
+    frame_ids = [frame.image_id for segment in draft.segments
+                 for frame in (segment.first_frame, segment.last_frame) if frame is not None]
+    upload_ids = dict.fromkeys((*validation.reference_image_ids, *frame_ids))
+    placeholders = {
+        image_id: {"imageFile": f"preview-image:{image_id}"}
+        for image_id in upload_ids
+    }
+    return compile_director_payload(
+        draft, optimized, placeholders, reference_limit=reference_limit,
+    )
+
+
+__all__ = ["DirectorPayload", "compile_director_payload", "compile_director_preview"]

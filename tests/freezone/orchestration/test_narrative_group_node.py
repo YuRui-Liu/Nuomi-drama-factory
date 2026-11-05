@@ -24,26 +24,73 @@ def test_bound_group_storyboard_is_a_registered_json_reference_node():
 
     operations = available_operations()
     assert ("narrativeGroupStoryboardNode", "validate") in operations
+    assert ("narrativeGroupStoryboardNode", "render") in operations
+    assert ("narrativeGroupStoryboardNode", "retry_render") in operations
     entry = next(item for item in capabilities(operations)
                  if item["node_type"] == "narrativeGroupStoryboardNode")
     assert [port["name"] for port in entry["inputs"]] == ["json"]
     assert [port["name"] for port in entry["outputs"]] == ["json"]
-    assert [(item["name"], item["available"]) for item in entry["operations"]] == [("validate", True)]
+    assert [(item["name"], item["available"]) for item in entry["operations"]] == [
+        ("validate", True), ("render", True), ("retry_render", True),
+    ]
+
+    video = next(item for item in capabilities(operations)
+                 if item["node_type"] == "narrativeGroupVideoNode")
+    compose = next(item for item in capabilities(operations)
+                   if item["node_type"] == "episodeComposeNode")
+    assert [port["name"] for port in video["inputs"]] == ["json"]
+    assert [port["name"] for port in video["outputs"]] == ["json"]
+    assert [(item["name"], item["available"]) for item in video["operations"]] == [
+        ("video", True), ("retry_video", True),
+    ]
+    assert [port["name"] for port in compose["inputs"]] == ["json"]
+    assert [port["name"] for port in compose["outputs"]] == ["json", "video"]
+    assert [(item["name"], item["available"]) for item in compose["operations"]] == [
+        ("compose", True),
+    ]
 
     nodes = [
         _bound_group_node(),
-        {"id": "idea", "type": "ideationNode", "data": {"operation": "generate"}},
+        {"id": "video", "type": "narrativeGroupVideoNode", "data": {
+            "operation": "video", "episodeNumber": 2, "groupId": "group-2",
+            "directorRevisionId": "revision-2",
+        }},
+        {"id": "compose", "type": "episodeComposeNode", "data": {
+            "operation": "compose", "episodeNumber": 2,
+            "directorRevisionId": "revision-2", "productionGroupIds": ["group-2"],
+        }},
     ]
-    edges = [{"id": "group-idea", "source": "group", "target": "idea",
+    edges = [{"id": "group-video", "source": "group", "target": "video",
+              "data": {"sourcePort": "json", "targetPort": "json"}},
+             {"id": "video-compose", "source": "video", "target": "compose",
               "data": {"sourcePort": "json", "targetPort": "json"}}]
     assert validate_graph(nodes, edges)["valid"] is True
-    assert execution_order(nodes, edges, "idea") == ["group", "idea"]
+    assert execution_order(nodes, edges, "compose") == ["group", "video", "compose"]
     assert frozen_node_result(nodes[0]) == {"narrativeGroupReference": {
         "episodeNumber": 2, "groupId": "group-2", "directorRevisionId": "revision-2",
     }}
     assert input_fingerprint(nodes[0]) != input_fingerprint(
         _bound_group_node(groupId="different-group")
     )
+
+
+def test_episode_compose_requires_the_complete_explicit_group_set():
+    from novelvideo.freezone.orchestration.graph import validate_graph
+    from novelvideo.freezone.orchestration.adapters import _validate_episode_group_ids
+    from novelvideo.freezone.orchestration.models import OrchestrationError
+
+    valid = {"id": "compose", "type": "episodeComposeNode", "data": {
+        "operation": "compose", "episodeNumber": 2,
+        "directorRevisionId": "revision-2", "productionGroupIds": ["g1", "g2"],
+    }}
+    assert _validate_episode_group_ids(valid["data"]["productionGroupIds"]) == ["g1", "g2"]
+    invalid_groups = [
+        [], ["g1", "g1"], ["../g1"], ["g" * 129],
+    ]
+    assert validate_graph([valid], [])["valid"] is True
+    for group_ids in invalid_groups:
+        with pytest.raises(OrchestrationError):
+            _validate_episode_group_ids(group_ids)
 
 
 @pytest.mark.asyncio

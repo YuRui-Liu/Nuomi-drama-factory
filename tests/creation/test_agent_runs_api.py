@@ -1,6 +1,7 @@
 import pytest
 
 from novelvideo.creation import agent_model
+from novelvideo.creation.operations import OperationError
 from .test_delegations import ctx,ready,service
 from .test_delegation_api import api
 from .test_agent_tools import task,action
@@ -39,3 +40,26 @@ async def test_runtime_and_unknown_reads_do_not_initialize(api,ctx,monkeypatch):
     assert not ctx.state_dir.exists()
     user['legacy']=True
     assert (await client.get('/projects/p/creation/agent-runtime')).status_code==409
+
+
+async def test_agent_run_api_exposes_safe_codex_failure_diagnostic(api,ready,task,runs,monkeypatch):
+    client,_=api
+    diagnostic={'stage':'decision_payload','code':'decision_contract_invalid',
+                'exception_type':'ValidationError',
+                'issues':[{'loc':['actions',0,'payload','<field>'],'type':'extra_forbidden'}]}
+    async def fail(*args,**kwargs):
+        raise OperationError('model_response_invalid','模型未返回可执行结果',response_received=True,
+                             diagnostic=diagnostic)
+    monkeypatch.setattr(agent_model,'run_decision',fail)
+    query={'canvas_id':ready[0],'conversation_id':ready[1]}
+    base='/projects/p/creation'
+    body=start_request(task);body.pop('delegation_id')
+    response=await client.post(base+'/delegations/'+task['delegation_id']+'/runs',params=query,json=body)
+    assert response.status_code==200,response.text
+    identifier=response.json()['data']['run']['id']
+
+    current=(await client.get(base+'/agent-runs/'+identifier,params=query)).json()['data']
+
+    assert current['state']=='blocked'
+    assert current['error']['diagnostic']==diagnostic
+    assert not current['outputs'] and not current['rounds'][0].get('prompt')

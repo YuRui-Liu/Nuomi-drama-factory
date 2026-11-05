@@ -38,6 +38,9 @@ def list_episodes(state_dir) -> list[dict]:
             episodes.append({'episode_id': row['id'], 'canvas_id': row['canvas_id'],
                 'title': payload['title'], 'number': payload['number'], 'revision': row['current_revision'],
                 'status': 'running' if operation['state'] == 'pending_projection' else operation['state']})
+    deleted_dir = Path(state_dir) / 'freezone' / 'canvases'
+    episodes = [episode for episode in episodes
+                if not (deleted_dir / f"{episode['canvas_id']}.deleted.json").is_file()]
     return sorted(episodes, key=lambda episode: (episode['number'], episode['episode_id']))
 
 

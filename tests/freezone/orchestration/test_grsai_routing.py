@@ -24,6 +24,7 @@ async def test_shared_canvas_image_jobs_use_grsai_runtime(monkeypatch, tmp_path,
     calls = []
     async def generate(**kwargs):
         calls.append(kwargs)
+        kwargs["out"].write_bytes(b"image")
         return kwargs["out"]
     monkeypatch.setattr(jobs, "_run_grsai_image", generate, raising=False)
     if edit:
@@ -33,3 +34,66 @@ async def test_shared_canvas_image_jobs_use_grsai_runtime(monkeypatch, tmp_path,
         await jobs.run_freezone_gen(project_dir=tmp_path, job_id="a", prompt="draw", provider="grsai", model="gpt-image-2")
     assert len(calls) == 1
     assert calls[0]["reference_paths"] == (["base.png", "other.png"] if edit else [])
+
+
+@pytest.mark.asyncio
+async def test_freezone_gen_publishes_only_after_staged_image_is_complete(monkeypatch, tmp_path):
+    import asyncio
+    from novelvideo.freezone import jobs
+
+    out = jobs.output_path_for_job(tmp_path, "freezone_gen", "atomic")
+    writing = asyncio.Event()
+    finish = asyncio.Event()
+    staged_paths = []
+
+    async def generate(**kwargs):
+        staged = kwargs["out"]
+        staged_paths.append(staged)
+        staged.write_bytes(b"partial image")
+        writing.set()
+        await finish.wait()
+        staged.write_bytes(b"complete image")
+        return staged
+
+    monkeypatch.setattr(jobs, "_run_grsai_image", generate)
+    task = asyncio.create_task(jobs.run_freezone_gen(
+        project_dir=tmp_path, job_id="atomic", prompt="draw", provider="grsai", model="gpt-image-2"
+    ))
+    await writing.wait()
+    final_visible_while_writing = out.exists()
+    staged_suffix = staged_paths[0].suffix
+    finish.set()
+    returned = await task
+
+    assert not final_visible_while_writing
+    assert staged_paths[0] != out
+    assert staged_suffix == out.suffix == ".png"
+    assert returned == out
+    assert out.read_bytes() == b"complete image"
+    assert not staged_paths[0].exists()
+
+
+@pytest.mark.asyncio
+async def test_freezone_gen_failure_preserves_existing_published_image(monkeypatch, tmp_path):
+    from novelvideo.freezone import jobs
+
+    out = jobs.output_path_for_job(tmp_path, "freezone_gen", "preserve")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(b"previous successful image")
+    staged_paths = []
+
+    async def fail_after_partial_write(**kwargs):
+        staged = kwargs["out"]
+        staged_paths.append(staged)
+        staged.write_bytes(b"partial replacement")
+        raise RuntimeError("provider write failed")
+
+    monkeypatch.setattr(jobs, "_run_grsai_image", fail_after_partial_write)
+    with pytest.raises(RuntimeError, match="provider write failed"):
+        await jobs.run_freezone_gen(
+            project_dir=tmp_path, job_id="preserve", prompt="draw", provider="grsai", model="gpt-image-2"
+        )
+
+    assert out.read_bytes() == b"previous successful image"
+    assert staged_paths and staged_paths[0] != out
+    assert not staged_paths[0].exists()

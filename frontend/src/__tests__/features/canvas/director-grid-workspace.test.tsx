@@ -4,6 +4,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { NodeProps } from '@xyflow/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { DirectorWorkspaceNode } from '@/features/canvas/nodes/DirectorWorkspaceNode';
+import { WorkspaceScopeProvider } from '@/features/freezone/WorkspaceScope';
+import { directorWorkspaceApi } from '@/features/canvas/production/directorWorkspaceApi';
 
 const mocks = vi.hoisted(() => ({
   apiCall: vi.fn(),
@@ -18,6 +20,7 @@ const mocks = vi.hoisted(() => ({
     updateNodeData: vi.fn(),
   },
   adopt: vi.fn(),
+  continue: vi.fn(),
 }));
 
 vi.mock('@/lib/url-params', () => ({ readUrl: () => ({ project: 'project-a' }) }));
@@ -43,6 +46,7 @@ vi.mock('@/features/canvas/production/useProductionAction', () => ({
 vi.mock('@/features/canvas/production/directorWorkspaceApi', () => ({ directorWorkspaceApi: {
   get: vi.fn(async () => ({ stages: {}, scene_blocking: {} })),
   adopt: (...args: unknown[]) => mocks.adopt(...args),
+  continue: (...args: unknown[]) => mocks.continue(...args),
 } }));
 
 const revision = {
@@ -59,10 +63,10 @@ const revision = {
   ],
 };
 
-function renderWorkspace() {
+function renderWorkspace(canvasEpisode = 2, nodeEpisode = 2) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const props = { id: 'director-node', data: { episodeNumber: 2, directorRevisionId: 'revision-1' } } as unknown as NodeProps;
-  const result = render(<QueryClientProvider client={client}><DirectorWorkspaceNode {...props} /></QueryClientProvider>);
+  const props = { id: 'director-node', data: { episodeNumber: nodeEpisode, directorRevisionId: 'revision-1' } } as unknown as NodeProps;
+  const result = render(<WorkspaceScopeProvider value={{ projectId: 'project-a', canvasId: `episode-${canvasEpisode}`, kind: 'episode', episodeId: `ep${canvasEpisode}`, episodeNumber: canvasEpisode, status: 'applied' }}><QueryClientProvider client={client}><DirectorWorkspaceNode {...props} /></QueryClientProvider></WorkspaceScopeProvider>);
   return { ...result, client };
 }
 
@@ -75,10 +79,26 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+it('starts planning with the explicitly adopted semantics in the bound episode', async () => {
+  const workspace = { episode: 2, stages: { director_plan: { status: 'waiting' } },
+    semantics: { active_revision_id: 'semantic-current', current_source_revision: 3, candidates: [] } };
+  vi.mocked(directorWorkspaceApi.get).mockResolvedValueOnce(workspace);
+  mocks.continue.mockResolvedValue({ ...workspace, stages: { director_plan: { status: 'queued', task_id: 'plan-task' } } });
+  const result = renderWorkspace();
+  const start = await screen.findByRole('button', { name: '继续本集导演规划' });
+  await waitFor(() => expect(start).toBeEnabled());
+  fireEvent.click(start);
+  await waitFor(() => expect(mocks.continue).toHaveBeenCalledWith('project-a', 2, 'semantic-current'));
+  result.unmount();
+  result.client.clear();
+});
+
 it('shows the group storyboard workspace and keeps direct generation out of the director node', async () => {
   const result = renderWorkspace();
 
   expect(await screen.findByRole('button', { name: /门口对峙/ })).toBeInTheDocument();
+  expect(document.querySelector('.production-workspace-layout--director')).toBeInTheDocument();
+  expect(screen.getByText(/浏览组内镜头 · 2/).closest('details')).not.toHaveAttribute('open');
   expect(screen.getByRole('button', { name: '图板' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '镜头表' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '时间预演' })).toBeInTheDocument();
@@ -90,6 +110,17 @@ it('shows the group storyboard workspace and keeps direct generation out of the 
   fireEvent.click(screen.getByRole('button', { name: '调度审阅' }));
   fireEvent.change(screen.getByRole('combobox', { name: '场景' }), { target: { value: 'scene-1' } });
   expect(screen.getByText('场景调度编辑器')).toBeInTheDocument();
+
+  result.unmount();
+  result.client.clear();
+});
+
+it('keeps an E02 director reference read-only on the E01 canvas without loading episode editors', () => {
+  const result = renderWorkspace(1, 2);
+
+  expect(screen.getByText('请切换到节点对应的分集画布后再打开导演工作空间。此处保留来源信息，不会读取或修改导演方案。')).toBeInTheDocument();
+  expect(directorWorkspaceApi.get).not.toHaveBeenCalled();
+  expect(mocks.apiCall).not.toHaveBeenCalled();
 
   result.unmount();
   result.client.clear();

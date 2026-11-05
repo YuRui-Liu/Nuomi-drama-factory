@@ -23,6 +23,7 @@ from novelvideo.director_plan.models import (
     ValidationReport,
 )
 from novelvideo.director_plan.store import DirectorPlanStore
+from novelvideo.storyboard_prompt import StaticPanel
 from novelvideo.media_capabilities.video.workflow_registry import (
     VideoReferencePolicy,
     VideoWorkflowDefinition,
@@ -278,6 +279,644 @@ def test_narrative_group_video_request_accepts_official_h3_modes(mode):
     assert request.mode == mode
 
 
+def test_narrative_group_video_request_accepts_typed_prepared_h3_plans():
+    from novelvideo.media_capabilities.video.h3_prepared_plans import (
+        EMPTY_VIDEO_KEYFRAME_BINDING_SHA256,
+        H3PreparedPlanImport,
+        H3PreparedPlanPins,
+        H3PreparedPlanSegment,
+    )
+    from tests.media_capabilities.video.test_h3_episode_pack import _plan
+
+    pins = H3PreparedPlanPins(
+        project_id="demo",
+        episode=1,
+        group_id="g1",
+        workflow_id="runninghub:minimax-h3",
+        requested_mode="auto",
+        dialogue_source="external_tts",
+        video_revision=0,
+        plan_revision=1,
+        settings_revision=0,
+        reference_revision=0,
+        director_revision_id="rev-1",
+        keyframe_revision=0,
+        keyframe_binding_sha256=EMPTY_VIDEO_KEYFRAME_BINDING_SHA256,
+    )
+    prepared = H3PreparedPlanImport(
+        preparation_sha256="a" * 64,
+        pins=pins,
+        segments=(H3PreparedPlanSegment(
+            segment_id="shot-1", input_hash="b" * 64, director_plan=_plan()
+        ),),
+    )
+
+    request = narrative_groups.NarrativeGroupVideoRequest(
+        revision=0,
+        plan_revision=1,
+        mode="auto",
+        dialogue_source="external_tts",
+        prepared_h3_plans=prepared,
+    )
+
+    assert request.prepared_h3_plans == prepared
+
+
+def test_prepared_h3_context_get_returns_frame_and_compiler_pins(monkeypatch, tmp_path):
+    from novelvideo.media_capabilities.video.h3_episode_pack import (
+        H3EpisodeInput,
+        H3EpisodeVideoSegment,
+        _segment_input_hash,
+    )
+    from novelvideo.media_capabilities.video.h3_prepared_plans import (
+        EMPTY_VIDEO_KEYFRAME_BINDING_SHA256,
+        H3PreparedPlanPins,
+        prepared_h3_context_digest,
+    )
+    from novelvideo.media_capabilities.video.h3_prompt_optimizer import H3PromptContext
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.media_capabilities.video.models import H3Mode
+    from novelvideo.task_backend.runners import narrative_group_video as runner
+
+    client, _ = make_client(monkeypatch, tmp_path)
+    segment = H3DirectorSegment(
+        segment_id="shot-1", beat_number=1, prompt="opens the door",
+        duration_seconds=4, first_frame="first.png", last_frame="last.png",
+    )
+    entry = H3EpisodeVideoSegment(
+        segment_id="shot-1", group_id="g1", shot_ids=("shot-1",),
+        duration_seconds=4, style_snapshot_id="style-1", source_segment=segment,
+        context=H3PromptContext(
+            visual_description="opens the door", narration="", prev_summary="",
+            next_summary="", first_frame_sha256="a" * 64,
+            last_frame_sha256="b" * 64, model_id="test-model",
+            style_prefix="cinematic realism",
+        ),
+        mode=H3Mode.FL2VA, summary="opens the door", scene_anchor="{}",
+    )
+    episode_input = H3EpisodeInput(
+        episode=1, director_revision_id="rev-1", style_hash="style-hash",
+        style_video={"projection": "cinematic realism"}, segments=(entry,),
+    )
+    group = SimpleNamespace(
+        id="g1", director_revision_id="rev-1", beat_ids=("shot-1",),
+        stages={
+            "render": SimpleNamespace(cell_assets=()),
+            "video": SimpleNamespace(revision=3),
+        },
+        video_plan=SimpleNamespace(revision=4, to_dict=lambda: {"revision": 4, "units": []}),
+        video_settings=SimpleNamespace(revision=5),
+        video_reference_settings=SimpleNamespace(revision=6),
+    )
+    resolved = SimpleNamespace(
+        ctx=SimpleNamespace(project_id="demo", state_dir=tmp_path),
+        project_dir=tmp_path,
+    )
+
+    async def resolve(*_args, **_kwargs):
+        return resolved, [group], [{"id": "shot-1"}]
+
+    async def prepare(*_args, **_kwargs):
+        return episode_input
+
+    monkeypatch.setattr(narrative_groups, "_resolve_groups", resolve)
+    monkeypatch.setattr(
+        narrative_groups, "generation_beats_for_group", lambda *_args: [{"id": "shot-1"}]
+    )
+    monkeypatch.setattr(
+        runner, "_build_segments", lambda *_args, **_kwargs: [segment]
+    )
+    monkeypatch.setattr(
+        runner, "_resolve_workflow_modes", lambda **_kwargs: {"shot-1": H3Mode.FL2VA}
+    )
+    monkeypatch.setattr(runner, "_build_prepared_h3_episode_input", prepare)
+    monkeypatch.setattr(
+        "novelvideo.narrative_groups.video_keyframes.load_current_video_keyframe_binding",
+        lambda *_args, **_kwargs: None,
+    )
+    pins = H3PreparedPlanPins(
+        project_id="demo", episode=1, group_id="g1",
+        workflow_id="runninghub:minimax-h3", requested_mode="auto",
+        dialogue_source="external_tts", video_revision=3, plan_revision=4,
+        settings_revision=5, reference_revision=6, director_revision_id="rev-1",
+        keyframe_revision=0,
+        keyframe_binding_sha256=EMPTY_VIDEO_KEYFRAME_BINDING_SHA256,
+    )
+    expected_input_hash = _segment_input_hash(episode_input, entry)
+    expected_digest = prepared_h3_context_digest(
+        pins, [("shot-1", expected_input_hash)]
+    )
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/g1/video/prepared-context"
+        "?mode=auto&dialogue_source=external_tts"
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["preparation_sha256"] == expected_digest
+    assert data["segments"][0]["mode"] == "fl2va"
+    assert data["segments"][0]["total_frames"] == 96
+    assert data["segments"][0]["first_frame_sha256"] == "a" * 64
+    assert data["import_template"]["segments"][0]["input_hash"] == expected_input_hash
+
+
+def test_h3_ref_prepared_context_rejects_stale_reference_bytes_and_replays_queue(
+    monkeypatch, tmp_path
+):
+    import hashlib
+
+    from novelvideo.media_capabilities.video.h3_director_plan import (
+        H3DirectorPlan,
+    )
+    from novelvideo.media_capabilities.video.h3_episode_pack import (
+        H3EpisodeInput,
+        H3EpisodeVideoSegment,
+    )
+    from novelvideo.media_capabilities.video.h3_prepared_plans import (
+        H3PreparedPlanImport,
+        H3PreparedPlanSegment,
+        prepared_h3_reference_binding_digest,
+    )
+    from novelvideo.media_capabilities.video.h3_prompt_optimizer import (
+        H3PromptContext,
+    )
+    from novelvideo.media_capabilities.video.h3_reference_payload import (
+        build_h3_resolved_reference_facts,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.narrative_groups.video_references import ResolvedVideoReference
+    from novelvideo.task_backend.runners import narrative_group_video as runner
+    from tests.media_capabilities.video.test_h3_episode_pack import _plan
+
+    client, backend = make_client(monkeypatch, tmp_path)
+    assert client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups"
+    ).status_code == 200
+    activate_director_plan(tmp_path, group_id="ng-01", shot_id="beat-1")
+    prepare_render_frames(tmp_path)
+    install_h3_reference_registry(monkeypatch)
+    groups = narrative_group_service.load_groups(tmp_path, 1)
+    narrative_group_service.save_groups(
+        tmp_path,
+        1,
+        [replace(
+            group,
+            video_settings=replace(
+                group.video_settings, workflow_id="runninghub:minimax-h3-ref"
+            ),
+        ) for group in groups],
+    )
+
+    first_path = tmp_path / "frames" / "beat-1.png"
+    last_path = tmp_path / "frames" / "beat-2.png"
+    segment = H3DirectorSegment(
+        segment_id="beat-1", beat_number=1, prompt="The hero opens the door.",
+        duration_seconds=4, first_frame=str(first_path), last_frame=str(last_path),
+    )
+    monkeypatch.setattr(
+        runner, "_build_segments", lambda *_args, **_kwargs: [segment]
+    )
+
+    reference_content = {"value": image_bytes()}
+    reference_path = tmp_path / "identity.png"
+
+    async def resolve_references(**_kwargs):
+        content = reference_content["value"]
+        return (ResolvedVideoReference(
+            reference_id="identity-hero",
+            source_kind="character_identity",
+            label="Hero identity",
+            subject_description="The hero's approved appearance",
+            path=reference_path,
+            content=content,
+            sha256=hashlib.sha256(content).hexdigest(),
+            asset_id="hero-identity-v1",
+        ),)
+
+    monkeypatch.setattr(
+        narrative_groups, "resolve_saved_video_references", resolve_references
+    )
+
+    first_sha = hashlib.sha256(first_path.read_bytes()).hexdigest()
+    last_sha = hashlib.sha256(last_path.read_bytes()).hexdigest()
+
+    async def prepare_input(*_args, global_references=(), frozen_frames=None, **_kwargs):
+        facts = build_h3_resolved_reference_facts(global_references)
+        assert frozen_frames[str(first_path)].sha256 == first_sha
+        assert frozen_frames[str(last_path)].sha256 == last_sha
+        context = H3PromptContext(
+            visual_description="The hero opens the door.", narration="",
+            prev_summary="", next_summary="", first_frame_sha256=first_sha,
+            last_frame_sha256=last_sha, model_id="test-model",
+            style_prefix="cinematic realism",
+            resolved_references=facts,
+        )
+        entry = H3EpisodeVideoSegment(
+            segment_id="beat-1", group_id="ng-01", shot_ids=("beat-1",),
+            duration_seconds=4, style_snapshot_id="style-1",
+            source_segment=segment, context=context, mode="ref2va",
+            summary="The hero opens the door.",
+        )
+        return H3EpisodeInput(
+            episode=1, director_revision_id="rev-api-active",
+            style_hash="style-hash", style_video={"projection": "cinematic realism"},
+            segments=(entry,),
+        )
+
+    monkeypatch.setattr(runner, "_build_prepared_h3_episode_input", prepare_input)
+    context_response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prepared-context"
+        "?mode=auto&dialogue_source=external_tts"
+    )
+
+    assert context_response.status_code == 200, context_response.text
+    prepared_context = context_response.json()["data"]
+    assert prepared_context["workflow_id"] == "runninghub:minimax-h3-ref"
+    assert prepared_context["segments"][0]["mode"] == "ref2va"
+    reference_fact = prepared_context["segments"][0]["compiler_context"][
+        "resolved_references"
+    ][0]
+    assert reference_fact["tag"] == "@identity-hero"
+    assert reference_fact["provider_subject"] == "<Subject 1>"
+    context_reference = asyncio.run(resolve_references())[0]
+    assert prepared_context["pins"]["reference_binding_sha256"] == (
+        prepared_h3_reference_binding_digest(
+            (context_reference,), provider_workflow_id="2096502793044582401"
+        )
+    )
+
+    plan_payload = _plan().model_dump(mode="json")
+    plan_payload.update({
+        "mode": "ref2va",
+        "total_frames": 96,
+        "rigid_prompt": None,
+        "first_frame_anchor": None,
+        "last_frame_anchor": None,
+        "reference_summary": "The hero keeps the identity shown in Picture 1.",
+        "reference_subjects": [{
+            "subject_index": 1,
+            "source_picture_indexes": [1],
+            "description": "The approved hero identity",
+            "retention_marker": "fully_preserved",
+            "retention_detail": "Preserve the selected identity and costume.",
+            "shot_ids": ["1"],
+        }],
+    })
+    plan_payload["shots"][0]["end_frame"] = 96
+    plan_payload["shots"][0]["actions"] = [
+        {"phase": "establish", "start_frame": 0, "end_frame": 24,
+         "description": "Establish the doorway and hero."},
+        {"phase": "execute", "start_frame": 24, "end_frame": 72,
+         "description": "The hero opens the door with a quick shoulder turn.",
+         "moving_entities": ["hero"]},
+        {"phase": "settle", "start_frame": 72, "end_frame": 96,
+         "description": "The hero holds the open doorway."},
+    ]
+    prepared_plan = H3DirectorPlan.model_validate(plan_payload)
+    imported = H3PreparedPlanImport(
+        preparation_sha256=prepared_context["preparation_sha256"],
+        pins=prepared_context["pins"],
+        segments=(H3PreparedPlanSegment(
+            segment_id="beat-1",
+            input_hash=prepared_context["segments"][0]["input_hash"],
+            director_plan=prepared_plan,
+        ),),
+    )
+    body = {
+        "model": "runninghub:minimax-h3-ref",
+        "mode": "auto",
+        "dialogue_source": "external_tts",
+        "revision": imported.pins.video_revision,
+        "plan_revision": imported.pins.plan_revision,
+        "reference_revision": imported.pins.reference_revision,
+        "prepared_h3_plans": imported.model_dump(mode="json"),
+        "client_mutation_id": "prepared-ref-route-1",
+    }
+    reference_content["value"] = image_bytes(size=(9, 8))
+    stale_response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json=body,
+    )
+    assert stale_response.status_code == 409
+    assert stale_response.json()["detail"]["code"] == "prepared_h3_context_stale"
+    assert backend.calls == []
+
+    reference_content["value"] = image_bytes()
+    queued = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json=body,
+    )
+    replay = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json=body,
+    )
+
+    assert queued.status_code == 202, queued.text
+    assert replay.status_code == 202, replay.text
+    assert len(backend.calls) == 1
+    queued_payload = backend.calls[0][1]["payload"]
+    assert queued_payload["prepared_h3_plans"]["segments"][0][
+        "director_plan"
+    ]["mode"] == "ref2va"
+    from novelvideo.media_capabilities.video.h3_reference_runtime import (
+        load_h3_reference_input_snapshot,
+    )
+
+    snapshot = load_h3_reference_input_snapshot(
+        state_root=tmp_path,
+        snapshot_id=queued_payload["reference_snapshot_id"],
+        expected_digest=queued_payload["reference_snapshot_digest"],
+        frame_sources=(str(first_path), str(last_path)),
+    )
+    assert snapshot.references[0].content == image_bytes()
+    assert snapshot.frames[str(first_path)].content == first_path.read_bytes()
+    assert snapshot.frames[str(last_path)].content == last_path.read_bytes()
+
+
+def test_h3_ref_repair_context_only_returns_paid_shots_and_pins_prior_manifest(
+    monkeypatch, tmp_path
+):
+    import hashlib
+
+    from novelvideo.media_capabilities.video.h3_episode_pack import (
+        H3EpisodeInput,
+        H3EpisodeVideoSegment,
+    )
+    from novelvideo.media_capabilities.video.h3_prompt_optimizer import H3PromptContext
+    from novelvideo.media_capabilities.video.h3_reference_payload import (
+        build_h3_resolved_reference_facts,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        H3DirectorOutputManifest,
+        H3DirectorSegment,
+        H3TimelineEntry,
+        save_h3_director_manifest,
+    )
+    from novelvideo.narrative_groups.execution_contract import freeze_execution_contract
+    from novelvideo.narrative_groups.video_repairs import freeze_video_repair_snapshot
+    from novelvideo.task_backend.runners import narrative_group_video as runner
+
+    client, backend = make_client(monkeypatch, tmp_path)
+    assert client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups"
+    ).status_code == 200
+    activate_director_plan(tmp_path, group_id="ng-01", shot_id="S01")
+    prepare_render_frames(tmp_path)
+    install_h3_reference_registry(monkeypatch)
+    groups = narrative_group_service.load_groups(tmp_path, 1)
+    narrative_group_service.save_groups(
+        tmp_path,
+        1,
+        [replace(
+            group,
+            video_settings=replace(
+                group.video_settings, workflow_id="runninghub:minimax-h3-ref"
+            ),
+        ) for group in groups],
+    )
+
+    segments = [
+        H3DirectorSegment(
+            segment_id=f"S{index:02d}",
+            source_shot_ids=(f"S{index:02d}",),
+            beat_number=index,
+            prompt=f"Shot {index}",
+            duration_seconds=4,
+            first_frame=str(tmp_path / "frames" / f"beat-{index}.png"),
+            last_frame=str(tmp_path / "frames" / f"beat-{index + 1}.png"),
+        )
+        for index in range(1, 4)
+    ]
+    monkeypatch.setattr(runner, "_build_segments", lambda *_args, **_kwargs: segments)
+    monkeypatch.setattr(
+        runner,
+        "_canonical_beats_for_segments",
+        lambda current_segments, _beats: [
+            {"id": segment.segment_id} for segment in current_segments
+        ],
+    )
+    monkeypatch.setattr(
+        runner,
+        "_resolve_workflow_modes",
+        lambda **_kwargs: {segment.segment_id: "ref2va" for segment in segments},
+    )
+
+    reference_bytes = image_bytes()
+    reference = ResolvedVideoReference(
+        reference_id="identity-hero",
+        source_kind="character_identity",
+        label="Hero identity",
+        subject_description="The hero's approved appearance",
+        path=tmp_path / "identity.png",
+        content=reference_bytes,
+        sha256=hashlib.sha256(reference_bytes).hexdigest(),
+        asset_id="hero-identity-v1",
+    )
+
+    async def resolve_references(**_kwargs):
+        return (reference,)
+
+    monkeypatch.setattr(
+        narrative_groups, "resolve_saved_video_references", resolve_references
+    )
+
+    async def prepare_input(
+        current_segments, *_args, global_references=(), frozen_frames=None, **_kwargs
+    ):
+        facts = build_h3_resolved_reference_facts(global_references)
+        entries = []
+        for segment in current_segments:
+            context = H3PromptContext(
+                visual_description=segment.prompt,
+                narration="",
+                prev_summary="",
+                next_summary="",
+                first_frame_sha256=frozen_frames[segment.first_frame].sha256,
+                last_frame_sha256=frozen_frames[segment.last_frame].sha256,
+                model_id="test-model",
+                style_prefix="cinematic realism",
+                resolved_references=facts,
+            )
+            entries.append(H3EpisodeVideoSegment(
+                segment_id=segment.segment_id,
+                group_id="ng-01",
+                shot_ids=segment.source_shot_ids,
+                duration_seconds=segment.duration_seconds,
+                style_snapshot_id="style-1",
+                source_segment=segment,
+                context=context,
+                mode="ref2va",
+                summary=segment.prompt,
+            ))
+        return H3EpisodeInput(
+            episode=1,
+            director_revision_id="rev-api-active",
+            style_hash="style-hash",
+            style_video={"projection": "cinematic realism"},
+            segments=tuple(entries),
+        )
+
+    monkeypatch.setattr(runner, "_build_prepared_h3_episode_input", prepare_input)
+
+    clip_dir = tmp_path / "videos" / "source-clips"
+    clip_dir.mkdir(parents=True)
+    prior_entries = []
+    for index, segment in enumerate(segments):
+        clip = clip_dir / f"{segment.segment_id}.mp4"
+        clip.write_bytes(f"prior clip {segment.segment_id}".encode())
+        prior_entries.append(H3TimelineEntry(
+            segment=segment,
+            start_frame=index * 96,
+            frame_count=96,
+            physical_video=str(clip),
+            status="completed",
+        ))
+    shot_ids = tuple(
+        shot_id for segment in segments for shot_id in segment.source_shot_ids
+    )
+    storyboard_binding = {
+        "project_id": "demo", "episode": 1, "group_id": "ng-01",
+        "shot_ids": list(shot_ids),
+    }
+    keyframe_binding = {
+        **storyboard_binding, "director_revision_id": "rev-api-active",
+    }
+    source_manifest_path = tmp_path / "videos" / "ng-01_source.manifest.json"
+    save_h3_director_manifest(source_manifest_path, H3DirectorOutputManifest(
+        entries=tuple(prior_entries),
+        total_frames=288,
+        execution_contract=freeze_execution_contract({
+            "episode": 1,
+            "group_id": "ng-01",
+            "storyboard_binding": storyboard_binding,
+            "video_keyframe_binding": keyframe_binding,
+        }),
+        status="completed",
+    ))
+    advance_revision(tmp_path, 1, "ng-01", "video")
+    record_stage_result(
+        tmp_path,
+        1,
+        "ng-01",
+        "video",
+        expected_revision=1,
+        status="completed",
+        manifest_asset=str(source_manifest_path),
+    )
+
+    response = client.get(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/prepared-context"
+        "?mode=auto&dialogue_source=external_tts&repair_shot_ids=S02"
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    expected_snapshot = freeze_video_repair_snapshot(
+        source_manifest_path,
+        tmp_path,
+        episode=1,
+        group_id="ng-01",
+        director_revision_id="rev-api-active",
+        expected_source_shot_ids=shot_ids,
+        repair_shot_ids=("S02",),
+    )
+    assert [segment["segment_id"] for segment in data["segments"]] == ["S02"]
+    assert data["pins"]["source_reuse_digest"] == expected_snapshot.snapshot_sha256
+    assert data["source_reuse_snapshot"] == expected_snapshot.model_dump(mode="json")
+    assert data["segments"][0]["compiler_context"]["resolved_references"][0][
+        "provider_subject"
+    ] == "<Subject 1>"
+    assert backend.calls == []
+
+    from novelvideo.media_capabilities.video.h3_director_plan import H3DirectorPlan
+    from novelvideo.media_capabilities.video.h3_prepared_plans import (
+        H3PreparedPlanImport,
+        H3PreparedPlanSegment,
+    )
+    from tests.media_capabilities.video.test_h3_episode_pack import _plan
+
+    plan_payload = _plan().model_dump(mode="json")
+    plan_payload.update({
+        "mode": "ref2va",
+        "total_frames": 96,
+        "rigid_prompt": None,
+        "first_frame_anchor": None,
+        "last_frame_anchor": None,
+        "reference_summary": "The hero retains the selected identity.",
+        "reference_subjects": [{
+            "subject_index": 1,
+            "source_picture_indexes": [1],
+            "description": "The approved hero identity",
+            "retention_marker": "fully_preserved",
+            "retention_detail": "Preserve the selected identity and costume.",
+            "shot_ids": ["1"],
+        }],
+    })
+    plan_payload["shots"][0]["end_frame"] = 96
+    plan_payload["shots"][0]["actions"] = [
+        {"phase": "establish", "start_frame": 0, "end_frame": 24,
+         "description": "Establish the doorway and hero."},
+        {"phase": "execute", "start_frame": 24, "end_frame": 72,
+         "description": "The hero opens the door."},
+        {"phase": "settle", "start_frame": 72, "end_frame": 96,
+         "description": "The hero holds at the open doorway."},
+    ]
+    imported = H3PreparedPlanImport(
+        preparation_sha256=data["preparation_sha256"],
+        pins=data["pins"],
+        segments=(H3PreparedPlanSegment(
+            segment_id="S02",
+            input_hash=data["segments"][0]["input_hash"],
+            director_plan=H3DirectorPlan.model_validate(plan_payload),
+        ),),
+    )
+    request_body = {
+        "model": "runninghub:minimax-h3-ref",
+        "mode": "auto",
+        "dialogue_source": "external_tts",
+        "revision": imported.pins.video_revision,
+        "plan_revision": imported.pins.plan_revision,
+        "reference_revision": imported.pins.reference_revision,
+        "repair_shot_ids": ["S02"],
+        "source_reuse_snapshot": data["source_reuse_snapshot"],
+        "prepared_h3_plans": imported.model_dump(mode="json"),
+        "client_mutation_id": "prepared-ref-repair-1",
+    }
+    untouched_clip = clip_dir / "S01.mp4"
+    original_clip_bytes = untouched_clip.read_bytes()
+    untouched_clip.write_bytes(b"changed prior bytes")
+    stale = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json=request_body,
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "video_repair_source_stale"
+    assert backend.calls == []
+
+    untouched_clip.write_bytes(original_clip_bytes)
+    queued = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json=request_body,
+    )
+    replay = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json=request_body,
+    )
+    assert queued.status_code == 202, queued.text
+    assert replay.status_code == 202, replay.text
+    assert len(backend.calls) == 1
+    queued_payload = backend.calls[0][1]["payload"]
+    assert queued_payload["repair_shot_ids"] == ["S02"]
+    assert queued_payload["source_reuse_snapshot"]["snapshot_sha256"] == (
+        data["pins"]["source_reuse_digest"]
+    )
+    assert [
+        entry["segment_id"]
+        for entry in queued_payload["prepared_h3_plans"]["segments"]
+    ] == ["S02"]
+
+
 def install_h3_reference_registry(monkeypatch, *, max_images=2):
     monkeypatch.setattr(
         narrative_groups,
@@ -526,6 +1165,82 @@ def test_generate_action_uses_stable_group_revision(monkeypatch, tmp_path):
     assert backend.calls[0][1]["payload"]["model"] == "nano-banana-2"
 
 
+def test_three_shot_external_static_plan_uses_frozen_triptych_for_render(
+    monkeypatch, tmp_path
+):
+    client, backend = make_client(monkeypatch, tmp_path)
+    planned = install_empty_planned_snapshot(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    shots = tuple(
+        ShotPlan(
+            id=f"shot-{index}",
+            source_span_ids=(f"span-{index}",),
+            subject="Hero",
+            action=f"Later action {index}",
+            visible_start_state="Before",
+            visible_end_state="After",
+            duration_seconds=3,
+            static_panel=StaticPanel(
+                id=f"panel-{index}",
+                shot_id=f"shot-{index}",
+                anchor="selected",
+                state=f"Selected still {index}",
+                framing="medium shot",
+                subjects=[],
+                setting="Hallway",
+                lighting="Cool side light",
+                visible_text=[],
+            ),
+        )
+        for index in range(1, 4)
+    )
+    group = NarrativeGroupPlan(
+        id="ng-01",
+        ordinal=1,
+        source_span_ids=("span-1", "span-2", "span-3"),
+        scene_anchor="hallway",
+        time_anchor="night",
+        objective="Reach the door",
+        visible_turn="The door opens",
+        relation_to_previous="single",
+        shots=shots,
+    )
+    revision = DirectorPlanRevision(
+        revision_id="rev-triptych-layout",
+        episode=1,
+        status="review_required",
+        source_script_hash="sha256:abc",
+        director_model="external:codex",
+        prompt_version="v3-keyframe-instant",
+        project_style_snapshot_id="style-1",
+        groups=(group,),
+        validation_report=ValidationReport(passed=True),
+        edit_source="human",
+        created_at=datetime(2026, 10, 25, tzinfo=timezone.utc),
+    )
+    store = DirectorPlanStore(tmp_path)
+    store.save(revision)
+    store.activate(1, revision.revision_id)
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
+        json=planned,
+    )
+
+    assert response.status_code == 202, response.text
+    payload = backend.calls[0][1]["payload"]
+    assert payload["layout"] == {"rows": 1, "columns": 3, "capacity": 3}
+    assert [beat["id"] for beat in payload["beats"]] == [
+        "shot-1", "shot-2", "shot-3"
+    ]
+    from novelvideo.task_backend.runners.narrative_group import _generation_input
+
+    generation = _generation_input(payload)
+    assert len(generation.static_panels) == 3
+    assert "Selected still 1" in generation.prompt
+    assert "Later action 1" not in generation.prompt
+
+
 def test_render_skips_sketch_by_default_but_can_require_it(monkeypatch, tmp_path):
     client, backend = make_client(monkeypatch, tmp_path)
     planned = install_empty_planned_snapshot(monkeypatch, tmp_path)
@@ -580,6 +1295,55 @@ def test_video_capability_conflict_rejected_before_enqueue(monkeypatch, tmp_path
                            json={"revision": 0, "plan_revision": 1})
     assert response.status_code == 422, response.text
     assert response.json()["detail"]["code"] == "capability_conflict"
+    assert not backend.calls
+
+
+def test_managed_group_video_submission_is_gated_before_revision_reservation(monkeypatch, tmp_path):
+    from novelvideo.freezone.orchestration.models import OrchestrationError
+
+    client, backend = make_client(monkeypatch, tmp_path)
+
+    def blocked(_state_root, _output_root, episode, stage, **_kwargs):
+        assert episode == 1
+        assert stage == "video"
+        raise OrchestrationError("production_stage_blocked", "review required",
+                                 stage="video", required_stage="storyboard",
+                                 status="awaiting_review", reason="awaiting_review")
+
+    monkeypatch.setattr(narrative_groups, "admit_registered_episode_stage", blocked)
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/generate",
+        json={"revision": 0, "plan_revision": 1},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "production_stage_blocked"
+    assert not backend.calls
+
+
+def test_managed_group_storyboard_render_is_gated_before_reservation(monkeypatch, tmp_path):
+    from novelvideo.freezone.orchestration.models import OrchestrationError
+
+    client, backend = make_client(monkeypatch, tmp_path)
+    planned = install_empty_planned_snapshot(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    activate_director_plan(tmp_path, group_id="ng-01", shot_id="beat-1")
+
+    def blocked(_state_root, _output_root, episode, stage, **_kwargs):
+        assert episode == 1
+        assert stage == "storyboard"
+        raise OrchestrationError("production_stage_blocked", "assets required",
+                                 stage="storyboard", required_stage="assets",
+                                 status="pending", reason="not_ready")
+
+    monkeypatch.setattr(narrative_groups, "admit_registered_episode_stage", blocked)
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
+        json=planned,
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["required_stage"] == "assets"
     assert not backend.calls
 
 
@@ -659,6 +1423,56 @@ def test_repeated_generate_is_idempotent_but_regenerate_advances_revision(monkey
 
     assert first["scope"] == repeated["scope"] == "group_ng-01_render_r1"
     assert regenerated["scope"] == "group_ng-01_render_r2"
+
+
+def test_rollback_keeps_mutation_receipt_and_replay_does_not_enqueue_again(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    planned = install_empty_planned_snapshot(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    activate_director_plan(tmp_path, group_id="ng-01", shot_id="beat-1")
+    first = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/generate",
+        json={**planned, "client_mutation_id": "request-a"},
+    )
+    assert first.status_code == 202, first.text
+    record_stage_result(
+        tmp_path, 1, "ng-01", "render", expected_revision=1,
+        status="completed", grid_asset="render-r1.png",
+    )
+
+    request_b = {**planned, "client_mutation_id": "request-b"}
+    second = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/regenerate",
+        json=request_b,
+    )
+    assert second.status_code == 202, second.text
+    assert len(backend.calls) == 2
+    receipt = narrative_group_service.find_stage_submission(
+        tmp_path, 1, "ng-01", "render", "request-b",
+    )
+    assert receipt["task_id"] == "task-2"
+
+    rollback = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/revisions/1/rollback",
+    )
+    assert rollback.status_code == 200, rollback.text
+    assert narrative_group_service.find_stage_submission(
+        tmp_path, 1, "ng-01", "render", "request-b",
+    )["task_id"] == "task-2"
+    monkeypatch.setattr(narrative_groups, "get_task_manager", lambda: SimpleNamespace(
+        get_task_for_project=lambda *args, **kwargs: SimpleNamespace(
+            task_id="task-2", status="queued", metadata={"backend": "inline", "queue_kind": "images"},
+        ),
+    ))
+
+    replay = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/render/regenerate",
+        json=request_b,
+    )
+
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["data"].get("task_id") == "task-2", replay.json()
+    assert len(backend.calls) == 2
 
 
 def test_unknown_group_returns_404(monkeypatch, tmp_path):
@@ -786,6 +1600,7 @@ def test_video_reference_preview_returns_safe_dto_and_canonical_thumbnail(
     data = response.json()["data"]
     assert _without_version(data) == {
         "revision": 3,
+        "director_revision_id": None,
         "max_images": 2,
         "candidates": [{
             "reference_id": reference_id,
@@ -825,6 +1640,7 @@ def test_video_reference_upload_normalizes_png_and_ignores_filename(
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
         "video/reference-uploads",
+        data={"expected_director_revision_id": "__none__"},
         files={"file": ("../../outside.jpg", image_bytes("JPEG"), "image/jpeg")},
     )
 
@@ -862,6 +1678,7 @@ def test_video_reference_upload_rejects_invalid_files_without_partial_output(
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
         "video/reference-uploads",
+        data={"expected_director_revision_id": "__none__"},
         files={"file": ("input.png", content, content_type)},
     )
 
@@ -882,6 +1699,7 @@ def test_video_reference_upload_rejects_images_over_pixel_limit(
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
         "video/reference-uploads",
+        data={"expected_director_revision_id": "__none__"},
         files={"file": ("large.png", image_bytes(), "image/png")},
     )
 
@@ -904,6 +1722,7 @@ def test_video_reference_upload_rejects_normalized_png_over_byte_limit(
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
         "video/reference-uploads",
+        data={"expected_director_revision_id": "__none__"},
         files={"file": ("small.png", image_bytes(), "image/png")},
     )
 
@@ -928,19 +1747,23 @@ def test_put_video_references_preserves_order_and_enforces_validation_and_cas(
     )
     first = client.post(
         upload_endpoint,
+        data={"expected_director_revision_id": "__none__"},
         files={"file": ("one.png", image_bytes(), "image/png")},
     ).json()["data"]
     second = client.post(
         upload_endpoint,
+        data={"expected_director_revision_id": "__none__"},
         files={"file": ("two.webp", image_bytes("WEBP"), "image/webp")},
     ).json()["data"]
     third = client.post(
         upload_endpoint,
+        data={"expected_director_revision_id": "__none__"},
         files={"file": ("three.png", image_bytes(), "image/png")},
     ).json()["data"]
 
     response = client.put(endpoint, json={
         "expected_revision": 0,
+        "expected_director_revision_id": None,
         "references": [
             {"reference_id": second["reference_id"], "subject_description": " Second "},
             {"reference_id": first["reference_id"], "subject_description": "First"},
@@ -953,6 +1776,7 @@ def test_put_video_references_preserves_order_and_enforces_validation_and_cas(
     ]
     assert client.put(endpoint, json={
         "expected_revision": 0,
+        "expected_director_revision_id": None,
         "references": [{"reference_id": first["reference_id"], "subject_description": "First"}],
     }).status_code == 409
     for references in (
@@ -966,10 +1790,11 @@ def test_put_video_references_preserves_order_and_enforces_validation_and_cas(
         [{"reference_id": first["reference_id"], "subject_description": "two\nlines"}],
     ):
         assert client.put(endpoint, json={
-            "expected_revision": 1, "references": references,
+            "expected_revision": 1, "expected_director_revision_id": None, "references": references,
         }).status_code == 422
     assert client.put(endpoint, json={
         "expected_revision": 1,
+        "expected_director_revision_id": None,
         "references": [{
             "reference_id": first["reference_id"],
             "subject_description": "First",
@@ -980,6 +1805,7 @@ def test_put_video_references_preserves_order_and_enforces_validation_and_cas(
     advance_revision(tmp_path, 1, "ng-01", "video")
     assert client.put(endpoint, json={
         "expected_revision": 1,
+        "expected_director_revision_id": None,
         "references": [{"reference_id": first["reference_id"], "subject_description": "First"}],
     }).status_code == 409
 
@@ -992,6 +1818,7 @@ def test_put_video_references_validates_trimmed_description_and_top_level_extra(
     prefix = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video"
     candidate = client.post(
         f"{prefix}/reference-uploads",
+        data={"expected_director_revision_id": "__none__"},
         files={"file": ("one.png", image_bytes(), "image/png")},
     ).json()["data"]
     reference = {
@@ -1001,7 +1828,7 @@ def test_put_video_references_validates_trimmed_description_and_top_level_extra(
 
     accepted = client.put(
         f"{prefix}/references",
-        json={"expected_revision": 0, "references": [reference]},
+        json={"expected_revision": 0, "expected_director_revision_id": None, "references": [reference]},
     )
     assert accepted.status_code == 200
     assert accepted.json()["data"]["selected"][0]["subject_description"] == "x" * 500
@@ -1010,6 +1837,7 @@ def test_put_video_references_validates_trimmed_description_and_top_level_extra(
         f"{prefix}/references",
         json={
             "expected_revision": 1,
+            "expected_director_revision_id": None,
             "references": [{**reference, "subject_description": "x" * 501}],
         },
     )
@@ -1017,6 +1845,7 @@ def test_put_video_references_validates_trimmed_description_and_top_level_extra(
         f"{prefix}/references",
         json={
             "expected_revision": 1,
+            "expected_director_revision_id": None,
             "references": [reference],
             "path": "/tmp/client-controlled.png",
         },
@@ -1055,6 +1884,7 @@ def test_video_reference_upload_surfaces_safe_writer_failure_without_temp_files(
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
         "video/reference-uploads",
+        data={"expected_director_revision_id": "__none__"},
         files={"file": ("one.png", image_bytes(), "image/png")},
     )
 
@@ -1097,6 +1927,7 @@ def test_video_reference_upload_cleans_published_file_when_preview_fails(
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
         "video/reference-uploads",
+        data={"expected_director_revision_id": "__none__"},
         files={"file": ("one.png", image_bytes(), "image/png")},
     )
 
@@ -1136,6 +1967,7 @@ def test_video_reference_upload_cleans_internal_failure_without_leaking_detail(
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/"
         "video/reference-uploads",
+        data={"expected_director_revision_id": "__none__"},
         files={"file": ("one.png", image_bytes(), "image/png")},
     )
 
@@ -1143,6 +1975,62 @@ def test_video_reference_upload_cleans_internal_failure_without_leaking_detail(
     assert secret not in response.text
     assert group_root.is_dir()
     assert list(group_root.iterdir()) == []
+
+
+def test_video_reference_mutations_require_the_exact_active_director_revision(
+    monkeypatch, tmp_path
+):
+    client, _ = make_client(monkeypatch, tmp_path)
+    activate_director_plan(tmp_path, group_id="ng-01", shot_id="beat-1")
+    prefix = "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video"
+
+    preview = client.get(f"{prefix}/reference-preview")
+    assert preview.status_code == 200
+    assert preview.json()["data"]["director_revision_id"] == "rev-api-active"
+
+    stale_upload = client.post(
+        f"{prefix}/reference-uploads",
+        data={"expected_director_revision_id": "__none__"},
+        files={"file": ("one.png", image_bytes(), "image/png")},
+    )
+    assert stale_upload.status_code == 409
+    assert stale_upload.json()["detail"]["code"] == "DIRECTOR_REVISION_CONFLICT"
+
+    uploaded = client.post(
+        f"{prefix}/reference-uploads",
+        data={"expected_director_revision_id": "rev-api-active"},
+        files={"file": ("one.png", image_bytes(), "image/png")},
+    )
+    assert uploaded.status_code == 200
+    candidate = uploaded.json()["data"]
+
+    stale_save = client.put(
+        f"{prefix}/references",
+        json={
+            "expected_revision": 0,
+            "expected_director_revision_id": None,
+            "references": [{
+                "reference_id": candidate["reference_id"],
+                "subject_description": "Alice",
+            }],
+        },
+    )
+    assert stale_save.status_code == 409
+    assert stale_save.json()["detail"]["code"] == "DIRECTOR_REVISION_CONFLICT"
+
+    saved = client.put(
+        f"{prefix}/references",
+        json={
+            "expected_revision": 0,
+            "expected_director_revision_id": "rev-api-active",
+            "references": [{
+                "reference_id": candidate["reference_id"],
+                "subject_description": "Alice",
+            }],
+        },
+    )
+    assert saved.status_code == 200
+    assert saved.json()["data"]["director_revision_id"] == "rev-api-active"
 
 
 def test_h3_reference_generate_requires_current_reference_revision_before_reserve(
@@ -2298,9 +3186,16 @@ def test_generate_builds_planned_reference_resolution_snapshot(monkeypatch, tmp_
     assert backend.calls[0][1]["payload"]["reference_scope"]["beat_ids"] == ["dramatic-beat-1"]
     assert "image_path" not in str(response.json())
     if stage == "render":
+        assert backend.calls[0][1]["payload"]["reference_selection"] == {
+            "selected_binding_ids": ["planned-ref-letter"],
+            "upload_ids": [],
+            "reference_revision": "revision-1",
+        }
         assert backend.calls[0][1]["payload"]["storyboard_contract_version"] == 1
         batch = load_materialized_groups(tmp_path, 1)[0].generation_batches[0]
         assert backend.calls[0][1]["payload"]["batch_id"] == batch["id"]
+    else:
+        assert "reference_selection" not in backend.calls[0][1]["payload"]
 
 
 def test_generate_snapshot_wait_does_not_block_activation_and_rejects_race(
@@ -2489,6 +3384,7 @@ def _seed_director_manifest(tmp_path: Path) -> None:
         DialogueSource,
         H3DirectorOutputManifest,
         H3DirectorSegment,
+        H3SourceDialogueLine,
         build_h3_timeline_data,
         save_h3_director_manifest,
     )
@@ -2496,15 +3392,22 @@ def _seed_director_manifest(tmp_path: Path) -> None:
     video = tmp_path / "videos" / "director.mp4"
     ambience = tmp_path / "videos" / "ambience.wav"
     dialogue = tmp_path / "videos" / "dialogue.wav"
+    external = tmp_path / "videos" / "external-span-1.wav"
     video.parent.mkdir(parents=True, exist_ok=True)
-    for path in (video, ambience, dialogue):
+    for path in (video, ambience, dialogue, external):
         path.write_bytes(b"media")
     entries = build_h3_timeline_data((
         H3DirectorSegment(segment_id="s1", beat_number=1, prompt="p", duration_seconds=1,
-                          first_frame="f1.png", dialogue_source=DialogueSource.EXTERNAL_TTS),
+                          first_frame="f1.png", dialogue="走吧。",
+                          dialogue_lines=(H3SourceDialogueLine(speaker="阿岑", text="走吧。"),),
+                          dialogue_source=DialogueSource.EXTERNAL_TTS),
         H3DirectorSegment(segment_id="s2", beat_number=2, prompt="p", duration_seconds=1,
                           first_frame="f2.png", dialogue_source=DialogueSource.H3_NATIVE),
     )).entries
+    entries = (
+        entries[0].model_copy(update={"external_audio_path": str(external)}),
+        entries[1],
+    )
     manifest_path = tmp_path / "videos" / "director.manifest.json"
     save_h3_director_manifest(manifest_path, H3DirectorOutputManifest(
         physical_video=str(video), entries=entries,
@@ -2527,9 +3430,14 @@ def test_list_video_stage_exposes_manifest_video_spans_and_urls(monkeypatch, tmp
     assert _without_version(stage["ambience_stem_path"]) == "/api/v1/projects/demo/media/videos/ambience.wav"
     assert _without_version(stage["video_spans"]) == [
         {"span_index": 0, "beat_numbers": [1], "start_seconds": 0.0,
-         "end_seconds": 39 / 24, "dialogue_source": "external_tts"},
+         "end_seconds": 39 / 24, "dialogue_source": "external_tts",
+         "has_dialogue": True,
+         "external_audio_path": "/api/v1/projects/demo/media/videos/external-span-1.wav",
+         "external_audio_ready": True},
         {"span_index": 1, "beat_numbers": [2], "start_seconds": 39 / 24,
-         "end_seconds": 78 / 24, "dialogue_source": "h3_native"},
+         "end_seconds": 78 / 24, "dialogue_source": "h3_native",
+         "has_dialogue": False, "external_audio_path": "",
+         "external_audio_ready": False},
     ]
 
 
@@ -2538,6 +3446,10 @@ def test_change_dialogue_source_updates_manifest_and_enqueues_compose_only(monke
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     _seed_director_manifest(tmp_path)
     monkeypatch.setattr(narrative_groups, "_generation_aspect_ratio", lambda *_: "16:9")
+    monkeypatch.setattr(
+        "novelvideo.task_backend.runners.video._video_has_audio_stream",
+        lambda _path: True,
+    )
 
     response = client.post(
         "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/dialogue-source",
@@ -2580,6 +3492,10 @@ def test_dialogue_source_waits_for_required_external_audio(monkeypatch, tmp_path
     client, backend = make_client(monkeypatch, tmp_path)
     client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
     _seed_director_manifest(tmp_path)
+    monkeypatch.setattr(
+        "novelvideo.task_backend.runners.video._video_has_audio_stream",
+        lambda _path: True,
+    )
     narrative_groups.update_video_manifest_dialogue_source(
         tmp_path, 1, "ng-01", span_index=1,
         dialogue_source="external_tts", expected_revision=1,
@@ -2604,6 +3520,86 @@ def test_dialogue_source_waits_for_required_external_audio(monkeypatch, tmp_path
     manifest = load_h3_director_manifest(tmp_path / "videos" / "director.manifest.json")
     assert manifest.entries[0].dialogue_source.value == "h3_native"
     assert manifest.entries[1].dialogue_source.value == "external_tts"
+
+
+def test_native_dialogue_selection_waits_for_embedded_audio(monkeypatch, tmp_path):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_director_manifest(tmp_path)
+    monkeypatch.setattr(
+        "novelvideo.task_backend.runners.video._video_has_audio_stream",
+        lambda _path: False,
+    )
+
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/dialogue-source",
+        json={"span_index": 0, "dialogue_source": "h3_native", "revision": 1},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["data"]["recomposition_deferred"] is True
+    assert backend.calls == []
+
+
+def test_managed_native_dialogue_selection_is_gated_before_manifest_mutation(
+    monkeypatch, tmp_path
+):
+    from fastapi import HTTPException
+    from novelvideo.freezone.orchestration.models import OrchestrationError
+    from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+
+    client, _backend = make_client(monkeypatch, tmp_path, beat_count=12)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_director_manifest(tmp_path)
+
+    def block_audio(_resolved, episode, stage, **_kwargs):
+        assert episode == 1 and stage == "audio"
+        raise HTTPException(
+            status_code=409,
+            detail=OrchestrationError(
+                "production_stage_blocked", "screenplay required",
+                stage="audio", required_stage="screenplay", status="pending",
+                reason="not_ready",
+            ).as_dict(),
+        )
+
+    monkeypatch.setattr(narrative_groups, "_admit_managed_episode_stage", block_audio)
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/dialogue-source",
+        json={"span_index": 0, "dialogue_source": "h3_native", "revision": 1},
+    )
+
+    assert response.status_code == 409
+    manifest = load_h3_director_manifest(tmp_path / "videos" / "director.manifest.json")
+    assert manifest.entries[0].dialogue_source.value == "external_tts"
+
+
+def test_native_span_recompose_uses_audio_admission_not_final_composition_gate(
+    monkeypatch, tmp_path
+):
+    client, backend = make_client(monkeypatch, tmp_path)
+    client.get("/api/v1/projects/demo/episodes/1/narrative-groups")
+    _seed_director_manifest(tmp_path)
+    monkeypatch.setattr(narrative_groups, "_generation_aspect_ratio", lambda *_: "16:9")
+    monkeypatch.setattr(
+        "novelvideo.task_backend.runners.video._video_has_audio_stream",
+        lambda _path: True,
+    )
+    admitted_stages = []
+
+    def admit(_resolved, episode, stage, **_kwargs):
+        assert episode == 1
+        admitted_stages.append(stage)
+
+    monkeypatch.setattr(narrative_groups, "_admit_managed_episode_stage", admit)
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/ng-01/video/dialogue-source",
+        json={"span_index": 0, "dialogue_source": "h3_native", "revision": 1},
+    )
+
+    assert response.status_code == 202
+    assert admitted_stages == ["audio"]
+    assert backend.calls[0][1]["task_type"] == "narrative_group_video_compose"
 
 
 def test_external_dialogue_selection_prepares_audio_before_changing_source(monkeypatch, tmp_path):

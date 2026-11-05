@@ -136,18 +136,14 @@ async def _build_director_plan_input(
         if not semantic.validation_report.passed or not semantic.scenes or not semantic.beats:
             raise DirectorPlanTaskError("SCREENPLAY_SEMANTICS_NOT_VALIDATED")
     from novelvideo.project_config import load_project_config_file_from_state_dir
-    from novelvideo.services.style_service import StyleService
 
     config = load_project_config_file_from_state_dir(ctx.state_dir)
-    project_style = str(config.get("visual_style") or "chinese_period_drama")
-    style_override = str(payload.get("style_id") or "").strip() or None
-    snapshot = StyleService.resolve_style_snapshot(
-        project_style,
-        style_override,
-        username=ctx.owner_username,
-        project=ctx.project_name,
-        project_dir=ctx.output_dir,
+    from novelvideo.director_plan.style_resolution import (
+        resolve_project_style_snapshot,
     )
+
+    style_override = str(payload.get("style_id") or "").strip() or None
+    snapshot = resolve_project_style_snapshot(ctx, style_override=style_override)
     expected_snapshot_id = str(payload.get("style_snapshot_id") or "").strip()
     if expected_snapshot_id and snapshot.snapshot_id != expected_snapshot_id:
         raise DirectorPlanTaskError("STYLE_SNAPSHOT_CONFLICT")
@@ -401,18 +397,29 @@ async def _execute_director_plan(
     old_plan, assets = _load_asset_migration_context(ctx, episode)
     try:
         review_id = str(payload.get("review_revision_id") or "")
-        operation = service.review_revision if review_id else service.create_draft
-        review_args = {"candidate": DirectorPlanStore(ctx.output_dir).load(episode, review_id)} if review_id else {}
-        revision = await operation(
-            input_value,
+        review_mode = str(payload.get("review_mode") or "creative_review")
+        if review_mode not in {"creative_review", "style_refresh"}:
+            raise ValueError("unsupported director-plan review mode")
+        if review_mode == "style_refresh" and not review_id:
+            raise ValueError("style refresh requires an existing director-plan revision")
+        candidate = DirectorPlanStore(ctx.output_dir).load(episode, review_id) if review_id else None
+        if review_mode == "style_refresh":
+            operation = service.refresh_style_revision
+            review_args = {"candidate": candidate}
+        else:
+            operation = service.review_revision if review_id else service.create_draft
+            review_args = {"candidate": candidate} if candidate is not None else {}
+        operation_args = {
             **review_args,
-            on_stage=lambda stage: progress(
-                0.55 if stage == "episode_planned" else 0.8,
+            "on_stage": lambda stage: progress(
+                0.55 if stage == "episode_planned" else
+                0.65 if stage == "professional_roles_started" else 0.8,
                 f"M1 {stage}",
             ),
-            old_plan=old_plan,
-            assets=assets,
-        )
+        }
+        if review_mode != "style_refresh":
+            operation_args.update(old_plan=old_plan, assets=assets)
+        revision = await operation(input_value, **operation_args)
     except DirectorPlanTaskError:
         raise
     except Exception as exc:
@@ -421,7 +428,7 @@ async def _execute_director_plan(
     report = _validation_report(revision)
     if getattr(ctx, "output_dir", None) is not None:
         DirectorPlanStore(ctx.output_dir).require_current(revision)
-    if not bool(report.get("passed")) or str(revision.status) not in {
+    if (not bool(report.get("passed")) and review_mode != "style_refresh") or str(revision.status) not in {
         "review_required", "active", "superseded", "abandoned",
     }:
         raise DirectorPlanTaskError(

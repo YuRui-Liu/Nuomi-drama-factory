@@ -36,8 +36,24 @@ describe("ProviderModelPicker empty catalog", () => {
 
     const imageGenNode = readFileSync(consumers[0], "utf8");
     expect(imageGenNode).toMatch(
-      /const submitDisabled\s*=\s*isGenerating\s*\|\|\s*!selectedModel\s*\|\|/,
+      /const submitDisabled\s*=\s*isNarrativeGroupGrid\s*\|\|\s*isGenerating\s*\|\|\s*isAssetDesignRunBusy\s*\|\|\s*assetDesignActionBusy\s*\|\|\s*!selectedModel\s*\|\|\s*!hasEffectivePrompt/,
     );
+  });
+
+  it("routes bound asset designs through explicit single-run orchestration and exposes their source and status", () => {
+    const source = readFileSync(
+      "src/features/canvas/nodes/ImageGenNode.tsx",
+      "utf8",
+    );
+
+    expect(source).toMatch(/if \(isAssetDesignBound\)\s*\{[\s\S]*?await submitBoundAssetDesign\(\)/);
+    expect(source).toContain("!canAutoCommitOnGenerate && !isAssetDesignBound");
+    expect(source).toContain("canAutoCommitOnGenerate || isAssetDesignBound ? 1 : count");
+    expect(source).toContain('aria-label="资产设计状态"');
+    expect(source).toContain("设计来源：");
+    expect(source).toContain("assetRunLabel(assetDesignRun.status)");
+    expect(source).toContain("performAssetDesignAction('cancel')");
+    expect(source).toContain("performAssetDesignAction('retry')");
   });
 
   it.each([

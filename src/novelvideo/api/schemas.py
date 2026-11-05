@@ -1593,6 +1593,11 @@ class FreezoneAudioSpeechRequest(BaseModel):
 class FreezoneAudioMusicRequest(BaseModel):
     """Freezone 音频节点：文本生成音乐请求。"""
 
+    target_episode: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="可选：声明该音轨属于指定集数，以便执行托管制作阶段校验。",
+    )
     input: str = Field(
         description="音乐描述 prompt。",
         examples=["cinematic rain-soaked suspense music"],

@@ -8,8 +8,18 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { getFixedAssetVersion, getFixedAssetUses, getFixedAssetMedia } from '@/api/creation';
 import { listCreationAssets, listCreationCanvases, registerCreationAsset } from '@/api/creation';
 import { captureFreezoneCanvasRuntime } from '@/features/freezone/canvasSyncRuntime';
+import { getFreezoneCanvas } from '@/api/canvas';
+import { prepareAssetDesign } from '@/api/collaboration';
+import { refreshAgentCanvasChanges } from '@/features/canvas/infrastructure/orchestrationGateway';
+vi.mock('@/api/canvas', () => ({ getFreezoneCanvas: vi.fn() }));
+vi.mock('@/api/collaboration', () => ({ prepareAssetDesign: vi.fn() }));
+vi.mock('@/features/canvas/infrastructure/orchestrationGateway', () => ({ refreshAgentCanvasChanges: vi.fn() }));
+vi.mock('@/features/canvas/hooks/useFreezoneStyleTemplates', () => ({ useFreezoneStyleTemplates: () => ({ templates: [] }) }));
 vi.mock('@/api/creation', () => ({ listCreationAssets: vi.fn(), listCreationCanvases: vi.fn(), registerCreationAsset: vi.fn(), getFixedAssetVersion: vi.fn(), getFixedAssetUses: vi.fn(), getFixedAssetMedia: vi.fn() }));
-vi.mock('@/features/freezone/canvasSyncRuntime', () => ({ captureFreezoneCanvasRuntime: vi.fn() }));
+vi.mock('@/features/freezone/canvasSyncRuntime', () => ({
+  captureFreezoneCanvasRuntime: vi.fn(),
+  currentFreezoneCanvasScope: vi.fn(() => null),
+}));
 const entry = { kind: 'character' as const, source_name: 'Lin', parent_source_name: null,
   selection: { kind: 'character' as const, source_name: 'Lin', parent_source_name: null }, proof: 'proof', title: 'Lin', asset_ref: null, snapshot: {},
   media: [{ slot_id: 'character:Lin:portrait', role: 'portrait', preview_url: '/latest.png', sha256: 'hash', adoption_status: 'adopted' }] };
@@ -17,7 +27,7 @@ describe('fixed asset application', () => {
   beforeEach(() => vi.clearAllMocks());
   it('places consecutive button additions in free space using nodes present after registration', async () => {
     useCanvasStore.setState({ nodes: [], edges: [], selectedNodeId: null });
-    vi.mocked(listCreationCanvases).mockResolvedValue([{ canvas_id: 'free', title: '自由', kind: 'free', episode_id: null, status: 'applied' }]);
+    vi.mocked(listCreationCanvases).mockResolvedValue([{ canvas_id: 'free', title: '自由', kind: 'free', episode_id: null, episode_number: null, status: 'applied' }]);
     vi.mocked(registerCreationAsset).mockImplementation(async () => {
       if (!useCanvasStore.getState().nodes.length) useCanvasStore.setState({ nodes: [{ id: 'existing', type: 'uploadNode', position: { x: 120, y: 120 }, measured: { width: 360, height: 360 }, data: {} }] as never });
       return { base_asset_id: 'base', revision: 1 };
@@ -59,7 +69,7 @@ describe('fixed asset application', () => {
     vi.mocked(getFixedAssetUses).mockResolvedValue(media.map((item, index) => ({ canvas_id: 'free', node_id: roles[index], asset_ref: ref, media: item, status: 'applied' })));
     vi.mocked(getFixedAssetMedia).mockResolvedValue({ imageUrl: null, previewImageUrl: '/model.sog', panoUrl: '/fixed-pano.png' });
     vi.mocked(listCreationAssets).mockResolvedValue([{ ...entry, kind: 'scene', asset_ref: { ...ref, revision: 2 }, media: media.slice(0, 4) }]);
-    vi.mocked(listCreationCanvases).mockResolvedValue([{ canvas_id: 'free', title: '自由', kind: 'free', episode_id: null, status: 'applied' }]);
+    vi.mocked(listCreationCanvases).mockResolvedValue([{ canvas_id: 'free', title: '自由', kind: 'free', episode_id: null, episode_number: null, status: 'applied' }]);
     vi.mocked(registerCreationAsset).mockResolvedValue({ ...ref, revision: 2 });
     const run = vi.fn().mockResolvedValue({ status: 'applied' });
     vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue({ isCurrent: () => true, run } as never);
@@ -82,7 +92,7 @@ describe('fixed asset application', () => {
     vi.mocked(getFixedAssetUses).mockResolvedValue(['free', 'other'].map(canvas_id => ({ canvas_id, node_id: 'n', asset_ref: ref, media: entry.media[0], status: 'applied' })));
     vi.mocked(getFixedAssetMedia).mockResolvedValue({ imageUrl: '/fixed-old.png' });
     vi.mocked(listCreationAssets).mockResolvedValue([{ ...entry, asset_ref: { ...ref, revision: 2 } }]);
-    vi.mocked(listCreationCanvases).mockResolvedValue([{ canvas_id: 'free', title: '自由', kind: 'free', episode_id: null, status: 'applied' }]);
+    vi.mocked(listCreationCanvases).mockResolvedValue([{ canvas_id: 'free', title: '自由', kind: 'free', episode_id: null, episode_number: null, status: 'applied' }]);
     vi.mocked(registerCreationAsset).mockResolvedValue({ ...ref, revision: 2 });
     const run = vi.fn().mockResolvedValue({ status: 'applied' });
     vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue({ isCurrent: () => true, run } as never);
@@ -101,7 +111,7 @@ describe('fixed asset application', () => {
   it('does not apply after registration completes for a replaced runtime instance', async () => {
     const run = vi.fn(); let current = true;
     vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue({ isCurrent: () => current, run } as never);
-    vi.mocked(listCreationCanvases).mockResolvedValue([{ canvas_id: 'free', title: '自由', kind: 'free', episode_id: null, status: 'applied' }]);
+    vi.mocked(listCreationCanvases).mockResolvedValue([{ canvas_id: 'free', title: '自由', kind: 'free', episode_id: null, episode_number: null, status: 'applied' }]);
     vi.mocked(registerCreationAsset).mockImplementation(async () => { current = false; return { base_asset_id: 'base', revision: 1 }; });
     expect((await applyFixedAsset({ project: 'p', canvasId: 'free', entry, media: entry.media[0] })).status).toBe('detached');
     expect(run).not.toHaveBeenCalled();
@@ -122,7 +132,7 @@ describe('fixed asset application', () => {
   });
   it('browses without registering, shows the destination, and applies only on an explicit click', async () => {
     vi.mocked(listCreationAssets).mockResolvedValue([entry]);
-    vi.mocked(listCreationCanvases).mockResolvedValue([{ canvas_id: 'free', title: '自由画布', kind: 'free', episode_id: null, status: 'applied' }]);
+    vi.mocked(listCreationCanvases).mockResolvedValue([{ canvas_id: 'free', title: '自由画布', kind: 'free', episode_id: null, episode_number: null, status: 'applied' }]);
     vi.mocked(registerCreationAsset).mockResolvedValue({ base_asset_id: 'base', revision: 1 });
     const run = vi.fn().mockResolvedValue({ status: 'applied' });
     vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue({ isCurrent: () => true, run } as never);
@@ -135,13 +145,116 @@ describe('fixed asset application', () => {
     await waitFor(() => expect(run).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(listCreationAssets).toHaveBeenCalledTimes(2));
   });
+  it('reuses the exact prepare request after an uncertain response, even when the canvas revision changed', async () => {
+    window.history.replaceState({}, '', '/projects/p/freezone?canvas=free');
+    vi.mocked(listCreationAssets).mockResolvedValue([]);
+    vi.mocked(listCreationCanvases).mockResolvedValue([{ canvas_id: 'free', title: '自由画布', kind: 'free', episode_id: null, episode_number: null, status: 'applied' }]);
+    const baseline = vi.mocked(getFreezoneCanvas)
+      .mockResolvedValueOnce({ canvas_id: 'free', revision: 10 } as never)
+      .mockResolvedValueOnce({ canvas_id: 'free', revision: 11 } as never);
+    vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue({ isCurrent: () => true, flush: async () => true } as never);
+    vi.mocked(refreshAgentCanvasChanges).mockResolvedValue({ status: 'applied' } as never);
+    vi.mocked(prepareAssetDesign)
+      .mockRejectedValueOnce(new Error('response was lost'))
+      .mockResolvedValueOnce({
+        request_id: 'prepared-request', operation_id: 'operation',
+        design_ref: { id: 'design', revision: 1, kind: 'character' },
+        source_proposal_ref: { id: 'source', revision: 1, kind: 'story_fragment' },
+        group_id: 'group', text_node_id: 'text', image_node_id: 'image',
+        canvas_revision: 11, projection_status: 'applied',
+        prepared_execution: { canvas_id: 'free', node_id: 'image', node_type: 'imageGenNode', operation: 'generate', max_node_runs: 1, source_operation_id: 'op', request_id: 'prepared-request' },
+      });
+    let view = render(<QueryClientProvider client={new QueryClient()}><FixedAssetLibrary project="p" canvasId="free" /></QueryClientProvider>);
+    fireEvent.change(await screen.findByLabelText('资产设计名称'), { target: { value: '女主' } });
+    fireEvent.change(screen.getByLabelText('人物设计用途'), { target: { value: 'full_body' } });
+    fireEvent.change(screen.getByLabelText('角色或场景设定'), { target: { value: '冷静的侦探' } });
+    fireEvent.change(screen.getByLabelText('资产出图描述'), { target: { value: '短发，旧风衣' } });
+    const prepare = screen.getByRole('button', { name: '准备新设计' });
+    fireEvent.click(prepare);
+    await waitFor(() => expect(prepareAssetDesign).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('response was lost'));
+    view.unmount();
+    view = render(<QueryClientProvider client={new QueryClient()}><FixedAssetLibrary project="p" canvasId="free" /></QueryClientProvider>);
+    fireEvent.change(await screen.findByLabelText('资产设计名称'), { target: { value: '女主' } });
+    fireEvent.change(screen.getByLabelText('人物设计用途'), { target: { value: 'full_body' } });
+    fireEvent.change(screen.getByLabelText('角色或场景设定'), { target: { value: '冷静的侦探' } });
+    fireEvent.change(screen.getByLabelText('资产出图描述'), { target: { value: '短发，旧风衣' } });
+    fireEvent.click(screen.getByRole('button', { name: '准备新设计' }));
+    await waitFor(() => expect(prepareAssetDesign).toHaveBeenCalledTimes(2));
+    const first = vi.mocked(prepareAssetDesign).mock.calls[0][1];
+    const second = vi.mocked(prepareAssetDesign).mock.calls[1][1];
+    expect(second).toEqual(first);
+    expect(second.expected_canvas_revision).toBe(10);
+    expect(second.request_id).toBe(first.request_id);
+    expect(second.purpose).toBe('full_body');
+    expect(baseline).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+  it('freezes the selected scene purpose and an explicit nondefault image ratio', async () => {
+    window.history.replaceState({}, '', '/projects/p/freezone?workspace=free');
+    vi.mocked(listCreationAssets).mockResolvedValue([]);
+    vi.mocked(listCreationCanvases).mockResolvedValue([
+      { canvas_id: 'free', title: '自由画布', kind: 'free', episode_id: null, episode_number: null, status: 'applied' },
+    ]);
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ canvas_id: 'free', revision: 4 } as never);
+    vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue({ isCurrent: () => true, flush: async () => true } as never);
+    vi.mocked(refreshAgentCanvasChanges).mockResolvedValue({ status: 'applied' } as never);
+    vi.mocked(prepareAssetDesign).mockResolvedValue({
+      request_id: 'scene-request', operation_id: 'operation',
+      design_ref: { id: 'design', revision: 1, kind: 'scene' },
+      source_proposal_ref: { id: 'source', revision: 1, kind: 'story_fragment' },
+      group_id: 'group', text_node_id: 'text', image_node_id: 'image',
+      canvas_revision: 5, projection_status: 'applied',
+      prepared_execution: { canvas_id: 'free', node_id: 'image', node_type: 'imageGenNode', operation: 'generate', max_node_runs: 1, source_operation_id: 'op', request_id: 'scene-request' },
+    });
+    render(<QueryClientProvider client={new QueryClient()}><FixedAssetLibrary project="p" canvasId="free" kind="scene" /></QueryClientProvider>);
+    fireEvent.change(await screen.findByLabelText('资产设计名称'), { target: { value: '居民楼门厅' } });
+    fireEvent.change(screen.getByLabelText('角色或场景设定'), { target: { value: '雨夜停电的居民楼门厅' } });
+    fireEvent.change(screen.getByLabelText('资产出图描述'), { target: { value: '从大门朝电梯的宽幅视角' } });
+    fireEvent.change(screen.getByLabelText('资产出图比例'), { target: { value: '2:3' } });
+    fireEvent.click(screen.getByRole('button', { name: '准备新设计' }));
+
+    await waitFor(() => expect(prepareAssetDesign).toHaveBeenCalledTimes(1));
+    expect(prepareAssetDesign).toHaveBeenCalledWith('p', expect.objectContaining({
+      kind: 'scene', purpose: 'scene', aspect_ratio: '2:3',
+    }));
+  });
+  it('defaults a new character design to the four-view character sheet and freezes that purpose', async () => {
+    window.history.replaceState({}, '', '/projects/p/freezone?workspace=free');
+    vi.mocked(listCreationAssets).mockResolvedValue([]);
+    vi.mocked(listCreationCanvases).mockResolvedValue([
+      { canvas_id: 'free', title: '自由画布', kind: 'free', episode_id: null, episode_number: null, status: 'applied' },
+    ]);
+    vi.mocked(getFreezoneCanvas).mockResolvedValue({ canvas_id: 'free', revision: 3 } as never);
+    vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue({ isCurrent: () => true, flush: async () => true } as never);
+    vi.mocked(refreshAgentCanvasChanges).mockResolvedValue({ status: 'applied' } as never);
+    vi.mocked(prepareAssetDesign).mockResolvedValue({
+      request_id: 'character-sheet-request', operation_id: 'operation',
+      design_ref: { id: 'design', revision: 1, kind: 'character' },
+      source_proposal_ref: { id: 'source', revision: 1, kind: 'story_fragment' },
+      group_id: 'group', text_node_id: 'text', image_node_id: 'image',
+      canvas_revision: 4, projection_status: 'applied',
+      prepared_execution: { canvas_id: 'free', node_id: 'image', node_type: 'imageGenNode', operation: 'generate', max_node_runs: 1, source_operation_id: 'op', request_id: 'character-sheet-request' },
+    });
+    render(<QueryClientProvider client={new QueryClient()}><FixedAssetLibrary project="p" canvasId="free" /></QueryClientProvider>);
+    const purpose = await screen.findByLabelText('人物设计用途') as HTMLSelectElement;
+    expect(purpose.value).toBe('character_sheet');
+    expect(screen.getByLabelText('资产出图比例').textContent).toContain('按用途默认（16:9）');
+    fireEvent.change(await screen.findByLabelText('资产设计名称'), { target: { value: '林岚' } });
+    fireEvent.change(screen.getByLabelText('角色或场景设定'), { target: { value: '夜班记者，短发' } });
+    fireEvent.change(screen.getByLabelText('资产出图描述'), { target: { value: '沉着，蓝灰工装' } });
+    fireEvent.click(screen.getByRole('button', { name: '准备新设计' }));
+    await waitFor(() => expect(prepareAssetDesign).toHaveBeenCalledWith('p', expect.objectContaining({
+      kind: 'character', purpose: 'character_sheet',
+    })));
+  });
   it('explicitly registers and sends a complete atomic create to the correct episode runtime', async () => {
     const run = vi.fn().mockImplementation(async request => {
       useCanvasStore.setState({ nodes: [{ id: request.payload.node_id, type: 'uploadNode', position: { x: 4, y: 8 }, data: {} }] as never });
       return { status: 'applied' };
     });
     vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue({ isCurrent: () => true, run } as never);
-    vi.mocked(listCreationCanvases).mockResolvedValue([{ canvas_id: 'episode-two', episode_id: 'ep2', kind: 'episode', title: '第二集', status: 'applied' }]);
+    vi.mocked(listCreationCanvases).mockResolvedValue([{ canvas_id: 'episode-two', episode_id: 'ep2', episode_number: 2, kind: 'episode', title: '第二集', status: 'applied' }]);
     vi.mocked(registerCreationAsset).mockResolvedValue({ base_asset_id: 'base', variant_id: null, revision: 2 });
     await applyFixedAsset({ project: 'p', canvasId: 'episode-two', entry, media: entry.media[0], position: { x: 4, y: 8 } });
     expect(registerCreationAsset).toHaveBeenCalledWith('p', { selection: entry.selection, proof: 'proof' });

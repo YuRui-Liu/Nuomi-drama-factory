@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Handle,
@@ -38,6 +38,8 @@ import {
   type CanvasNodeType,
   type ScriptGenAction,
   type ScriptNodeData,
+  type StoryboardDirectorBlock,
+  type StoryboardScriptRow,
 } from '@/features/canvas/domain/canvasNodes';
 import { isRenderableImageSrc, resolveImageDisplayUrl } from '@/features/canvas/application/imageData';
 import { resolveNodeDisplayName } from '@/features/canvas/domain/nodeDisplay';
@@ -66,7 +68,6 @@ import {
   submitFreezoneTextTranslate,
   type FreezoneGenerationHistoryRecord,
   type FreezoneStoryScriptResult,
-  type FreezoneStoryScriptRow,
 } from '@/api/ops';
 import { awaitTaskCompletion } from '@/api/tasks';
 import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
@@ -78,6 +79,7 @@ import {
   hasCompletedHistoryRecords,
 } from '@/features/canvas/ui/NodeGenerationHistory';
 import { readUrl } from '@/lib/url-params';
+import { buildStoryboardGroups, reconcileStoryboardReferenceEdges, storyboardSourceSignature } from '../production/lightweightEpisodeChain';
 import { CreditCostPill } from '@/components/credits/credit-visual';
 import { useGenerationCreditCost } from '@/lib/queries/generation-credit-cost';
 import {
@@ -184,12 +186,64 @@ const SCRIPT_COLUMNS: ScriptColumnDef[] = [
   { key: 'video_motion_prompt', label: '视频运动提示词', widthPx: 200 },
 ];
 
-const SCRIPT_TABLE_MIN_WIDTH = SCRIPT_COLUMNS.reduce(
-  (sum, col) => sum + col.widthPx,
-  0,
-);
+const SUMMARY_COLUMNS = SCRIPT_COLUMNS.filter(column => ['shot_no', 'duration', 'visual_description', 'character', 'dialogue'].includes(column.key));
 
-function isScriptResult(value: unknown): value is FreezoneStoryScriptResult {
+// 行内展开的 director 结构化块：固定六个维度 + 一行 panel_spec 摘要，
+// 顺序与设计稿（景别 / 轴线 / 主光 / 表演 / 道具 / 连续性）一致。
+const STORYBOARD_DIRECTOR_FIELDS = [
+  { key: 'framing', label: '景别' },
+  { key: 'blocking', label: '轴线' },
+  { key: 'lights', label: '主光' },
+  { key: 'performance', label: '表演' },
+  { key: 'props', label: '道具' },
+  { key: 'continuity', label: '连续性' },
+] as const satisfies ReadonlyArray<{ key: keyof StoryboardDirectorBlock; label: string }>;
+
+/** director 字段可能来自不同版本的投影（字符串 / 数组 / 缺失），统一折成一行文本。 */
+function directorText(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number') return String(value);
+  if (Array.isArray(value)) {
+    return value.map(directorText).filter((part) => part.length > 0).join(' · ');
+  }
+  return '';
+}
+
+/** 读取行上的 director 块并归一化；没有可展示内容时返回 null（不渲染展开区）。 */
+function readDirectorBlock(row: StoryboardScriptRow): StoryboardDirectorBlock | null {
+  const candidate = row.director;
+  if (!candidate || typeof candidate !== 'object') return null;
+  const raw = candidate as Record<string, unknown>;
+  const block: StoryboardDirectorBlock = {
+    framing: directorText(raw.framing) || null,
+    blocking: directorText(raw.blocking) || null,
+    lights: directorText(raw.lights) || null,
+    performance: directorText(raw.performance) || null,
+    props: directorText(raw.props) || null,
+    continuity: directorText(raw.continuity) || null,
+    panel_spec: directorText(raw.panel_spec) || null,
+  };
+  const hasField =
+    STORYBOARD_DIRECTOR_FIELDS.some(({ key }) => Boolean(block[key])) || Boolean(block.panel_spec);
+  return hasField ? block : null;
+}
+
+/** 设计稿的行标题用 S01 这种镜号前缀；没有镜号时退回「第 N 镜」。 */
+function storyboardShotLabel(row: StoryboardScriptRow, index: number): string {
+  const shot = row.shot_no;
+  if (typeof shot === 'number' && Number.isFinite(shot)) {
+    return `S${String(shot).padStart(2, '0')}`;
+  }
+  if (typeof shot === 'string' && shot.trim().length > 0) return shot.trim();
+  return `第 ${index + 1} 镜`;
+}
+
+/** 分镜表视图：后端 story-script 结果 + 行内可能携带的 director 投影块。 */
+type StoryboardScriptResult = Omit<FreezoneStoryScriptResult, 'rows'> & {
+  rows: StoryboardScriptRow[];
+};
+
+function isScriptResult(value: unknown): value is StoryboardScriptResult {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as { rows?: unknown };
   return Array.isArray(candidate.rows);
@@ -213,6 +267,10 @@ interface ScriptReference {
 }
 
 function classifyUpstreamNode(node: CanvasNode): ScriptReference | null {
+  if (node.type === CANVAS_NODE_TYPES.screenplay) {
+    return { nodeId: node.id, kind: 'text', text: typeof node.data.content === 'string' ? node.data.content : '',
+      displayName: node.data.displayName ?? '单集剧本' };
+  }
   if (isTextAnnotationNode(node)) {
     return {
       nodeId: node.id,
@@ -274,6 +332,18 @@ function classifyUpstreamNode(node: CanvasNode): ScriptReference | null {
   return null;
 }
 
+function scriptRequestInputSignature(nodeId: string): string {
+  const state = useCanvasStore.getState();
+  const node = state.nodes.find(item => item.id === nodeId);
+  return JSON.stringify({ prompt: node?.data.prompt ?? '', source: node?.data.screenplaySourceText ?? '',
+    refs: state.edges.filter(edge => edge.target === nodeId).map(edge => {
+      const source = state.nodes.find(item => item.id === edge.source);
+      return { id: edge.source, reference: source ? classifyUpstreamNode(source) : null,
+        revision: source?.data.documentRevisionId ?? null };
+    }),
+  });
+}
+
 // 提交逻辑抽成共享 hook：节点本体的「重试」按钮与底部操作面板的「生成」按钮共用同一条
 // 提交路径。错误统一写进 data.generationError（渲染在节点本体上），不再用面板本地 state。
 function useScriptStorySubmit(
@@ -321,10 +391,11 @@ function useScriptStorySubmit(
     // 输入的提示词(参考 libtv:素材做参考、提示词驱动生成)。优先用上游文本节点内容，
     // 否则把输入框里用户写的提示词作为 source_text 主输入 —— 而不是塞进 steering 后
     // 让后端因缺 source_text 报 400(#65 视频参考、#66 图片参考失败的根因)。
-    const sourceText = upstreamText.length > 0 ? upstreamText : trimmedPrompt;
+    const sourceText = upstreamText || (typeof data.screenplaySourceText === 'string' ? data.screenplaySourceText : '') || trimmedPrompt;
     // 有上游文本节点时输入框内容退居 steering prompt；否则它已是主输入，不再重复下发。
     const steeringPrompt =
-      upstreamText.length > 0 ? trimmedPrompt || undefined : undefined;
+      upstreamText.length > 0 || (typeof data.screenplaySourceText === 'string' && data.screenplaySourceText.trim())
+        ? trimmedPrompt || undefined : undefined;
 
     if (!sourceText || sourceText.length === 0) {
       updateNodeData(nodeId, {
@@ -338,6 +409,8 @@ function useScriptStorySubmit(
       generationStartedAt: Date.now(),
       generationError: null,
     });
+    const resultAtStart = JSON.stringify(useCanvasStore.getState().nodes.find(node => node.id === nodeId)?.data.scriptResult ?? null);
+    const inputAtStart = scriptRequestInputSignature(nodeId);
     try {
       const ref = await submitFreezoneStoryScript(project, {
         sourceText,
@@ -345,20 +418,35 @@ function useScriptStorySubmit(
         durationSec: videoRef?.durationSec ?? undefined,
         characterRefs: characterRefs.length > 0 ? characterRefs : undefined,
         prompt: steeringPrompt,
-        canvasId: readUrl().canvas ?? 'default',
+        canvasId: readUrl().canvas ?? new URLSearchParams(window.location.search).get('workspace') ?? 'default',
         nodeId,
       });
       // Persist the task handle so a page refresh can resume this job.
       updateNodeData(nodeId, generationTaskDescriptor(ref));
       await awaitTaskCompletion(ref.task_key, project);
       const result = await fetchFreezoneStoryScriptResult(project, ref.job_id);
+      const current = useCanvasStore.getState();
+      if (JSON.stringify(current.nodes.find(node => node.id === nodeId)?.data.scriptResult ?? null) !== resultAtStart ||
+          scriptRequestInputSignature(nodeId) !== inputAtStart) {
+        updateNodeData(nodeId, { isGenerating: false, generationStartedAt: null, pendingScriptResult: result,
+          generationError: '生成期间内容已修改，已保留现有内容。可查看旧请求结果，或按当前输入重新生成。' });
+        return;
+      }
       updateNodeData(nodeId, {
         isGenerating: false,
         generationStartedAt: null,
         scriptResult: result,
         scriptTitle: result.title ?? null,
         generationError: null,
+        pendingScriptResult: null,
+        needsUpdate: false,
+        scriptGenerationInputSignature: inputAtStart,
+        ...(references.some(ref => current.nodes.find(node => node.id === ref.nodeId)?.type === CANVAS_NODE_TYPES.screenplay)
+          ? { screenplaySourceText: sourceText,
+            screenplaySourceRevision: current.nodes.find(node => references.some(ref => ref.nodeId === node.id) && node.type === CANVAS_NODE_TYPES.screenplay)?.data.documentRevisionId }
+          : {}),
       });
+      updateNodeData(nodeId, { scriptGenerationInputSignature: scriptRequestInputSignature(nodeId) });
     } catch (error) {
       console.error('[script-node] submit failed', error);
       updateNodeData(nodeId, {
@@ -369,12 +457,14 @@ function useScriptStorySubmit(
     } finally {
       onSettled?.();
     }
-  }, [isGenerating, nodeId, references, prompt, updateNodeData, onSettled]);
+  }, [isGenerating, nodeId, references, prompt, data.screenplaySourceText, updateNodeData, onSettled]);
 
   return { submit, isGenerating };
 }
 
 export const ScriptNode = memo(({ id, data, selected, width, height }: ScriptNodeProps) => {
+  const [showDetails, setShowDetails] = useState(false);
+  const [showDeferredResult, setShowDeferredResult] = useState(false);
   const updateNodeInternals = useUpdateNodeInternals();
   const setSelectedNode = useCanvasStore((state) => state.setSelectedNode);
   const selectedNodeId = useCanvasStore((state) => state.selectedNodeId);
@@ -382,7 +472,28 @@ export const ScriptNode = memo(({ id, data, selected, width, height }: ScriptNod
   // Subscribe to ONLY one-hop upstream (not the whole nodes array) so unrelated
   // node drags don't re-render this node. See useUpstreamGraph.
   const upstreamNodes = useUpstreamNodes(id);
+  useEffect(() => {
+    const state = useCanvasStore.getState();
+    const referenceIds = state.edges.filter(edge => edge.target === id).flatMap(edge => {
+      const node = state.nodes.find(item => item.id === edge.source);
+      return node && classifyUpstreamNode(node)?.kind === 'image' ? [node.id] : [];
+    });
+    let edges = state.edges;
+    const changed: string[] = [];
+    state.nodes.filter(node => node.type === CANVAS_NODE_TYPES.storyboardGen && node.data.lightweightSourceNodeId === id).forEach(grid => {
+      const next = reconcileStoryboardReferenceEdges(edges, id, grid.id, referenceIds);
+      if (next !== edges) changed.push(grid.id);
+      edges = next;
+    });
+    if (edges !== state.edges) {
+      state.replaceEdges(edges);
+      changed.forEach(gridId => state.updateNodeData(gridId, { needsUpdate: true }));
+    }
+  }, [id, upstreamNodes]);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // 选中分镜表节点后行内展开「当前行」的 director 结构化块：默认落到第一条
+  // 带导演投影的镜头，点其它行可切换当前行（null = 由默认行兜底）。
+  const [activeRowIndex, setActiveRowIndex] = useState<number | null>(null);
 
   const resolvedTitle = useMemo(
     () => resolveNodeDisplayName(CANVAS_NODE_TYPES.script, data),
@@ -390,7 +501,88 @@ export const ScriptNode = memo(({ id, data, selected, width, height }: ScriptNod
   );
 
   const scriptResult = isScriptResult(data.scriptResult) ? data.scriptResult : null;
+  const deferredResult = isScriptResult(data.pendingScriptResult) ? data.pendingScriptResult : null;
+  const screenplaySource = upstreamNodes.find(node => node.type === CANVAS_NODE_TYPES.screenplay);
+  const sourceChanged = Boolean(scriptResult && (
+    data.needsUpdate === true ||
+    (typeof data.scriptGenerationInputSignature === 'string' && data.scriptGenerationInputSignature !== scriptRequestInputSignature(id)) ||
+    (screenplaySource && ((typeof data.screenplaySourceRevision === 'string' && screenplaySource.data.documentRevisionId !== data.screenplaySourceRevision) ||
+      (typeof data.screenplaySourceText === 'string' && typeof screenplaySource.data.content === 'string' && screenplaySource.data.content !== data.screenplaySourceText)))
+  ));
   const rows = scriptResult?.rows ?? [];
+  const createGrids = () => {
+    const canvas = useCanvasStore.getState();
+    const source = canvas.nodes.find(node => node.id === id);
+    if (!source || !rows.length) return;
+    const signature = storyboardSourceSignature(rows);
+    const refs = canvas.edges.filter(edge => edge.target === id).map(edge => canvas.nodes.find(node => node.id === edge.source))
+      .filter((node): node is CanvasNode => Boolean(node && classifyUpstreamNode(node)?.kind === 'image'));
+    const referenceSignature = JSON.stringify(refs.map(node => classifyUpstreamNode(node)));
+    const groups = buildStoryboardGroups(rows);
+    let firstId: string | undefined;
+    groups.forEach((group, index) => {
+      const prior = canvas.nodes.find(node => node.type === CANVAS_NODE_TYPES.storyboardGen &&
+        node.data.lightweightSourceNodeId === id &&
+        (node.data.lightweightGroupOrder === index || node.data.lightweightGroupKey === group.key));
+      if (prior?.data.isGenerating || prior?.data.lightweightGenerateRequest || prior?.data.lightweightGenerationRequestActive) { toast.info('宫格已在准备或生成，完成后可更新分镜内容。'); firstId ??= prior.id; return; }
+      const sourceChanged = !prior || prior.data.lightweightSourceSignature !== signature;
+      const groupChanged = !prior || JSON.stringify(prior.data.frames) !== JSON.stringify(group.frames)
+        || prior.data.gridRows !== group.gridRows || prior.data.gridCols !== group.gridCols;
+      const referencesChanged = !prior || prior.data.lightweightReferenceSignature !== referenceSignature;
+      const superseded = prior?.data.lightweightSuperseded === true || prior?.data.lightweightSourceSignature === '__superseded__';
+      const seed = { displayName: `叙事组 ${index + 1} · 宫格图`,
+        frames: group.frames, gridRows: group.gridRows, gridCols: group.gridCols,
+        aspectRatio: prior?.data.aspectRatio === '16:9' ? '16:9' : '9:16', ratioControlMode: 'cell' as const,
+        lightweightSourceNodeId: id, lightweightGroupKey: group.key, lightweightGroupOrder: index,
+        lightweightSuperseded: false,
+        lightweightReferenceSignature: referenceSignature,
+        lightweightSourceSignature: signature, episodeNumber: data.episodeNumber };
+      const target = prior?.id ?? canvas.addNode(CANVAS_NODE_TYPES.storyboardGen,
+        { x: source.position.x + (source.width ?? 800) + 80, y: source.position.y + index * 480 }, seed);
+      if (prior && (sourceChanged || groupChanged || referencesChanged || superseded)) {
+        canvas.updateNodeData(target, { ...seed, needsUpdate: prior.data.needsUpdate === true || groupChanged || referencesChanged || superseded });
+      }
+      canvas.addEdge(id, target);
+      const current = useCanvasStore.getState();
+      const edges = reconcileStoryboardReferenceEdges(current.edges, id, target, refs.map(ref => ref.id));
+      if (edges !== current.edges) {
+        current.replaceEdges(edges);
+        if (prior) current.updateNodeData(target, { needsUpdate: true });
+      }
+      if (!prior || !prior.data.imageUrl || prior.data.needsUpdate === true || superseded ||
+          groupChanged || referencesChanged || edges !== current.edges) {
+        current.updateNodeData(target, { lightweightGenerateRequest: { requestId: crypto.randomUUID() } });
+      }
+      firstId ??= target;
+    });
+    const latest = useCanvasStore.getState();
+    const surplusGrids = latest.nodes.filter(node => node.type === CANVAS_NODE_TYPES.storyboardGen &&
+      node.data.lightweightSourceNodeId === id && typeof node.data.lightweightGroupOrder === 'number' &&
+      node.data.lightweightGroupOrder >= groups.length);
+    if (surplusGrids.length) {
+      const surplusIds = new Set(surplusGrids.map(node => node.id));
+      const surplusDirectors = latest.nodes.filter(node => node.type === CANVAS_NODE_TYPES.videoDirector &&
+        node.data.lightweightSourceNodeId === id && typeof node.data.lightweightGroupOrder === 'number' &&
+        node.data.lightweightGroupOrder >= groups.length);
+      const surplusDirectorIds = new Set(surplusDirectors.map(node => node.id));
+      const sourceComposers = new Set(latest.nodes.filter(node => node.type === CANVAS_NODE_TYPES.videoCompose &&
+        node.data.lightweightSourceNodeId === id).map(node => node.id));
+      latest.edges.filter(edge =>
+        (surplusIds.has(edge.source) && surplusDirectorIds.has(edge.target)) ||
+        (surplusDirectorIds.has(edge.source) && sourceComposers.has(edge.target)))
+        .forEach(edge => latest.deleteEdge(edge.id));
+
+      const activeSurplus = surplusGrids.filter(node => node.data.isGenerating === true ||
+        node.data.lightweightGenerationRequestActive === true || Boolean(node.data.lightweightGenerateRequest));
+      activeSurplus.forEach(node => latest.updateNodeData(node.id, {
+        lightweightSuperseded: true, lightweightSourceSignature: '__superseded__',
+        lightweightGenerateRequest: null, needsUpdate: true,
+      }));
+      const removableIds = surplusGrids.filter(node => !activeSurplus.some(active => active.id === node.id)).map(node => node.id);
+      if (removableIds.length) latest.deleteNodes(removableIds);
+    }
+    if (firstId) canvas.setSelectedNode(firstId);
+  };
   const hasResult = rows.length > 0;
 
   // 表格单元格编辑：把编辑过的值写回 data.scriptResult.rows[idx][colKey]。
@@ -432,6 +624,17 @@ export const ScriptNode = memo(({ id, data, selected, width, height }: ScriptNod
   }, [upstreamNodes]);
   const hasUpstream = references.length > 0;
   const isNodeSelected = Boolean(selected) || selectedNodeId === id;
+  const activeRowInRange = activeRowIndex !== null && activeRowIndex >= 0 && activeRowIndex < rows.length;
+  const firstDirectorRowIndex = rows.findIndex((row) => readDirectorBlock(row) !== null);
+  // 选中节点才展开：用户点过行就用那一行（没有 director 就只高亮不展开），
+  // 还没点过时默认落到第一条带导演投影的镜头。
+  const expandedRowIndex = !isNodeSelected
+    ? null
+    : activeRowInRange
+      ? activeRowIndex
+      : firstDirectorRowIndex >= 0
+        ? firstDirectorRowIndex
+        : null;
   const promptText = typeof data.prompt === 'string' ? data.prompt : '';
   // Per-node story-script history; fetched only while the node is selected.
   // 提到节点本体这一层：本体「重试」与面板「生成」共用下面同一个提交实例，任何
@@ -644,11 +847,27 @@ export const ScriptNode = memo(({ id, data, selected, width, height }: ScriptNod
             durationMs={data.generationDurationMs}
           />
         )}
+        {sourceChanged && !isGenerating && <div role="status" className="border-b border-amber-400/20 px-3 py-2 text-xs text-amber-200">输入已修改 · 当前分镜表需要更新，原有内容仍保留。</div>}
+        {deferredResult && !isGenerating && <div className="nodrag border-b border-amber-400/20 px-3 py-2 text-xs">
+          <div className="flex items-center gap-3">
+            <button onClick={() => setShowDeferredResult(value => !value)}>{showDeferredResult ? '收起旧请求结果' : '查看旧请求结果'}</button>
+            <button onClick={() => { updateNodeData(id, { pendingScriptResult: null, generationError: null }); setShowDeferredResult(false); }}>保留当前编辑</button>
+          </div>
+          {showDeferredResult && <div className="mt-2 space-y-2">
+            <p className="text-text-muted">这份结果基于修改前的输入。使用它会替换当前分镜表。</p>
+            <div className="max-h-40 overflow-auto">{deferredResult.rows.map((row, index) => <p key={index}>{index + 1}. {String(row.visual_description ?? row.shot_prompt ?? '')}</p>)}</div>
+            <button onClick={() => { updateNodeData(id, { scriptResult: deferredResult, scriptTitle: deferredResult.title, pendingScriptResult: null,
+              generationError: null, needsUpdate: true }); setShowDeferredResult(false); }}>使用这份结果</button>
+          </div>}
+        </div>}
         {hasResult ? (
           <>
             <ScriptResultHeader
               title={headerSubtitle}
+              directorBinding={data.directorBinding}
               onFullscreen={() => setIsFullscreen(true)}
+              showDetails={showDetails}
+              onToggleDetails={() => setShowDetails(value => !value)}
             />
             {/* 已有结果时重新生成失败：表格上方横幅提示 + 重试，
                 否则失败只写进 data.generationError、界面毫无反应。 */}
@@ -665,7 +884,17 @@ export const ScriptNode = memo(({ id, data, selected, width, height }: ScriptNod
               </div>
             )}
             <div className="flex-1 overflow-hidden p-2">
-              <ScriptResultTable rows={rows} onCellCommit={handleCellCommit} />
+              <ScriptResultTable
+                rows={rows}
+                onCellCommit={handleCellCommit}
+                detailed={showDetails}
+                expandedRowIndex={expandedRowIndex}
+                onSelectRow={setActiveRowIndex}
+              />
+            </div>
+            <div className="flex items-center justify-between border-t border-white/10 px-3 py-2 text-xs text-text-muted">
+              <span>{rows.length} 镜 · 按叙事组整理，资产自动连接</span>
+              <button className="nodrag rounded-md bg-[#d5ef52] px-3 py-2 font-medium text-black disabled:opacity-40" disabled={isGenerating} onClick={createGrids}>制作宫格图</button>
             </div>
           </>
         ) : (
@@ -760,7 +989,7 @@ export const ScriptNode = memo(({ id, data, selected, width, height }: ScriptNod
               </button>
             </div>
             <div className="flex-1 overflow-hidden rounded-lg border border-[rgba(255,255,255,0.12)] bg-surface-dark/95">
-              <ScriptResultTable rows={rows} onCellCommit={handleCellCommit} />
+              <ScriptResultTable rows={rows} onCellCommit={handleCellCommit} detailed />
             </div>
           </div>,
           document.body,
@@ -773,25 +1002,45 @@ ScriptNode.displayName = 'ScriptNode';
 
 interface ScriptResultHeaderProps {
   title: string;
+  directorBinding?: ScriptNodeData['directorBinding'];
   onFullscreen: () => void;
+  showDetails: boolean;
+  onToggleDetails: () => void;
 }
 
-function ScriptResultHeader({ title, onFullscreen }: ScriptResultHeaderProps) {
+function ScriptResultHeader({
+  title,
+  directorBinding,
+  onFullscreen,
+  showDetails,
+  onToggleDetails,
+}: ScriptResultHeaderProps) {
+  const projectionHash = directorBinding?.projectionHash?.trim() ?? '';
   return (
     <div className="flex items-center justify-between border-b border-[rgba(255,255,255,0.08)] px-3 py-2">
       <div className="flex min-w-0 items-center gap-2">
         <span className="truncate text-[13px] font-medium text-text-dark">
           {title || '分镜脚本'}
         </span>
+        {projectionHash && (
+          <span
+            data-testid="storyboard-director-badge"
+            title={`导演计划 ${directorBinding?.revisionId ?? ''} · 第 ${directorBinding?.episode ?? ''} 集`}
+            className="inline-flex shrink-0 items-center rounded border border-[rgb(var(--accent-rgb)/0.35)] bg-[rgb(var(--accent-rgb)/0.1)] px-2 py-0.5 text-[10px] leading-3 text-text-dark/90"
+          >
+            计划投影 · hash {projectionHash.slice(0, 6)}
+          </span>
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {/* 「脚本视图」目前只有一种视图，先放占位下拉，后续接其它视图（卡片视图等）。 */}
         <button
           type="button"
           className="inline-flex h-6 items-center gap-1 rounded border border-[rgba(255,255,255,0.18)] bg-bg-dark/60 px-2 text-[11px] text-text-dark hover:border-[rgba(255,255,255,0.32)]"
-          onClick={(event) => event.stopPropagation()}
+          onClick={(event) => { event.stopPropagation(); onToggleDetails(); }}
+          aria-pressed={showDetails}
         >
-          脚本视图
+          {showDetails ? '收起专业参数' : '专业参数'}
           <ChevronDown className="h-3 w-3" />
         </button>
         <button
@@ -811,8 +1060,13 @@ function ScriptResultHeader({ title, onFullscreen }: ScriptResultHeaderProps) {
 }
 
 interface ScriptResultTableProps {
-  rows: FreezoneStoryScriptRow[];
+  rows: StoryboardScriptRow[];
   onCellCommit?: (rowIndex: number, colKey: string, nextValue: string) => void;
+  detailed?: boolean;
+  /** 行内展开 director 结构化块的「当前行」下标（仅节点内表格传入）。 */
+  expandedRowIndex?: number | null;
+  /** 点行切换「当前行」；不传时表格只负责渲染、不接管行选择。 */
+  onSelectRow?: (rowIndex: number) => void;
 }
 
 // 镜号 / 时长这类短数字列居中、等宽数字，便于扫读。
@@ -820,16 +1074,23 @@ const NUMERIC_COLUMN_KEYS = new Set(['shot_no', 'duration']);
 // 单格内容过多时在格内出现滚动条，避免把整行撑得很高。
 const CELL_MAX_HEIGHT_PX = 196;
 
-function ScriptResultTable({ rows, onCellCommit }: ScriptResultTableProps) {
+function ScriptResultTable({
+  rows,
+  onCellCommit,
+  detailed = false,
+  expandedRowIndex = null,
+  onSelectRow,
+}: ScriptResultTableProps) {
+  const columns = detailed ? SCRIPT_COLUMNS : SUMMARY_COLUMNS;
   return (
     <div className="ui-scrollbar h-full w-full overflow-auto rounded-lg border border-[rgba(255,255,255,0.08)] bg-bg-dark/30">
       <table
         className="border-collapse text-left text-[12px] text-text-dark"
-        style={{ minWidth: SCRIPT_TABLE_MIN_WIDTH, tableLayout: 'fixed' }}
+        style={{ minWidth: columns.reduce((sum, column) => sum + column.widthPx, 0), width: '100%', tableLayout: 'fixed' }}
       >
         <thead className="sticky top-0 z-10">
           <tr>
-            {SCRIPT_COLUMNS.map((col) => (
+            {columns.map((col) => (
               <th
                 key={col.key}
                 style={{ width: col.widthPx, minWidth: col.widthPx }}
@@ -843,50 +1104,123 @@ function ScriptResultTable({ rows, onCellCommit }: ScriptResultTableProps) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, idx) => (
-            <tr
-              key={idx}
-              className={`align-top transition-colors hover:bg-[rgb(var(--accent-rgb)/0.06)] ${
-                idx % 2 === 1 ? 'bg-white/[0.02]' : ''
-              }`}
-            >
-              {SCRIPT_COLUMNS.map((col) => {
-                const numeric = NUMERIC_COLUMN_KEYS.has(col.key);
-                return (
-                  <td
-                    key={col.key}
-                    style={{ width: col.widthPx, minWidth: col.widthPx }}
-                    className={`border-b border-r border-[rgba(255,255,255,0.05)] px-3 py-2 align-top last:border-r-0 ${
-                      numeric ? 'text-center tabular-nums text-text-dark/90' : ''
-                    }`}
-                  >
-                    <div
-                      className="ui-scrollbar nowheel overflow-y-auto overflow-x-hidden"
-                      style={{ maxHeight: CELL_MAX_HEIGHT_PX }}
+          {rows.map((row, idx) => {
+            const isActive = expandedRowIndex === idx;
+            const director = isActive ? readDirectorBlock(row) : null;
+            return (
+              <Fragment key={idx}>
+                {/* 捕获阶段选行：单元格的 contentEditable 会 stopPropagation，
+                    但捕获先于它执行，点哪一格都能切换当前行。 */}
+                <tr
+                  onClickCapture={onSelectRow ? () => onSelectRow(idx) : undefined}
+                  className={`align-top transition-colors hover:bg-[rgb(var(--accent-rgb)/0.06)] ${
+                    isActive
+                      ? 'bg-[rgb(var(--accent-rgb)/0.08)]'
+                      : idx % 2 === 1
+                        ? 'bg-white/[0.02]'
+                        : ''
+                  }`}
+                >
+                  {columns.map((col) => {
+                    const numeric = NUMERIC_COLUMN_KEYS.has(col.key);
+                    return (
+                      <td
+                        key={col.key}
+                        style={{ width: col.widthPx, minWidth: col.widthPx }}
+                        className={`border-b border-r border-[rgba(255,255,255,0.05)] px-3 py-2 align-top last:border-r-0 ${
+                          numeric ? 'text-center tabular-nums text-text-dark/90' : ''
+                        }`}
+                      >
+                        <div
+                          className="ui-scrollbar nowheel overflow-y-auto overflow-x-hidden"
+                          style={{ maxHeight: CELL_MAX_HEIGHT_PX }}
+                        >
+                          <ScriptResultCell
+                            row={row}
+                            col={col}
+                            onCommit={
+                              onCellCommit
+                                ? (next) => onCellCommit(idx, col.key, next)
+                                : undefined
+                            }
+                          />
+                        </div>
+                      </td>
+                    );
+                  })}
+                </tr>
+                {director && (
+                  <tr data-testid="storyboard-director-block" className="bg-bg-dark/40">
+                    <td
+                      colSpan={columns.length}
+                      className="border-b border-[rgba(255,255,255,0.08)] px-3 py-2 align-top"
                     >
-                      <ScriptResultCell
-                        row={row}
-                        col={col}
-                        onCommit={
-                          onCellCommit
-                            ? (next) => onCellCommit(idx, col.key, next)
-                            : undefined
-                        }
+                      <StoryboardDirectorBlockView
+                        shotLabel={storyboardShotLabel(row, idx)}
+                        block={director}
                       />
-                    </div>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>
   );
 }
 
+interface StoryboardDirectorBlockViewProps {
+  shotLabel: string;
+  block: StoryboardDirectorBlock;
+}
+
+/**
+ * 选中行下方的 director 结构化块：六个维度做两行紧凑 label/value，
+ * 底部一行 panel_spec 摘要。只读展示，不提供按钮（重新投影 / 写回尚未接后端）。
+ */
+function StoryboardDirectorBlockView({ shotLabel, block }: StoryboardDirectorBlockViewProps) {
+  const fields = STORYBOARD_DIRECTOR_FIELDS.flatMap(({ key, label }) => {
+    const value = block[key];
+    return value ? [{ key, label, value }] : [];
+  });
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex min-w-0 items-baseline gap-2">
+        <span className="truncate text-[11px] font-medium text-text-dark/90">
+          {shotLabel} · director 结构化块
+        </span>
+        <span className="shrink-0 text-[10px] leading-3 text-text-muted/70">行内展开</span>
+      </div>
+      {fields.length > 0 && (
+        <dl className="grid grid-cols-3 gap-x-3 gap-y-1.5">
+          {fields.map((field) => (
+            <div
+              key={field.key}
+              className="flex min-w-0 flex-col gap-0.5 border-l border-[rgba(255,255,255,0.08)] pl-2"
+            >
+              <dt className="text-[10px] leading-3 text-text-muted/80">{field.label}</dt>
+              <dd className="min-w-0 break-words text-[12px] leading-4 text-text-dark/90 [overflow-wrap:anywhere]">
+                {field.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {block.panel_spec && (
+        <p className="flex min-w-0 flex-wrap items-baseline gap-x-2 border-t border-[rgba(255,255,255,0.06)] pt-1.5 text-[12px] leading-4 text-text-dark/80">
+          <span className="shrink-0 text-[10px] leading-3 text-text-muted/80">panel_spec</span>
+          <span className="min-w-0 break-words [overflow-wrap:anywhere]">{block.panel_spec}</span>
+        </p>
+      )}
+    </div>
+  );
+}
+
 interface ScriptResultCellProps {
-  row: FreezoneStoryScriptRow;
+  row: StoryboardScriptRow;
   col: ScriptColumnDef;
   onCommit?: (nextValue: string) => void;
 }
@@ -1041,6 +1375,7 @@ function ScriptOperationsPanel({
   // 与提交和后端保持一致：当前接口必须有文字剧情。
   const hasContent =
     prompt.trim().length > 0 ||
+    (typeof data.screenplaySourceText === 'string' && data.screenplaySourceText.trim().length > 0) ||
     references.some(
       (ref) =>
         ref.kind === 'text' && (ref.text ?? '').trim().length > 0,

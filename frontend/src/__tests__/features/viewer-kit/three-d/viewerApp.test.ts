@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   calculateFrameCaptureRect,
+  calculateOutputPreviewCropRect,
   distanceSqPointToRay,
+  normalizeThreeDSceneSnapshot,
+  spotLightDirectionFromRotation,
+  spotLightRotationForDirection,
   resolveSnapshotWorldTransform,
   resolveViewerDevicePixelRatio,
   sampleActorAnimationPoseFrame,
   shouldHideEditorOverlaysForCapture,
+  syncOutputCameraFromViewForAction,
 } from "@/features/viewer-kit/three-d/engine/viewerApp";
 import {
   proxyLocalBottomForHint,
@@ -63,10 +68,45 @@ describe("calculateFrameCaptureRect", () => {
   });
 });
 
+describe("calculateOutputPreviewCropRect", () => {
+  it("maps the same centered capture crop into the output preview for portrait delivery", () => {
+    const input = {
+      canvasWidth: 1000,
+      canvasHeight: 600,
+      clientWidth: 1000,
+      clientHeight: 600,
+      frameAspect: "9:16" as const,
+      paddingCssPx: 16,
+    };
+    const captureRect = calculateFrameCaptureRect(input);
+    expect(calculateOutputPreviewCropRect(input)).toEqual({
+      left: captureRect.sx / input.canvasWidth,
+      top: captureRect.sy / input.canvasHeight,
+      width: captureRect.sw / input.canvasWidth,
+      height: captureRect.sh / input.canvasHeight,
+    });
+    expect(captureRect.sw).toBeLessThan(input.canvasWidth * 0.4);
+    expect(captureRect.sh).toBe(input.canvasHeight - input.paddingCssPx * 2);
+  });
+});
+
 describe("shouldHideEditorOverlaysForCapture", () => {
   it("hides selection and transform overlays for director combined screenshots", () => {
     expect(shouldHideEditorOverlaysForCapture("combined")).toBe(true);
     expect(shouldHideEditorOverlaysForCapture("env_only")).toBe(true);
+  });
+});
+
+describe("output camera initialization", () => {
+  it("copies the editor view when loading a world but preserves the output camera on editor reset", () => {
+    const syncOutputCamera = vi.fn();
+
+    syncOutputCameraFromViewForAction("world-load", syncOutputCamera);
+    expect(syncOutputCamera).toHaveBeenCalledTimes(1);
+
+    syncOutputCamera.mockClear();
+    syncOutputCameraFromViewForAction("editor-reset", syncOutputCamera);
+    expect(syncOutputCamera).not.toHaveBeenCalled();
   });
 });
 
@@ -90,6 +130,89 @@ describe("resolveSnapshotWorldTransform", () => {
       yawDeg: 45,
       scale: [1, 1, 1],
     })).toBeNull();
+  });
+});
+
+describe("normalizeThreeDSceneSnapshot", () => {
+  const fallbackCamera = {
+    azim: -20,
+    elev: 10,
+    distance: 3,
+    focalPoint: [1, 2, 3] as [number, number, number],
+    fov: 72,
+  };
+
+  it("keeps old snapshots loadable and seeds the output camera from the saved editor view", () => {
+    const snapshot = normalizeThreeDSceneSnapshot({
+      schemaVersion: 1,
+      savedAt: 1,
+      actors: [],
+      props: [],
+      stagings: [],
+      camera: { azim: 15, elev: -5, distance: 4, focalPoint: [4, 5, 6] },
+    }, fallbackCamera);
+
+    expect(snapshot.camera).toEqual({
+      azim: 15,
+      elev: -5,
+      distance: 4,
+      focalPoint: [4, 5, 6],
+      fov: 72,
+    });
+    expect(snapshot.outputCamera).toEqual(snapshot.camera);
+    expect(snapshot.lights).toEqual([]);
+  });
+
+  it("preserves a separate output camera and normalizes optional proxy light state", () => {
+    const snapshot = normalizeThreeDSceneSnapshot({
+      schemaVersion: 1,
+      savedAt: 1,
+      actors: [],
+      props: [],
+      stagings: [],
+      camera: { azim: 10, elev: 20, distance: 2, focalPoint: [0, 1, 2], fov: 68 },
+      outputCamera: { azim: 35, elev: -10, distance: 5, focalPoint: [3, 2, 1], fov: 44 },
+      lights: [{
+        id: "key-1",
+        label: "Key light",
+        color: "#ffcc88",
+        intensity: 12,
+        position: [1, 2, 3],
+        direction: [0, -4, 0],
+        enabled: true,
+      }],
+    }, fallbackCamera);
+
+    expect(snapshot.camera?.fov).toBe(68);
+    expect(snapshot.outputCamera).toEqual({
+      azim: 35,
+      elev: -10,
+      distance: 5,
+      focalPoint: [3, 2, 1],
+      fov: 44,
+    });
+    expect(snapshot.lights).toEqual([{
+      id: "key-1",
+      label: "Key light",
+      color: "#ffcc88",
+      intensity: 8,
+      position: [1, 2, 3],
+      direction: [0, -1, 0],
+      enabled: true,
+    }]);
+  });
+});
+
+describe("proxy spot light direction", () => {
+  it("stores and restores the PlayCanvas spot light's local -Y emission axis", () => {
+    for (const direction of [[0, -1, 0], [1, 0, 0], [0.2, -0.4, 0.8]] as const) {
+      const rotation = spotLightRotationForDirection([...direction]);
+      const restored = spotLightDirectionFromRotation(rotation);
+      const length = Math.hypot(...direction);
+      expect(restored[0]).toBeCloseTo(direction[0] / length, 5);
+      expect(restored[1]).toBeCloseTo(direction[1] / length, 5);
+      expect(restored[2]).toBeCloseTo(direction[2] / length, 5);
+    }
   });
 });
 

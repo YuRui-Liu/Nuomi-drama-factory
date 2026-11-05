@@ -14,6 +14,7 @@ import { RevisionHistory } from "./revision-history";
 import { HandoffDialog } from "./handoff-dialog";
 import { readRecovery, writeRecovery } from "./draft-recovery";
 import { DocumentEditor } from "./document-editor";
+import { LongformOutlinePanel } from "./longform-outline-panel";
 import { treeForDocuments } from "./document-tree";
 import type { TreeNode } from "./document-tree";
 import { decodeBriefSettings, defaultSettings, encodeBriefSettings } from "./settings";
@@ -43,6 +44,7 @@ function ProjectScriptWorkspace({ project, initialDocumentId }: { project: strin
   const [candidateId, setCandidateId] = useState<string | null>(null);
   const [candidateTargetId, setCandidateTargetId] = useState<string | null>(null);
   const [focusEvidence, setFocusEvidence] = useState<ConsistencyEvidence | null>(null);
+  const [outlineMode, setOutlineMode] = useState<"structured" | "markdown">("structured");
   const [selection, setSelection] = useState<{ text: string; start: number; end: number; documentId: string; revisionId: string; markdown: string } | null>(null);
   const [, redraw] = useState(0);
   const imports = useEpisodeImports(project);
@@ -255,7 +257,12 @@ function ProjectScriptWorkspace({ project, initialDocumentId }: { project: strin
         </div>
       </aside>
       <section aria-label="文档正文" className="min-h-0 overflow-y-auto bg-[#15171B] px-4">
-        {current?.kind === "episode_script" && current.episode_number != null && <EpisodeDraftNotice key={current.id} project={project} episodeNumber={current.episode_number} revisionKey={current.current_revision_id} disabled={!allSaved || busy} onApply={async (markdown) => {
+        {current?.kind === "outline" && <div className="sticky top-0 z-10 mx-auto flex max-w-4xl justify-end gap-1 border-b border-white/10 bg-[#15171B] py-2">
+          <button type="button" aria-pressed={outlineMode === "structured"} disabled={draft?.status !== "saved"} onClick={() => setOutlineMode("structured")} className={"rounded px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-40 " + (outlineMode === "structured" ? "bg-[#E5FF5C]/10 text-[#E5FF5C]" : "text-white/55 hover:bg-white/5")}>结构化大纲</button>
+          <button type="button" aria-pressed={outlineMode === "markdown"} onClick={() => setOutlineMode("markdown")} className={"rounded px-3 py-1.5 text-xs " + (outlineMode === "markdown" ? "bg-[#E5FF5C]/10 text-[#E5FF5C]" : "text-white/55 hover:bg-white/5")}>Markdown 文档</button>
+          {draft?.status !== "saved" && <span className="self-center pr-2 text-[11px] text-amber-300">先处理本地草稿，再打开结构化编辑</span>}
+        </div>}
+        {current?.kind === "episode_script" && current.episode_number != null && <EpisodeDraftNotice key={`episode-draft:${current.id}`} project={project} episodeNumber={current.episode_number} revisionKey={current.current_revision_id} disabled={!allSaved || busy} onApply={async (markdown) => {
           const id = current.id;
           if (manager.get(id)?.status !== "saved") throw new Error("请先保存或处理正文版本冲突。");
           manager.edit(id, markdown);
@@ -270,7 +277,7 @@ function ProjectScriptWorkspace({ project, initialDocumentId }: { project: strin
           <span className="text-white/50">当前草稿 {current.current_revision_id.slice(0, 8)} · 已交接 {current.adopted_revision_id?.slice(0, 8) ?? "无"}</span>
           <button disabled={!allSaved || busy} onClick={() => setHandoffOpen(true)} className="rounded bg-[#E5FF5C] px-3 py-2 font-semibold text-black disabled:opacity-40">确认本集并交接制作</button>
         </div>}
-        {draft ? <DocumentEditor key={draft.document.id} project={project} draft={draft} manager={manager} onSelection={(value) => setSelection(value && current && draft ? { ...value, documentId: current.id, revisionId: current.current_revision_id, markdown: draft.markdown } : null)} focusEvidence={focusEvidence} /> : <div className="mx-auto flex h-full max-w-md flex-col items-center justify-center text-center">
+        {current?.kind === "outline" && outlineMode === "structured" && draft?.status === "saved" ? <LongformOutlinePanel project={project} documentId={current.id} onSaved={() => void refresh()} /> : draft ? <DocumentEditor key={draft.document.id} project={project} draft={draft} manager={manager} onSelection={(value) => setSelection(value && current && draft ? { ...value, documentId: current.id, revisionId: current.current_revision_id, markdown: draft.markdown } : null)} focusEvidence={focusEvidence} /> : <div className="mx-auto flex h-full max-w-md flex-col items-center justify-center text-center">
           <div className="mb-5 flex size-16 items-center justify-center rounded-2xl border border-[#E5FF5C]/20 bg-[#E5FF5C]/5 text-[#E5FF5C]"><FileText size={30} /></div>
           <h2 className="text-xl font-semibold">你的下一部故事，从这里开始。</h2><p className="mt-3 text-sm leading-7 text-white/45">从创作预设找到方向，或写下一个想法。设定、大纲和正文都会保存在这里。</p>
           <button onClick={() => setSetterOpen(true)} className="mt-6 rounded bg-[#E5FF5C] px-5 py-2.5 text-sm font-semibold text-black">从创作预设开始</button>

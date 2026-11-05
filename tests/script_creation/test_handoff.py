@@ -92,6 +92,52 @@ async def test_confirm_rejects_source_cas_and_keeps_prepared_snapshot(workspace)
     assert (await service.get(prepared["id"]))["status"] == "prepared"
 
 
+async def test_prepare_rechecks_previous_source_after_preflight(workspace):
+    from novelvideo.episode_sources import build_episode_candidate
+
+    documents, sources, service = workspace
+    script = await documents.create(
+        kind="episode_script", title="第一集", episode_number=1,
+        markdown="原始剧本", client_mutation_id="prepare-source-race-script",
+    )
+    first = await service.prepare(
+        document_id=script.id, revision_id=script.current_revision_id,
+        reference_revisions={}, selected_entity_ids=[], update_scope={"mode": "none"},
+        fact_acknowledgement={"mode": "unchecked", "reason": "人工检查"},
+        client_mutation_id="prepare-source-race-first",
+    )
+    confirmed = await service.confirm(
+        first["id"],
+        expected_source_project_revision=first["expected_source_project_revision"],
+        client_mutation_id="confirm-source-race-first",
+    )
+    revised = await documents.save(
+        script.id, base_revision_id=script.current_revision_id,
+        markdown="已接受的新剧本", client_mutation_id="save-source-race-revision",
+    )
+    manual_source = "用户在 episode source 中的手动修改"
+    await sources.upsert_sources(
+        [build_episode_candidate("E01.md", manual_source)],
+        expected_revision=confirmed["source_project_revision"],
+    )
+
+    with pytest.raises(DocumentConflict, match="episode source changed"):
+        await service.prepare(
+            document_id=script.id, revision_id=revised.current_revision_id,
+            reference_revisions={}, selected_entity_ids=[], update_scope={"mode": "none"},
+            fact_acknowledgement={"mode": "unchecked", "reason": "接受已审提案"},
+            expected_previous_source={
+                "revision": confirmed["source_revision"],
+                "hash": confirmed["source_hash"],
+            },
+            client_mutation_id="prepare-source-race-revision",
+        )
+
+    assert (await sources.list_sources())[0].content == manual_source
+    assert (await documents.get(script.id)).adopted_revision_id == script.current_revision_id
+    assert len(await service.list(1)) == 1
+
+
 async def test_prepare_freezes_only_selected_references_and_rejects_cross_project_ids(workspace, tmp_path):
     from novelvideo.script_creation.entities import EntityService
 

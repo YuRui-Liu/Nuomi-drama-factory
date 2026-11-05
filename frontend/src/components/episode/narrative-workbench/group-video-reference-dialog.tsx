@@ -50,7 +50,7 @@ function validate(items: VideoReferenceSelection[], minImages: number, maxImages
 }
 
 export function GroupVideoReferenceDialog({
-  open, onOpenChange, project, episode, groupId, preview, loading = false, error = null,
+  open, onOpenChange, project, episode, groupId, expectedDirectorRevisionId, preview, loading = false, error = null,
   minImages, maxImages, onRefresh, onDirtyChange, onSaved,
 }: {
   open: boolean;
@@ -58,6 +58,8 @@ export function GroupVideoReferenceDialog({
   project: string;
   episode: number;
   groupId: string;
+  /** Optional fixed canvas binding; non-canvas callers pin the preview's revision. */
+  expectedDirectorRevisionId?: string | null;
   preview: VideoReferencePreview | null;
   loading?: boolean;
   error?: Error | null;
@@ -73,14 +75,31 @@ export function GroupVideoReferenceDialog({
   const [draft, setDraft] = useState<VideoReferenceSelection[]>([]);
   const [localCandidates, setLocalCandidates] = useState<VideoReferenceCandidate[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [pinnedDirectorRevisionId, setPinnedDirectorRevisionId] = useState<string | null | undefined>(undefined);
+  const directorRevisionPin = useRef<{ groupId: string; revisionId: string | null } | null>(null);
   const dragIndex = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      directorRevisionPin.current = null;
+      setPinnedDirectorRevisionId(undefined);
+      return;
+    }
+    if (directorRevisionPin.current?.groupId !== groupId) {
+      const revisionId = expectedDirectorRevisionId !== undefined
+        ? expectedDirectorRevisionId
+        : preview?.director_revision_id;
+      if (revisionId !== undefined) {
+        directorRevisionPin.current = { groupId, revisionId };
+        setPinnedDirectorRevisionId(revisionId);
+      } else {
+        setPinnedDirectorRevisionId(undefined);
+      }
+    }
     setDraft(initialDraft(preview, maxImages));
     setLocalCandidates(preview?.candidates ?? []);
     setSubmitError(null);
-  }, [open, groupId, preview?.revision, maxImages]);
+  }, [open, groupId, expectedDirectorRevisionId, preview?.revision, preview?.director_revision_id, maxImages]);
 
   const savedSignature = selectionSignature(preview?.selected ?? []);
   const dirty = selectionSignature(draft) !== savedSignature;
@@ -88,6 +107,9 @@ export function GroupVideoReferenceDialog({
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   const validationError = validate(draft, minImages, maxImages, t);
+  const directorRevisionMismatch = pinnedDirectorRevisionId !== undefined
+    && preview !== null
+    && preview.director_revision_id !== pinnedDirectorRevisionId;
   const candidateById = useMemo(
     () => new Map(localCandidates.map((candidate) => [candidate.reference_id, candidate])),
     [localCandidates],
@@ -107,10 +129,10 @@ export function GroupVideoReferenceDialog({
       : [...current, { reference_id: candidate.reference_id, subject_description: candidate.subject_description }]);
   };
   const handleUpload = async (file?: File) => {
-    if (!file || !file.type.startsWith("image/")) return;
+    if (!file || !file.type.startsWith("image/") || pinnedDirectorRevisionId === undefined || directorRevisionMismatch) return;
     setSubmitError(null);
     try {
-      const response = await upload.mutateAsync({ groupId, file });
+      const response = await upload.mutateAsync({ groupId, file, expectedDirectorRevisionId: pinnedDirectorRevisionId });
       const uploaded = responseData<VideoReferenceCandidate>(response);
       if (!uploaded) throw new Error(t("narrativeVideoReferences.uploadFailed"));
       const refreshed = await onRefresh?.();
@@ -124,12 +146,13 @@ export function GroupVideoReferenceDialog({
     }
   };
   const handleSave = async () => {
-    if (!preview || validationError) return;
+    if (!preview || validationError || pinnedDirectorRevisionId === undefined || directorRevisionMismatch) return;
     setSubmitError(null);
     try {
       const response = await update.mutateAsync({
         groupId,
         expectedRevision: preview.revision,
+        expectedDirectorRevisionId: pinnedDirectorRevisionId,
         references: draft.map((item) => ({
           reference_id: item.reference_id,
           subject_description: item.subject_description.trim(),
@@ -154,7 +177,7 @@ export function GroupVideoReferenceDialog({
       {error ? <p role="alert" className="text-sm text-destructive">{t("narrativeVideoReferences.loadFailed")}</p> : null}
       {!loading && !error && preview ? <>
         <section>
-          <div className="flex items-center justify-between gap-2"><h3 className="font-medium">{t("narrativeVideoReferences.candidates")}</h3><label className="cursor-pointer text-xs text-primary"><Upload className="mr-1 inline size-3" />{t("narrativeVideoReferences.upload")}<input className="sr-only" aria-label={t("narrativeVideoReferences.upload")} type="file" accept="image/*" disabled={upload.isPending} onChange={(event) => void handleUpload(event.target.files?.[0])} /></label></div>
+          <div className="flex items-center justify-between gap-2"><h3 className="font-medium">{t("narrativeVideoReferences.candidates")}</h3><label className="cursor-pointer text-xs text-primary"><Upload className="mr-1 inline size-3" />{t("narrativeVideoReferences.upload")}<input className="sr-only" aria-label={t("narrativeVideoReferences.upload")} type="file" accept="image/*" disabled={upload.isPending || pinnedDirectorRevisionId === undefined || directorRevisionMismatch} onChange={(event) => void handleUpload(event.target.files?.[0])} /></label></div>
           <div className="mt-2 grid gap-2 sm:grid-cols-3">{localCandidates.map((candidate) => <button key={candidate.reference_id} type="button" className="flex items-center gap-2 rounded border border-white/10 p-2 text-left disabled:opacity-50" disabled={draft.length >= maxImages || draft.some((item) => item.reference_id === candidate.reference_id)} onClick={() => add(candidate)}>
             <img src={candidate.thumbnail_url} alt="" className="size-12 rounded object-cover" />
             <span><span className="block text-xs font-medium">{candidate.label}</span><span className="text-[11px] text-muted-foreground">{t(`narrativeVideoReferences.source.${candidate.source_kind}`)}</span></span>
@@ -170,10 +193,11 @@ export function GroupVideoReferenceDialog({
           </div>;
         })}</div></section>
         {preview.warnings.map((warning) => <p key={warning} className="text-xs text-amber-400">{warning}</p>)}
+        {directorRevisionMismatch ? <p role="alert" className="text-xs text-destructive">{t("narrativeVideoReferences.conflict")}</p> : null}
         {validationError ? <p role="alert" className="text-xs text-destructive">{validationError}</p> : null}
       </> : null}
       {submitError ? <p role="alert" className="text-sm text-destructive">{submitError}</p> : null}
-      <DialogFooter className="p-0"><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>{t("narrativeVideoReferences.cancel")}</Button><Button type="button" disabled={!preview || !!validationError || update.isPending || upload.isPending} onClick={() => void handleSave()}>{update.isPending ? t("narrativeVideoReferences.saving") : t("narrativeVideoReferences.save")}</Button></DialogFooter>
+      <DialogFooter className="p-0"><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>{t("narrativeVideoReferences.cancel")}</Button><Button type="button" disabled={!preview || pinnedDirectorRevisionId === undefined || directorRevisionMismatch || !!validationError || update.isPending || upload.isPending} onClick={() => void handleSave()}>{update.isPending ? t("narrativeVideoReferences.saving") : t("narrativeVideoReferences.save")}</Button></DialogFooter>
     </DialogContent>
   </Dialog>;
 }

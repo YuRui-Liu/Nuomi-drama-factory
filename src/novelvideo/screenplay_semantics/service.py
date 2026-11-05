@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 
 from novelvideo.episode_source_store import EpisodeSource
 from novelvideo.screenplay_semantics.extractor import (
+    DramaticBeatDraft,
     SceneBeatDraft,
     SceneExtractionFailure,
     SceneExtractionResult,
@@ -24,9 +25,65 @@ from novelvideo.screenplay_semantics.models import (
 )
 from novelvideo.screenplay_semantics.parser import parse_screenplay_document
 from novelvideo.screenplay_semantics.store import ScreenplaySemanticStore
-from novelvideo.screenplay_semantics.validation import validate_scene_beats
+from novelvideo.screenplay_semantics.validation import (
+    validate_revision_beats,
+    validate_scene_beats,
+)
 
 SceneExtractor = Callable[..., Awaitable[tuple[SceneExtractionResult, ...]]]
+
+
+def build_external_semantic_revision(
+    source: EpisodeSource,
+    scene_beats: dict[int, tuple[DramaticBeatDraft, ...]],
+) -> ScreenplaySemanticRevision:
+    """Bind externally authored beats to the deterministic parse of a source.
+
+    This path intentionally does not invoke ``extract_scene_beats`` or any
+    provider runtime. Scene identities and source blocks always come from the
+    current formal episode source; callers can only supply per-scene beat
+    content and evidence ranges for validation.
+    """
+    parsed = parse_screenplay_document(source.content)
+    if not parsed.scenes:
+        raise ValueError("SCREENPLAY_SCENES_NOT_FOUND")
+
+    scene_ordinals = {scene.ordinal for scene in parsed.scenes}
+    if set(scene_beats) != scene_ordinals:
+        raise ValueError("EXTERNAL_DRAFT_SCENE_SET_INVALID")
+
+    bound_scenes: list[Scene] = []
+    beats: list[DramaticBeat] = []
+    for scene in parsed.scenes:
+        drafts = scene_beats[scene.ordinal]
+        if not drafts:
+            raise ValueError("EXTERNAL_DRAFT_BEATS_REQUIRED")
+        scene_report = validate_scene_beats(scene, drafts)
+        bound_scenes.append(
+            scene.model_copy(
+                update={"status": "validated" if scene_report.passed else "failed"}
+            )
+        )
+        for ordinal, draft in enumerate(drafts, start=1):
+            beats.append(
+                DramaticBeat(
+                    id=f"beat-{scene.id}-{ordinal:02d}",
+                    ordinal=ordinal,
+                    scene_id=scene.id,
+                    **draft.model_dump(),
+                )
+            )
+
+    report = validate_revision_beats(tuple(bound_scenes), tuple(beats))
+    return ScreenplaySemanticRevision.new(
+        episode=source.episode_number,
+        source_revision=source.source_revision,
+        source_hash=source.content_hash,
+        scenes=tuple(bound_scenes),
+        beats=tuple(beats),
+        metadata_blocks=parsed.metadata_blocks,
+        validation_report=report,
+    ).model_copy(update={"status": "draft" if report.passed else "review_required"})
 
 
 class ScreenplaySemanticService:
@@ -174,4 +231,4 @@ class ScreenplaySemanticService:
         return await saved if isawaitable(saved) else saved
 
 
-__all__ = ["ScreenplaySemanticService"]
+__all__ = ["ScreenplaySemanticService", "build_external_semantic_revision"]

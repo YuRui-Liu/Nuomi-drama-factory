@@ -48,6 +48,45 @@ def bind_payload(asset):
     return {'node_id': 'n', 'asset_ref': asset['ref'], 'media': asset['media']}
 
 
+def test_image_camera_selection_is_an_explicit_catalog_backed_node_input():
+    from novelvideo.creation.operations import OperationError, OperationService
+
+    OperationService._data({'cameraSelection': {
+        'cameraBodyId': 'arri_alexa_65', 'lensId': 'arri_signature_prime',
+        'focalLengthMm': 75, 'aperture': 'f/4',
+    }})
+    for selection in (
+        {'focalLengthMm': 85},
+        {'aperture': 'f/1.2'},
+        {'cameraBodyId': 'unknown-camera'},
+        {'lensId': 'unknown-lens'},
+        {'focalLengthMm': True},
+        {'unrecognized': 'free text'},
+    ):
+        with pytest.raises(OperationError, match='摄影'):
+            OperationService._data({'cameraSelection': selection})
+
+
+@pytest.mark.parametrize(('node_type', 'size', 'accepted'), [
+    ('imageGenNode', '1K', True),
+    ('imageGenNode', '2K', True),
+    ('imageGenNode', '8K', False),
+    ('textAnnotationNode', '1K', False),
+])
+def test_image_generation_size_is_scoped_to_image_gen_nodes(tmp_path, node_type, size, accepted):
+    from novelvideo.creation.operations import OperationError
+
+    _, service, episode = setup_service(tmp_path, node_type=node_type)
+    req = request(episode, payload={'operations': [{
+        'op': 'update_node', 'node_id': 'n', 'data': {'size': size},
+    }]})
+    if accepted:
+        service.apply('alice', req)
+    else:
+        with pytest.raises(OperationError, match='分辨率'):
+            service.apply('alice', req)
+
+
 def setup_service(tmp_path, node_type='imageNode'):
     from novelvideo.creation.operations import OperationService
     store = ObjectStore(tmp_path)

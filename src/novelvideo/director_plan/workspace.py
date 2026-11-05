@@ -18,6 +18,7 @@ from ulid import ULID
 
 from .cinematography import PropBlocking
 from .models import DirectorPlanRevision, SceneBlockingRevisionReference
+from .stage_snapshot import PanoramaPlacement, StageCapture, StageSnapshot, marker_position, screen_position, stage_composition, vector_text
 
 
 class StrictHandoffReviewRequired(RuntimeError):
@@ -98,6 +99,8 @@ class SceneBlocking(_BlockingModel):
     props: list[_BlockingProp] = Field(default_factory=list, max_length=100)
     camera: _BlockingCamera | None
     lights: list[_BlockingLight] = Field(default_factory=list, max_length=100)
+    stage_snapshot: StageSnapshot | None = None
+    stage_capture: StageCapture | None = None
 
     @field_validator("label", mode="before")
     @classmethod
@@ -141,11 +144,117 @@ def _lock_for(project_dir: Path, episode: int) -> threading.RLock:
         return _LOCKS.setdefault(key, threading.RLock())
 
 
+def _apply_stage_snapshot(cinematography, snapshot: StageSnapshot):
+    """Use explicit entity ids and proxy coordinates; never infer world units from 2D."""
+    actors = {item.id: item for item in snapshot.actors if item.id}
+    props = {item.id: item for item in snapshot.props if item.id}
+    lights = {item.id: item for item in snapshot.lights}
+    subjects = tuple(
+        item.model_copy(update={
+            "world_position": marker_position(actors[item.subject_id]),
+            "screen_position": screen_position(actors[item.subject_id], snapshot),
+            "facing": f"3D proxy yaw={_marker_yaw(actors[item.subject_id]):g}°",
+        }) if item.subject_id in actors else item
+        for item in cinematography.subjects
+    )
+    updated_props = tuple(
+        item.model_copy(update={
+            "world_position": marker_position(props[item.prop_id]),
+            "facing": f"3D proxy yaw={_marker_yaw(props[item.prop_id]):g}°",
+        }) if item.prop_id in props else item
+        for item in cinematography.props
+    )
+    updated_lights = tuple(
+        item.model_copy(update={
+            "world_position": f"3D proxy world xyz={vector_text(lights[item.light_id].position)}",
+            "direction": f"3D direction={vector_text(lights[item.light_id].direction)}",
+            "relative_intensity": f"proxy intensity={lights[item.light_id].intensity:g}, enabled={lights[item.light_id].enabled}, color={lights[item.light_id].color}",
+        }) if item.light_id in lights else item
+        for item in cinematography.lights
+    )
+    camera = snapshot.outputCamera
+    camera_side = cinematography.camera_side
+    if camera:
+        camera_side = (f"3D output camera azim={camera.azim:g}°, elev={camera.elev:g}°, "
+                        f"distance={camera.distance:g}, focalPoint={vector_text(camera.focalPoint)}, "
+                        f"vertical fov={camera.fov:g}°; proxy staging, not surveyed geometry")
+    return cinematography.model_copy(update={
+        "subjects": subjects, "props": updated_props, "lights": updated_lights,
+        "camera_side": camera_side,
+    })
+
+
+def _marker_yaw(marker) -> float:
+    return marker.placement.yawDeg if marker.placement is not None else marker.yawDeg
+
+
+def _apply_stage_creative(creative, snapshot: StageSnapshot):
+    """Keep the selected still's explicit optics and terminal snapshot consistent."""
+    if creative is None:
+        return None
+    changes = {}
+    if creative.keyframe_anchor == "end" and creative.end_cinematography is not None:
+        changes["end_cinematography"] = _apply_stage_snapshot(creative.end_cinematography, snapshot)
+    camera = snapshot.outputCamera
+    if camera is not None:
+        changes["optics"] = creative.optics.model_copy(update={
+            "mode": "field_of_view", "field_of_view_degrees": camera.fov,
+            "field_of_view_axis": "vertical", "focal_length_mm": None,
+            "sensor_basis": None, "not_applicable_reason": None,
+            "subject_distance": f"3D proxy orbit distance {camera.distance:g}; subject distance is not inferred",
+        })
+        changes["camera_position"] = creative.camera_position.model_copy(update={
+            "landmark": f"3D proxy focal point {vector_text(camera.focalPoint)}",
+            "position": f"3D output camera azimuth {camera.azim:g}°, elevation {camera.elev:g}° around focal point {vector_text(camera.focalPoint)}",
+            "height": f"proxy elevation {camera.elev:g}°; focal point height {camera.focalPoint[1]:g}",
+            "distance": f"proxy orbit distance {camera.distance:g}",
+            "direction": f"toward proxy focal point {vector_text(camera.focalPoint)}",
+            "axis_side": f"current 3D camera azimuth {camera.azim:g}°; verify the story axis against the captured frame",
+        })
+        layout = stage_composition(snapshot)
+        changes["framing"] = creative.framing.model_copy(update={
+            f"{creative.keyframe_anchor}_frame": layout,
+        })
+        changes["composition"] = creative.composition.model_copy(update={
+            f"{creative.keyframe_anchor}_composition": layout,
+            "subject_placement": layout, "frame_occupancy": "as framed by the current 3D output camera",
+            "depth_layers": "current 3D proxy depth relationships",
+            "occlusion": "current 3D proxy overlap", "look_room": "current 3D output framing",
+        })
+    if snapshot.lights:
+        lighting = "; ".join(f"{light.id}: direction {vector_text(light.direction)}, color {light.color}, intensity {light.intensity:g}, enabled {light.enabled}" for light in snapshot.lights)
+        changes["lighting"] = creative.lighting.model_copy(update={
+            "camera_relative_lighting": lighting,
+            "color": "; ".join(f"{light.id} {light.color}" for light in snapshot.lights),
+            "shadow": "shadows cast by the current 3D stage lights",
+        })
+    return type(creative).model_validate({**creative.model_dump(mode="python"), **changes})
+
+
 def _blocking_path_text(path: Sequence[_BlockingPathPoint]) -> str:
     return "; ".join(
         f"{point.at_seconds:g}s at x={point.x:g}%, y={point.y:g}%"
         for point in path
     )
+
+
+def _stage_shot_fields(shot, snapshot: StageSnapshot) -> dict:
+    if snapshot.outputCamera is None:
+        return {}
+    layout = stage_composition(snapshot)
+    camera = snapshot.outputCamera
+    fields = {
+        "composition": layout,
+        "camera_angle": f"3D output camera azimuth {camera.azim:g}°, elevation {camera.elev:g}°",
+    }
+    if shot.static_panel is not None:
+        actors = {actor.id: actor for actor in snapshot.actors}
+        fields["static_panel"] = shot.static_panel.model_copy(update={
+            "framing": f"vertical field of view {camera.fov:g}°; {layout}",
+            "subjects": [subject.model_copy(update={"screen_position": screen_position(actors[subject.entity_id], snapshot)})
+                         if subject.entity_id in actors else subject for subject in shot.static_panel.subjects],
+        })
+    return fields
 
 
 def _atomic_write(path: Path, payload: Mapping[str, Any]) -> None:
@@ -505,6 +614,23 @@ def compile_scene_blocking_candidate(
             raise SceneBlockingCompileConflict(
                 f"prop id {sorted(unknown_prop_ids)[0]!r} does not match a prop in the referenced scene groups"
             )
+        if blocking.stage_snapshot is not None:
+            stage = blocking.stage_snapshot
+            if stage.outputCamera is None:
+                raise SceneBlockingCompileConflict("3D stage requires an explicit outputCamera; the editor camera is not an output viewpoint")
+            if any(isinstance(marker.placement, PanoramaPlacement)
+                   for marker in [*stage.actors, *stage.props]):
+                raise SceneBlockingCompileConflict("save resolved world-space 3D proxy placements before compiling panorama-relative markers")
+            for kind, markers, known in (
+                ("actor", stage.actors, inventory["actors"]),
+                ("prop", stage.props, inventory["props"]),
+                ("light", stage.lights, inventory["lights"]),
+            ):
+                for marker in markers:
+                    if marker.id not in known:
+                        raise SceneBlockingCompileConflict(
+                            f"3D {kind} id {marker.id!r} must bind to a production entity in the referenced scene groups"
+                        )
 
     updated_groups = []
     for group in revision.groups:
@@ -619,11 +745,19 @@ def compile_scene_blocking_candidate(
                     "camera_side": camera_side,
                 }
             )
+            if blocking.stage_snapshot is not None and (shot.creative is None or shot.creative.keyframe_anchor == "start"):
+                updated_cinematography = _apply_stage_snapshot(
+                    updated_cinematography, blocking.stage_snapshot
+                )
             updated_shots.append(
                 type(shot).model_validate(
                     {
                         **shot.model_dump(mode="python"),
                         "cinematography": updated_cinematography,
+                        "creative": (_apply_stage_creative(shot.creative, blocking.stage_snapshot)
+                                     if blocking.stage_snapshot is not None else shot.creative),
+                        **(_stage_shot_fields(shot, blocking.stage_snapshot)
+                           if blocking.stage_snapshot is not None else {}),
                     }
                 )
             )

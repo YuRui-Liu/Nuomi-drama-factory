@@ -15,12 +15,13 @@ export interface ProductionNodeShellProps {
   summary: string;
   status?: string;
   actionLabel?: string;
+  nodeActions?: ReactNode;
   children: ReactNode | ((controls: ProductionNodeShellControls) => ReactNode);
   workspace?: boolean;
   beforeClose?: () => boolean;
 }
 
-export function ProductionNodeShell({ title, summary, status, actionLabel, children, workspace = false, beforeClose }: ProductionNodeShellProps) {
+export function ProductionNodeShell({ title, summary, status, actionLabel, nodeActions, children, workspace = false, beforeClose }: ProductionNodeShellProps) {
   const [open, setOpen] = useState(false);
   const entry = useRef<HTMLButtonElement>(null);
   const wasOpen = useRef(false);
@@ -40,7 +41,10 @@ export function ProductionNodeShell({ title, summary, status, actionLabel, child
     <Handle type="source" position={Position.Right} id="source" />
     <p className="mb-4 text-sm text-muted-foreground">{summary}</p>
     {status && <p role="status" className="mb-3 text-xs text-muted-foreground">{status}</p>}
-    <Button ref={entry} className="nodrag" variant="outline" onClick={() => setOpen(true)}>{actionLabel ?? `打开${title}`}</Button>
+    <div className="nodrag flex flex-wrap gap-2">
+      <Button ref={entry} variant="outline" onClick={() => setOpen(true)}>{actionLabel ?? `打开${title}`}</Button>
+      {nodeActions}
+    </div>
     <Dialog open={open} onOpenChange={next => next ? setOpen(true) : requestClose()}>
       <DialogContent
         className={workspace

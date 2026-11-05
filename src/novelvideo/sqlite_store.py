@@ -922,7 +922,8 @@ class SQLiteStore:
 
     async def initialize(self) -> None:
         await self._ensure_db()
-        console.print(f"[dim]SQLite 存储已初始化 (db: {self.db_path})[/dim]")
+        # API requests must not exit when the launching terminal is detached.
+        logger.debug("SQLite 存储已初始化 (db: %s)", self.db_path)
 
     @staticmethod
     def _planned_reference_binding_from_row(

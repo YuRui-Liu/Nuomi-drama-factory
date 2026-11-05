@@ -14,7 +14,7 @@ from novelvideo.chat.conversation_binding import canvas_evidence, validate_conve
 from novelvideo.chat.session_store import conversation_scope, for_scope
 from novelvideo.freezone.canvas_store import read_canvas
 from novelvideo.freezone.orchestration.models import RESULT_FIELDS, input_fingerprint
-from .asset_reference import AssetReferences
+from .asset_reference import AssetReferences, readonly, table
 from .creative_constraints import CreativeConstraints
 from .library_references import DirectionReferences, DirectionScope, digest
 from .ontology import Ontology, exact, integer, require, text
@@ -194,6 +194,10 @@ def required_canvases(ctx, conn, body):
             require(isinstance(ref.get('canvas_id'), str), '采纳引用画布无效', 'scope_violation')
             require(ref['canvas_id'] == body.get('canvas_id'), '采纳引用必须来自当前画布', 'scope_violation')
             ids.add(ref['canvas_id'])
+        elif ref.get('kind') == 'run_output':
+            require(body.get('canvas_id') == ref.get('canvas_id'),
+                    '运行输出引用必须来自当前画布', 'scope_violation')
+            ids.add(body['canvas_id'])
         elif ref.get('kind') == 'object':
             owner = {'level': 'object', 'object_id': ref.get('object_id')}
             seen = set()
@@ -290,7 +294,7 @@ def graph_scope(ctx, canvas_id, scope):
             'nodes': snapshots, 'membership': chains, 'observed_canvas_revision': canvas['revision']}
 
 
-def inputs(ctx, conn, values, *, username=None, current_canvas_id=None):
+def inputs(ctx, conn, values, *, username=None, current_canvas_id=None, run_output_resolver=None):
     require(isinstance(values, list) and len(values) <= 100, '输入引用数量无效')
     result = []
     for ref in values:
@@ -312,6 +316,45 @@ def inputs(ctx, conn, values, *, username=None, current_canvas_id=None):
                     '固定采纳引用需要可信用户和当前画布', 'scope_violation')
             from .ideation_reference import resolve
             value = resolve(ctx, conn, ref, username=username, current_canvas_id=current_canvas_id)
+        elif kind == 'run_output':
+            require(callable(run_output_resolver), '运行输出引用只能由可信运行宿主解析', 'scope_violation')
+            value = run_output_resolver(conn, ref)
+        elif kind == 'script_document':
+            exact(ref, {'kind', 'canvas_id', 'document_id', 'revision_id'})
+            require(isinstance(current_canvas_id, str) and current_canvas_id
+                    and ref['canvas_id'] == current_canvas_id,
+                    '正式剧本只能作为当前画布的固定输入', 'scope_violation')
+            for field in ('canvas_id', 'document_id', 'revision_id'):
+                text(ref[field], 128)
+            path = ctx.state_dir / 'data.db'
+            require(path.is_file() and not path.is_symlink()
+                    and path.resolve().is_relative_to(ctx.state_dir.resolve()),
+                    '正式剧本存储不可用', 'scope_violation')
+            with readonly(path) as script_db:
+                require(table(script_db, 'script_documents') and table(script_db, 'script_revisions'),
+                        '正式剧本存储不可用', 'scope_violation')
+                row = script_db.execute('''SELECT d.id,d.kind,d.title,d.episode_number,
+                        d.current_revision_id,d.source_origin,r.markdown
+                    FROM script_documents d JOIN script_revisions r ON r.document_id=d.id
+                    WHERE d.id=? AND r.id=?''', (ref['document_id'], ref['revision_id'])).fetchone()
+            require(row is not None and row['kind'] == 'episode_script'
+                    and row['current_revision_id'] == ref['revision_id'],
+                    '正式剧本版本已变化或不存在', 'stale_input')
+            try:
+                origin = json.loads(row['source_origin']) if row['source_origin'] else None
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise OperationError('scope_violation', '正式剧本来源不可验证') from exc
+            require(isinstance(origin, dict) and origin.get('kind') == 'agent_script_draft'
+                    and origin.get('project_id') == ctx.project_id
+                    and origin.get('canvas_id') == current_canvas_id
+                    and isinstance(origin.get('delegation_id'), str)
+                    and isinstance(origin.get('member_id'), str),
+                    '固定输入不是当前项目和画布中的受信剧本草稿', 'scope_violation')
+            value = {'ref': ref, 'snapshot': {
+                'kind': row['kind'], 'document_id': row['id'], 'revision_id': row['current_revision_id'],
+                'current_revision_id': row['current_revision_id'], 'episode_number': row['episode_number'],
+                'title': row['title'], 'markdown': row['markdown'], 'source_origin': origin,
+            }}
         elif kind == 'asset':
             exact(ref, {'kind', 'asset_ref', 'slot_id', 'role'})
             asset = AssetReferences(ctx.state_dir, ctx.output_dir, ctx.project_id).resolve(ref['asset_ref'])

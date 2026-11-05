@@ -6,15 +6,23 @@ export type DirectorBinding = { kind: 'reference' } | { kind: 'firstFrame' | 'la
 
 export function isStoryboardPreparationStale(prepared: StoryboardPreparation | undefined, source: {
   id?: string; imageUrl?: string | null; gridRows?: number; gridCols?: number;
+  frames?: { id?: string }[]; selectedShotIds?: string[];
 }): boolean {
   if (!prepared) return false;
   if (source.id !== undefined && source.id !== prepared.sourceNodeId ||
       source.imageUrl !== undefined && source.imageUrl !== prepared.sourceUrl) return true;
   if (source.gridRows !== undefined && source.gridCols !== undefined) {
-    return source.gridRows * source.gridCols !== prepared.cells.length ||
+    if (source.gridRows * source.gridCols !== prepared.cells.length ||
       prepared.sourceGridRows !== undefined && source.gridRows !== prepared.sourceGridRows ||
-      prepared.sourceGridCols !== undefined && source.gridCols !== prepared.sourceGridCols;
+      prepared.sourceGridCols !== undefined && source.gridCols !== prepared.sourceGridCols) return true;
   }
+  const expectedShotIds = source.selectedShotIds ?? (source.frames?.every((frame) => typeof frame.id === 'string')
+    ? source.frames.map((frame) => frame.id as string) : undefined);
+  if (expectedShotIds && prepared.selectedShotIds &&
+      (expectedShotIds.length !== prepared.selectedShotIds.length ||
+        expectedShotIds.some((id, index) => id !== prepared.selectedShotIds?.[index]))) return true;
+  if (source.selectedShotIds && (!prepared.selectedShotIds || !prepared.selectedCells ||
+      prepared.selectedShotIds.length !== prepared.selectedCells.length)) return true;
   return false;
 }
 

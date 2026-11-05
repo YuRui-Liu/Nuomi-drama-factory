@@ -1,5 +1,5 @@
 import { apiCall } from '@/api/client';
-import { getFreezoneCanvas } from '@/api/canvas';
+import { createFreezoneProductionGraph, getFreezoneCanvas } from '@/api/canvas';
 import { applyRemoteFreezoneCanvas, captureFreezoneCanvasRuntime, flushFreezoneCanvasRuntime } from '@/features/freezone/canvasSyncRuntime';
 import { mergeCanvasOperation } from '@/features/freezone/canvasThreeWayMerge';
 import { useCanvasStore, type CanvasNode, type CanvasEdge } from '@/stores/canvasStore';
@@ -44,6 +44,50 @@ export async function startCanvasRun(project: string, canvas: string, target: st
   } });
 }
 
+/** Persist pending local edits, pin the production graph to the latest server revision, and leave it unsubmitted. */
+export async function createProductionGraph(
+  project: string,
+  canvas: string,
+  episode: number,
+  revisionId: string,
+  requestId: string,
+) {
+  const runtime = captureFreezoneCanvasRuntime(project, canvas);
+  if (!runtime) throw new Error('当前画布运行上下文已切换，请重新打开导演工作区。');
+  const flushed = await runtime.flush();
+  if (flushed !== true) throw new Error('画布尚未保存，请先解决保存冲突再创建制作节点。');
+  const current = await getFreezoneCanvas(project, canvas);
+  if (!runtime.isCurrent()) throw new Error('创建制作节点期间画布已切换；节点保留在原画布，请切回后检查。');
+  if (typeof current.revision !== 'number' || !Number.isInteger(current.revision) || current.revision < 0) {
+    throw new Error('无法读取当前画布版本，请刷新画布后重试。');
+  }
+  const result = await createFreezoneProductionGraph(project, canvas, {
+    base_revision: current.revision,
+    request_id: requestId,
+    episode,
+    revision_id: revisionId,
+  });
+  if (!runtime.isCurrent()) throw new Error('制作节点已创建在原画布，但当前画布已切换；请切回原画布检查。');
+
+  // The endpoint changes the saved graph outside useCanvasSync. Merge that
+  // authoritative graph against the captured baseline so edits made while the
+  // request was in flight survive, and never apply the response to a new canvas.
+  const refresh = await refreshAgentCanvasChanges(
+    project,
+    canvas,
+    current,
+    runtime.isCurrent,
+    typeof result.canvas.revision === 'number' ? result.canvas.revision : undefined,
+  );
+  if (refresh.status === 'conflict') {
+    throw new Error(`制作节点已创建，但与正在编辑的画布内容有冲突（${refresh.paths.join('、')}）。请解决冲突后重新加载。`);
+  }
+  if (refresh.status !== 'applied') {
+    throw new Error('制作节点已创建，但画布未能安全刷新；请切回原画布后重新加载。');
+  }
+  return result;
+}
+
 const resultFields = new Set(['imageUrl', 'videoUrl', 'resultVideoUrl', 'previewImageUrl', 'audioUrl',
   'scriptResult', 'scriptTitle', 'storyResult', 'outputs', 'frames', 'plyUrl', 'sources', 'orchestration',
   'attemptId', 'activeAttemptId', 'resultRevision', 'durationMs', 'generationBatch', 'skillRunId']);
@@ -82,9 +126,9 @@ export async function refreshCanvasRunResults(project: string, canvas: string) {
   // next autosave would erase nodes/edges created by the CLI. Flush local edits
   // first, then adopt the complete authoritative graph. A conflict stays visible.
   const flushed = await flushFreezoneCanvasRuntime(project, canvas);
-  if (flushed !== true) return;
+  if (flushed !== true) return false;
   const remote = await getFreezoneCanvas(project, canvas);
-  applyRemoteFreezoneCanvas(project, canvas, remote);
+  return applyRemoteFreezoneCanvas(project, canvas, remote);
 }
 
 export type AgentCanvasRefreshResult =

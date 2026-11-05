@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import aiosqlite
 
-from .models import Block, Document, KINDS, Revision, SceneIdentity
+from .models import Block, ContinuityFact, Document, KINDS, OutlineItem, Revision, SceneIdentity
 
 
 class DocumentNotFound(LookupError):
@@ -207,6 +207,24 @@ class DocumentStore:
         finally:
             await db.close()
 
+    @staticmethod
+    def _validate_source_locator(revision, source_locator):
+        prefix = "block:"
+        block_id = source_locator[len(prefix):] if isinstance(source_locator, str) and source_locator.startswith(prefix) else ""
+        if not block_id or block_id not in {block.id for block in revision.blocks}:
+            raise DocumentValidation("source locator must identify a block in the referenced source revision")
+
+    @staticmethod
+    async def _require_adopted_source(db, document_id, revision_id):
+        row = await (await db.execute(
+            "SELECT adopted_revision_id FROM script_documents WHERE id=?", (document_id,),
+        )).fetchone()
+        if row is None:
+            raise DocumentNotFound("source document not found")
+        if row["adopted_revision_id"] != revision_id:
+            message = "source revision is not adopted" if row["adopted_revision_id"] is None else "source revision is no longer adopted"
+            raise DocumentConflict(message, current_revision_id=row["adopted_revision_id"])
+
     async def initialize(self):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         async with self._db() as db:
@@ -248,6 +266,30 @@ class DocumentStore:
                     parent_ids TEXT NOT NULL, anchor_block_ids TEXT NOT NULL,
                     PRIMARY KEY(document_id, revision_id, scene_id),
                     UNIQUE(document_id, revision_id, ordinal));
+                CREATE TABLE IF NOT EXISTS script_outline_items (
+                    document_id TEXT NOT NULL, revision_id TEXT NOT NULL, item_id TEXT NOT NULL,
+                    parent_id TEXT, ordinal INTEGER NOT NULL, title TEXT NOT NULL, kind TEXT NOT NULL,
+                    episode_start INTEGER, episode_end INTEGER, source_document_id TEXT,
+                    source_revision_id TEXT, source_locator TEXT,
+                    PRIMARY KEY(document_id,revision_id,item_id));
+                CREATE TABLE IF NOT EXISTS script_continuity_candidates (
+                    id TEXT PRIMARY KEY, bible_document_id TEXT NOT NULL, base_revision_id TEXT NOT NULL,
+                    patch TEXT NOT NULL, source_document_id TEXT NOT NULL, source_revision_id TEXT NOT NULL,
+                    source_locator TEXT NOT NULL, episode_start INTEGER NOT NULL, episode_end INTEGER NOT NULL,
+                    status TEXT NOT NULL, created_at TEXT NOT NULL, adopted_revision_id TEXT,
+                    mutation_id TEXT UNIQUE NOT NULL);
+                CREATE TABLE IF NOT EXISTS script_continuity_facts (
+                    id TEXT PRIMARY KEY, bible_document_id TEXT NOT NULL, subject_id TEXT NOT NULL,
+                    predicate TEXT NOT NULL, object_id TEXT NOT NULL, state TEXT NOT NULL,
+                    episode_start INTEGER, episode_end INTEGER, source_document_id TEXT NOT NULL,
+                    source_revision_id TEXT NOT NULL, source_locator TEXT NOT NULL,
+                    adoption_status TEXT NOT NULL, created_at TEXT NOT NULL,
+                    mutation_id TEXT UNIQUE NOT NULL, request_hash TEXT NOT NULL,
+                    adopted_at TEXT, adopted_mutation_id TEXT);
+                CREATE TABLE IF NOT EXISTS script_continuity_fact_adoptions (
+                    fact_id TEXT PRIMARY KEY, mutation_id TEXT UNIQUE NOT NULL, created_at TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS idx_continuity_facts_episode
+                    ON script_continuity_facts(adoption_status,episode_start,episode_end);
                 CREATE TABLE IF NOT EXISTS script_generation_runs (
                     id TEXT PRIMARY KEY, mutation_id TEXT UNIQUE NOT NULL,
                     request_hash TEXT NOT NULL, data TEXT NOT NULL,
@@ -388,9 +430,59 @@ class DocumentStore:
                     row["document_id"], row["markdown"], blocks,
                     parent.scene_identities if parent else (),
                 )
+        outline_rows = await (await db.execute(
+            "SELECT * FROM script_outline_items WHERE document_id=? AND revision_id=? ORDER BY rowid",
+            (row["document_id"], revision_id),
+        )).fetchall()
+        outline_items = tuple(OutlineItem(
+            item["item_id"], item["parent_id"], item["ordinal"], item["title"], item["kind"],
+            item["episode_start"], item["episode_end"], item["source_document_id"],
+            item["source_revision_id"], item["source_locator"],
+        ) for item in outline_rows)
         return Revision(row["id"], row["document_id"], row["parent_revision_id"], row["markdown"],
                         blocks, row["client_mutation_id"], row["created_at"],
-                        row["restored_from_revision_id"], scene_identities)
+                        row["restored_from_revision_id"], scene_identities, outline_items)
+
+    @staticmethod
+    def _validated_outline(items):
+        items = tuple(item if isinstance(item, OutlineItem) else OutlineItem(**item) for item in items)
+        ids = [item.id for item in items]
+        if not items or len(ids) != len(set(ids)) or any(not value for value in ids):
+            raise DocumentValidation("outline requires unique stable item ids")
+        by_id = {item.id: item for item in items}
+        ordinals = {}
+        for item in items:
+            if item.kind not in {"series_arc", "story_arc", "episode"} or not item.title.strip():
+                raise DocumentValidation("invalid outline item")
+            ordinals.setdefault(item.parent_id, []).append(item.ordinal)
+            if item.parent_id is not None and item.parent_id not in by_id:
+                raise DocumentValidation("outline parent does not exist")
+            if item.kind == "episode":
+                if item.episode_start is None or item.episode_end != item.episode_start or not 1 <= item.episode_start <= 100:
+                    raise DocumentValidation("episode outline must reference an episode from 1 to 100")
+            elif item.episode_start is not None or item.episode_end is not None:
+                if (item.episode_start is None or item.episode_end is None or
+                        not 1 <= item.episode_start <= item.episode_end <= 100):
+                    raise DocumentValidation("invalid outline episode range")
+            seen, current = set(), item
+            while current.parent_id is not None:
+                if current.id in seen:
+                    raise DocumentValidation("outline hierarchy contains a cycle")
+                seen.add(current.id)
+                current = by_id[current.parent_id]
+        for sibling_ordinals in ordinals.values():
+            if sorted(sibling_ordinals) != list(range(1, len(sibling_ordinals) + 1)):
+                raise DocumentValidation("outline sibling ordinals must be consecutive")
+        return items
+
+    @staticmethod
+    async def _persist_outline(db, document_id, revision_id, items):
+        await db.executemany(
+            "INSERT OR IGNORE INTO script_outline_items VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(document_id, revision_id, item.id, item.parent_id, item.ordinal, item.title, item.kind,
+              item.episode_start, item.episode_end, item.source_document_id, item.source_revision_id,
+              item.source_locator) for item in items],
+        )
 
     @staticmethod
     async def _persist_scene_identities(db, document_id, revision_id, identities):
@@ -1130,16 +1222,22 @@ class DocumentStore:
             return [await self._revision(db, row["id"]) for row in rows]
 
     async def create(self, *, kind, title, markdown="", client_mutation_id,
-                     episode_number=None, blocks=None, source_origin=None):
+                     episode_number=None, blocks=None, source_origin=None, outline_items=None):
         if kind not in KINDS or not title.strip() or not client_mutation_id.strip():
             raise DocumentValidation("invalid kind, title, or client_mutation_id")
+        outline_items = self._validated_outline(outline_items) if outline_items is not None else None
+        if outline_items is not None and kind != "outline":
+            raise DocumentValidation("outline items require an outline document")
         if episode_number is not None and episode_number < 1:
             raise DocumentValidation("episode_number must be positive")
         normalized = ([{"id": item.id, "markdown": item.markdown} if isinstance(item, Block) else item
                        for item in blocks] if blocks is not None else None)
         parsed = _blocks(markdown, normalized, allow_client_ids=True)
         digest = _digest(dict(kind=kind, title=title, markdown=markdown, episode_number=episode_number,
-                              blocks=normalized, source_origin=source_origin))
+                              blocks=normalized, source_origin=source_origin,
+                              outline_items=[item.__dict__ if hasattr(item, "__dict__") else {
+                                  field: getattr(item, field) for field in item.__dataclass_fields__
+                              } for item in outline_items] if outline_items is not None else None))
         async with self._db() as db:
             await db.execute("BEGIN IMMEDIATE")
             try:
@@ -1157,6 +1255,8 @@ class DocumentStore:
                 if kind == "episode_script":
                     identities = _scene_identity_records(document_id, markdown, parsed)
                     await self._persist_scene_identities(db, document_id, revision_id, identities)
+                if outline_items is not None:
+                    await self._persist_outline(db, document_id, revision_id, outline_items)
                 await db.execute("INSERT INTO script_mutations VALUES (?,?,?,?,?)",
                                  ("create", client_mutation_id, digest, document_id, revision_id))
                 response = await self._document(db, document_id)
@@ -1166,12 +1266,210 @@ class DocumentStore:
                 await db.rollback()
                 raise
 
+    async def create_outline(self, *, title, items, client_mutation_id):
+        items = self._validated_outline(items)
+        markdown = "\n".join("  " * (0 if item.parent_id is None else 1) + item.title for item in items)
+        return await self.create(kind="outline", title=title, markdown=markdown,
+                                 client_mutation_id=client_mutation_id, outline_items=items)
+
+    async def save_outline(self, document_id, *, base_revision_id, items, client_mutation_id):
+        items = self._validated_outline(items)
+        current = await self.get(document_id)
+        if current.kind != "outline":
+            raise DocumentValidation("document is not an outline")
+        markdown = "\n".join("  " * (0 if item.parent_id is None else 1) + item.title for item in items)
+        return await self.save(document_id, base_revision_id=base_revision_id, markdown=markdown,
+                               client_mutation_id=client_mutation_id, outline_items=items)
+
+    async def create_continuity_candidate(self, bible_document_id, *, base_revision_id, patch,
+                                          source_document_id, source_revision_id, source_locator,
+                                          episode_start, episode_end, client_mutation_id):
+        if not patch.strip() or not source_document_id or not source_revision_id or not source_locator:
+            raise DocumentValidation("patch and source/version locator are required")
+        if not 1 <= episode_start <= episode_end <= 100:
+            raise DocumentValidation("invalid continuity episode range")
+        bible = await self.get_revision(bible_document_id, base_revision_id)
+        if bible.kind not in {"brief", "outline"}:
+            raise DocumentValidation("continuity candidates require a story bible document")
+        source = await self.get_revision(source_document_id, source_revision_id)
+        self._validate_source_locator(source.revision, source_locator)
+        digest = _digest([bible_document_id, base_revision_id, patch, source_document_id,
+                          source_revision_id, source_locator, episode_start, episode_end])
+        async with self._db() as db:
+            row = await (await db.execute(
+            "SELECT * FROM script_continuity_candidates WHERE mutation_id=?", (client_mutation_id,)
+            )).fetchone()
+            if row:
+                existing_digest = _digest([row["bible_document_id"], row["base_revision_id"], row["patch"],
+                    row["source_document_id"], row["source_revision_id"], row["source_locator"],
+                    row["episode_start"], row["episode_end"]])
+                if digest != existing_digest:
+                    raise DocumentConflict("mutation id reused with different payload")
+                return dict(row)
+            candidate_id, stamp = _id(), _now()
+            await db.execute("INSERT INTO script_continuity_candidates VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,?)",
+                (candidate_id, bible_document_id, base_revision_id, patch, source_document_id,
+                 source_revision_id, source_locator, episode_start, episode_end, "candidate", stamp,
+                 client_mutation_id))
+            await db.commit()
+            return await self.get_continuity_candidate(candidate_id)
+
+    async def get_continuity_candidate(self, candidate_id):
+        async with self._db() as db:
+            row = await (await db.execute("SELECT * FROM script_continuity_candidates WHERE id=?",
+                                          (candidate_id,))).fetchone()
+            if row is None:
+                raise DocumentNotFound("continuity candidate not found")
+            return dict(row)
+
+    @staticmethod
+    def _continuity_fact(row):
+        return ContinuityFact(
+            row["id"], row["subject_id"], row["predicate"], row["object_id"], row["state"],
+            row["episode_start"], row["episode_end"], row["source_document_id"],
+            row["source_revision_id"], row["source_locator"], row["adoption_status"],
+        )
+
+    async def create_continuity_fact(self, bible_document_id, *, subject_id, predicate, object_id,
+                                     state, episode_start, episode_end, source_document_id,
+                                     source_revision_id, source_locator, client_mutation_id):
+        if not all(isinstance(value, str) and value.strip() for value in (
+                subject_id, predicate, object_id, source_document_id, source_revision_id,
+                source_locator, client_mutation_id)):
+            raise DocumentValidation("fact identity, evidence, and mutation id are required")
+        if state not in {"confirmed", "planned", "occurred", "retracted", "unknown"}:
+            raise DocumentValidation("invalid continuity fact state")
+        if not 1 <= episode_start <= episode_end <= 100:
+            raise DocumentValidation("invalid continuity episode range")
+        bible = await self.get(bible_document_id)
+        if bible.kind not in {"brief", "outline"}:
+            raise DocumentValidation("continuity facts require a story bible document")
+        source = await self.get_revision(source_document_id, source_revision_id)
+        self._validate_source_locator(source.revision, source_locator)
+        payload = [bible_document_id, subject_id, predicate, object_id, state, episode_start,
+                   episode_end, source_document_id, source_revision_id, source_locator]
+        request_hash = _digest(payload)
+        async with self._db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                prior = await (await db.execute(
+                    "SELECT * FROM script_continuity_facts WHERE mutation_id=?", (client_mutation_id,)
+                )).fetchone()
+                if prior:
+                    if prior["request_hash"] != request_hash:
+                        raise DocumentConflict("mutation id reused with different payload")
+                    await db.rollback()
+                    return self._continuity_fact(prior)
+                fact_id, stamp = _id(), _now()
+                await db.execute("""
+                    INSERT INTO script_continuity_facts
+                    (id,bible_document_id,subject_id,predicate,object_id,state,episode_start,episode_end,
+                     source_document_id,source_revision_id,source_locator,adoption_status,created_at,
+                     mutation_id,request_hash,adopted_at,adopted_mutation_id)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,'candidate',?,?,?,NULL,NULL)
+                """, (fact_id, bible_document_id, subject_id, predicate, object_id, state,
+                      episode_start, episode_end, source_document_id, source_revision_id,
+                      source_locator, stamp, client_mutation_id, request_hash))
+                row = await (await db.execute(
+                    "SELECT * FROM script_continuity_facts WHERE id=?", (fact_id,)
+                )).fetchone()
+                await db.commit()
+                return self._continuity_fact(row)
+            except Exception:
+                await db.rollback()
+                raise
+
+    async def get_continuity_fact(self, fact_id):
+        async with self._db() as db:
+            row = await (await db.execute("SELECT * FROM script_continuity_facts WHERE id=?",
+                                          (fact_id,))).fetchone()
+            if row is None:
+                raise DocumentNotFound("continuity fact not found")
+            return self._continuity_fact(row)
+
+    async def list_continuity_facts(self, bible_document_id):
+        bible = await self.get(bible_document_id)
+        if bible.kind not in {"brief", "outline"}:
+            raise DocumentValidation("continuity facts require a story bible document")
+        async with self._db() as db:
+            rows = await (await db.execute(
+                "SELECT * FROM script_continuity_facts WHERE bible_document_id=? "
+                "ORDER BY episode_start,created_at,id", (bible_document_id,),
+            )).fetchall()
+            return [self._continuity_fact(row) for row in rows]
+
+    async def _mark_continuity_fact_adopted(self, db, fact_id, client_mutation_id):
+        stamp = _now()
+        await db.execute("UPDATE script_continuity_facts SET adoption_status='adopted',adopted_at=?,"
+                         "adopted_mutation_id=? WHERE id=? AND adoption_status='candidate'",
+                         (stamp, client_mutation_id, fact_id))
+        await db.execute("INSERT INTO script_continuity_fact_adoptions VALUES (?,?,?)",
+                         (fact_id, client_mutation_id, stamp))
+
+    async def adopt_continuity_fact(self, fact_id, *, client_mutation_id):
+        if not client_mutation_id:
+            raise DocumentValidation("client_mutation_id required")
+        async with self._db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                row = await (await db.execute("SELECT * FROM script_continuity_facts WHERE id=?",
+                                              (fact_id,))).fetchone()
+                if row is None:
+                    raise DocumentNotFound("continuity fact not found")
+                if row["adoption_status"] == "adopted":
+                    await self._require_adopted_source(db, row["source_document_id"], row["source_revision_id"])
+                    await db.rollback()
+                    return self._continuity_fact(row)
+                await self._require_adopted_source(db, row["source_document_id"], row["source_revision_id"])
+                await self._mark_continuity_fact_adopted(db, fact_id, client_mutation_id)
+                updated = await (await db.execute("SELECT * FROM script_continuity_facts WHERE id=?",
+                                                  (fact_id,))).fetchone()
+                await db.commit()
+                return self._continuity_fact(updated)
+            except Exception:
+                await db.rollback()
+                raise
+
+    async def continuity_context(self, *, episode, limit=100):
+        from .continuity import build_episode_context
+
+        if not 1 <= episode <= 100 or not 1 <= limit <= 500:
+            raise DocumentValidation("episode and limit are out of range")
+        async with self._db() as db:
+            rows = await (await db.execute(
+                "SELECT f.* FROM script_continuity_facts f JOIN script_documents source "
+                "ON source.id=f.source_document_id AND source.adopted_revision_id=f.source_revision_id "
+                "WHERE f.adoption_status='adopted' AND f.episode_start<=? "
+                "AND (f.episode_end>=? OR f.state='retracted') ORDER BY f.episode_start,f.created_at,f.id",
+                (episode, episode),
+            )).fetchall()
+            facts = tuple(self._continuity_fact(row) for row in rows)
+        return build_episode_context(facts, episode=episode)[:limit]
+
+    async def adopt_continuity_candidate(self, candidate_id, *, client_mutation_id):
+        candidate = await self.get_continuity_candidate(candidate_id)
+        if candidate["status"] == "adopted":
+            async with self._db() as db:
+                await self._require_adopted_source(
+                    db, candidate["source_document_id"], candidate["source_revision_id"])
+            return await self.get_revision(candidate["bible_document_id"], candidate["adopted_revision_id"])
+        bible = await self.get(candidate["bible_document_id"])
+        if bible.current_revision_id != candidate["base_revision_id"]:
+            raise DocumentConflict(current_revision_id=bible.current_revision_id)
+        separator = "\n\n" if bible.revision.markdown else ""
+        saved = await self._change(bible.id, base_revision_id=bible.current_revision_id,
+            markdown=bible.revision.markdown + separator + candidate["patch"],
+            client_mutation_id=client_mutation_id, blocks=None,
+            restored_from_revision_id=None, adopted_candidate_id=candidate_id,
+            required_adopted_source=(candidate["source_document_id"], candidate["source_revision_id"]))
+        return saved
+
     async def save(self, document_id, *, base_revision_id, markdown, client_mutation_id,
-                   blocks=None, scene_identity_update=None):
+                   blocks=None, scene_identity_update=None, outline_items=None):
         return await self._change(document_id, base_revision_id=base_revision_id, markdown=markdown,
                                   client_mutation_id=client_mutation_id, blocks=blocks,
                                   restored_from_revision_id=None,
-                                  scene_identity_update=scene_identity_update)
+                                  scene_identity_update=scene_identity_update, outline_items=outline_items)
 
     async def restore(self, document_id, *, revision_id, base_revision_id, client_mutation_id):
         async with self._db() as db:
@@ -1185,7 +1483,8 @@ class DocumentStore:
 
     async def _change(self, document_id, *, base_revision_id, markdown, client_mutation_id,
                       blocks, restored_from_revision_id, restored_blocks=None,
-                      scene_identity_update=None, restored_scene_identities=None):
+                      scene_identity_update=None, restored_scene_identities=None,
+                      outline_items=None, adopted_candidate_id=None, required_adopted_source=None):
         if not client_mutation_id or not base_revision_id:
             raise DocumentValidation("base_revision_id and client_mutation_id required")
         normalized = ([{"id": b.id, "markdown": b.markdown} if isinstance(b, Block) else b
@@ -1194,6 +1493,10 @@ class DocumentStore:
                               blocks=normalized, restored_from_revision_id=restored_from_revision_id)
         if scene_identity_update is not None:
             digest_payload["scene_identity_update"] = scene_identity_update
+        normalized_outline = self._validated_outline(outline_items) if outline_items is not None else None
+        if normalized_outline is not None:
+            digest_payload["outline_items"] = [{field: getattr(item, field)
+                for field in item.__dataclass_fields__} for item in normalized_outline]
         digest = _digest(digest_payload)
         async with self._db() as db:
             await db.execute("BEGIN IMMEDIATE")
@@ -1203,6 +1506,10 @@ class DocumentStore:
                     await db.rollback()
                     return replay
                 current = await self._document(db, document_id)
+                if required_adopted_source is not None:
+                    await self._require_adopted_source(db, *required_adopted_source)
+                if normalized_outline is not None and current.kind != "outline":
+                    raise DocumentValidation("outline items require an outline document")
                 if current.current_revision_id != base_revision_id:
                     raise DocumentConflict(current_revision_id=current.current_revision_id)
                 parsed = restored_blocks if restored_blocks is not None else _blocks(
@@ -1237,6 +1544,10 @@ class DocumentStore:
                                   json.dumps(_as_json_blocks(parsed), ensure_ascii=False),
                                   client_mutation_id, stamp, restored_from_revision_id))
                 await self._persist_scene_identities(db, document_id, revision_id, identities)
+                if normalized_outline is not None:
+                    await self._persist_outline(db, document_id, revision_id, normalized_outline)
+                if adopted_candidate_id is not None:
+                    await self._set_candidate_adopted(db, adopted_candidate_id, revision_id)
                 await db.execute("UPDATE script_documents SET current_revision_id=?,updated_at=? WHERE id=?",
                                  (revision_id, stamp, document_id))
                 await db.execute("INSERT INTO script_mutations VALUES (?,?,?,?,?)",
@@ -1247,6 +1558,10 @@ class DocumentStore:
             except Exception:
                 await db.rollback()
                 raise
+
+    async def _set_candidate_adopted(self, db, candidate_id, revision_id):
+        await db.execute("UPDATE script_continuity_candidates SET status='adopted',adopted_revision_id=? WHERE id=?",
+                         (revision_id, candidate_id))
 
     async def generation_start(self, data, mutation_id):
         legacy_digest = _digest({key: data[key] for key in (

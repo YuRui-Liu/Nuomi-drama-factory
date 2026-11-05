@@ -180,3 +180,21 @@ def test_workspace_markdown_heading_and_cast_keep_clean_names():
     assert scene.interior_exterior == "interior"
     assert scene.characters == ("林川", "掌柜")
     assert scene.blocks[0].kind == "dialogue"
+
+
+def test_cast_parenthetical_annotation_keeps_the_character_name():
+    parsed = parse_screenplay_document(
+        "1-1 临街修简铺 夜 内\n"
+        "人物：步知遥、收简人、朏朏（前半场藏于木匣内）\n"
+        "△木匣轻轻晃动。"
+    )
+
+    assert parsed.scenes[0].characters == ("步知遥", "收简人", "朏朏")
+
+
+def test_sound_effect_field_is_not_classified_as_dialogue():
+    parsed = parse_screenplay_document(
+        "1-1 临街修简铺 夜 内\n音效：木匣发出轻响。"
+    )
+
+    assert parsed.scenes[0].blocks[0].kind == "action"

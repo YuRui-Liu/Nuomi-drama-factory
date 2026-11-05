@@ -123,9 +123,11 @@ def compile_indextts2_request(
 
 
 class _RunningHubClient(Protocol):
+    async def workflow_json(self, workflow_id: str) -> dict: ...
+
     async def upload(self, path: str | Path) -> str: ...
 
-    async def submit(self, workflow_id: str, node_info: list[dict[str, str]]) -> str: ...
+    async def submit(self, workflow_id: str, node_info: list[dict[str, str]], *, workflow: dict | None = None) -> str: ...
 
     async def query(self, task_id: str): ...
 
@@ -150,6 +152,27 @@ async def generate_indextts2_audio(
     reference_path = Path(reference_path)
     client: _RunningHubClient = runtime.create_client()
     try:
+        from .workflow_variants import build_indextts2_variant, save_audio_nodes, EmotionMode as VariantMode
+        workflow_id = runtime.workflow_id(MediaCapability.TTS_VOICE_CLONE)
+        graph = await client.workflow_json(workflow_id)
+        custom_workflow = None
+        runner = "1"
+        if "103" not in graph:
+            if any(graph.get(n, {}).get("class_type") != "IndexTTS2Run" for n in ("1", "14", "17", "20")):
+                raise ValueError("Unsupported IndexTTS2 workflow graph")
+            normalized_mode = EmotionMode(mode)
+            variant_mode = VariantMode("neutral" if normalized_mode == EmotionMode.NEUTRAL else "emotion_" + normalized_mode.value)
+            variant = build_indextts2_variant(graph, variant_mode)
+            custom_workflow = variant.workflow
+            runner = variant.runner_node_id
+            if save_audio_nodes(custom_workflow) != {variant.output_node_id}:
+                raise ValueError("IndexTTS2 variant must contain exactly one SaveAudio output")
+            if sum(n.get("class_type") == "IndexTTS2Run" for n in custom_workflow.values()) != 1:
+                raise ValueError("IndexTTS2 variant must contain exactly one runner")
+        outputs = save_audio_nodes(custom_workflow if custom_workflow is not None else graph)
+        if len(outputs) != 1:
+            raise ValueError("IndexTTS2 workflow must contain exactly one SaveAudio output")
+        output_node = next(iter(outputs))
         reference_file = await client.upload(reference_path)
         emotion_file = ""
         if emotion_path is not None:
@@ -163,10 +186,17 @@ async def generate_indextts2_audio(
             emotion_vector=emotion_vector,
             emotion_alpha=emotion_alpha,
         )
-        workflow_id = runtime.workflow_id(MediaCapability.TTS_VOICE_CLONE)
+        nodes = list(compiled.node_info_list)
+        if custom_workflow is not None:
+            nodes = [{**n, "nodeId": runner if n["nodeId"] == "1" else n["nodeId"]} for n in nodes if n["nodeId"] != "103"]
+            if any(n["nodeId"] not in custom_workflow or n["fieldName"] not in custom_workflow[n["nodeId"]].get("inputs", {}) for n in nodes):
+                raise ValueError("IndexTTS2 workflow input contract mismatch")
         from novelvideo.costs.providers import requested_cost_context
         with requested_cost_context('audio', usage={'character': str(len(text.strip()))}):
-            task_id = await client.submit(workflow_id, list(compiled.node_info_list))
+            if custom_workflow is None:
+                task_id = await client.submit(workflow_id, nodes)
+            else:
+                task_id = await client.submit(workflow_id, nodes, workflow=custom_workflow)
         for _ in range(max_polls):
             snapshot = await client.query(task_id)
             if snapshot.status in {"failed", "cancelled"}:
@@ -174,7 +204,10 @@ async def generate_indextts2_audio(
             if snapshot.status == "succeeded":
                 if not snapshot.results:
                     raise RuntimeError("RunningHub IndexTTS2 returned no audio")
-                return await client.download(snapshot.results[0].url)
+                matches = [r for r in snapshot.results if str(getattr(r, "node_id", "")) == output_node]
+                if len(matches) != 1:
+                    raise RuntimeError("RunningHub IndexTTS2 missing unique expected audio output")
+                return await client.download(matches[0].url)
             await asyncio.sleep(poll_interval)
         raise TimeoutError("RunningHub IndexTTS2 task timed out")
     finally:
@@ -226,6 +259,15 @@ class RunningHubIndexTTS2Generator:
             target.write_bytes(audio)
             return TTSResult(success=True, audio_path=str(target), duration_seconds=0.0)
         except Exception as exc:
+            from novelvideo.media_capabilities.runtime.runninghub_client import RunningHubError
+            if isinstance(exc, RunningHubError):
+                details = "; ".join(str(value) for value in (
+                    f"code={exc.code}" if exc.code else None,
+                    f"http={exc.http_status}" if exc.http_status else None,
+                    f"operation={exc.operation}" if exc.operation else None,
+                    exc.details,
+                ) if value)
+                return TTSResult(success=False, error=f"RunningHub IndexTTS2 failed: {exc}; {details}")
             return TTSResult(success=False, error=f"RunningHub IndexTTS2 failed: {exc}")
 
 

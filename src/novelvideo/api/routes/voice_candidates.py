@@ -205,19 +205,39 @@ async def preflight_episode_voice(project: str, episode_num: int, user: dict = D
         return JSONResponse(status_code=422, content={"ok": False, "error": "episode must be positive"})
     _, _, _, project_dir, _, store = await _resolve_character_project(project, user, required_role="viewer")
     beats = await store.get_beats_as_dicts(episode_num)
+    from novelvideo.director_plan.store import DirectorPlanStore
+    from novelvideo.narrative_groups.service import generation_beats_for_group
+
+    active = DirectorPlanStore(project_dir).load_active(episode_num)
+    if active is not None:
+        # Match the production source even when obsolete legacy beats still exist.
+        # This projection reads frozen semantic dialogue without materializing groups.
+        beats = [beat for group in active.groups for beat in generation_beats_for_group(
+            project_dir, episode_num, group.id, beats,
+        )]
     results = []
     roles = store.get_all_characters()
     candidates = VoiceCandidateStore(store.db_path, project_dir)
     for beat in beats:
-        for speaker in unique_seedance2_dialogue_speakers(beat):
+        if "dialogue_lines" in beat:
+            # Structured director lines have separate identities; the beat-level
+            # speaker is only a display string (e.g. "甲 / 乙").
+            speakers = [(str(line.get("speaker") or "").strip(), str(line.get("text") or ""))
+                        for line in beat["dialogue_lines"] if str(line.get("text") or "").strip()]
+        else:
+            speakers = [(speaker, str(beat.get("dialogue") or ""))
+                        for speaker in unique_seedance2_dialogue_speakers(beat)]
+        for speaker, dialogue in speakers:
+            context = {"speaker": speaker, "dialogue": dialogue,
+                       "beat": beat.get("beat_number") or beat.get("id") or beat.get("beat_id")}
             role = next((role for role in roles if _speaker_matches_character(speaker, role)), None)
             if role is None:
-                results.append({"character_name": speaker, "production_ready": False, "reason": "speaker_not_resolved"})
+                results.append({**context, "character_name": speaker, "production_ready": False, "reason": "speaker_not_resolved"})
                 continue
             identity = _identity_for_speaker(speaker, role, beat)
             selected = _resolve_voice_path(Path(project_dir), role, identity)
             item = voice_readiness(role, candidates, selected)
-            item.update(speaker=speaker, identity_id=identity.identity_id if identity else "", beat=beat.get("beat_number"))
+            item.update(**context, identity_id=identity.identity_id if identity else "")
             if item["mode"] not in {"dialogue", "both"}:
                 item = {**item, "production_ready": False, "reason": "dialogue_speaker_mode_conflict"}
             results.append(item)

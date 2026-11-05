@@ -10,9 +10,10 @@ export interface ProductionWorkspaceLayoutProps {
   inspector?: ReactNode;
   actions: ReactNode;
   status?: string;
+  variant?: 'director';
 }
 
-export function ProductionWorkspaceLayout({ title, onBack, navigation, children, inspector, actions, status }: ProductionWorkspaceLayoutProps) {
+export function ProductionWorkspaceLayout({ title, onBack, navigation, children, inspector, actions, status, variant }: ProductionWorkspaceLayoutProps) {
   const [inspectorOpen, setInspectorOpen] = useState(() =>
     typeof window !== 'undefined' && typeof window.matchMedia === 'function'
       ? !window.matchMedia('(max-width: 1024px)').matches
@@ -27,7 +28,7 @@ export function ProductionWorkspaceLayout({ title, onBack, navigation, children,
     return () => media.removeEventListener?.('change', update);
   }, []);
 
-  return <div className="production-workspace-layout">
+  return <div className={`production-workspace-layout${variant ? ` production-workspace-layout--${variant}` : ''}`}>
     <header className="production-workspace-header">
       <Button type="button" variant="ghost" className="production-workspace-back" onClick={onBack}>
         <span aria-hidden="true">←</span> 返回画布

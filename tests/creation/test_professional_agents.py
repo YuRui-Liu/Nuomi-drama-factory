@@ -46,11 +46,12 @@ def test_professional_catalog_exposes_all_configured_roles(service, ctx):
     entries = service.builtin_catalog()
     assert {entry['id']:entry['configuration']['name'] for entry in entries} == EXPECTED_ROLES
     assert len(entries) == 22
-    assert all(entry['revision'] == (3 if identifier in {
-        'builtin:creative-lead', 'builtin:text-writer', 'builtin:director', 'builtin:storyboard-artist'} else 2 if identifier in {
+    assert all(entry['revision'] == (4 if identifier == 'builtin:creative-lead' else 4 if identifier == 'builtin:text-writer' else 3 if identifier in {
+        'builtin:script-editor', 'builtin:director', 'builtin:storyboard-artist',
+        'builtin:minimax-video-operator', 'builtin:storyboard-image-operator'} else 2 if identifier in {
         'builtin:blocking-designer', 'builtin:cinematographer', 'builtin:lighting-designer',
-        'builtin:action-designer', 'builtin:expression-designer', 'builtin:script-editor',
-        'builtin:minimax-video-operator', 'builtin:storyboard-image-operator', 'builtin:voice-designer',
+        'builtin:action-designer', 'builtin:expression-designer',
+        'builtin:editor', 'builtin:voice-designer',
         'builtin:dubbing-director', 'builtin:dubbing-operator'} else 1)
         for identifier, entry in ((item['id'], item) for item in entries))
 
@@ -74,6 +75,29 @@ def test_professional_catalog_exposes_all_configured_roles(service, ctx):
         assert entry['source']['kind'] == 'builtin'
 
     assert not ctx.state_dir.exists() and not service.library.root.exists()
+
+
+def test_latest_production_roles_use_group_graph_without_rewriting_pinned_versions(service):
+    entries = {item['id']: item for item in service.builtin_catalog()}
+    expected = {
+        'builtin:creative-lead': {('narrativeGroupStoryboardNode', 'render'),
+                                 ('narrativeGroupVideoNode', 'video'), ('episodeComposeNode', 'compose')},
+        'builtin:storyboard-image-operator': {('narrativeGroupStoryboardNode', 'render'),
+                                            ('narrativeGroupStoryboardNode', 'retry_render')},
+        'builtin:minimax-video-operator': {('narrativeGroupVideoNode', 'video'),
+                                          ('narrativeGroupVideoNode', 'retry_video')},
+        'builtin:editor': {('episodeComposeNode', 'compose')},
+    }
+    retired = {'produce', 'retry_production', 'render_groups', 'retry_render_groups'}
+    for identifier, operations in expected.items():
+        current = entries[identifier]
+        required = {(item['node_type'], item['operation'])
+                    for item in current['configuration']['required_node_operations']}
+        assert operations <= required
+        assert not any(node == 'directorWorkspaceNode' and op in retired for node, op in required)
+        previous = builtin_agents.resolve({'id': identifier, 'revision': current['revision'] - 1})
+        assert previous['revision'] == current['revision'] - 1
+        assert previous['configuration'] != current['configuration']
 
 
 def test_voice_roles_separate_design_direction_and_execution_without_adoption_grants(service):
@@ -104,6 +128,24 @@ def test_director_specialists_have_versioned_content_operations(service):
         assert {'node_type': 'directorWorkspaceNode', 'operation': 'edit_shot'} in entry['configuration']['required_node_operations']
         legacy = builtin_agents.resolve({'id': entry['id'], 'revision': 1})
         assert not any(item['operation'] == 'edit_shot' for item in legacy['configuration']['required_node_operations'])
+
+
+def test_formal_script_capabilities_are_published_as_new_builtin_revisions(service):
+    entries = {item['id']: item for item in service.builtin_catalog()}
+    writer = entries['builtin:text-writer']
+    editor = entries['builtin:script-editor']
+
+    assert writer['revision'] == 4
+    assert editor['revision'] == 3
+    assert 'script.document.draft' in writer['configuration']['capabilities']
+    assert 'script.document.review' in editor['configuration']['capabilities']
+
+    previous_writer = builtin_agents.resolve({'id': writer['id'], 'revision': 3})
+    previous_editor = builtin_agents.resolve({'id': editor['id'], 'revision': 2})
+    assert previous_writer['revision'] == 3
+    assert previous_editor['revision'] == 2
+    assert '正式剧本文档草稿' not in ' '.join(previous_writer['configuration']['collaboration_rules'])
+    assert '独立剧本审阅' not in ' '.join(previous_editor['configuration']['collaboration_rules'])
     assert {'node_type': 'directorWorkspaceNode', 'operation': 'compile_blocking'} in entries['builtin:director']['configuration']['required_node_operations']
 
 
@@ -117,6 +159,28 @@ def test_professional_source_entries_keep_legacy_v1_and_add_latest_versions():
         legacy = builtin_agents.resolve({'id':identifier, 'revision':1})
         assert legacy['revision'] == 1
         assert not {'delivery_requirements','collaboration_rules','required_node_operations','examples'} & legacy['configuration'].keys()
+
+
+async def test_existing_builtin_adoption_stays_fixed_when_catalog_advances(service, monkeypatch):
+    selected = next(item for item in service.builtin_catalog() if item['id'] == 'builtin:lighting-designer')
+    ref = {'id':selected['id'], 'revision':selected['revision']}
+    adopted = await service.apply(command('adopt', {
+        'source':'builtin', 'ref':ref, 'proof':selected['proof'],
+    }, 'adopt-fixed-professional'))
+    before = service.adoption(adopted['adoption_id'])
+
+    newer = deepcopy(max(
+        (item for item in builtin_agents.BUILTIN_AGENTS if item['id'] == ref['id']),
+        key=lambda item: item['revision'],
+    ))
+    newer['revision'] += 1
+    newer['configuration']['methods'] = '新版专业方法'
+    monkeypatch.setattr(builtin_agents, 'BUILTIN_AGENTS', (*builtin_agents.BUILTIN_AGENTS, newer))
+
+    latest = next(item for item in service.builtin_catalog() if item['id'] == ref['id'])
+    assert latest['revision'] > ref['revision']
+    assert service.adoption(adopted['adoption_id']) == before
+    assert before['fixed']['source']['ref'] == ref
 
 
 def test_professional_role_capabilities_are_requirements_not_execution_grants(service):

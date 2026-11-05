@@ -387,6 +387,28 @@ class AssetReferences:
         data.update(assetRef=resolved['asset_ref'], assetMediaSelection=media)
         return {'data': data, 'blobs': blobs, 'proof': fingerprint(resolved), 'resolved': resolved}
 
+    def image_url(self, ref, media):
+        """Resolve one fixed, verified image slot for a generation reference."""
+        resolved = self.resolve(ref)
+        if not isinstance(media, dict) or set(media) != {'slot_id', 'role'}:
+            fail('asset_media_selection', '必须指定素材槽位和角色')
+        if media['role'] not in {'portrait', 'state', 'costume', 'master', 'reverse_master',
+                                 'pano', 'panorama_360', 'spatial_layout'}:
+            fail('asset_media_type', '此固定资产素材不是可用图片')
+        payload = resolved['object']['payload']
+        selected = [item for item in payload.get('_media', [])
+                    if item.get('slot_id') == media['slot_id'] and self.role(item) == media['role']]
+        if len(selected) != 1 or not owns_slot(resolved['mapping'], payload, media['slot_id']):
+            fail('asset_media_selection', '素材不属于此固定资产版本')
+        item = selected[0]
+        blob = item.get('current_blob') or item.get('canonical_blob') or item.get('blob')
+        if not isinstance(blob, dict):
+            fail('asset_media_unavailable', '此版本没有可用图片')
+        verify_blob(self.output_dir, blob)
+        if Path(blob['path']).suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.bmp'}:
+            fail('asset_media_type', '固定素材不是受支持的图片格式')
+        return project_static_url(self.project_id, blob['path'])
+
     def _scene_layouts(self, payload, items, sources, selected_role):
         """Translate saved source identities using only the immutable snapshot.
 

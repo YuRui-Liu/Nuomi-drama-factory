@@ -7,9 +7,16 @@ from novelvideo.freezone.skill_registry import list_skills
 # (category, accepted media, produced media, operations). Do not remove blocked
 # operations to make an acceptance report appear complete.
 _SPECS = {
+    "agentNode": ("input", (), ("json",), ("validate",)),
     "ideationNode": ("generation", ("text", "json"), ("json",), ("generate",)),
-    "screenplayNode": ("generation", ("text", "json"), ("json",), ("plan", "inspect", "review", "rewrite")),
-    "narrativeGroupStoryboardNode": ("input", ("json",), ("json",), ("validate",)),
+    # Screenplays accept typed image references on the canvas. Image-only links
+    # are graph context, not a text-planning dependency (see execution_order).
+    "screenplayNode": ("generation", ("text", "json", "image"), ("json",), ("plan", "inspect", "review", "rewrite")),
+    "narrativeGroupStoryboardNode": ("input", ("json",), ("json",), ("validate", "render", "retry_render")),
+    "narrativeGroupVideoNode": ("generation", ("json",), ("json",), ("video", "retry_video")),
+    # Composition reports JSON state and emits a video that can connect to
+    # ordinary video consumers as a typed graph edge.
+    "episodeComposeNode": ("transform", ("json",), ("json", "video"), ("compose",)),
     "directorWorkspaceNode": ("generation", ("text", "json"), ("json",),
                                ("prepare", "preview_handoff", "inspect", "save_blocking", "compile_blocking", "edit_shot", "edit_structure", "render_groups", "retry_render_groups", "produce", "retry_production")),
     "characterVoiceNode": ("generation", ("text", "audio", "json"), ("audio", "json"), ("design", "prepare_design")),
@@ -30,7 +37,7 @@ _SPECS = {
     "videoStoryNode": ("generation", ("video", "text"), ("text", "json"), ("analyze",)),
     "videoComposeNode": ("transform", ("video", "audio"), ("video",), ("compose",)),
     "musicDeskNode": ("transform", ("video", "audio"), ("audio", "video"), ("edit", "export")),
-    "scriptNode": ("generation", ("text", "image", "video", "json"), ("text", "json"), ("generate", "plan_episode")),
+    "scriptNode": ("generation", ("text", "image", "video", "json"), ("text", "json"), ("generate", "plan_episode", "project")),
     "pano360ViewerNode": ("interactive", ("image",), ("image", "json"), ("view", "capture")),
     "threeDWorldNode": ("interactive", ("image", "text", "json"), ("image", "json"), ("generate", "view", "capture")),
     "skillNode": ("generation", ("text", "image", "json"), ("text", "image", "json"), ("run",)),

@@ -2,7 +2,7 @@
 
 ## Production Workflow
 
-For episode production, continuation, Ref video generation, or failed-batch recovery, read `skills/nuomi-production/SKILL.md` first and use `novelvideo.production_cli` (`nuomi`). Production units are narrative groups: group storyboard images → group videos → episode composition. Read saved concurrency settings; do not invent a lower limit. Do not replace this workflow with shot/segment loops or direct-provider scripts. Report blocked groups and repair the supported entry point instead of bypassing it. Keep verification proportional: generation result, obvious story omissions, and final playback; no unsolicited ASR or repeated paid quality passes.
+For new creation and episode production through the Codex client, read `skills/nuomi-canvas-production/SKILL.md` first and use `novelvideo.production_cli` (`nuomi`) with the `canvas` commands. Keep detailed creative documents in local project files and show only core artifacts on the canvas. Default to review checkpoints after screenplay, assets, and storyboard table plus grid; honor explicit auto mode or a requested stopping stage. For explicitly requested legacy production runs, read `skills/nuomi-production/SKILL.md` and recover the original run instead of creating a duplicate canvas run. Production units follow existing narrative-group/provider capabilities: group storyboard images → group videos → episode composition. Read saved concurrency settings; do not invent a lower limit. Do not replace the supported workflow with shot/segment paid loops or direct-provider scripts. Report blocked groups and repair the public entry point instead of bypassing it. Keep verification proportional: generation result, obvious story omissions, and final playback; no unsolicited ASR or repeated paid quality passes.
 
 ## Project Structure & Module Organization
 
@@ -32,3 +32,15 @@ Recent history uses short conventional prefixes such as `fix:`, `feat(scope):`, 
 ## Security & Configuration Tips
 
 Do not commit provider keys, signed URLs, credentials, or generated secrets. Configure model access through environment variables such as `MODEL_PROVIDER` and `MODEL_API_KEY`. Run the gitleaks pre-commit hook before sharing changes that touch configuration, provisioning, backup, or gateway code.
+
+
+# Codex project instructions
+
+For complex coding tasks, use the `astra-orchestrator` skill when its trigger conditions match.
+
+The root agent owns architecture, decomposition, integration, and final verification.
+Prefer specialized subagents for bounded exploration, implementation, testing, review, and technical research.
+
+Do not delegate trivial work merely for parallelism.
+Do not let multiple implementation agents edit the same files without explicit ownership boundaries.
+User instructions always take precedence over this orchestration policy.

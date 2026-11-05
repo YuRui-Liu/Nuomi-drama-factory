@@ -11,6 +11,7 @@ from novelvideo.freezone.orchestration.models import OrchestrationError, input_f
 from novelvideo.production_workflow.coordination import asset_project_lock
 from . import agent_context
 from .asset_adapter import registration_io
+from .asset_generation import AssetDesignPrepare, AssetGeneration, AssetDesignProposal, AssetDesignProposalRef
 from .asset_reference import table
 from .delegations import Delegations, OPERATIONS
 from .library_references import digest, packed
@@ -34,7 +35,7 @@ class AgentTools(ProjectDomain):
     def __init__(self, ctx, *, username, canvas_id, conversation_id, delegation_id, resolve_context,
                  accepted_transition=None, authorize_submission=None, authorize_projection=None, authorize_action=None,
                  heartbeat=None, node_context=None,
-                 node_execution_factory=None):
+                 node_execution_factory=None, run_output_resolver=None):
         super().__init__(ctx, authority='agent')
         self.username = text(username, 200)
         self.canvas_id = text(canvas_id, 64)
@@ -50,8 +51,11 @@ class AgentTools(ProjectDomain):
         self.heartbeat = heartbeat
         self.node_context = deepcopy(node_context or {})
         self.node_execution_factory = node_execution_factory
+        self.run_output_resolver = run_output_resolver
         self._pending_node_transition = None
         self._pending_node_result = None
+        self._pending_asset_design = None
+        self._pending_script_document = None
         self._direct_node_acceptance = None
         self._agent_run_transition = None
 
@@ -74,6 +78,16 @@ class AgentTools(ProjectDomain):
             **deepcopy(body), 'delegation_id': self.delegation_id,
             'canvas_id': self.canvas_id, 'conversation_id': self.conversation_id})
         await self._fresh('editor')
+        if body['operation'] == 'asset.design.create':
+            try:
+                return await self._execute_asset_design(request)
+            except OrchestrationError as exc:
+                raise OperationError(exc.code, str(exc), **exc.details) from exc
+        if body['operation'] in {'script.document.draft', 'script.document.review'}:
+            try:
+                return await self._execute_script_document(request)
+            except OrchestrationError as exc:
+                raise OperationError(exc.code, str(exc), **exc.details) from exc
         if body['operation'] in {'node.patch', 'node.run'}:
             try:
                 return await self._execute_node(request, accepted_transition=accepted_transition)
@@ -88,6 +102,302 @@ class AgentTools(ProjectDomain):
             except CanvasLockBusy as exc:
                 raise OperationError('canvas_busy', '画布正在保存，请使用原请求重试') from exc
 
+    def _script_document_plan(self, payload, contract):
+        from .canvas_workspaces import list_canvases
+
+        selection = self._selection(payload, contract)
+        workspaces = [item for item in list_canvases(self.ctx.state_dir)
+            if item['canvas_id'] == self.canvas_id and item['status'] == 'applied']
+        require(len(workspaces) == 1 and workspaces[0]['kind'] == 'concept'
+                and workspaces[0]['episode_id'] is None,
+                '正式剧本草稿和独立审阅只能从已登记的构思画布发起', 'scope_violation')
+        if payload.get('source_input_index') is not None:
+            index = payload['source_input_index']
+            require(index in selection['input_indices'], '剧本来源必须是本动作明确选择的固定输入', 'scope_violation')
+            source = contract['inputs'][index]
+            snapshot = source.get('snapshot', {})
+            provenance = snapshot.get('provenance')
+            ref = source.get('ref', {})
+            require(ref.get('kind') == 'run_output'
+                    and snapshot.get('kind') == 'story_fragment'
+                    and isinstance(snapshot.get('payload'), dict)
+                    and snapshot['payload'].get('canvas_id') == self.canvas_id
+                    and isinstance(provenance, dict)
+                    and isinstance(provenance.get('source_run_id'), str)
+                    and isinstance(provenance.get('source_delegation_id'), str)
+                    and isinstance(provenance.get('source_output_id'), str)
+                    and isinstance(provenance.get('source_action_request_id'), str)
+                    and isinstance(provenance.get('source_operation_id'), str),
+                    '既有剧本来源必须是当前画布上经过验证的主创任务产物', 'scope_violation')
+            source_ref = {'kind': 'run_output', 'output_id': provenance['source_output_id'],
+                          'source_run_id': provenance['source_run_id'],
+                          'source_task_key': ref.get('source_task_key'),
+                          'source_delegation_id': provenance['source_delegation_id'],
+                          'source_action_request_id': provenance['source_action_request_id'],
+                          'source_operation_id': provenance['source_operation_id']}
+        else:
+            source_ref = None
+        if 'document_input_index' in payload:
+            index = payload['document_input_index']
+            require(index in selection['input_indices'], '审阅剧本必须是本动作明确选择的固定输入', 'scope_violation')
+            document_input = contract['inputs'][index]
+            ref = document_input.get('ref', {})
+            snapshot = document_input.get('snapshot', {})
+            require(ref.get('kind') == 'script_document'
+                    and ref.get('canvas_id') == self.canvas_id
+                    and snapshot.get('kind') == 'episode_script'
+                    and snapshot.get('current_revision_id') == ref.get('revision_id'),
+                    '审阅目标不是当前画布中已固定的正式剧本草稿', 'scope_violation')
+            document_ref = {'document_id': ref['document_id'], 'revision_id': ref['revision_id'],
+                            'kind': 'episode_script', 'episode_number': snapshot['episode_number']}
+        else:
+            document_ref = None
+        return {'selection': selection, 'source_ref': source_ref, 'document_ref': document_ref}
+
+    async def _execute_script_document(self, request):
+        from pathlib import Path
+
+        from novelvideo.script_creation.store import DocumentStore
+        from .agent_script_documents import AgentScriptDocuments
+
+        operation = request.payload['operation']
+        payload = request.payload['payload']
+        request_hash = digest([self.domain, self.ctx.project_id, self.ctx.requester_user_id,
+                               self.authority, request.model_dump(mode='json')])
+
+        def replay():
+            with self.read() as conn:
+                return self._replay(conn, request, request_hash)
+
+        previous = await registration_io(replay)
+        if previous is not None:
+            return previous
+        self._pending_script_document = None
+        try:
+            await self._fresh('editor')
+            async with asset_project_lock(self.ctx.state_dir):
+                await self._fresh('editor')
+
+                def preflight():
+                    with self.read() as conn:
+                        contract = self._current(conn, operation)
+                        return contract, self._script_document_plan(payload, contract)
+
+                contract, plan = await registration_io(preflight)
+                documents = AgentScriptDocuments(DocumentStore(Path(self.ctx.state_dir) / 'data.db'))
+                member_id = contract['agent'].get('adoption_id')
+                member = {'adoption_id': member_id, 'revision': contract['agent'].get('revision'),
+                          'name': contract['agent']['effective']['name']}
+                if operation == 'script.document.draft':
+                    result = await documents.create_draft(
+                        request_id=request.request_id, project_id=self.ctx.project_id,
+                        canvas_id=self.canvas_id, delegation_id=self.delegation_id,
+                        writer=member, episode_number=payload['episode_number'],
+                        title=payload['title'], markdown=payload['markdown'],
+                        source_ref=plan['source_ref'],
+                    )
+                    projection = await registration_io(documents.project_draft,
+                        state_dir=self.ctx.state_dir, project_id=self.ctx.project_id,
+                        canvas_id=self.canvas_id, actor=self.ctx.requester_user_id,
+                        document_ref=result['document_ref'], title=result['title'],
+                        markdown=result['markdown'], request_id=request.request_id)
+                    result = {**result, 'projection': projection}
+                else:
+                    document_ref = plan['document_ref']
+                    result = await documents.record_review(
+                        request_id=request.request_id, project_id=self.ctx.project_id,
+                        canvas_id=self.canvas_id, delegation_id=self.delegation_id,
+                        reviewer=member, document_id=document_ref['document_id'],
+                        revision_id=document_ref['revision_id'], report=payload['report'],
+                    )
+                self._pending_script_document = {'contract': contract, 'result': result,
+                                                 'plan': plan}
+                return await registration_io(self._apply, request)
+        except CanvasLockBusy as exc:
+            raise OperationError('canvas_busy', '画布正在保存，请使用原请求重试') from exc
+        finally:
+            self._pending_script_document = None
+
+    def _asset_design_plan(self, payload, contract):
+        selection = self._selection(payload, contract)
+        scope = contract['expanded_scope']['scope']
+        scope_kind = scope['kind']
+        targets = selection['target_node_ids']
+        expanded_scope = contract['expanded_scope']
+        nodes = {node['node_id']: node for node in expanded_scope['nodes']}
+        input_indices = set(selection['input_indices'])
+        reference_indices = self._indices(payload['reference_indices'], len(contract['inputs']))
+        require(set(reference_indices) <= input_indices,
+                '资产参考必须来自本动作明确选择的冻结输入', 'scope_violation')
+        if scope_kind == 'canvas':
+            require(not targets, '画布级委托的资产设计不能伪造局部目标', 'scope_violation')
+            selected_group_id = None
+        elif scope_kind == 'group':
+            selected_group_id = scope['group_id']
+            require(targets == [selected_group_id], '分组委托只能在冻结的目标内容组内创建设计', 'scope_violation')
+        else:
+            require(len(targets) == 1 and targets[0] in nodes,
+                    '节点委托只能在单一冻结目标内创建设计', 'scope_violation')
+            target_id = targets[0]
+            target_node = nodes[target_id]
+            if target_node['node_type'] == 'groupNode':
+                selected_group_id = target_id
+            else:
+                require(target_node['node_type'] in {'imageGenNode', 'imageNode', 'uploadNode'},
+                        '节点委托只允许内容组或单一图像节点作为资产设计范围', 'scope_violation')
+                media_fields = set(target_node.get('media_evidence', {}).get('fields', ()))
+                require(bool(media_fields & {'imageUrl', 'previewImageUrl'}),
+                        '选中的图像节点尚无固定图像结果', 'scope_violation')
+                if target_node['node_type'] == 'uploadNode':
+                    require(not media_fields & {'videoUrl', 'audioUrl', 'panoUrl', 'plyUrl'},
+                            '上传节点必须是单一图像素材', 'scope_violation')
+
+                membership = [item for item in expanded_scope.get('membership', [])
+                              if item.get('node_id') == target_id]
+                require(len(membership) == 1 and isinstance(membership[0].get('members'), list),
+                        '选中图像缺少冻结的分组成员关系', 'scope_violation')
+                chain = membership[0]['members']
+                chain_ids = [item.get('id') for item in chain if isinstance(item, dict)]
+                require(len(chain) == len(chain_ids) and chain_ids
+                        and chain_ids[0] == target_id and len(chain_ids) == len(set(chain_ids)),
+                        '选中图像的冻结分组成员关系无效', 'scope_violation')
+                require(all(item.get('parentId') == (chain_ids[index + 1]
+                                if index + 1 < len(chain_ids) else None)
+                            for index, item in enumerate(chain)),
+                        '选中图像的冻结分组链不连续', 'scope_violation')
+                require(chain[0].get('type') == target_node['node_type']
+                        and chain[0].get('parentId') == target_node.get('parent_id'),
+                        '选中图像的冻结父分组与成员关系不一致', 'scope_violation')
+                parent_id = target_node.get('parent_id')
+                if parent_id is None:
+                    require(len(chain) == 1,
+                            '顶层图像不能带有未声明的冻结父分组', 'scope_violation')
+                    selected_group_id = None
+                else:
+                    require(len(chain) > 1 and chain[1].get('id') == parent_id
+                            and chain[1].get('type') == 'groupNode',
+                            '输出容器必须是选中图像的冻结直接父分组', 'scope_violation')
+                    require(all(item.get('type') == 'groupNode' for item in chain[1:]),
+                            '选中图像的冻结祖先必须全部是内容组', 'scope_violation')
+                    selected_group_id = parent_id
+
+                # A selected image is an authorized write target only for
+                # add-only design creation. Its bytes are referenced through
+                # the fixed input snapshot; the output container is derived
+                # from frozen ancestry and never accepted from model payload.
+                frozen_input_indices = [index for index in input_indices
+                    if contract['inputs'][index].get('ref') == {
+                        'kind': 'canvas_node', 'canvas_id': self.canvas_id, 'node_id': target_id}
+                    and contract['inputs'][index].get('snapshot') == target_node
+                    and contract['inputs'][index].get('membership') == membership]
+                require(any(index in reference_indices for index in frozen_input_indices),
+                        '选中图像必须作为本次资产设计的固定图像参考', 'scope_violation')
+
+        references = []
+        for index in reference_indices:
+            item = contract['inputs'][index]
+            ref = item['ref']
+            if ref.get('kind') == 'canvas_node':
+                require(ref.get('canvas_id') == self.canvas_id,
+                        '资产参考节点必须来自当前画布', 'scope_violation')
+                references.append({'kind': 'canvas_node', 'canvas_id': self.canvas_id,
+                                   'node_id': ref['node_id']})
+            elif ref.get('kind') == 'asset':
+                references.append({'kind': 'asset', 'asset_ref': deepcopy(ref['asset_ref']),
+                                   'slot_id': ref['slot_id'], 'role': ref['role']})
+            else:
+                require(False, '资产参考只支持当前画布节点或固定资产输入', 'scope_violation')
+
+        base_ref = None
+        base_index = payload.get('base_asset_input_index')
+        if base_index is not None:
+            require(base_index in input_indices, '基础资产必须来自本动作明确选择的输入', 'scope_violation')
+            base_input = contract['inputs'][base_index]
+            require(base_input['ref'].get('kind') == 'asset',
+                    '基础版本必须引用固定资产输入', 'scope_violation')
+            base_ref = deepcopy(base_input['ref']['asset_ref'])
+
+        source_ref = None
+        source_provenance = None
+        source_index = payload.get('source_proposal_input_index')
+        if source_index is not None:
+            require(source_index in input_indices, '既有提案必须来自本动作明确选择的输入', 'scope_violation')
+            source = contract['inputs'][source_index]
+            snapshot = source.get('snapshot', {})
+            require(source['ref'].get('kind') == 'run_output'
+                    and snapshot.get('kind') == 'story_fragment'
+                    and isinstance(snapshot.get('payload'), dict)
+                    and isinstance(snapshot.get('provenance'), dict)
+                    and snapshot.get('payload', {}).get('canvas_id') == self.canvas_id,
+                    '既有提案必须是受信的、属于当前画布的已验证故事草案输出', 'scope_violation')
+            source_ref = AssetDesignProposalRef(id=snapshot['id'], revision=snapshot['revision'],
+                                                kind='story_fragment')
+            source_provenance = deepcopy(snapshot['provenance'])
+        else:
+            require('draft_title' in payload and 'draft_text' in payload,
+                    '请提供新提案草稿正文，或引用已验证的提案输入')
+
+        return {'selection': selection, 'selected_group_id': selected_group_id,
+                'references': references, 'base_asset_ref': base_ref,
+                'source_proposal_ref': source_ref,
+                'source_proposal_provenance': source_provenance}
+
+    async def _execute_asset_design(self, request):
+        request_hash = digest([self.domain, self.ctx.project_id, self.ctx.requester_user_id,
+                               self.authority, request.model_dump(mode='json')])
+
+        def replay():
+            with self.read() as conn:
+                return self._replay(conn, request, request_hash)
+
+        previous = await registration_io(replay)
+        if previous is not None:
+            return previous
+        self._pending_asset_design = None
+        try:
+            await self._fresh('editor')
+            async with asset_project_lock(self.ctx.state_dir):
+                await self._fresh('editor')
+
+                def preflight():
+                    with self.read() as conn:
+                        contract = self._current(conn, 'asset.design.create')
+                        plan = self._asset_design_plan(request.payload['payload'], contract)
+                        return contract, plan
+
+                contract, plan = await registration_io(preflight)
+                canvas = await registration_io(read_canvas, self.ctx.state_dir, self.canvas_id)
+                require(canvas is not None and canvas.get('project_id') == self.ctx.project_id,
+                        '当前概念画布不可用', 'scope_violation')
+                payload = request.payload['payload']
+                design_request_id = 'asset-design:' + digest(
+                    [self.ctx.project_id, self.delegation_id, request.request_id])[:48]
+                body = AssetDesignPrepare(
+                    request_id=design_request_id, canvas_id=self.canvas_id,
+                    expected_canvas_revision=canvas['revision'], kind=payload['kind'],
+                    purpose=(payload['purpose'] if payload.get('purpose') is not None else
+                             'character_sheet' if payload['kind'] == 'character' else 'scene'),
+                    aspect_ratio=payload.get('aspect_ratio'),
+                    camera_selection=payload.get('camera_selection'),
+                    name=payload['name'], description=payload['description'], prompt=payload['prompt'],
+                    source_proposal=(AssetDesignProposal(title=payload['draft_title'], text=payload['draft_text'])
+                                     if plan['source_proposal_ref'] is None else None),
+                    source_proposal_ref=plan['source_proposal_ref'],
+                    style_template_id=payload.get('style_template_id'),
+                    base_asset_ref=plan['base_asset_ref'], references=plan['references'],
+                    group_id=plan['selected_group_id'])
+                service = AssetGeneration(self.ctx)
+                result = await registration_io(service.prepare, self.ctx.requester_user_id, body,
+                    selected_group_id=plan['selected_group_id'],
+                    source_proposal_provenance=plan['source_proposal_provenance'])
+                self._pending_asset_design = {'contract': contract, 'plan': plan, 'body': body,
+                                              'result': result}
+                return await registration_io(self._apply, request)
+        except CanvasLockBusy as exc:
+            raise OperationError('canvas_busy', '画布正在保存，请使用原请求重试') from exc
+        finally:
+            self._pending_asset_design = None
+
     def _node_service(self, contract):
         if self.node_execution_factory is not None:
             return self.node_execution_factory(contract)
@@ -96,7 +406,8 @@ class AgentTools(ProjectDomain):
         return NodeExecutionService(Path(self.ctx.state_dir), project_id=self.ctx.project_id,
             canvas_id=self.canvas_id, actor={'id': self.ctx.requester_user_id, 'username': self.username},
             authorize_submission=self.authorize_submission,
-            authorize_projection=self.authorize_projection)
+            authorize_projection=self.authorize_projection,
+            require_workspace_scope=True)
 
     def _node_preflight(self, operation, payload, *, accepted_transition, connection):
         if operation == 'node.patch':
@@ -420,6 +731,147 @@ class AgentTools(ProjectDomain):
             transitions[pending['node_id']] = pending
         return transitions
 
+    def _verified_asset_designs(self, conn, contract):
+        """Read only applied asset-design receipts under this authorization root."""
+        root_id = contract.get('root_delegation_id') or self.delegation_id
+        if not table(conn, 'agent_delegations') or not table(conn, 'delegation_outputs'):
+            return []
+        delegation_ids = []
+        for row in conn.execute('''SELECT id,contract FROM agent_delegations
+                WHERE project_id=? AND owner_id=? AND owner_username=? AND canvas_id=? AND conversation_id=?''',
+                (self.ctx.project_id, self.ctx.requester_user_id, self.username,
+                 self.canvas_id, self.conversation_id)):
+            value = json.loads(row['contract'])
+            if (value.get('root_delegation_id') == root_id
+                    and value.get('authorization_id') == contract.get('authorization_id')):
+                delegation_ids.append(row['id'])
+        if not delegation_ids or not table(conn, 'creative_domain_receipts'):
+            return []
+        placeholders = ','.join('?' for _ in delegation_ids)
+        rows = conn.execute(f'''SELECT d.rowid AS sequence,d.delegation_id,d.content,o.request_id,o.actor_id,
+                r.result FROM delegation_outputs d JOIN operations o ON o.id=d.operation_id
+            JOIN creative_domain_receipts r ON r.request_id=o.request_id AND r.project_id=d.project_id
+                AND r.domain='agent_tools'
+            WHERE d.project_id=? AND d.owner_id=? AND d.canvas_id=? AND d.conversation_id=?
+              AND d.delegation_id IN ({placeholders}) AND o.actor_id=? ORDER BY d.rowid''',
+            (self.ctx.project_id, self.ctx.requester_user_id, self.canvas_id, self.conversation_id,
+             *delegation_ids, self.ctx.requester_user_id))
+        from .asset_generation import AssetGeneration
+        designs = []
+        for row in rows:
+            output = json.loads(row['content'])
+            if (output.get('operation') != 'asset.design.create'
+                    or output.get('delegation_id') != row['delegation_id']
+                    or output.get('operation_id') is None):
+                continue
+            receipt = json.loads(row['result'])
+            candidate = output.get('prepared_execution')
+            if (receipt.get('delegation_id') != row['delegation_id']
+                    or receipt.get('output') != output
+                    or not isinstance(candidate, dict)
+                    or output.get('asset_design', {}).get('prepared_execution') != candidate):
+                continue
+            verified = AssetGeneration.verified_design_nodes(self.ctx, candidate)
+            if verified is None:
+                continue
+            if (output.get('group_id') != verified['group_id']
+                    or output.get('text_node_id') != verified['text_node_id']
+                    or output.get('image_node_id') != verified['image_node_id']
+                    or candidate.get('node_id') != verified['image_node_id']):
+                continue
+            designs.append({**verified, 'sequence': row['sequence'],
+                            'delegation_id': row['delegation_id']})
+        return designs
+
+    def _verified_own_script_projections(self, conn, contract):
+        """Return only applied screenplay refs recorded by this delegation's run."""
+        if 'script.document.draft' not in contract.get('allowed_operations', []):
+            return set()
+        required_tables = {'agent_runs', 'creative_domain_receipts', 'operations', 'delegation_outputs'}
+        if not conn or not all(table(conn, name) for name in required_tables):
+            return set()
+        run_row = conn.execute('''SELECT content FROM agent_runs
+            WHERE project_id=? AND owner_id=? AND username=? AND canvas_id=?
+              AND conversation_id=? AND delegation_id=?''',
+            (self.ctx.project_id, self.ctx.requester_user_id, self.username,
+             self.canvas_id, self.conversation_id, self.delegation_id)).fetchone()
+        if run_row is None:
+            return set()
+        run = json.loads(run_row['content'])
+        root_id = contract.get('root_delegation_id') or self.delegation_id
+        if (run.get('delegation_id') != self.delegation_id
+                or run.get('root_delegation_id', self.delegation_id) != root_id
+                or run.get('state') not in {
+                    'queued', 'applying', 'model_inflight', 'waiting_children', 'stopped', 'blocked'}):
+            return set()
+
+        agent = contract.get('agent', {})
+        projections = set()
+        for round_index, step in enumerate(run.get('rounds', [])):
+            if step.get('delegation_id') != self.delegation_id:
+                continue
+            actions = step.get('decision', {}).get('actions', [])
+            completed = set(step.get('actions_done', []))
+            for action_index, action in enumerate(actions):
+                if (action_index not in completed
+                        or action.get('operation') != 'script.document.draft'):
+                    continue
+                request_id = f"run:{run['id']}:{round_index}:action:{action_index}"
+                persisted = conn.execute('''SELECT d.content,r.result,o.id AS operation_id
+                    FROM creative_domain_receipts r
+                    JOIN operations o ON o.request_id=r.request_id
+                    JOIN delegation_outputs d ON d.operation_id=o.id
+                    WHERE r.request_id=? AND r.domain='agent_tools' AND r.project_id=?
+                      AND o.actor_id=? AND d.project_id=? AND d.owner_id=?
+                      AND d.delegation_id=? AND d.canvas_id=? AND d.conversation_id=?''',
+                    (request_id, self.ctx.project_id, self.ctx.requester_user_id,
+                     self.ctx.project_id, self.ctx.requester_user_id, self.delegation_id,
+                     self.canvas_id, self.conversation_id)).fetchone()
+                if persisted is None:
+                    continue
+                output = json.loads(persisted['content'])
+                receipt = json.loads(persisted['result'])
+                origin = output.get('source_origin')
+                document_ref = output.get('document_ref')
+                projection = output.get('projection')
+                if (receipt.get('delegation_id') != self.delegation_id
+                        or receipt.get('output') != output
+                        or output.get('id') != receipt.get('output', {}).get('id')
+                        or output.get('operation_id') != persisted['operation_id']
+                        or output.get('operation') != 'script.document.draft'
+                        or output.get('state') != 'draft'
+                        or not isinstance(origin, dict)
+                        or origin.get('kind') != 'agent_script_draft'
+                        or origin.get('project_id') != self.ctx.project_id
+                        or origin.get('canvas_id') != self.canvas_id
+                        or origin.get('delegation_id') != self.delegation_id
+                        or origin.get('member_id') != agent.get('adoption_id')
+                        or origin.get('member_revision') != agent.get('revision')
+                        or not isinstance(document_ref, dict)
+                        or document_ref.get('kind') != 'episode_script'
+                        or not isinstance(document_ref.get('document_id'), str)
+                        or not isinstance(document_ref.get('revision_id'), str)
+                        or not isinstance(projection, dict)
+                        or projection.get('status') != 'applied'
+                        or projection.get('canvas_id') != self.canvas_id
+                        or not isinstance(projection.get('node_id'), str)):
+                    continue
+
+                from novelvideo.freezone.canvas_store import read_canvas
+                canvas = read_canvas(self.ctx.state_dir, self.canvas_id)
+                node = next((item for item in (canvas or {}).get('nodes', [])
+                             if item.get('id') == projection['node_id']), None)
+                binding = (node or {}).get('data', {}).get('formalScriptRef', {})
+                if (node is not None and node.get('type') == 'textAnnotationNode'
+                        and binding.get('kind') == 'episode_script'
+                        and binding.get('project_id') == self.ctx.project_id
+                        and binding.get('canvas_id') == self.canvas_id
+                        and binding.get('document_id') == document_ref['document_id']
+                        and binding.get('revision_id') == document_ref['revision_id']
+                        and binding.get('episode_number') == document_ref.get('episode_number')):
+                    projections.add(projection['node_id'])
+        return projections
+
     def _current(self, conn, operation, *, allow_inactive=False):
         row = self._owned(conn)
         contract = row['contract']
@@ -434,9 +886,85 @@ class AgentTools(ProjectDomain):
         scope = dict(original['scope'])
         require(scope.pop('canvas_id') == self.canvas_id, '委托画布归属损坏', 'scope_violation')
         current = agent_context.graph_scope(self.ctx, self.canvas_id, scope)
-        require(current['scope'] == original['scope'] and current['node_ids'] == original['node_ids']
-                and current['membership'] == original['membership'],
-                '目标范围或成员归属已变化', 'stale_input')
+        require(current['scope'] == original['scope'], '目标范围已变化', 'stale_input')
+        designs = self._verified_asset_designs(conn, contract)
+        expected_added = set()
+        visible_designs = []
+        if scope['kind'] == 'canvas':
+            visible_designs = designs
+        elif scope['kind'] == 'group':
+            visible_designs = [item for item in designs if item['parent_group_id'] == scope['group_id']]
+        expected_added = {identifier for item in visible_designs for identifier in
+                          (item['group_id'], item['text_node_id'], item['image_node_id'])}
+        script_projection_ids = set()
+        parent_id = contract.get('parent_id')
+        if scope['kind'] == 'canvas' and parent_id:
+            parent_contract = self.delegations._get(conn, parent_id)['contract']
+            inherited_inputs = {digest(item['ref']) for item in parent_contract.get('inputs', [])}
+            for item in contract.get('inputs', []):
+                ref = item.get('ref', {})
+                if ref.get('kind') != 'script_document' or digest(ref) in inherited_inputs:
+                    continue
+                evidence = self.delegations._script_document_transition_evidence(
+                    conn, item, parent_id, parent_contract)
+                projection_node_id = evidence.get('projection_node_id')
+                require(isinstance(projection_node_id, str) and projection_node_id,
+                        '正式剧本来源缺少固定投影节点', 'scope_violation')
+                script_projection_ids.add(projection_node_id)
+        if scope['kind'] == 'canvas':
+            script_projection_ids.update(self._verified_own_script_projections(conn, contract))
+        original_ids = set(original['node_ids'])
+        # Existing frozen nodes remain part of the original scope. Only newly
+        # projected, receipt-verified references can be removed from its delta.
+        script_projection_ids.difference_update(original_ids)
+        expected_added.update(script_projection_ids)
+        current_ids = set(current['node_ids'])
+        require(current_ids - original_ids == expected_added
+                and original_ids <= current_ids,
+                '目标范围只能增加已验证的资产设计或固定剧本引用节点', 'stale_input')
+        if script_projection_ids:
+            # The exact script version is already present as a fixed input.
+            # Keep its canvas projection out of the live graph read set; this
+            # bridge tolerates the node's existence without exposing its
+            # content or granting access to any other added node.
+            current['node_ids'] = [node_id for node_id in current['node_ids']
+                                   if node_id not in script_projection_ids]
+            current['nodes'] = [node for node in current['nodes']
+                                if node['node_id'] not in script_projection_ids]
+            current['membership'] = [item for item in current['membership']
+                                     if item['node_id'] not in script_projection_ids]
+        original_membership = {item['node_id']: item for item in original['membership']}
+        current_membership = {item['node_id']: item for item in current['membership']}
+        require(all(current_membership.get(node_id) == frozen
+                    for node_id, frozen in original_membership.items()),
+                '目标范围原成员归属已变化', 'stale_input')
+        # A nodes-scope group intentionally freezes only the selected parent
+        # node. Keep its child range add-only by comparing the last trusted
+        # design's pre-add membership to the live group descendants.
+        if scope['kind'] == 'nodes':
+            current_canvas = read_canvas(self.ctx.state_dir, self.canvas_id)
+            canvas_nodes = {node['id']: node for node in current_canvas['nodes']}
+            original_nodes = {node['node_id']: node for node in original['nodes']}
+            selected_groups = {node_id for node_id, node in original_nodes.items()
+                               if node['node_type'] == 'groupNode'}
+            for group_id in selected_groups:
+                group_designs = [item for item in designs if item['parent_group_id'] == group_id]
+                if not group_designs:
+                    continue
+                latest = max(group_designs, key=lambda item: item['sequence'])
+                expected_descendants = set(latest['prior_descendant_ids']) | {
+                    latest['group_id'], latest['text_node_id'], latest['image_node_id']}
+                descendants = {group_id}
+                changed = True
+                while changed:
+                    changed = False
+                    for node in current_canvas['nodes']:
+                        if node.get('parentId') in descendants and node['id'] not in descendants:
+                            descendants.add(node['id'])
+                            changed = True
+                require(descendants == expected_descendants,
+                        '局部内容组只能包含原成员与回执中的资产设计节点', 'stale_input',
+                        group_id=group_id)
         accepted = self._accepted_node_transitions(conn, contract)
         original_nodes = {node['node_id']: node for node in original['nodes']}
         current_nodes = {node['node_id']: node for node in current['nodes']}
@@ -452,7 +980,8 @@ class AgentTools(ProjectDomain):
                     '目标内容、结果或媒体投影已变化', 'stale_input', node_id=node_id)
         inputs = agent_context.inputs(self.ctx, conn, [item['ref'] for item in contract['inputs']],
                                       username=self.username,
-                                      current_canvas_id=self.canvas_id)
+                                      current_canvas_id=self.canvas_id,
+                                      run_output_resolver=self.run_output_resolver)
         for current_input, frozen_input in zip(inputs, contract['inputs']):
             ref = current_input['ref']
             input_node_id = ref.get('node_id') if ref.get('kind') == 'canvas_node' and ref.get('canvas_id') == self.canvas_id else None
@@ -542,6 +1071,10 @@ class AgentTools(ProjectDomain):
         if (operation in {'node.patch', 'node.run'} and self._pending_node_result is not None
                 and (self._agent_run_transition is not None or self._direct_node_acceptance is not None)):
             contract = self._owned(conn)['contract']
+        elif operation == 'asset.design.create' and self._pending_asset_design is not None:
+            contract = self._pending_asset_design['contract']
+        elif operation in {'script.document.draft', 'script.document.review'} and self._pending_script_document is not None:
+            contract = self._pending_script_document['contract']
         else:
             contract = self._current(conn, operation,
                 allow_inactive=bool(self._direct_node_acceptance and operation == 'node.patch'))
@@ -551,6 +1084,11 @@ class AgentTools(ProjectDomain):
         common = {'target_node_ids', 'input_indices', 'acceptance_indices'}
         fields = {'context.read': set(), 'proposal.create': {'title', 'text'},
                   'ontology.definition.draft': {'definition'}, 'media.propose': {'title', 'intent', 'modality'},
+                  'asset.design.create': {'kind', 'name', 'description', 'prompt', 'reference_indices',
+                      'style_template_id', 'base_asset_input_index', 'draft_title', 'draft_text',
+                      'source_proposal_input_index', 'purpose', 'aspect_ratio', 'camera_selection'},
+                  'script.document.draft': {'episode_number', 'title', 'markdown', 'source_input_index'},
+                  'script.document.review': {'document_input_index', 'report'},
                   'node.patch': {'node_id', 'expected_revision', 'changes'},
                   'node.run': {'node_id', 'operation', 'expected_revision'}}
         if operation in {'node.patch', 'node.run'}:
@@ -597,7 +1135,14 @@ class AgentTools(ProjectDomain):
                  self.canvas_id, self.conversation_id, operation_id, packed(output)))
             return {'delegation_id': self.delegation_id, 'output': output}
 
-        exact(payload, common | fields[operation])
+        if operation == 'asset.design.create':
+            exact(payload, common | {'kind', 'name', 'description', 'prompt', 'reference_indices'},
+                  {'style_template_id', 'base_asset_input_index', 'draft_title', 'draft_text',
+                   'source_proposal_input_index', 'purpose', 'aspect_ratio', 'camera_selection'})
+        elif operation == 'script.document.draft':
+            exact(payload, common | {'episode_number', 'title', 'markdown'}, {'source_input_index'})
+        else:
+            exact(payload, common | fields[operation])
         selection = self._selection(payload, contract)
         output = {'id': uuid4().hex, 'delegation_id': self.delegation_id, 'operation_id': operation_id,
                   'operation': operation, 'source': {'kind': 'agent', 'owner_id': self.ctx.requester_user_id,
@@ -621,6 +1166,39 @@ class AgentTools(ProjectDomain):
             result = domain.dispatch(conn, DomainCommand(request_id=request.request_id, action='definition.draft',
                 payload={'definition': payload['definition'], 'expected_revision': 0}), operation_id)
             output.update(state='draft', definition_ref={'name': result['name'], 'revision': result['revision']})
+        elif operation == 'asset.design.create':
+            pending = self._pending_asset_design
+            require(isinstance(pending, dict) and pending.get('result'),
+                    '资产设计服务尚未返回可记录的持久回执', 'asset_design_result_missing')
+            result = deepcopy(pending['result'])
+            candidate = result.get('prepared_execution')
+            if candidate is not None:
+                candidate = AssetGeneration.verified_prepared_execution(self.ctx, candidate)
+                require(candidate is not None,
+                        '资产设计节点未能通过持久回执验证', 'asset_design_projection_unverified')
+            result['prepared_execution'] = candidate
+            output.update(state=result['projection_status'], asset_design=result,
+                request_id=result['request_id'], design_ref=result['design_ref'],
+                source_proposal_ref=result['source_proposal_ref'], group_id=result['group_id'],
+                text_node_id=result['text_node_id'], image_node_id=result['image_node_id'],
+                canvas_revision=result['canvas_revision'],
+                graph_operation_id=result['operation_id'], projection_status=result['projection_status'],
+                prepared_execution=candidate)
+        elif operation in {'script.document.draft', 'script.document.review'}:
+            pending = self._pending_script_document
+            require(isinstance(pending, dict) and isinstance(pending.get('result'), dict),
+                    '正式剧本服务尚未返回可记录的持久回执', 'script_document_result_missing')
+            result = deepcopy(pending['result'])
+            if operation == 'script.document.draft':
+                output.update(state='draft', document_ref=result['document_ref'],
+                    title=result['title'], markdown=result['markdown'],
+                    source_origin=result['source_origin'], adopted=result['adopted'],
+                    projection=result.get('projection'))
+            else:
+                output.update(state='reviewed', script_review=result,
+                    document_ref=result['document_ref'], candidate_hash=result['candidate_hash'],
+                    conclusion=result['conclusion'], summary=result['summary'], issues=result['issues'],
+                    reviewer=result['reviewer'])
         else:
             text(payload['title'], 200); text(payload['intent'], 12000)
             require(isinstance(payload['modality'], str) and payload['modality'] in {'image', 'video', 'audio', '3d'},

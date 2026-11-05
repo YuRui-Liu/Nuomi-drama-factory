@@ -17,6 +17,8 @@ from novelvideo.media_capabilities.video.h3_timeline import H3_FPS, frames_for_d
 
 from .models import DirectorDraft
 
+H3_MAX_SUBMISSION_SECONDS = 15
+
 
 class DirectorCapabilityError(ValueError):
     """A generation error addressable by an editor field and segment ID."""
@@ -117,6 +119,34 @@ def validate_generation(draft: DirectorDraft, reference_limit: int = 5) -> Gener
                                 reference_ids, tuple(timeline), offset, total_duration)
 
 
+def validate_submission(draft: DirectorDraft, reference_limit: int = 5) -> GenerationValidation:
+    """Validate a generation request against the 15-second H3 batch limit.
+
+    The limit applies after each segment is aligned to legal H3 frame counts,
+    so a request with raw durations at or below 15 seconds may still exceed it.
+    """
+    validation = validate_generation(draft, reference_limit=reference_limit)
+    max_frames = H3_MAX_SUBMISSION_SECONDS * H3_FPS
+    overlong_index = next((index for index, segment in enumerate(validation.timeline)
+                           if segment.frames > max_frames), None)
+    if overlong_index is not None:
+        segment = validation.timeline[overlong_index]
+        raise DirectorCapabilityError(
+            f"segments[{overlong_index}].duration_seconds",
+            f"segment H3-aligns to {segment.duration_seconds:.3f}s, exceeding the "
+            f"{H3_MAX_SUBMISSION_SECONDS}s per-request limit; shorten this shot before submitting",
+            segment.id,
+        )
+    if validation.total_frames > max_frames:
+        raise DirectorCapabilityError(
+            "segments",
+            f"H3-aligned total duration {validation.actual_duration_seconds:.3f}s "
+            f"exceeds the {H3_MAX_SUBMISSION_SECONDS}s per-request limit; "
+            "split the shot group into smaller Director requests",
+        )
+    return validation
+
+
 def describe_capabilities(reference_limit: int = 5) -> dict:
     """Public product capabilities; no unverified provider maxima are claimed."""
     _validate_reference_limit(reference_limit)
@@ -126,6 +156,8 @@ def describe_capabilities(reference_limit: int = 5) -> dict:
         "models": ({"id": "minimax-h3", "label": "MiniMax H3", "adapter": "h3",
                     "reference_adapter": "h3_ref"},),
         "reference_limit": reference_limit,
+        "max_submission_duration_seconds": H3_MAX_SUBMISSION_SECONDS,
+        "max_submission_frames": H3_MAX_SUBMISSION_SECONDS * H3_FPS,
         "fps": H3_FPS,
         "frame_rule": "smallest 17k+5 frames at or above requested duration",
         "params": {"resolution": ("720p", "1080p"),
@@ -146,4 +178,5 @@ def describe_capabilities(reference_limit: int = 5) -> dict:
 
 
 __all__ = ["DirectorCapabilityError", "AlignedSegment", "GenerationValidation",
-           "resolve_route", "validate_generation", "describe_capabilities"]
+           "H3_MAX_SUBMISSION_SECONDS", "resolve_route", "validate_generation",
+           "validate_submission", "describe_capabilities"]

@@ -72,8 +72,16 @@ def _content_kind(text: str) -> SourceBlockKind:
 def _screenplay_field(text: str) -> tuple[str, str] | None:
     # Normalize markup only for classification; source evidence stays verbatim.
     normalized = re.sub(r"^\s*(?:[-*+]\s+|#{1,6}\s+)?", "", text).replace("**", "").strip()
-    match = re.match(r"^(人物|出场人物|角色|动作|对白|结尾钩子)\s*[：:]\s*(.*)$", normalized)
+    match = re.match(r"^(人物|出场人物|角色|动作|对白|音效|结尾钩子)\s*[：:]\s*(.*)$", normalized)
     return (match[1], match[2]) if match else None
+
+
+def _parse_cast_characters(line: str) -> list[str]:
+    field = _screenplay_field(line)
+    text = field[1] if field and field[0] in {"人物", "出场人物", "角色"} else line
+    # Parentheses annotate the preceding cast name; they are not another name.
+    text = re.sub(r"[（(][^）)]*[）)]", "", text)
+    return parse_character_line(text)
 
 
 def recover_scene_fields(scene: Scene) -> Scene:
@@ -85,7 +93,7 @@ def recover_scene_fields(scene: Scene) -> Scene:
         if field:
             label, body = field
             if label in {"人物", "出场人物", "角色"}:
-                for character in parse_character_line(f"人物：{body}"):
+                for character in _parse_cast_characters(f"人物：{body}"):
                     if character not in characters:
                         characters.append(character)
             block = block.model_copy(update={"kind": _content_kind(block.text)})
@@ -210,7 +218,7 @@ def parse_screenplay_document(
         cast_value = f"{field[0]}：{field[1]}" if field else value
         cast = LABELED_CHARACTER_RE.match(cast_value)
         if cast and all(block.kind == "formatting" for block in current_blocks):
-            for character in parse_character_line(cast_value):
+            for character in _parse_cast_characters(cast_value):
                 if character not in current_characters:
                     current_characters.append(character)
             metadata.append(_block(line, len(metadata) + 1, "cast"))

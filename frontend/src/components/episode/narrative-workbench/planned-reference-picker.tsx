@@ -12,7 +12,7 @@ export interface PlannedReferencePickerProps {
   maxImages: number;
   temporaryCount: number;
   onChange: (ids: string[]) => void;
-  onResolvePlanning: () => void;
+  onResolvePlanning?: () => void;
   onRepairCharacter?: (binding: PlannedReferenceBinding, mode: "create" | "existing") => void;
 }
 
@@ -150,7 +150,7 @@ export function PlannedReferencePicker({
 
     {normalized.hasRequiredUnavailable ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300/70 bg-amber-300/15 p-3 text-sm text-amber-100">
       <span className="flex items-center gap-2"><AlertTriangle className="size-4" aria-hidden="true" />必需引用尚未就绪，请返回规划补齐后生成。</span>
-      <Button type="button" size="sm" variant="outline" aria-label="返回规划补齐引用" onClick={onResolvePlanning}>返回规划补齐</Button>
+      {onResolvePlanning ? <Button type="button" size="sm" variant="outline" aria-label="返回规划补齐引用" onClick={onResolvePlanning}>返回规划补齐</Button> : null}
     </div> : null}
 
     {normalized.requiredOverflow ? <div role="alert" className="rounded-lg border border-amber-300/70 bg-amber-300/15 p-3 text-sm text-amber-100">

@@ -85,6 +85,7 @@ def project_result(project_dir: Path, canvas_id: str, *, node_id: str,
                    expected_media_fingerprint: str | None = None,
                    expected_source_output_fingerprints: dict | None = None,
                    expected_dependency_edge_fingerprint: str | None = None,
+                   frozen_reference_validator=None,
                    authorize_projection=None) -> dict:
     def build(existing):
         payload = _existing(existing)
@@ -128,6 +129,18 @@ def project_result(project_dir: Path, canvas_id: str, *, node_id: str,
                                          node_id=source_id, current_result_fingerprint=current_result_fingerprint,
                                          current_media_fingerprint=current_media_fingerprint,
                                          current_media=current_media)
+        if frozen_reference_validator is not None:
+            try:
+                valid = frozen_reference_validator(payload)
+                if hasattr(valid, "__await__"):
+                    raise OrchestrationError("invalid_frozen_dependency",
+                                             "Frozen reference validation must be synchronous")
+            except OrchestrationError:
+                raise
+            except Exception as exc:
+                raise OrchestrationError("input_conflict",
+                                         "A frozen asset reference changed while the task was running",
+                                         node_id=node_id) from exc
         if authorize_projection is not None:
             try:
                 authorized = authorize_projection()
@@ -146,7 +159,11 @@ def project_result(project_dir: Path, canvas_id: str, *, node_id: str,
         previous_orchestration = node["data"].get("orchestration")
         history = deepcopy(previous_orchestration.get("result_history", [])) \
             if isinstance(previous_orchestration, dict) else []
-        node["data"]["orchestration"] = {"attempt_id": attempt_id, "status": "succeeded"}
+        node["data"]["orchestration"] = {
+            "attempt_id": attempt_id,
+            "status": "succeeded",
+            "projected_input_fingerprint": expected_input,
+        }
         if history_entry is not None:
             history.append(deepcopy(history_entry))
             node["data"]["orchestration"]["result_history"] = history[-25:]
@@ -171,7 +188,7 @@ def project_result(project_dir: Path, canvas_id: str, *, node_id: str,
                 (edge.get('source') not in ids or edge.get('target') not in ids))]
         # Agent target-scoped projection may write only its granted compose
         # node; companion creation/update would silently widen that write.
-        if node["type"] == "videoComposeNode" and result.get("resultVideoUrl") and history_entry is None:
+        if node["type"] in {"videoComposeNode", "episodeComposeNode"} and result.get("resultVideoUrl") and history_entry is None:
             # Logical output identity survives retry/resume and successive renders.
             output_id = "output-" + fingerprint([canvas_id, node_id, "video"])[:24]
             output = next((n for n in payload["nodes"] if n["id"] == output_id), None)
@@ -196,3 +213,78 @@ def project_result(project_dir: Path, canvas_id: str, *, node_id: str,
                 build_payload=build, client_save_id="result-" + attempt_id,
                 request_hash=fingerprint([node_id, expected_input, result]), save_source="orchestration")
     return read_canvas(project_dir, canvas_id)
+
+
+def mark_stale_result(project_dir: Path, canvas_id: str, *, node_id: str,
+                      expected_input: str, attempt_id: str,
+                      expected_source_output_fingerprints: dict | None = None,
+                      expected_dependency_edge_fingerprint: str | None = None) -> str:
+    """Mark a completed result stale without copying its media onto the node.
+
+    The attempt keeps its verified result in RunStore. The canvas stores only
+    the user-facing stale state, and only while the live projection has not
+    already been refreshed for the current node input.
+    """
+    outcome = "stale"
+
+    def classify(payload: dict | None) -> tuple[str, dict | None]:
+        if not isinstance(payload, dict):
+            return "missing", None
+        node = next((item for item in payload.get("nodes", []) if item.get("id") == node_id), None)
+        if node is None:
+            return "missing", None
+
+        current_input = input_fingerprint(node)
+        inputs_changed = current_input != expected_input
+        if expected_dependency_edge_fingerprint is not None:
+            inputs_changed = inputs_changed or (
+                dependency_edge_fingerprint(payload, node_id) != expected_dependency_edge_fingerprint
+            )
+        for source_id, expected_fingerprint in (expected_source_output_fingerprints or {}).items():
+            source = next((item for item in payload.get("nodes", []) if item.get("id") == source_id), None)
+            if source is None or fingerprint(frozen_node_result(source)) != expected_fingerprint:
+                inputs_changed = True
+
+        if not inputs_changed:
+            return "current", node
+        orchestration = node.get("data", {}).get("orchestration")
+        if (isinstance(orchestration, dict)
+                and orchestration.get("status") == "succeeded"
+                and orchestration.get("projected_input_fingerprint") == current_input):
+            return "superseded", node
+        return "stale", node
+
+    def skip_if(existing):
+        nonlocal outcome
+        outcome, _ = classify(existing)
+        return {"status": outcome} if outcome != "stale" else None
+
+    def build(existing):
+        nonlocal outcome
+        payload = _existing(existing)
+        outcome, node = classify(payload)
+        if outcome != "stale":
+            # skip_if and build run under the same canvas lock. This guard is
+            # defensive and keeps a no-op from incrementing the revision.
+            return payload
+        orchestration = node["data"].get("orchestration")
+        orchestration = deepcopy(orchestration) if isinstance(orchestration, dict) else {}
+        orchestration["status"] = "stale"
+        node["data"]["orchestration"] = orchestration
+        return _finish(payload)
+
+    saved = save_canvas(
+        project_dir,
+        canvas_id,
+        base_revision=None,
+        enforce_revision=False,
+        build_payload=build,
+        skip_if=skip_if,
+        client_save_id="stale-result-" + attempt_id,
+        request_hash=fingerprint([node_id, expected_input, attempt_id, "stale"]),
+        save_source="orchestration",
+    )
+    cached = saved.response_cache
+    if isinstance(cached, dict) and cached.get("status") in {"missing", "current", "superseded"}:
+        return cached["status"]
+    return outcome

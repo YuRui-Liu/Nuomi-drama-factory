@@ -16,6 +16,41 @@ import { useCanvasStore } from "@/stores/canvasStore";
 import enTranslations from "../../../../public/locales/en/translation.json";
 import zhTranslations from "../../../../public/locales/zh/translation.json";
 
+const agentRuntimeHarness = vi.hoisted(() => ({
+  saveSettings: undefined as (() => Promise<boolean>) | undefined,
+  runtime: {
+    nodes: [],
+    loading: false,
+    maxModelCalls: 1,
+    setMaxModelCalls: () => undefined,
+    working: false,
+    generate: async () => true,
+    runtimeStatus: null,
+    pendingIntent: null,
+    pendingWrite: null,
+    incoming: { refs: [], unadoptedAgentNodeIds: [] },
+    error: "",
+    notice: "",
+    conversationId: null,
+    history: [],
+    refresh: async () => undefined,
+    resumePending: async () => true,
+    recoverCandidateWrite: async () => true,
+    isStale: () => false,
+    stopRun: async () => true,
+    resumeRun: async () => true,
+    saveCandidateEdit: async () => true,
+    adoptCandidate: async () => true,
+  },
+}));
+
+vi.mock("@/features/ideation/useAgentNodeRuntime", () => ({
+  useAgentNodeRuntime: ({ saveSettings }: { saveSettings: () => Promise<boolean> }) => {
+    agentRuntimeHarness.saveSettings = saveSettings;
+    return agentRuntimeHarness.runtime;
+  },
+}));
+
 const translations: Record<string, string> = {
   "node.menu.sectionAddNode": "添加节点",
   "node.menu.sectionSkillNode": "技能节点",
@@ -86,11 +121,41 @@ describe("Agent canvas node", () => {
     ["zh", zhTranslations],
     ["en", enTranslations],
   ])("places Agent node copy on the canvas namespace in the %s locale", (_locale, translation) => {
-    expect(translation.canvas.agentNode).toMatchObject({
+    const copy = translation.canvas.agentNode as Record<string, unknown>;
+    expect(copy).toMatchObject({
       primaryGenre: expect.any(String),
       fusionGenre: expect.any(String),
       storySeed: expect.any(String),
       editSettings: expect.any(String),
+      runtimeTitle: expect.any(String),
+      runtimeRefresh: expect.any(String),
+      runtimeRefreshing: expect.any(String),
+      runtimeCallLimit: expect.any(String),
+      runtimeWorking: expect.any(String),
+      runtimeGenerate: expect.any(String),
+      runtimeUnavailable: expect.any(String),
+      runtimePending: expect.any(String),
+      runtimeRestore: expect.any(String),
+      runtimeWritePending: expect.any(String),
+      runtimeUnadopted: expect.any(String),
+      runtimeInputs: expect.any(String),
+      runtimeHistory: expect.any(String),
+      runtimeNoResults: expect.any(String),
+      runtimeNoConversation: expect.any(String),
+      runtimeStale: expect.any(String),
+      runtimeInvalidCandidates: expect.any(String),
+      runtimeRawProposal: expect.any(String),
+      runtimeSource: expect.any(String),
+      runtimeCompareEdit: expect.any(String),
+      runtimeProposal: expect.any(String),
+      runtimeStop: expect.any(String),
+      runtimeResume: expect.any(String),
+      runtimeCandidate: expect.any(String),
+      runtimeCandidateCompare: expect.any(String),
+      runtimeEdit: expect.any(String),
+      runtimeSaveVersion: expect.any(String),
+      runtimeAdopted: expect.any(String),
+      runtimeAdopt: expect.any(String),
     });
   });
 
@@ -205,6 +270,26 @@ describe("Agent canvas node", () => {
       }),
     );
     expect(screen.getByTestId("agent-settings-summary")).toHaveTextContent("悬疑推理");
+  });
+
+  it("mounts runtime controls and requires confirmed settings before a run", async () => {
+    const flush = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    renderAgent(flush);
+
+    expect(screen.getByRole("button", { name: "canvas.agentNode.runtimeGenerate" })).toBeInTheDocument();
+    const genre = screen.getByRole("combobox", { name: "主题材" });
+    fireEvent.change(genre, { target: { value: "悬疑推理" } });
+
+    expect(agentRuntimeHarness.saveSettings).toBeTypeOf("function");
+    await expect(agentRuntimeHarness.saveSettings!()).resolves.toBe(false);
+    expect(useCanvasStore.getState().nodes[0].data).toEqual(
+      expect.objectContaining({ settings: expect.objectContaining({ genrePrimary: "都市现实" }) }),
+    );
+
+    await expect(agentRuntimeHarness.saveSettings!()).resolves.toBe(true);
+    expect(useCanvasStore.getState().nodes[0].data).toEqual(
+      expect.objectContaining({ settings: expect.objectContaining({ genrePrimary: "悬疑推理" }) }),
+    );
   });
 
   it("keeps an inline draft retryable and the summary confirmed after flush failure", async () => {

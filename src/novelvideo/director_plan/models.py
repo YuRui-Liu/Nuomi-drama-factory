@@ -23,6 +23,7 @@ from ulid import ULID
 from .cinematography import ShotCinematography
 from .creative_contract import GroupCreativeContext, ShotCreativeDecisions, creative_shot_errors
 from .revision_feedback import FeedbackHistory
+from .professional_models import ProfessionalRunReceipt
 from novelvideo.storyboard_prompt import StaticPanel
 
 
@@ -506,6 +507,11 @@ class DirectorPlanRevision(FrozenModel):
     creative_contract_version: Literal[1] | None = None
     creative_feedback: FeedbackHistory | None = None
     author_chain_id: str | None = None
+    professional_status: Literal[
+        "not_requested", "pending", "complete", "partial", "unknown"
+    ] = "not_requested"
+    professional_decision: str = "No specialist contribution was requested."
+    professional_runs: tuple[ProfessionalRunReceipt, ...] = ()
     revision_id: str
     parent_revision_id: str | None = None
     episode: int = Field(gt=0)
@@ -553,10 +559,18 @@ class DirectorPlanRevision(FrozenModel):
         semantic_revision_id: str | None = None,
         parent_revision_id: str | None = None,
         creative_contract_version: Literal[1] | None = None,
+        professional_status: Literal[
+            "not_requested", "pending", "complete", "partial", "unknown"
+        ] = "not_requested",
+        professional_decision: str = "No specialist contribution was requested.",
+        professional_runs: tuple[ProfessionalRunReceipt, ...] = (),
     ) -> Self:
         return cls(
             revision_id=str(ULID()),
             creative_contract_version=creative_contract_version,
+            professional_status=professional_status,
+            professional_decision=professional_decision,
+            professional_runs=professional_runs,
             parent_revision_id=parent_revision_id,
             episode=episode,
             status="draft",

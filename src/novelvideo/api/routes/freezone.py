@@ -82,6 +82,14 @@ from novelvideo.api.schemas import (
 from novelvideo.director_world import DirectorWorldService
 from novelvideo.director_world.staging_prop_ai import generate_ai_staging_prop
 from novelvideo.freezone import canvas_store
+from novelvideo.creation.canvas_scope import resolve_canvas_scope
+from novelvideo.creation.production_admission import (
+    admit_managed_stage,
+    admit_registered_episode_stage,
+    classify_target_stage,
+    composition_requires_audio,
+)
+from novelvideo.freezone.orchestration.models import OrchestrationError
 from novelvideo.freezone.audio_node import (
     create_user_audio_voice,
     freezone_audio_eleven_music_output_path,
@@ -338,6 +346,9 @@ async def _start_or_enqueue_freezone_video_gen(
     model_id: str | None = None,
     gen_mode: str | None = None,
 ) -> dict:
+    _admit_managed_canvas_node_operation(
+        ctx, project_dir, canvas_id, node_id, "generate",
+    )
     payload = {
         "job_id": job_id,
         "canvas_id": canvas_id or "",
@@ -453,6 +464,9 @@ async def _start_or_enqueue_freezone_gen_job(
     for path_text in reference_paths:
         if not Path(path_text).exists():
             raise HTTPException(404, f"reference file not found: {path_text}")
+    _admit_managed_canvas_node_operation(
+        ctx, project_dir, canvas_id, node_id, "generate",
+    )
     job_id = _new_job_id()
     resolved_provider, resolved_model = _split_provider_and_model(provider, model)
     normalized_provider = _resolve_freezone_image_provider(resolved_provider)
@@ -1759,6 +1773,9 @@ async def _start_or_enqueue_mainline_scene_360_task(
 ) -> dict:
     task_type = "stage_asset"
     step = "pano_from_master"
+    _admit_managed_canvas_node_operation(
+        ctx, project_dir, canvas_id, node_id, "generate", stage_override="assets",
+    )
     master_paths = _resolve_url_list(project_dir, [master_url])
     if not master_paths:
         raise HTTPException(400, "master_url is required")
@@ -1854,6 +1871,9 @@ async def _start_or_enqueue_freezone_edit_job(
     for path_text in extra_paths:
         if not Path(path_text).exists():
             raise HTTPException(404, f"reference file not found: {path_text}")
+    _admit_managed_canvas_node_operation(
+        ctx, project_dir, canvas_id, node_id, "edit",
+    )
     resolved_aspect_ratio = (
         _resolve_outpaint_aspect_ratio(Path(base_paths[0]), "original")
         if str(aspect_ratio or "").strip().lower() == "original"
@@ -7463,6 +7483,8 @@ async def freezone_audio_separate(
     if not source_path.exists():
         raise HTTPException(404, f"video source not found: {source_path}")
 
+    _admit_registered_episode_stage_for_api(ctx, body.target_episode, "audio")
+
     try:
         job_id = _new_job_id()
         if ctx is not None:
@@ -7523,6 +7545,8 @@ async def freezone_audio_speech(
     if len(body.text) > 10_000:
         raise HTTPException(400, "text must be <= 10000 characters")
 
+    _admit_registered_episode_stage_for_api(ctx, body.target_episode, "audio")
+
     try:
         job_id = _new_job_id()
         if ctx is not None:
@@ -7582,6 +7606,8 @@ async def freezone_audio_eleven_music(
     if len(prompt) > 4100:
         raise HTTPException(400, "input must be <= 4100 characters")
 
+    _admit_registered_episode_stage_for_api(ctx, body.target_episode, "audio")
+
     try:
         job_id = _new_job_id()
         if ctx is not None:
@@ -7598,6 +7624,7 @@ async def freezone_audio_eleven_music(
                     "force_instrumental": body.force_instrumental,
                     "respect_sections_durations": body.respect_sections_durations,
                     "output_format": body.output_format,
+                    "target_episode": body.target_episode,
                 },
             )
         _raise_project_context_required("freezone_audio_eleven_music")
@@ -7678,6 +7705,16 @@ async def freezone_video_compose(
         raise HTTPException(400, "tracks must contain at least one media item")
     if not has_video_item:
         raise HTTPException(400, "video compose requires at least one video item")
+
+    _admit_managed_canvas_stage(
+        ctx,
+        body.canvas_id,
+        "composition",
+        requires_audio=any(
+            track.kind == "audio" and bool(track.items)
+            for track in body.tracks
+        ),
+    )
 
     resolved_subtitle_tracks = [
         track.model_dump() for track in body.subtitle_tracks if track.cues
@@ -8372,6 +8409,105 @@ def _canvas_state_project_dir(ctx: ProjectContext | None, output_project_dir: Pa
     if ctx is not None:
         return Path(ctx.state_dir)
     return output_project_dir
+
+
+def _applied_episode_canvas_scope(ctx: ProjectContext | None, canvas_id: str | None) -> dict | None:
+    canvas = (canvas_id or "").strip()
+    if ctx is None or not canvas:
+        return None
+    scope = resolve_canvas_scope(ctx.state_dir, canvas)
+    if (not isinstance(scope, dict) or scope.get("kind") != "episode"
+            or scope.get("status") != "applied"
+            or type(scope.get("episode_number")) is not int
+            or not isinstance(scope.get("episode_id"), str)
+            or not scope.get("episode_id")):
+        return None
+    return scope
+
+
+def _admit_managed_canvas_stage(
+    ctx: ProjectContext | None,
+    canvas_id: str | None,
+    stage: str,
+    *,
+    requires_audio: bool = False,
+) -> bool:
+    scope = _applied_episode_canvas_scope(ctx, canvas_id)
+    if scope is None:
+        return False
+    try:
+        return admit_managed_stage(
+            ctx.state_dir, ctx.output_dir, scope, stage,
+            requires_audio=requires_audio,
+        )
+    except OrchestrationError as exc:
+        raise HTTPException(status_code=409, detail=exc.as_dict()) from exc
+
+
+def _admit_registered_episode_stage_for_api(
+    ctx: ProjectContext | None,
+    episode_number: int | None,
+    stage: str,
+) -> bool:
+    if ctx is None or type(episode_number) is not int or episode_number < 1:
+        return False
+    try:
+        return admit_registered_episode_stage(
+            ctx.state_dir, ctx.output_dir, episode_number, stage,
+        )
+    except OrchestrationError as exc:
+        raise HTTPException(status_code=409, detail=exc.as_dict()) from exc
+
+
+def _admit_managed_canvas_node_operation(
+    ctx: ProjectContext | None,
+    project_dir: Path,
+    canvas_id: str | None,
+    node_id: str | None,
+    operation: str,
+    *,
+    stage_override: str | None = None,
+) -> bool:
+    """Gate an existing node-bound direct API while keeping free experiments open."""
+    scope = _applied_episode_canvas_scope(ctx, canvas_id)
+    if scope is None or not (node_id or "").strip():
+        return False
+    canvas = canvas_store.read_canvas(
+        _canvas_state_project_dir(ctx, project_dir), str(canvas_id).strip(),
+    )
+    if not isinstance(canvas, dict):
+        raise HTTPException(status_code=409, detail={
+            "code": "episode_scope_mismatch",
+            "message": "The managed episode canvas is unavailable",
+        })
+    node = next((item for item in canvas.get("nodes", [])
+                 if isinstance(item, dict) and item.get("id") == node_id), None)
+    if node is None:
+        raise HTTPException(status_code=404, detail={
+            "code": "managed_canvas_node_not_found", "node_id": node_id,
+        })
+    data = node.get("data")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=409, detail={
+            "code": "episode_scope_mismatch", "node_id": node_id,
+        })
+    bound_episode = data.get("episodeNumber", data.get("episode_number"))
+    episode_number = scope["episode_number"]
+    if bound_episode is not None and bound_episode != episode_number:
+        raise HTTPException(status_code=409, detail={
+            "code": "episode_scope_mismatch", "node_id": node_id,
+            "episode_number": episode_number,
+        })
+    copied = {**node, "data": {**data, "episodeNumber": episode_number}}
+    stage = stage_override or classify_target_stage(
+        copied, operation, episode_number=episode_number,
+    )
+    if stage is None:
+        return False
+    try:
+        return admit_managed_stage(ctx.state_dir, ctx.output_dir, scope, stage)
+    except OrchestrationError as exc:
+        raise HTTPException(status_code=409, detail=exc.as_dict()) from exc
 
 
 def _canvas_actor_id(user: dict) -> str:
@@ -11379,6 +11515,25 @@ async def freezone_push(project: str, body: PushRequest, user: dict = Depends(ge
             )
             backup, image_adaptation = await copy_canvas_publication(ctx, project_dir, publication,
                 adapt=_copy_image_matching_existing_target if should_match_existing_size else None)
+            if body.target.kind == "prop_ref":
+                from novelvideo.production_workflow import (
+                    ProductionWorkflowStore,
+                    production_workflow_project_lock,
+                )
+                from novelvideo.production_workflow.slot_ids import prop_reference_slot_id
+
+                try:
+                    with production_workflow_project_lock(ctx.state_dir):
+                        workflow = ProductionWorkflowStore(
+                            Path(ctx.state_dir) / "production_workflow.json"
+                        )
+                        workflow.materialize_legacy_current(
+                            slot_id=prop_reference_slot_id(body.target.prop_id),
+                            asset_kind="prop_reference",
+                            asset_path=target.relative_to(project_dir).as_posix(),
+                        )
+                except (RuntimeError, ValueError) as exc:
+                    raise HTTPException(409, str(exc)) from exc
             if body.target.kind == "selected_background":
                 await _persist_freezone_selected_background_scene_ref(
                     ctx=ctx,

@@ -8,10 +8,16 @@ export function AgentConfigurationEntry({
   project,
   canvasId,
   compact = false,
+  buttonLabel = '项目 Agent 配置',
+  initialUpgradeAdoptionId,
+  onProjectConfigurationChanged,
 }: {
   project: string;
   canvasId: string;
   compact?: boolean;
+  buttonLabel?: string;
+  initialUpgradeAdoptionId?: string;
+  onProjectConfigurationChanged?: () => void;
 }) {
   const router = useRouter();
   const location = useRouterState({ select: (s) => s.location });
@@ -25,6 +31,7 @@ export function AgentConfigurationEntry({
     origin: typeof location;
     runtime: ReturnType<typeof captureFreezoneCanvasRuntime>;
     instance: string;
+    initialUpgradeAdoptionId?: string;
   } | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
@@ -59,11 +66,12 @@ export function AgentConfigurationEntry({
             origin: router.state.location,
             runtime,
             instance: crypto.randomUUID(),
+            initialUpgradeAdoptionId,
           });
           setError('');
         }}
       >
-        项目 Agent 配置
+        {buttonLabel}
       </button>
       {error && (
         <span role="alert" className="text-xs text-destructive">
@@ -88,6 +96,8 @@ export function AgentConfigurationEntry({
               key={opened.instance}
               owner={{ user: opened.user, project: opened.project, canvas: opened.canvas }}
               isCurrent={isCurrent}
+              initialUpgradeAdoptionId={opened.initialUpgradeAdoptionId}
+              onProjectConfigurationChanged={onProjectConfigurationChanged}
             />
           )}
         </DialogContent>

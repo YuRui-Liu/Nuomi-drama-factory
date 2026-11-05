@@ -4,6 +4,13 @@ from .h3_director_plan import H3DirectorPlan
 from .h3_rigid_prompt import H3PositiveConstraint
 
 
+def _derived_count_assertion(target: str, count: int) -> str:
+    if target == "props":
+        noun = "entry" if count == 1 else "entries"
+        return f"The declared held-prop inventory contains exactly {count} {noun}."
+    return f"The structured {target} inventory contains {count} entries."
+
+
 def normalize_derived_contract(plan: H3DirectorPlan) -> H3DirectorPlan:
     rigid = plan.rigid_prompt
     if rigid is None:
@@ -37,7 +44,7 @@ def normalize_derived_contract(plan: H3DirectorPlan) -> H3DirectorPlan:
     constraints = tuple(item for item in rigid.positive_constraints
                         if item.target not in counts) + tuple(
         H3PositiveConstraint(target=target, count=count,
-                             assertion=f"The structured {target} inventory contains {count} entries.")
+                             assertion=_derived_count_assertion(target, count))
         for target, count in counts.items()
     )
     return plan.model_copy(update={"rigid_prompt": rigid.model_copy(update={

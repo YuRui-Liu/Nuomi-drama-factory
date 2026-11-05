@@ -143,3 +143,54 @@ def test_creative_materialization_retains_static_media_on_motion_revision(tmp_pa
     assert provenance == {shot_id: {**value, "director_revision_id": new.revision_id}
                           for shot_id, value in materialized.generation_batches[0]["keyframe_projections"].items()}
     assert all(value["keyframe_projection_hash"] and value["dependency_fields"] for value in provenance.values())
+
+
+def test_style_refresh_materialization_keeps_media_and_refreshes_dependencies(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from tests.director_plan.test_creative_invalidation import revision, stages
+    from novelvideo.narrative_groups.service import _materialize_active_groups, save_groups
+
+    old = revision().model_copy(update={
+        "revision_id": "style-old-revision",
+        "project_style_snapshot_id": "style-old",
+        "groups": tuple(group.model_copy(update={"style_snapshot_id": "style-old"})
+                         for group in revision().groups),
+    })
+    new = old.model_copy(update={
+        "revision_id": "style-new-revision",
+        "parent_revision_id": old.revision_id,
+        "project_style_snapshot_id": "style-new",
+        "groups": tuple(group.model_copy(update={"style_snapshot_id": "style-new"})
+                         for group in old.groups),
+    })
+    materialized = _materialize_active_groups(tmp_path, 1, old)[0]
+    previous_stages = stages()
+    previous = replace(
+        materialized,
+        director_revision_id=old.revision_id,
+        effective_style_snapshot={"snapshot_id": "style-old"},
+        stages=previous_stages,
+    )
+    save_groups(tmp_path, 1, [previous])
+    monkeypatch.setattr(DirectorPlanStore, "load", lambda *args: old)
+
+    refreshed = _materialize_active_groups(tmp_path, 1, new)[0]
+
+    assert refreshed.director_revision_id == new.revision_id
+    assert refreshed.effective_style_snapshot["snapshot_id"] == "style-new"
+    assert refreshed.generation_batches[0]["style_hash"] == "style-new"
+    assert refreshed.generation_batches[0]["keyframe_projections"]["shot-1"][
+        "director_revision_id"
+    ] == new.revision_id
+    for name in ("sketch", "render", "video"):
+        stage = refreshed.stages[name]
+        assert stage.needs_regeneration is True
+        assert "style_snapshot_changed" in stage.stale_reason
+    assert refreshed.stages["render"].grid_asset == "old.png"
+    assert refreshed.stages["video"].video_asset == "old.mp4"
+    assert refreshed.stages["render"].provider_parameters[
+        "effective_style_snapshot_id"
+    ] == "style-new"
+    assert refreshed.stages["video"].provider_parameters[
+        "effective_style_snapshot_hash"
+    ] == "style-new"

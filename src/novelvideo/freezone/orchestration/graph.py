@@ -27,6 +27,7 @@ _FIXED_INPUT_OPERATIONS = {
     ("directorWorkspaceNode", "retry_render_groups"),
     ("directorWorkspaceNode", "produce"),
     ("directorWorkspaceNode", "retry_production"),
+    ("scriptNode", "project"),
     ("audioNode", "prepare_dubbing"),
     ("audioNode", "generate_dubbing"),
     ("audioNode", "group_dubbing"),
@@ -134,8 +135,33 @@ def validate_graph(nodes: list[dict], edges: list[dict]) -> dict:
     return {"valid": not errors, "errors": errors, "order": order}
 
 
+def _is_screenplay_image_reference(edge: dict, nodes: dict[str, dict], catalog: dict[str, dict]) -> bool:
+    """Recognize image-only links to a screenplay as reference context, not execution inputs."""
+    source = nodes.get(edge.get("source"))
+    target = nodes.get(edge.get("target"))
+    if not source or not target or target.get("type") != "screenplayNode":
+        return False
+    source_spec = catalog.get(source.get("type"))
+    target_spec = catalog.get(target.get("type"))
+    if not source_spec or not target_spec:
+        return False
+    data = edge.get("data") or {}
+    if not isinstance(data, dict):
+        return False
+    source_port = data.get("sourcePort", edge.get("sourceHandle"))
+    target_port = data.get("targetPort", edge.get("targetHandle"))
+    source_types = {port["name"] for port in source_spec["outputs"]}
+    target_types = {port["name"] for port in target_spec["inputs"]}
+    if source_port not in (None, "", "source"):
+        source_types &= {source_port}
+    if target_port not in (None, "", "target"):
+        target_types &= {target_port}
+    return source_types & target_types == {"image"}
+
+
 def execution_order(nodes: list[dict], edges: list[dict], target: str,
-                    *, operation: str | None = None) -> list[str]:
+                    *, operation: str | None = None,
+                    frozen_sources: set[str] | frozenset[str] | None = None) -> list[str]:
     report = validate_graph(nodes, edges)
     if not report["valid"]:
         raise OrchestrationError("invalid_graph", "Canvas graph is invalid", errors=report["errors"])
@@ -146,15 +172,22 @@ def execution_order(nodes: list[dict], edges: list[dict], target: str,
                           or catalog_by_type()[target_node["type"]]["default_operation"])
     if (target_node["type"], selected_operation) in _FIXED_INPUT_OPERATIONS:
         return [target]
+    node_by_id = {node["id"]: node for node in nodes}
+    catalog = catalog_by_type()
     dependencies = {n["id"]: set() for n in nodes}
     for edge in edges:
-        if not (edge.get("data") or {}).get("contextLink"):
+        if (not (edge.get("data") or {}).get("contextLink")
+                and not _is_screenplay_image_reference(edge, node_by_id, catalog)):
             dependencies[edge["target"]].add(edge["source"])
+    frozen_sources = set(frozen_sources or ())
+    if target in frozen_sources:
+        raise OrchestrationError("invalid_frozen_dependency", "The target cannot be a frozen source",
+                                 node_id=target)
     selected: set[str] = set()
     pending = [target]
     while pending:
         node_id = pending.pop()
         if node_id not in selected:
             selected.add(node_id)
-            pending.extend(dependencies[node_id])
+            pending.extend(source for source in dependencies[node_id] if source not in frozen_sources)
     return [node_id for node_id in report["order"] if node_id in selected]

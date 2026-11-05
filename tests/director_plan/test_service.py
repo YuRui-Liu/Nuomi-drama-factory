@@ -3,7 +3,12 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from novelvideo.director_plan.models import NarrativeGroupPlan, ShotPlan, SourceSpan
+from novelvideo.director_plan.cinematography import (
+    MotivatedLight,
+    ShotCinematography,
+    SubjectBlocking,
+)
+from novelvideo.director_plan.models import AssetRequirement, NarrativeGroupPlan, ShotPlan, SourceSpan
 from novelvideo.director_plan.planner import (
     DirectorPlanDraft,
     DirectorPlanInput,
@@ -18,6 +23,42 @@ from novelvideo.director_plan.store import DirectorPlanStore
 
 def span(id: str, ordinal: int) -> SourceSpan:
     return SourceSpan(id=id, ordinal=ordinal, scene="A", time="NIGHT", text=id)
+
+
+def shot_cinematography(source_id: str) -> ShotCinematography:
+    return ShotCinematography(
+        source="director_plan",
+        source_ids=(source_id,),
+        axis="actor-platform axis",
+        camera_side="platform side",
+        screen_direction="left to right",
+        subjects=(
+            SubjectBlocking(
+                subject_id="actor",
+                world_position="one step left of the platform column",
+                screen_position="left third of frame",
+                facing="toward camera right",
+                gaze_target="the arriving train",
+                motion_path="takes one step toward the platform edge",
+            ),
+        ),
+        lights=(
+            MotivatedLight(
+                light_id="platform-key",
+                source_type="practical",
+                world_position="overhead platform fixture",
+                direction="down and across the actor's face",
+                color_temperature="cool white",
+                relative_intensity="key, one stop above ambient",
+                attachment="fixed",
+                motivation="the visible station fixture",
+            ),
+        ),
+        key_light_id="platform-key",
+        shadow_direction="toward the platform wall",
+        exposure_priority="preserve the actor's face against the dark tracks",
+        transition_intent="cut on the actor's step",
+    )
 
 
 def group(
@@ -41,6 +82,14 @@ def group(
                 visible_start_state="left",
                 visible_end_state="right",
                 duration_seconds=2,
+                cinematography=shot_cinematography(source_id),
+                asset_requirements=(
+                    AssetRequirement(
+                        kind="character_identity",
+                        entity_key="actor",
+                        evidence_source_ids=(source_id,),
+                    ),
+                ),
             ),
         ),
     )
@@ -115,6 +164,80 @@ async def test_service_reports_planning_and_validation_at_real_boundaries(tmp_pa
 
     assert result.status == "review_required"
     assert events == ["episode_planned", "validated"]
+
+
+@pytest.mark.asyncio
+async def test_style_refresh_creates_qc_only_child_and_preserves_structure(tmp_path, monkeypatch) -> None:
+    from novelvideo.director_plan.creative_review import CreativeQCResult
+    from novelvideo.director_plan.models import (
+        SceneBlockingRevisionReference, StyleProjections, StyleSnapshot,
+        ValidationReport,
+    )
+    from tests.director_plan.creative_qc_fixtures import complete_assessments
+    from tests.director_plan.test_creative_invalidation import revision as creative_revision
+
+    old_style = StyleSnapshot(
+        snapshot_id="style-old", style_id="old", style_version="1",
+        catalog_hash="catalog-old", style_hash="hash-old",
+        projections=StyleProjections(director="old", image="old", video="old", panel_tag="old"),
+    )
+    new_style = StyleSnapshot(
+        snapshot_id="style-new", style_id="new", style_version="1",
+        catalog_hash="catalog-new", style_hash="hash-new",
+        projections=StyleProjections(director="new", image="new", video="new", panel_tag="new"),
+    )
+    reference = SceneBlockingRevisionReference(
+        scene_id="scene-1", group_id="group-1", revision_id="blocking-r2", version=2,
+        semantic_revision_id="semantic-1",
+    )
+    candidate = creative_revision().model_copy(update={
+        "status": "review_required", "source_script_hash": "hash",
+        "semantic_revision_id": "semantic-1", "project_style_snapshot_id": "style-old",
+        "project_style_snapshot": old_style,
+        "groups": tuple(group.model_copy(update={"style_snapshot_id": "style-old"})
+                         for group in creative_revision().groups),
+        "scene_blocking_references": (reference,),
+        "validation_report": ValidationReport(passed=True),
+    })
+    input_value = episode().model_copy(update={
+        "semantic_revision_id": "semantic-1", "project_style_snapshot_id": "style-new",
+        "project_style_snapshot": new_style,
+    })
+    monkeypatch.setattr(
+        "novelvideo.director_plan.service.validate_director_plan",
+        lambda *_args: ValidationReport(passed=True),
+    )
+
+    class QCOnlyPlanner:
+        def __init__(self):
+            self.reviewed = []
+
+        async def review_creative(self, value, plan, history):
+            self.reviewed.append((value, plan, history))
+            return CreativeQCResult(assessments=complete_assessments(plan))
+
+        async def plan_episode(self, _value):
+            raise AssertionError("style refresh must not replan the episode")
+
+        async def repair_creative(self, *_args):
+            raise AssertionError("style refresh must not run author repair")
+
+    store = DirectorPlanStore(tmp_path)
+    monkeypatch.setattr(store, "require_current", lambda _revision: None)
+    planner = QCOnlyPlanner()
+    child = await DirectorPlanService(store, planner).refresh_style_revision(
+        input_value, candidate,
+    )
+
+    assert child.parent_revision_id == candidate.revision_id
+    assert child.project_style_snapshot_id == "style-new"
+    assert child.scene_blocking_references == candidate.scene_blocking_references
+    assert len(child.groups) == len(candidate.groups)
+    for old_group, new_group in zip(candidate.groups, child.groups):
+        assert new_group.style_snapshot_id == "style-new"
+        assert new_group.model_dump(mode="json") | {"style_snapshot_id": "style-old"} == old_group.model_dump(mode="json")
+    assert len(planner.reviewed) == 1
+    assert child.status == "review_required"
 
 
 @pytest.mark.asyncio

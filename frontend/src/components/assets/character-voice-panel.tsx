@@ -66,6 +66,7 @@ type CharacterVoicePanelProps = {
   nodeVoicePerceivedAge?: string;
   isNodeContextCurrent?: () => boolean;
   onNodeDataChange?: (patch: CharacterVoiceNodeUpdate) => void;
+  onVoiceCandidateUsed?: (versionId: string) => Promise<boolean>;
 };
 
 const VOICE_SPEC_FIELDS = [
@@ -237,6 +238,7 @@ function CharacterVoicePanelContent({
   nodeVoicePerceivedAge,
   isNodeContextCurrent,
   onNodeDataChange,
+  onVoiceCandidateUsed,
 }: CharacterVoicePanelProps) {
   const { t } = useTranslation();
   const samples = useCharacterVoiceSamples(project, character.name);
@@ -276,7 +278,7 @@ function CharacterVoicePanelContent({
       queryKeys.characters(project),
     ],
     showCompleteToast: false,
-    onComplete: () => toast.success("声音候选已保存，请试听后采用为角色声音。"),
+    onComplete: () => toast.success("声音候选已保存，可试听后使用。"),
   });
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -520,7 +522,6 @@ function CharacterVoicePanelContent({
   };
   const storedFactsKey = JSON.stringify(storedFacts);
   useEffect(() => { setConfirmedFacts(null); }, [storedFactsKey]);
-  const [confirmations, setConfirmations] = useState<Record<string, boolean>>({});
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const draft = factDraft ?? facts ?? {};
   const sampleSlots = voiceSamples?.slots ?? EMPTY_VOICE_SLOTS;
@@ -896,7 +897,7 @@ function CharacterVoicePanelContent({
                   ) : actionSlot.required ? (
                     <p className="flex items-center gap-1.5 text-[11px] text-amber-700 dark:text-amber-300">
                       <AlertTriangle className="size-3.5" />
-                      尚未设置声音，试听满意后即可采用
+                      尚未设置声音；选择一个声音后即可作为当前声音
                     </p>
                   ) : actionSlot.inherited_from_default ? (
                     <p className="text-[11px] italic text-muted-foreground">
@@ -964,7 +965,7 @@ function CharacterVoicePanelContent({
             角色声音
           </h3>
           <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">
-            为当前角色生成声音，试听满意后采用。采用前会保留当前声音。
+            为当前角色生成声音候选。试听可选，使用后才会更新当前声音。
           </p>
         </div>
         {pending && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
@@ -1031,7 +1032,7 @@ function CharacterVoicePanelContent({
         <Button size="sm" disabled={pending || preparingVoice || refineVoice.isPending || prepareVoice.isPending || !!voiceDescriptionDraft.trim() || !!voiceDesignProposal || !!facts?.conflicts?.length || samples.isLoading || loadFailed || recommendation.isFetching} onClick={() => void designVoiceSample(sampleSlots.find((slot) => slot.slot === "default") ?? emptySlot("default", "角色声音"))}>
           <WandSparkles className="size-4" />{preparingVoice ? "正在准备并生成…" : "一键生成声音"}
         </Button>
-        <p className="text-xs text-muted-foreground">仅在点击后生成音频，试听采用前保留当前声音。</p>
+        <p className="text-xs text-muted-foreground">仅在点击后生成音频；候选会先保存，使用后才会更新当前声音。</p>
       </div>}
 
       {!!voiceSamples?.candidates?.length && <details open={candidatesOpen ?? !sampleSlots.some(slot => slot.path)} onToggle={event => setCandidatesOpen(event.currentTarget.open)} className="mt-4 space-y-3 rounded-lg border border-border p-4">
@@ -1043,15 +1044,27 @@ function CharacterVoicePanelContent({
           <p>{candidate.report?.reason}</p>
           {candidate.status === "approved" && candidate.kind !== "nonverbal" && <VoiceAssetFavorite project={project} character={character.name} candidateId={candidate.candidate_id} description={candidate.payload?.voice_description || ""} suggestedTags={{ timbre: [candidate.payload?.design?.voice_spec.texture, candidate.payload?.design?.voice_spec.pitch, candidate.payload?.design?.voice_spec.resonance].filter((value): value is string => Boolean(value && value.length <= 30)) }} />}
           <details><summary>实际生成描述与参数</summary><p>{candidate.payload?.voice_description || "未提供描述"}</p><pre className="whitespace-pre-wrap">{JSON.stringify(candidate.payload, null, 2)}</pre></details>
-          <label className="block"><input type="checkbox" checked={confirmations[candidate.candidate_id] ?? false} onChange={(event) => setConfirmations({ ...confirmations, [candidate.candidate_id]: event.target.checked })} /> 我已试听，确认适合此角色</label>
+          <p className="text-muted-foreground">试听是可选的；选择使用后会更新这个角色当前采用的声音。</p>
           <details><summary className="cursor-pointer text-muted-foreground">补充采用说明（可选）</summary><Input aria-label="采用理由" placeholder="可选，记录喜欢或需要改进的地方" value={reasons[candidate.candidate_id] ?? ""} onChange={(event) => setReasons({ ...reasons, [candidate.candidate_id]: event.target.value })} /></details>
-          <Button size="sm" disabled={pending || !candidate.url || !confirmations[candidate.candidate_id] || sampleSlots.some(slot => slot.path === candidate.path && slot.sha256 === candidate.sha256)} onClick={async () => {
+          <Button size="sm" disabled={pending || !candidate.url || sampleSlots.some(slot => slot.path === candidate.path && slot.sha256 === candidate.sha256)} onClick={async () => {
             try {
               const selectedSlot = sampleSlots.find(slot => slot.slot === candidate.slot);
-              const res = await approveCandidate.mutateAsync({ candidateId: candidate.candidate_id, reason: reasons[candidate.candidate_id]?.trim() || "已试听，确认声音适合当前角色。", expectedReference: { path: selectedSlot?.inherited_from_default ? "" : selectedSlot?.path || "", sha256: selectedSlot?.inherited_from_default ? "" : selectedSlot?.sha256 || "" } });
-              if (finishMutation(res, "候选已采用")) { setConfirmations({ ...confirmations, [candidate.candidate_id]: false }); setCandidatesOpen(false); setWantsNewVoice(false); audioContainer.current?.querySelectorAll("audio").forEach(audio => audio.pause()); }
+              const res = await approveCandidate.mutateAsync({ candidateId: candidate.candidate_id, reason: reasons[candidate.candidate_id]?.trim() || "用户选择将该声音用于当前角色。", expectedReference: { path: selectedSlot?.inherited_from_default ? "" : selectedSlot?.path || "", sha256: selectedSlot?.inherited_from_default ? "" : selectedSlot?.sha256 || "" } });
+              if (finishMutation(res, "角色声音已更新")) {
+                setCandidatesOpen(false);
+                setWantsNewVoice(false);
+                audioContainer.current?.querySelectorAll("audio").forEach(audio => audio.pause());
+                const approvedData = isOkResponse<Record<string, unknown>>(res) ? res.data : null;
+                const versionId = typeof approvedData?.voice_version_id === "string" ? approvedData.voice_version_id : "";
+                if (versionId && onVoiceCandidateUsed && isCurrentContext()) {
+                  const connected = await onVoiceCandidateUsed(versionId);
+                  if (!connected && isCurrentContext()) {
+                    toast.error("角色声音已更新，但本次配音节点未接入。请刷新声音列表后重试。");
+                  }
+                }
+              }
             } catch (error) { toast.error(backendErrorToastMessage(error, t)); }
-          }}>{candidate.status === "approved" ? "恢复为角色声音" : "采用为角色声音"}</Button>
+          }}>{candidate.status === "approved" ? "恢复为角色声音" : "使用此声音"}</Button>
           <Button size="sm" variant="ghost" disabled={pending || deleteCandidate.isPending} onClick={() => setCandidateToDelete(candidate.candidate_id)}><Trash2 className="size-3.5" />删除音频</Button>
         </div>)}
       </details>}

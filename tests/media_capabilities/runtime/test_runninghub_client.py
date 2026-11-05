@@ -21,6 +21,39 @@ def json_response(payload: dict[str, Any], status: int = 200) -> httpx.Response:
     return httpx.Response(status, json=payload)
 
 
+@pytest.mark.asyncio
+async def test_submit_serializes_custom_workflow_override():
+    seen = []
+    def handle(request):
+        seen.append(json.loads(request.content))
+        return json_response({"code": 0, "data": {"taskId": "task"}})
+    async with RunningHubClient("test-key", transport=httpx.MockTransport(handle)) as client:
+        graph = {"5": {"class_type": "SaveAudio", "inputs": {}}}
+        assert await client.submit("source-id", [], workflow=graph) == "task"
+    assert json.loads(seen[0]["workflow"]) == graph
+    assert seen[0]["workflowId"] == "source-id"
+
+
+@pytest.mark.asyncio
+async def test_rejection_preserves_sanitized_validation_diagnostics():
+    client = RunningHubClient("private-test-key", transport=httpx.MockTransport(lambda request: json_response({
+        "code": 804, "msg": "Node 103 field value invalid private-test-key https://upload.example/private?token=x",
+        "data": {"node_errors": {"103": {"message": "Invalid selector"}}, "fileUrl": "https://upload.example/private"},
+    })))
+    try:
+        with pytest.raises(RunningHubError) as caught:
+            await client._request_json("POST", "/task/openapi/create")
+        error = caught.value
+        assert error.code == "804"
+        assert error.http_status == 200
+        assert "103" in error.details and "Invalid selector" in error.details
+        assert "private-test-key" not in error.details
+        assert "upload.example" not in error.details
+        assert error.operation == "/task/openapi/create"
+    finally:
+        await client.close()
+
+
 class ChunkStream(httpx.AsyncByteStream):
     def __init__(self, chunks: list[bytes]) -> None:
         self._chunks = chunks

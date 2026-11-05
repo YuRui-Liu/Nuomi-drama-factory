@@ -209,6 +209,7 @@ class GroupStageState:
     # A video group is one physical H3 director output containing logical shots.
     video_asset: str = ""
     manifest_asset: str = ""
+    dialogue_source: str = ""
     original_audio_path: str = ""
     dialogue_stem_path: str = ""
     ambience_stem_path: str = ""
@@ -232,6 +233,9 @@ class GroupStageState:
     constraint_mode: str = ""
     created_at: str = ""
     revision_history: tuple[dict[str, Any], ...] = ()
+    # Stable project-API request receipts let the node scheduler recover a
+    # reserved group stage without advancing its revision or re-enqueueing it.
+    submission_records: tuple[dict[str, Any], ...] = ()
 
 
 def _default_stages() -> dict[StageName, GroupStageState]:

@@ -119,6 +119,16 @@ export interface DirectorFrameMetaProp {
   shape_hint?: string;
 }
 
+export interface DirectorFrameMetaLight {
+  id: string;
+  label: string;
+  color: string;
+  intensity: number;
+  position: [number, number, number];
+  direction: [number, number, number];
+  enabled: boolean;
+}
+
 export interface DirectorFrameMetaSource {
   source_id: string;
   source_type: DirectorStageSourceType;
@@ -140,11 +150,14 @@ export interface DirectorFrameMeta {
     mode: "sog" | "pano";
     frame_aspect: string;
     state: Record<string, unknown>;
+    /** Optional editor view camera; camera.state remains the independently saved output camera. */
+    view_state?: Record<string, unknown>;
   };
   layer: DirectorObjectLayer;
   actors?: DirectorFrameMetaActor[];
   props?: DirectorFrameMetaProp[];
   stagings?: DirectorFrameMetaProp[];
+  lights?: DirectorFrameMetaLight[];
   beat_context?: DirectorStageManifest["beat_context"];
 }
 
@@ -273,6 +286,8 @@ export interface DirectorStageOverlayPayload {
   frame_meta?: DirectorFrameMeta;
   snapshot?: Record<string, unknown>;
   camera?: Record<string, unknown>;
+  outputCamera?: Record<string, unknown>;
+  lights?: DirectorFrameMetaLight[];
   actors?: unknown[];
   props?: unknown[];
   stagings?: unknown[];

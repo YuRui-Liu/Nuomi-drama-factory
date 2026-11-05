@@ -10,7 +10,7 @@ describe('asset workspace navigation', () => {
   it('persists the exact chosen target and never infers a selected node', async () => {
     const navigate = vi.fn();
     vi.mocked(getAppRouter).mockReturnValue({ state: { location: {} }, navigate } as never);
-    vi.mocked(listCreationCanvases).mockResolvedValue([{ canvas_id: 'ep2', episode_id: 'episode2', kind: 'episode', title: '第二集', status: 'applied' }]);
+    vi.mocked(listCreationCanvases).mockResolvedValue([{ canvas_id: 'ep2', episode_id: 'episode2', episode_number: 2, kind: 'episode', title: '第二集', status: 'applied' }]);
     await returnAssetToWorkspace(intent);
     expect(readAssetReturn('p', 'ep2')).toEqual(intent);
     expect(readAssetReturn('p', 'ep2')).not.toHaveProperty('targetNodeId');

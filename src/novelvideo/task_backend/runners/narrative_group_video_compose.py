@@ -255,6 +255,45 @@ async def _execute(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, A
             return {"group_id": group_id, "revision": revision, "audio_prepared": True,
                     "recomposition_deferred": True}
 
+    expected_source = str(payload.get("dialogue_source") or "").strip()
+    if expected_source:
+        from novelvideo.narrative_groups.service import load_materialized_groups
+        from novelvideo.media_capabilities.video.h3_timeline import (
+            DialogueSource, load_h3_director_manifest,
+        )
+
+        try:
+            expected = DialogueSource(expected_source)
+            groups = load_materialized_groups(project_dir, episode)
+            group = next(item for item in groups if item.id == group_id)
+            video_stage = group.stages["video"]
+            if video_stage.revision != revision:
+                return {"status": "stale", "group_id": group_id, "revision": revision}
+            manifest_path = Path(video_stage.manifest_asset)
+            if not manifest_path.is_absolute():
+                manifest_path = project_dir / manifest_path
+            manifest = load_h3_director_manifest(manifest_path)
+            span_index = int(payload["span_index"])
+            entry = manifest.entries[span_index]
+        except (KeyError, IndexError, OSError, StopIteration, TypeError, ValueError) as exc:
+            raise RuntimeError("selected narrative-group audio input is unavailable") from exc
+        if entry.dialogue_source is not expected:
+            raise RuntimeError("selected narrative-group audio policy changed; resubmit composition")
+        if expected is DialogueSource.H3_NATIVE:
+            from novelvideo.task_backend.runners.video import _video_has_audio_stream
+
+            video_path = Path(manifest.physical_video or "")
+            if not video_path.is_absolute():
+                video_path = project_dir / video_path
+            if not _video_has_audio_stream(video_path):
+                raise RuntimeError("H3-native audio is missing from the selected video")
+        else:
+            from novelvideo.api.routes.narrative_groups import _episode_group_audio_ready
+
+            if not _episode_group_audio_ready(project_dir, episode, groups):
+                return {"group_id": group_id, "revision": revision,
+                        "recomposition_deferred": True}
+
     from novelvideo.task_backend.runners.video import run_compose_episode
 
     beats = await _load_canonical_beats(ctx, episode)

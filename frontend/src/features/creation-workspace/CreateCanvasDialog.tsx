@@ -7,9 +7,10 @@ const groups: { kind: WorkspaceKind; label: string }[] = [
   { kind: 'concept', label: '构思画布' }, { kind: 'episode', label: '分集画布' }, { kind: 'free', label: '自由画布' },
 ];
 
-export function CreateCanvasDialog({ open, initialKind, pending, error, finalFocus, onClose, onCreate, onRetry }: {
+export function CreateCanvasDialog({ open, initialKind, scopeKey, pending, error, finalFocus, onClose, onCreate, onRetry }: {
   open: boolean;
   initialKind: WorkspaceKind;
+  scopeKey?: string;
   pending: boolean;
   error?: string;
   finalFocus?: RefObject<HTMLElement | null>;
@@ -21,16 +22,16 @@ export function CreateCanvasDialog({ open, initialKind, pending, error, finalFoc
   const [title, setTitle] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
-  const wasOpen = useRef(false);
   const busy = pending || submitting;
+  const previousScope = useRef(scopeKey);
 
   useEffect(() => {
-    if (open && !wasOpen.current) {
+    if (previousScope.current !== scopeKey) {
+      previousScope.current = scopeKey;
       setKind(initialKind);
       setTitle('');
     }
-    wasOpen.current = open;
-  }, [initialKind, open]);
+  }, [initialKind, scopeKey]);
 
   async function runCreate(operation: () => Promise<boolean>) {
     if (busy || submittingRef.current) return false;
@@ -39,6 +40,7 @@ export function CreateCanvasDialog({ open, initialKind, pending, error, finalFoc
     try {
       const created = await operation();
       if (created) {
+        setKind(initialKind);
         setTitle('');
         onClose();
       }

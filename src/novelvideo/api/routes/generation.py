@@ -1,6 +1,7 @@
 """画面/网格/视频生成端点。"""
 
 import json
+import asyncio
 import io
 import logging
 import os
@@ -76,8 +77,11 @@ from novelvideo.seedance2_i2v.pipeline import (
 from novelvideo.seedance2_i2v.voice_clone import normalize_seedance2_audio_type
 from novelvideo.project_config import load_project_config, save_project_config
 from novelvideo.project_context import ProjectContext
+from novelvideo.creation.production_admission import admit_registered_episode_stage
+from novelvideo.freezone.orchestration.models import OrchestrationError
 from novelvideo.ports import get_task_backend, get_usage_meter
 from novelvideo.task_identity import project_task_state_key
+from novelvideo.task_state import get_task_manager
 from novelvideo.models import beat_scene_id
 from novelvideo.services.background_anchor_service import (
     BackgroundAnchorError,
@@ -133,6 +137,20 @@ def _requester_user_id_for_billing(resolved: Any, user: dict) -> str:
         or user.get("username")
         or ""
     )
+
+
+def _admit_episode_stage(resolved: Any, episode: int, stage: str, *, requires_audio: bool = False) -> bool:
+    """Protect direct episode APIs when their project opted into managed production."""
+    ctx = getattr(resolved, "ctx", None)
+    if ctx is None:
+        return False
+    try:
+        return admit_registered_episode_stage(
+            ctx.state_dir, resolved.output_dir, episode, stage,
+            requires_audio=requires_audio,
+        )
+    except OrchestrationError as exc:
+        raise HTTPException(status_code=409, detail=exc.as_dict()) from exc
 
 
 def _color_assignment_requires_full_sketch_clean(
@@ -1883,16 +1901,37 @@ async def compose_video(
     )
     beats = await store.get_beats_as_dicts(episode_num)
     director_composition = None
-    if not beats:
+    node_bound = any((body.client_mutation_id, body.director_revision_id,
+                      body.production_group_ids is not None))
+    if node_bound:
+        if (ctx is None or not body.client_mutation_id or not body.director_revision_id
+                or body.production_group_ids is None):
+            raise HTTPException(status_code=422, detail={"code": "DIRECTOR_COMPOSITION_BINDING_REQUIRED"})
         from novelvideo.task_backend.runners.video import director_composition_snapshot
-
+        from novelvideo.narrative_groups.service import load_materialized_groups
+        try:
+            director_composition = director_composition_snapshot(
+                output_dir, episode_num,
+                groups=load_materialized_groups(output_dir, episode_num),
+                require_current=True,
+            )
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=409, detail={"code": "DIRECTOR_COMPOSITION_INCOMPLETE", "message": str(exc)}) from exc
+        if (body.director_revision_id != director_composition["revision_id"]
+                or body.production_group_ids != director_composition["group_ids"]):
+            raise HTTPException(status_code=409, detail={
+                "code": "DIRECTOR_COMPOSITION_CHANGED",
+                "message": "The frozen director revision and complete production group set no longer match.",
+            })
+    elif not beats:
+        from novelvideo.task_backend.runners.video import director_composition_snapshot
         try:
             director_composition = director_composition_snapshot(output_dir, episode_num)
         except (ValueError, OSError) as exc:
             return {"ok": False, "error": str(exc)}
 
     config = {
-        "beats": beats,
+        "beats": [] if node_bound else beats,
         "add_subtitles": body.add_subtitles,
         "add_bgm": body.add_bgm,
     }
@@ -1900,23 +1939,70 @@ async def compose_video(
         config["director_composition"] = director_composition
 
     if ctx is not None:
+        scope = None
+        request_fingerprint = None
+        if node_bound:
+            from novelvideo.freezone.orchestration.models import fingerprint
+            request_fingerprint = fingerprint({
+                "episode": episode_num,
+                "director_composition": director_composition,
+                "body": body.model_dump(mode="json", exclude={"client_mutation_id"}),
+            })
+            scope = f"episode_{episode_num}_canvas_compose_{body.client_mutation_id}"
+            try:
+                existing = await asyncio.to_thread(
+                    get_task_manager().get_task_for_project,
+                    ctx, "compose_episode", episode_num, scope=scope,
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail={"code": "COMPOSITION_SUBMISSION_UNKNOWN"}) from exc
+            if existing is not None:
+                metadata = dict(existing.metadata or {})
+                if metadata.get("request_fingerprint") != request_fingerprint:
+                    raise HTTPException(status_code=409, detail={"code": "IDEMPOTENCY_CONFLICT"})
+                return {
+                    "ok": True, "task_type": "compose_episode", "task_id": existing.task_id,
+                    "task_key": project_task_state_key("compose_episode", ctx.project_id, episode_num),
+                    "scope": scope, "status": existing.status,
+                    "request_fingerprint": request_fingerprint,
+                    "backend": metadata.get("backend"), "queue": metadata.get("queue_kind"),
+                    "message": f"第 {episode_num} 集成片合成已进入队列",
+                }
+        _admit_episode_stage(
+            resolved, episode_num, "composition",
+            requires_audio=(body.add_bgm or any(
+                bool(beat.get("dialogue_lines")) for beat in beats
+                if isinstance(beat, dict)
+            )),
+        )
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="compose_episode",
             queue_kind="ffmpeg",
             episode=episode_num,
+            scope=scope,
             payload={
                 **config,
                 "episode": episode_num,
                 "output_dir": output_dir,
                 "resolution": getattr(body, "resolution", "720x1280"),
+                **({
+                    "client_mutation_id": body.client_mutation_id,
+                    "request_fingerprint": request_fingerprint,
+                    "production_group_ids": body.production_group_ids,
+                    "director_revision_id": body.director_revision_id,
+                } if node_bound else {}),
             },
         )
+        if node_bound and (queued.task_state.metadata or {}).get("request_fingerprint") != request_fingerprint:
+            raise HTTPException(status_code=409, detail={"code": "IDEMPOTENCY_CONFLICT"})
         return {
             "ok": True,
             "task_type": "compose_episode",
             "task_id": queued.task_state.task_id,
             "task_key": project_task_state_key("compose_episode", ctx.project_id, episode_num),
+            **({"scope": scope} if scope is not None else {}),
+            **({"request_fingerprint": request_fingerprint} if request_fingerprint is not None else {}),
             "backend": queued.backend,
             "queue": queued.queue,
             "message": f"第 {episode_num} 集成片合成已进入队列",
@@ -2055,6 +2141,8 @@ async def generate_sketches(
     )
     if not has_colors:
         return {"ok": False, "error": "未检测到颜色分配，请先调用 assign-colors 接口"}
+
+    _admit_episode_stage(resolved, episode_num, "storyboard")
 
     from novelvideo.utils.path_resolver import PathResolver
 
@@ -2216,6 +2304,7 @@ async def generate_audio(
         return _voice_prereq_error_response(missing_voice)
 
     if ctx is not None:
+        _admit_episode_stage(resolved, episode_num, "audio")
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="audio_generation_indextts2",
@@ -2300,6 +2389,7 @@ async def global_optimize_video(
     ]
 
     if ctx is not None:
+        _admit_episode_stage(resolved, episode_num, "video")
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="global_optimize_video",
@@ -2455,6 +2545,7 @@ async def regenerate_grid(
 
     scope = f"grid_{grid_index}"
     if ctx is not None:
+        _admit_episode_stage(resolved, episode_num, "storyboard")
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="grid_regenerate",
@@ -2759,6 +2850,7 @@ async def render_execute(
     dispatched_task_ids: list[str] = []
 
     if ctx is not None:
+        _admit_episode_stage(resolved, episode_num, "storyboard")
         for entry in execution_plan:
             entry_beats = [int(beat) for beat in entry.beat_numbers]
             entry_scope = selection_scope(entry.mode_key, entry_beats)
@@ -2889,6 +2981,7 @@ async def regenerate_beats(
     scope = selection_scope(mode_key, body.beat_indices)
 
     if ctx is not None:
+        _admit_episode_stage(resolved, episode_num, "storyboard")
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="selected_regen",
@@ -2987,6 +3080,7 @@ async def regenerate_sketches(
     scope = selection_scope(mode_key, body.beat_indices)
 
     if ctx is not None:
+        _admit_episode_stage(resolved, episode_num, "storyboard")
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="sketch_regen",
@@ -3078,6 +3172,28 @@ def _director_overlay_beat_context(beat: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _director_output_camera(
+    snapshot: dict[str, Any],
+    body: dict[str, Any],
+    frame_meta: dict[str, Any],
+) -> dict[str, Any]:
+    frame_camera = frame_meta.get("camera")
+    frame_camera = frame_camera if isinstance(frame_camera, dict) else {}
+    return next(
+        (
+            value
+            for value in (
+                snapshot.get("outputCamera"),
+                frame_camera.get("state"),
+                body.get("camera"),
+                snapshot.get("camera"),
+            )
+            if isinstance(value, dict) and value
+        ),
+        {},
+    )
+
+
 def _director_same_scene_beats(beats: list[dict[str, Any]], scene_name: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for item in beats:
@@ -3117,6 +3233,7 @@ def _director_overlay_payload(
     if not isinstance(source, dict):
         meta_source = frame_meta.get("source")
         source = meta_source if isinstance(meta_source, dict) else {}
+    output_camera = _director_output_camera(snapshot, body, frame_meta)
     return {
         "schema_version": "director_stage_overlay_v1",
         "scene_id": scene_name,
@@ -3126,7 +3243,7 @@ def _director_overlay_payload(
         "source": source,
         "frame_meta": frame_meta,
         "snapshot": snapshot,
-        "camera": snapshot.get("camera") or body.get("camera") or {},
+        "camera": output_camera,
         "actors": actors,
         "props": legacy_props,
         "stagings": stagings,
@@ -3256,6 +3373,17 @@ def _director_control_frame_export_payload(
     meta.setdefault("actors", actors)
     meta.setdefault("props", legacy_props)
     meta.setdefault("stagings", stagings)
+    output_camera = _director_output_camera(snapshot, body, meta)
+    if isinstance(output_camera, dict) and output_camera:
+        camera_meta = meta.get("camera")
+        camera_meta = dict(camera_meta) if isinstance(camera_meta, dict) else {}
+        camera_meta["state"] = output_camera
+        meta["camera"] = camera_meta
+    lights = snapshot.get("lights")
+    if not isinstance(lights, list):
+        lights = body.get("lights")
+    if isinstance(lights, list):
+        meta["lights"] = lights
     meta["paths"] = rel_paths
     meta_path = target_dir / "frame_meta.json"
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -3788,6 +3916,7 @@ async def director_control_to_sketch(
         }
 
     if ctx is not None:
+        _admit_episode_stage(resolved, episode_num, "storyboard")
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="sketch_generation",
@@ -4084,6 +4213,8 @@ async def generate_missing_manual_sketches(
             "data": {"dispatched": 0, "scopes": [], "segments": []},
             "message": "没有缺草图的手工分镜",
         }
+
+    _admit_episode_stage(resolved, episode_num, "storyboard")
 
     proj_config = load_project_config(username, project_name)
     style = proj_config.get("visual_style", "chinese_period_drama")
@@ -4497,6 +4628,7 @@ async def generate_single_video(
         config["references"] = grok_video_references
 
     if ctx is not None:
+        _admit_episode_stage(resolved, episode_num, "video")
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="single_video",
@@ -5051,6 +5183,7 @@ async def regenerate_beat_audio(
         return _voice_prereq_error_response(missing_voice)
 
     if ctx is not None:
+        _admit_episode_stage(resolved, episode_num, "audio")
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="audio_generation_indextts2",

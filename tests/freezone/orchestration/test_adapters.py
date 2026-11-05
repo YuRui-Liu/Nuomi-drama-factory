@@ -26,6 +26,73 @@ async def test_reference_only_screenplay_inspect_dispatches_the_bound_operation(
 
 
 @pytest.mark.asyncio
+async def test_verified_asset_design_legacy_huimeng_alias_uses_configured_grsai_and_keeps_ratio(
+        tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from novelvideo.api.routes import freezone
+    from novelvideo.creation.asset_generation import AssetGeneration
+    from novelvideo.freezone.orchestration.adapters import NodeAdapter
+    from novelvideo.media_capabilities.runtime import configuration
+
+    ctx = SimpleNamespace(project_id='p', requester_user_id='alice')
+    async def resolve(*_args, **_kwargs):
+        return (ctx, 'alice', 'project', tmp_path, str(tmp_path))
+    monkeypatch.setattr(freezone, '_resolve_freezone_project', resolve)
+    monkeypatch.setattr(AssetGeneration, 'verified_candidate_for_node',
+        staticmethod(lambda *_args: {'node_id': 'image', 'source_operation_id': 'op'}), raising=False)
+
+    async def gen(_project, body, _actor):
+        return {'ok': True, 'data': body.model_dump(mode='json')}
+    monkeypatch.setattr(freezone, 'freezone_gen', gen)
+    monkeypatch.setattr('novelvideo.api.deps.get_media_capability_store', lambda: object())
+    monkeypatch.setattr('novelvideo.api.deps.get_media_credential_resolver', lambda: object())
+    monkeypatch.setattr(configuration, 'load_grsai_runtime_configuration',
+                        lambda *_args: SimpleNamespace(model='gpt-image-2'))
+
+    node = {'id': 'image', 'type': 'imageGenNode', 'data': {
+        'operation': 'generate', 'prompt': 'portrait', 'model': 'huimeng/gpt-image-2',
+        'aspectRatio': '3:2', 'requestAspectRatio': '3:2', 'designBinding': {'design_ref': {'id': 'd'}},
+    }}
+    run = {'project_id': 'p', 'canvas_id': 'canvas', 'actor': {'id': 'alice'},
+           'snapshot': {'nodes': [node]}}
+    response = await NodeAdapter(tmp_path).submit(run, {'node_id': 'image', 'id': 'attempt'}, [])
+
+    assert response['provider'] == 'grsai'
+    assert response['model'] == 'gpt-image-2'
+    assert response['aspect_ratio'] == '3:2'
+
+
+@pytest.mark.asyncio
+async def test_unverified_asset_binding_does_not_fall_back_to_huimeng(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from novelvideo.api.routes import freezone
+    from novelvideo.creation.asset_generation import AssetGeneration
+    from novelvideo.freezone.orchestration.adapters import NodeAdapter
+
+    ctx = SimpleNamespace(project_id='p', requester_user_id='alice')
+    async def resolve(*_args, **_kwargs):
+        return (ctx, 'alice', 'project', tmp_path, str(tmp_path))
+    monkeypatch.setattr(freezone, '_resolve_freezone_project', resolve)
+    monkeypatch.setattr(AssetGeneration, 'verified_candidate_for_node',
+                        staticmethod(lambda *_args: None), raising=False)
+    submitted = []
+    async def gen(*_args):
+        submitted.append(True)
+        return {'ok': True, 'data': {}}
+    monkeypatch.setattr(freezone, 'freezone_gen', gen)
+
+    node = {'id': 'image', 'type': 'imageGenNode', 'data': {
+        'operation': 'generate', 'prompt': 'portrait', 'model': 'huimeng/gpt-image-2',
+        'designBinding': {'design_ref': {'id': 'forged'}},
+    }}
+    run = {'project_id': 'p', 'canvas_id': 'canvas', 'actor': {'id': 'alice'},
+           'snapshot': {'nodes': [node]}}
+    with pytest.raises(OrchestrationError, match='来源无法复核'):
+        await NodeAdapter(tmp_path).submit(run, {'node_id': 'image', 'id': 'attempt'}, [])
+    assert submitted == []
+
+
+@pytest.mark.asyncio
 async def test_cancelled_planner_releases_canvas_instead_of_running_forever(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from novelvideo.freezone.orchestration.adapters import NodeAdapter
@@ -55,6 +122,23 @@ def test_image_node_parameters_override_stale_request_and_include_style_camera()
     assert body["style"] == {"template_id": "cinematic"}
     assert body["camera"]["focal_length_mm"] == 50
     assert body["image_size"] == "2K"
+
+
+def test_image_node_camera_option_ids_are_resolved_to_prompt_labels():
+    from novelvideo.freezone.orchestration.adapters.requests import build_request
+
+    node = {"id": "n", "type": "imageGenNode", "data": {
+        "prompt": "portrait", "cameraSelection": {
+            "cameraBodyId": "arri_alexa_65", "lensId": "arri_signature_prime",
+            "focalLengthMm": 50, "aperture": "f/4",
+        }}}
+
+    _, body = build_request(node, "generate", [], canvas_id="c", attempt_id="a")
+
+    assert body["camera"] == {
+        "camera_body": "ARRI ALEXA 65", "lens": "Arri Signature Prime",
+        "focal_length_mm": 50, "aperture": "f/4",
+    }
 
 
 def test_extension_style_is_composed_from_catalog():

@@ -85,6 +85,46 @@ def test_task_runtime_config_round_trips_runtime_presets(client) -> None:
     assert harness_role["route"]["model"] == "deepseek-v4-flash-vision-exp"
 
 
+def test_creation_agent_decision_role_inherits_and_saves_independently(client) -> None:
+    script_route = {
+        "runtime": "codex",
+        "model": "gpt-6-luna",
+        "reasoning_effort": "medium",
+        "fallback": "stop",
+    }
+    saved_script = client.put(
+        CONFIG_PATH,
+        json={"routes": {"script_creation": script_route}},
+    )
+    assert saved_script.status_code == 200
+
+    fetched = client.get(CONFIG_PATH)
+    assert fetched.status_code == 200
+    roles = {item["id"]: item for item in fetched.json()["data"]["roles"]}
+    assert roles["creation_agent_decision"]["label"] == "创作主创Agent"
+    assert roles["creation_agent_decision"]["route"] == roles["script_creation"]["route"]
+
+    decision_route = {
+        "runtime": "codex",
+        "model": "gpt-6-sol",
+        "reasoning_effort": "high",
+        "fallback": "stop",
+    }
+    saved_both = client.put(
+        CONFIG_PATH,
+        json={"routes": {
+            "script_creation": script_route,
+            "creation_agent_decision": decision_route,
+        }},
+    )
+    assert saved_both.status_code == 200
+
+    roles = {item["id"]: item for item in saved_both.json()["data"]["roles"]}
+    assert roles["script_creation"]["route"]["model"] == "gpt-6-luna"
+    assert roles["creation_agent_decision"]["route"]["model"] == "gpt-6-sol"
+    assert roles["creation_agent_decision"]["route"]["reasoning_effort"] == "high"
+
+
 def test_task_runtime_config_rejects_unknown_runtime_preset_key(client) -> None:
     saved_first = client.put(
         CONFIG_PATH,

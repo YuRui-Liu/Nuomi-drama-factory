@@ -30,11 +30,13 @@ import {
   canvasNodeFrameClass,
 } from "@/features/canvas/ui/nodeFrameStyles";
 import { readUrl } from "@/lib/url-params";
+import { resolveFreezoneCanvasId } from "@/features/freezone/freezoneCanvasScope";
 import {
   VideoComposeModal,
   type ComposeExportEvidence,
 } from "@/features/canvas/compose/VideoComposeModal";
 import type { ComposeTimelineState } from "@/features/canvas/compose/timelineModel";
+import { orderComposeInputNodes } from "@/features/canvas/production/lightweightVideoPipeline";
 
 type VideoComposeNodeProps = NodeProps & {
   id: string;
@@ -57,13 +59,12 @@ export const VideoComposeNode = memo(
     // 上游可用素材按 y 坐标排序，与时间线初始顺序一致。
     const seedNodeIds = useMemo(
       () =>
-        [...upstreamNodes]
+        orderComposeInputNodes(upstreamNodes
           .filter(
             (node) =>
-              ((isVideoNode(node) || isVideoDirectorNode(node)) && node.data.videoUrl) ||
-              (isAudioNode(node) && node.data.audioUrl),
-          )
-          .sort((a, b) => (a.position?.y ?? 0) - (b.position?.y ?? 0))
+              (((isVideoNode(node) || isVideoDirectorNode(node)) && node.data.videoUrl) ||
+                (isAudioNode(node) && node.data.audioUrl)) && node.data.lightweightBatchActive !== false,
+          ))
           .map((node) => node.id),
       [upstreamNodes],
     );
@@ -76,7 +77,7 @@ export const VideoComposeNode = memo(
     const cardToneClass = canvasNodeFrameClass({ selected });
 
     const project = readUrl().project;
-    const canvasId = readUrl().canvas ?? "default";
+    const canvasId = project ? resolveFreezoneCanvasId(project) : "default";
 
     useEffect(() => {
       updateNodeInternals(id);

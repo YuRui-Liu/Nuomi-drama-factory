@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   PROJECT_NAV_ITEMS,
   PROJECT_SECTION_ROUTES,
+  projectEntryRoute,
   projectModeFromPath,
   projectSectionFromPath,
 } from "@/components/layout/project-navigation-routes";
@@ -33,6 +34,14 @@ describe("project navigation routes", () => {
 
   it("uses freezone as the project dashboard entry", () => {
     expect(PROJECT_SECTION_ROUTES.freezone).toBe("/projects/$project/freezone");
+  });
+
+  it("opens the canvas when a project card remembers the legacy creation page", () => {
+    expect(projectEntryRoute("creation")).toBe(PROJECT_SECTION_ROUTES.freezone);
+    expect(projectEntryRoute(undefined)).toBe(PROJECT_SECTION_ROUTES.freezone);
+    expect(projectEntryRoute("characters")).toBe(PROJECT_SECTION_ROUTES.characters);
+    // The compatibility route remains explicitly addressable.
+    expect(projectSectionFromPath("/projects/demo/creation")).toBe("creation");
   });
 
   it("classifies freezone as xiahua and every production section as xiaji", () => {

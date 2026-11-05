@@ -611,10 +611,11 @@ class NodeExecutionService:
 
     def __init__(self, project_dir: Path, *, project_id: str, canvas_id: str,
                  actor: dict, adapter=None, authorize_submission=None,
-                 authorize_projection=None):
+                 authorize_projection=None, require_workspace_scope: bool = False):
         self.project_dir = Path(project_dir)
         self.project_id = str(project_id)
         self.canvas_id = str(canvas_id)
+        self.require_workspace_scope = require_workspace_scope
         self.actor = {key: actor[key] for key in ("id", "username") if key in actor}
         if "id" not in self.actor:
             _invalid("authorization_required", "A scoped actor identity is required")
@@ -624,7 +625,7 @@ class NodeExecutionService:
                                    authorize_submission=authorize_submission,
                                    authorize_projection=authorize_projection)
 
-    def _canvas(self) -> dict:
+    def _canvas(self, *, node_ids: list[str] | None = None) -> dict:
         try:
             canvas = read_canvas(self.project_dir, self.canvas_id)
         except ValueError as exc:
@@ -632,7 +633,29 @@ class NodeExecutionService:
         if canvas is None or canvas.get("project_id") != self.project_id:
             _invalid("scope_violation", "Canvas does not belong to the authorized project",
                      canvas_id=self.canvas_id)
+        if self.require_workspace_scope:
+            from .canvas_scope import resolve_canvas_scope, validate_snapshot_workspace_scope
+            workspace_scope = resolve_canvas_scope(self.project_dir, self.canvas_id)
+            if workspace_scope is None:
+                _invalid("episode_scope_mismatch", "Agent node execution requires a registered workspace canvas",
+                         canvas_id=self.canvas_id)
+            validate_snapshot_workspace_scope(canvas, workspace_scope, node_ids=node_ids)
         return canvas
+
+    def _validate_agent_run_workspace_scope(self, run: dict) -> None:
+        if not self.require_workspace_scope:
+            return
+        from .canvas_scope import resolve_canvas_scope, validate_snapshot_workspace_scope
+        workspace_scope = resolve_canvas_scope(self.project_dir, self.canvas_id)
+        if workspace_scope is None:
+            _invalid("episode_scope_mismatch", "Agent node execution requires a registered workspace canvas",
+                     canvas_id=self.canvas_id)
+        marker = run.get('agent_execution') or {}
+        target = marker.get('target_node_id')
+        if not isinstance(target, str) or target not in run.get('order', []):
+            _invalid('episode_scope_mismatch', 'Agent run target is outside its recorded execution order',
+                     canvas_id=self.canvas_id)
+        validate_snapshot_workspace_scope(run.get('snapshot', {}), workspace_scope, node_ids=[target])
 
     def _grant(self, contract: dict, authorization_id: str) -> dict:
         grant = _contract(contract, project_id=self.project_id, canvas_id=self.canvas_id, actor=self.actor)
@@ -672,7 +695,7 @@ class NodeExecutionService:
             _invalid("idempotency_conflict", "Patch request ID was reused for different fields")
         if saved_action and saved_action["status"] == "complete":
             return saved_action["payload"]["receipt"]
-        canvas = self._canvas()
+        canvas = self._canvas(node_ids=[node_id])
         _check_revision(expected_revision, canvas)
         target = _node(canvas, node_id)
         if saved_action:
@@ -771,6 +794,13 @@ class NodeExecutionService:
         if not isinstance(request_id, str) or not request_id or len(request_id) > _MAX_REQUEST_ID:
             _invalid("invalid_contract", "A stable node execution request ID is required")
         run_request_id = "agent-" + fingerprint([grant["root_delegation_id"], request_id])[:64]
+        workspace_scope = None
+        if self.require_workspace_scope:
+            from .canvas_scope import resolve_canvas_scope
+            workspace_scope = resolve_canvas_scope(self.project_dir, self.canvas_id)
+            if workspace_scope is None:
+                _invalid("episode_scope_mismatch", "Agent node execution requires a registered workspace canvas",
+                         canvas_id=self.canvas_id)
         request_hash = fingerprint({"kind": "node.run", "project_id": self.project_id,
             "canvas_id": self.canvas_id, "actor_id": str(self.actor["id"]), "request_id": request_id,
             "node_id": node_id, "operation": operation, "expected_revision": expected_revision,
@@ -781,6 +811,8 @@ class NodeExecutionService:
         # changed dependencies must never turn a replay into a second run.
         existing = self.store.find_request(self.canvas_id, run_request_id)
         if existing is not None:
+            if self.require_workspace_scope:
+                self._validate_agent_run_workspace_scope(existing)
             marker = existing.get("agent_execution", {})
             if (marker.get("request_hash") != request_hash
                     or marker.get("target_node_id") != node_id
@@ -791,7 +823,7 @@ class NodeExecutionService:
             recovered = await self.scheduler.tick(existing["id"])
             return self._run_receipt(recovered, grant)
 
-        canvas = self._canvas()
+        canvas = self._canvas(node_ids=[node_id])
         _check_revision(expected_revision, canvas)
         target = _node(canvas, node_id)
         if input_fingerprint(target) != expected_input_fingerprint:
@@ -864,7 +896,8 @@ class NodeExecutionService:
             project_id=self.project_id,
             settings={"lanes": lanes, "concurrency": max(1, sum(lanes.values())),
                       "source": "task-runtime/concurrency"},
-            actor=self.actor, operation=operation, target_only=True, agent_execution=marker)
+            actor=self.actor, operation=operation, target_only=True, agent_execution=marker,
+            **({'workspace_scope': workspace_scope} if self.require_workspace_scope else {}))
         run = await self.scheduler.tick(run["id"])
         return self._run_receipt(run, grant)
 
@@ -872,6 +905,7 @@ class NodeExecutionService:
         grant = self._grant(contract, authorization_id)
         run = self.store.get(run_id)
         self._check_run_scope(run, grant)
+        self._validate_agent_run_workspace_scope(run)
         run = await self.scheduler.tick(run_id)
         return self._run_receipt(run, grant)
 
@@ -886,6 +920,7 @@ class NodeExecutionService:
         if run is None:
             return None
         self._check_run_scope(run, grant)
+        self._validate_agent_run_workspace_scope(run)
         return self._run_receipt(run, grant)
 
     async def stop_run(self, run_id: str, *, contract: dict, authorization_id: str) -> dict:
@@ -899,6 +934,7 @@ class NodeExecutionService:
         grant = self._grant(contract, authorization_id)
         run = self.store.get(run_id)
         self._check_run_scope(run, grant)
+        self._validate_agent_run_workspace_scope(run)
         run = self.store.resume(run_id)
         run = await self.scheduler.tick(run_id)
         return self._run_receipt(run, grant)
@@ -908,6 +944,7 @@ class NodeExecutionService:
         grant = self._grant(contract, authorization_id)
         run = self.store.get(run_id)
         self._check_run_scope(run, grant)
+        self._validate_agent_run_workspace_scope(run)
         run = await self.scheduler.tick(run_id)
         return self._run_receipt(run, grant)
 
@@ -961,7 +998,7 @@ class NodeExecutionService:
         }
         if attempt.get("status") == "succeeded":
             try:
-                canvas = self._canvas()
+                canvas = self._canvas(node_ids=[target])
                 node = _node(canvas, target)
                 result_fp = fingerprint(result_projection(node))
                 media_fp = fingerprint(media_projection(node))

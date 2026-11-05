@@ -1,6 +1,9 @@
+import pytest
+
+from novelvideo.media_capabilities.video.h3_derived_contract import normalize_derived_contract
+from novelvideo.media_capabilities.video.h3_prompt_compiler import compile_h3_director_plan
 from novelvideo.media_capabilities.video.h3_prompt_quality import H3PromptQualityIssue
 from tests.media_capabilities.video.test_h3_episode_pack import _input, _plan
-import pytest
 
 
 @pytest.mark.asyncio
@@ -19,7 +22,6 @@ async def test_partial_pack_requests_only_missing_segments(tmp_path):
 
 
 def test_derived_counts_preserve_scene_facts_and_unrelated_constraints():
-    from novelvideo.media_capabilities.video.h3_derived_contract import normalize_derived_contract
     from novelvideo.media_capabilities.video.h3_rigid_prompt import H3PositiveConstraint
     plan = _plan()
     rigid = plan.rigid_prompt
@@ -35,6 +37,45 @@ def test_derived_counts_preserve_scene_facts_and_unrelated_constraints():
     assert counts["characters"] == 1
     assert counts["references"] == 1
     assert normalize_derived_contract(result) == result
+
+
+@pytest.mark.parametrize(
+    "held_props,expected_count,expected_assertion",
+    (
+        ((), 0, "The declared held-prop inventory contains exactly 0 entries."),
+        (("knife",), 1, "The declared held-prop inventory contains exactly 1 entry."),
+    ),
+)
+def test_derived_held_prop_count_does_not_limit_other_visible_scene_props(
+    held_props, expected_count, expected_assertion
+):
+    plan = _plan()
+    rigid = plan.rigid_prompt
+    context = rigid.scene_context.model_copy(update={
+        "summary": "Lin stands by the corridor door while a wooden box rests on the table."
+    })
+    block = rigid.spatial_blocking[0]
+    subject = block.subjects[0].model_copy(update={"held_props": held_props})
+    block = block.model_copy(update={"subjects": (subject,)})
+    plan = plan.model_copy(update={"rigid_prompt": rigid.model_copy(update={
+        "scene_context": context,
+        "spatial_blocking": (block,),
+    })})
+
+    normalized = normalize_derived_contract(plan)
+    prop_constraint = next(
+        item for item in normalized.rigid_prompt.positive_constraints if item.target == "props"
+    )
+    prompt = compile_h3_director_plan(normalized)
+
+    assert prop_constraint.count == expected_count
+    assert prop_constraint.assertion == expected_assertion
+    assert expected_assertion in prompt
+    assert "Keep exactly zero props visible." not in prompt
+    assert "Keep exactly one prop visible." not in prompt
+    assert "wooden box rests on the table" in prompt
+    if held_props:
+        assert "holding knife" in prompt
 
 
 def test_physics_inventory_is_derived_without_changing_action_or_prose():

@@ -10,10 +10,15 @@ from pydantic import BaseModel, Field
 from novelvideo.api.auth import get_api_user
 from novelvideo.api.deps import get_media_capability_store
 from novelvideo.api.routes.freezone import _resolve_freezone_project
+from novelvideo.creation.canvas_scope import resolve_canvas_scope
+from novelvideo.creation.production_admission import admit_managed_stage, classify_target_stage
+from novelvideo.freezone.canvas_store import read_canvas
+from novelvideo.freezone.orchestration.models import OrchestrationError
+from pathlib import Path
 from novelvideo.freezone.video_director.capabilities import (
     DirectorCapabilityError, describe_capabilities,
 )
-from novelvideo.freezone.video_director.models import DirectorDraft
+from novelvideo.freezone.video_director.models import DirectorDraft, OptimizedDirector
 from novelvideo.freezone.video_director.service import DirectorService
 from novelvideo.freezone.video_director.techniques import CATALOG_VERSION, list_techniques
 from novelvideo.ports import get_task_backend
@@ -28,6 +33,12 @@ class CreateAttemptBody(BaseModel):
     node_id: str = Field(min_length=1, max_length=128)
     request_id: str = Field(min_length=1, max_length=128)
     draft: DirectorDraft
+    prepared: OptimizedDirector | None = None
+
+
+class DirectorPreviewBody(BaseModel):
+    draft: DirectorDraft
+    prepared: OptimizedDirector | None = None
 
 
 class StoryboardShot(BaseModel):
@@ -42,6 +53,7 @@ class PrepareStoryboardBody(BaseModel):
     request_id: str = Field(min_length=1, max_length=128)
     resolution: Literal['safe', 'keep_edits', 'replace_generated'] = 'safe'
     shots: list[StoryboardShot] | None = None
+    shot_ids: list[str] | None = Field(default=None, min_length=1, max_length=64)
     rects: list[tuple[int, int, int, int]] | None = None
 
 
@@ -110,6 +122,27 @@ async def _service(project: str, user: dict, *, role: str):
     return ctx, DirectorService(ctx, reference_limit=effective)
 
 
+def _admit_new_submission(ctx, canvas_id: str, node_id: str) -> None:
+    """Gate only a video node in an explicitly applied, managed episode."""
+    state_dir = getattr(ctx, "state_dir", None)
+    if state_dir is None:
+        return
+    scope = resolve_canvas_scope(state_dir, canvas_id)
+    if (not isinstance(scope, dict) or scope.get("kind") != "episode"
+            or scope.get("status") != "applied" or type(scope.get("episode_number")) is not int):
+        return
+    canvas = read_canvas(Path(state_dir), canvas_id)
+    if canvas is None:
+        return
+    node = next((item for item in canvas.get("nodes", [])
+                 if isinstance(item, dict) and item.get("id") == node_id), None)
+    if classify_target_stage(node, "generate", episode_number=scope["episode_number"]) != "video":
+        return
+    admit_managed_stage(
+        state_dir, getattr(ctx, "output_dir", state_dir), scope, "video",
+    )
+
+
 async def _enqueue(ctx, service: DirectorService, item):
     item = service.get(item["id"])
     if item["stage"] in {"completed", "failed", "submission_unknown"}:
@@ -146,6 +179,21 @@ async def capabilities(project: str, user: dict = Depends(get_api_user)):
     return {"ok": True, "data": data}
 
 
+@router.post("/preview")
+async def preview_director_input(project: str, body: DirectorPreviewBody,
+                                 user: dict = Depends(get_api_user)):
+    """Read-only input fingerprint and deterministic H3 wire/payload preview."""
+    _, service = await _service(project, user, role="editor")
+    try:
+        data = service.preview(body.draft, body.prepared)
+    except DirectorCapabilityError as exc:
+        raise HTTPException(422, detail={"field": exc.field, "segment_id": exc.segment_id,
+                                         "message": str(exc)}) from exc
+    except ValueError as exc:
+        raise HTTPException(422, detail={"field": "prepared", "message": str(exc)}) from exc
+    return {"ok": True, "data": data}
+
+
 @router.get("/techniques")
 async def techniques(project: str, user: dict = Depends(get_api_user)):
     await _resolve_freezone_project(project, user, required_role="viewer")
@@ -161,10 +209,21 @@ async def create_attempt(project: str, body: CreateAttemptBody,
     ctx, service = await _service(project, user, role="editor")
     try:
         # Replays own their immutable snapshot, even after the canvas changes.
-        if not any(item['request_id'] == body.request_id for item in service.list(body.canvas_id, body.node_id)):
+        existing = next((item for item in service.list(body.canvas_id, body.node_id)
+                         if item['request_id'] == body.request_id), None)
+        can_submit = existing is None or (
+            not existing.get("provider_task_id")
+            and existing.get("stage") not in {"completed", "failed", "submission_unknown", "submitting"}
+        )
+        if can_submit:
+            _admit_new_submission(ctx, body.canvas_id, body.node_id)
+        if existing is None:
             from novelvideo.freezone.video_director.storyboard_preparation import guard_prepared
             guard_prepared(ctx, body.canvas_id, body.node_id, body.draft)
-        item, _ = service.create(body.canvas_id, body.node_id, body.request_id, body.draft)
+        item, _ = service.create(body.canvas_id, body.node_id, body.request_id, body.draft,
+                                 prepared=body.prepared)
+    except OrchestrationError as exc:
+        raise HTTPException(409, detail=exc.as_dict()) from exc
     except DirectorCapabilityError as exc:
         raise HTTPException(422, detail={"field": exc.field, "segment_id": exc.segment_id,
                                          "message": str(exc)}) from exc
@@ -200,9 +259,18 @@ async def retry_attempt(project: str, attempt_id: str, user: dict = Depends(get_
         if (current["stage"] == "failed" and current.get("failed_stage") == "downloading"
                 and _old_task_active(ctx, current)):
             raise HTTPException(409, detail="Previous Director task is still finishing; retry after it stops")
+        if current["stage"] == "failed" and not (
+                current.get("failed_stage") == "downloading" and current.get("provider_task_id")):
+            child = next((item for item in service.list(current["canvas_id"], current["node_id"])
+                          if item.get("parent_attempt_id") == current["id"]), None)
+            if child is None or not child.get("provider_task_id") and child.get("stage") not in {
+                    "completed", "failed", "submission_unknown", "submitting"}:
+                _admit_new_submission(ctx, current["canvas_id"], current["node_id"])
         item, _ = service.retry(attempt_id)
     except KeyError as exc:
         raise HTTPException(404, detail="Director attempt not found") from exc
+    except OrchestrationError as exc:
+        raise HTTPException(409, detail=exc.as_dict()) from exc
     except ValueError as exc:
         raise HTTPException(409, detail=str(exc)) from exc
     item = await _enqueue(ctx, service, item)
@@ -219,6 +287,11 @@ async def resume_attempt(project: str, attempt_id: str, user: dict = Depends(get
         raise HTTPException(404, detail="Director attempt not found") from exc
     if item["stage"] in {"failed", "submission_unknown"}:
         raise HTTPException(409, detail="Director attempt requires explicit retry or reconciliation")
+    if not item.get("provider_task_id"):
+        try:
+            _admit_new_submission(ctx, item["canvas_id"], item["node_id"])
+        except OrchestrationError as exc:
+            raise HTTPException(409, detail=exc.as_dict()) from exc
     item = await _enqueue(ctx, service, item)
     return {"ok": True, "data": {"attempt_id": item["id"], "task_id": item.get("task_id"),
                                   "attempt": _public(item)}}

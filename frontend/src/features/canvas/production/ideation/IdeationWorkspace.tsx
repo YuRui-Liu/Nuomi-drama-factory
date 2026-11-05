@@ -5,7 +5,6 @@ import type { IdeaFields } from '../creativeWorkflowApi';
 import type { ProductionNodeShellControls } from '../ProductionNodeShell';
 import { IdeaDirections } from './IdeaDirections';
 import { useIdeationWorkspace, type IdeationWorkspacePage, type UseIdeationWorkspaceOptions } from './useIdeationWorkspace';
-import { RevisionImpactPanel } from '../RevisionImpactPanel';
 import './ideation-workspace.css';
 
 type Props = Omit<UseIdeationWorkspaceOptions, 'forceClose'> & {
@@ -43,18 +42,7 @@ export function IdeationWorkspace({ project, nodeId, data, registerCloseGuard, c
   const workspace = useIdeationWorkspace({ project, nodeId, data, registerCloseGuard, forceClose: controls.forceClose });
   const page = workspace.page;
   const pageInfo = pageCopy[page];
-  const briefRevisionConsumers = new Map<string, string[]>();
-  const addBriefConsumer = (revision: string | undefined, consumer: string) => {
-    if (!revision) return;
-    briefRevisionConsumers.set(revision, [...(briefRevisionConsumers.get(revision) ?? []), consumer]);
-  };
-  addBriefConsumer(workspace.selected?.source_brief_revision_id, '当前查看的立意方向');
-  addBriefConsumer(workspace.adopted?.brief_revision_id, '已采用方向与后续故事规划、剧本');
-  if (!briefRevisionConsumers.size) addBriefConsumer(workspace.run?.brief_revision_id, '本次立意运行');
-  const briefDependencies = workspace.briefDocument ? [...briefRevisionConsumers].map(([revisionId, consumers]) => ({
-    document: workspace.briefDocument!, revisionId, downstream: consumers.join('；'),
-  })) : [];
-  const runActive = ['queued', 'pending', 'running'].includes(workspace.run?.status ?? '');
+  const runActive = ['queued', 'pending', 'running'].includes(workspace.run?.status ?? '') && !workspace.generationFailed;
   const generationDisabled = workspace.busy || workspace.docsLoading || Boolean(workspace.docsError) || runActive;
   const errors = [workspace.actionError, workspace.uiError].filter(Boolean);
 
@@ -116,11 +104,14 @@ export function IdeationWorkspace({ project, nodeId, data, registerCloseGuard, c
           <span className="iw-spinner" aria-hidden="true" /><h3>{workspace.runStatusLabel || '正在生成立意方向'}</h3>
           <p>方向整理完成后会保留在这里，你可以逐个查看、编辑和选择。</p>
         </div>}
-        {workspace.candidateCount === 0 && !runActive && !workspace.ideaLoading && !workspace.ideaError && <div className="iw-no-run">
+        {workspace.candidateCount === 0 && workspace.generationFailed && <div className="iw-no-run iw-run-failed" role="alert">
+          <h3>立意方向生成失败</h3>
+          <p>{workspace.runError || '任务已失败，原有创作简报仍保留。你可以重新生成。'}</p>
+        </div>}
+        {workspace.candidateCount === 0 && !runActive && !workspace.generationFailed && !workspace.ideaLoading && !workspace.ideaError && <div className="iw-no-run">
           <h3>还没有立意方向</h3><p>回到题材创意，保存故事底色后开始生成。</p>
           <Button variant="outline" onClick={() => workspace.requestPage('creative')}>返回题材创意</Button>
         </div>}
-        <RevisionImpactPanel project={project} dependencies={briefDependencies} title="创作简报修订与立意影响" />
       </div>}
     </div>
 
@@ -138,7 +129,11 @@ export function IdeationWorkspace({ project, nodeId, data, registerCloseGuard, c
       </> : <>
         <p className="iw-footer-copy"><strong>{workspace.adopted ? '方向已采用，可以带着它进入故事规划。' : '正在查看一个方向；选择还不代表采用。'}</strong>
           <span>{workspace.runStatusLabel}{workspace.run?.error ? ` · ${workspace.run.error}` : ''}</span></p>
-        <div className="iw-action-buttons"><Button variant="outline" disabled={workspace.busy} onClick={() => workspace.requestPage('creative')}>返回题材创意</Button>
+        <div className="iw-action-buttons">
+          {workspace.candidateCount === 0 && workspace.generationFailed && <Button disabled={generationDisabled} onClick={() => void workspace.generateDirections()}>
+            {workspace.busy ? '正在重新生成…' : '重新生成立意方向'}
+          </Button>}
+          <Button variant="outline" disabled={workspace.busy} onClick={() => workspace.requestPage('creative')}>返回题材创意</Button>
           {workspace.selected && workspace.canPlan
             ? <Button disabled={workspace.busy || workspace.editing || workspace.candidateDirty} onClick={() => void workspace.planSelected()}>创作 E01 · 先规划</Button>
             : <Button disabled={workspace.busy || workspace.editing || workspace.candidateDirty || !workspace.selected} onClick={() => void workspace.adoptSelected()}>

@@ -35,7 +35,7 @@ from .h3_wire import (
 from .models import H3Mode
 
 
-H3_PROMPT_COMPILER_VERSION = 5
+H3_PROMPT_COMPILER_VERSION = 6
 _SHOT_SCOPED = TypeVar("_SHOT_SCOPED", H3SpatialBlockingPlan, H3OpticsPlan)
 _PURE_COUNT_ASSERTION_RE = re.compile(
     r"^(?:(?:show|keep|use|preserve)\s+)?(?:exactly\s+)?"
@@ -311,6 +311,10 @@ def _compile_positive_fact(constraint: H3PositiveConstraint) -> str:
     if constraint.count is None:
         return constraint.assertion
     assertion = _strip_terminal(constraint.assertion)
+    if constraint.target == "props" and _is_declared_held_prop_inventory_assertion(
+        assertion, constraint.count
+    ):
+        return _sentence(_capitalize_initial(assertion))
     semantic_assertion = (
         ""
         if _PURE_COUNT_ASSERTION_RE.fullmatch(assertion)
@@ -332,6 +336,13 @@ def _compile_positive_fact(constraint: H3PositiveConstraint) -> str:
     target = target_forms[constraint.target][constraint.count != 1]
     count_fact = f"Keep exactly {count} {target} visible."
     return f"{semantic} {count_fact}".strip()
+
+
+def _is_declared_held_prop_inventory_assertion(assertion: str, count: int) -> bool:
+    noun = "entry" if count == 1 else "entries"
+    return assertion == (
+        f"The declared held-prop inventory contains exactly {count} {noun}"
+    )
 
 
 def _is_target_count_directive(assertion: str, target: str) -> bool:

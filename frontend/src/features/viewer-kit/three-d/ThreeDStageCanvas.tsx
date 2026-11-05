@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { DirectorStageOrientationMode } from "./directorManifest";
 import type { DirectorWorldSourceTransform } from "./sourceTransform";
 import {
+  calculateOutputPreviewCropRect,
   createViewerApp,
+  OUTPUT_CAMERA_PREVIEW_RECT,
+  type CaptureFrameAspect,
+  type FrameCaptureCssRect,
   type SplatLoadProgress,
   type ViewerApp,
 } from "./engine/viewerApp";
@@ -19,6 +23,8 @@ export interface ThreeDStageCanvasProps {
   orientationMode?: DirectorStageOrientationMode;
   sourceTransform?: Partial<DirectorWorldSourceTransform> | null;
   collisionUrl?: string | null;
+  frameAspect?: CaptureFrameAspect;
+  outputPreviewFrameRectCss?: FrameCaptureCssRect | null;
   interactionActive?: boolean;
   onInteractionActiveChange?: (active: boolean) => void;
   onReady?: (app: ViewerApp) => void;
@@ -36,6 +42,8 @@ export function ThreeDStageCanvas({
   orientationMode,
   sourceTransform,
   collisionUrl,
+  frameAspect,
+  outputPreviewFrameRectCss,
   interactionActive = false,
   onInteractionActiveChange,
   onReady,
@@ -49,6 +57,13 @@ export function ThreeDStageCanvas({
   const { t } = useTranslation();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const viewerRef = useRef<ViewerApp | null>(null);
+  const [canvasLayout, setCanvasLayout] = useState<{
+    canvasWidth: number;
+    canvasHeight: number;
+    clientWidth: number;
+    clientHeight: number;
+    canvasRectCss: FrameCaptureCssRect;
+  } | null>(null);
   const onReadyRef = useRef<typeof onReady>(onReady);
   const onErrorRef = useRef<typeof onError>(onError);
   const onStatusRef = useRef<typeof onStatus>(onStatus);
@@ -67,9 +82,54 @@ export function ThreeDStageCanvas({
   interactionActiveRef.current = interactionActive;
 
   useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+    const updateLayout = () => {
+      const rect = canvas.getBoundingClientRect();
+      const next = {
+        canvasWidth: canvas.width,
+        canvasHeight: canvas.height,
+        clientWidth: canvas.clientWidth,
+        clientHeight: canvas.clientHeight,
+        canvasRectCss: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+      };
+      setCanvasLayout((current) => (
+        current && current.canvasWidth === next.canvasWidth
+        && current.canvasHeight === next.canvasHeight
+        && current.clientWidth === next.clientWidth
+        && current.clientHeight === next.clientHeight
+        && current.canvasRectCss.left === next.canvasRectCss.left
+        && current.canvasRectCss.top === next.canvasRectCss.top
+        && current.canvasRectCss.width === next.canvasRectCss.width
+        && current.canvasRectCss.height === next.canvasRectCss.height
+          ? current
+          : next
+      ));
+    };
+    updateLayout();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateLayout);
+    observer?.observe(canvas);
+    window.addEventListener("resize", updateLayout);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updateLayout);
+    };
+  }, []);
+
+  const outputPreviewCrop = useMemo(() => {
+    if (!canvasLayout || !frameAspect) return null;
+    return calculateOutputPreviewCropRect({
+      ...canvasLayout,
+      frameAspect,
+      frameRectCss: outputPreviewFrameRectCss ?? undefined,
+    });
+  }, [canvasLayout, frameAspect, outputPreviewFrameRectCss]);
+
+  useEffect(() => {
     let disposed = false;
     let unsubStatus: (() => void) | undefined;
     let unsubProgress: (() => void) | undefined;
+    let layoutFrame = 0;
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
 
@@ -122,6 +182,21 @@ export function ThreeDStageCanvas({
             return;
           }
           viewerRef.current = viewer;
+          layoutFrame = window.requestAnimationFrame(() => {
+            const bounds = canvas.getBoundingClientRect();
+            setCanvasLayout({
+              canvasWidth: canvas.width,
+              canvasHeight: canvas.height,
+              clientWidth: canvas.clientWidth,
+              clientHeight: canvas.clientHeight,
+              canvasRectCss: {
+                left: bounds.left,
+                top: bounds.top,
+                width: bounds.width,
+                height: bounds.height,
+              },
+            });
+          });
           viewer.fly.setInputEnabled(interactionActiveRef.current);
           if (onStatusRef.current) {
             unsubStatus = viewer.onStatus((next) => onStatusRef.current?.(next));
@@ -142,6 +217,7 @@ export function ThreeDStageCanvas({
     return () => {
       disposed = true;
       window.cancelAnimationFrame(initFrame);
+      if (layoutFrame) window.cancelAnimationFrame(layoutFrame);
       unsubStatus?.();
       unsubProgress?.();
       canvas.removeEventListener("pointerdown", onPointerDown);
@@ -256,6 +332,59 @@ export function ThreeDStageCanvas({
         onBlur={() => onInteractionActiveChange?.(false)}
         className="block h-full w-full cursor-crosshair outline-none"
       />
+      {outputPreviewCrop && frameAspect && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute z-20 overflow-hidden"
+          style={{
+            left: `${OUTPUT_CAMERA_PREVIEW_RECT.left * 100}%`,
+            top: `${(1 - OUTPUT_CAMERA_PREVIEW_RECT.bottom - OUTPUT_CAMERA_PREVIEW_RECT.height) * 100}%`,
+            width: `${OUTPUT_CAMERA_PREVIEW_RECT.width * 100}%`,
+            height: `${OUTPUT_CAMERA_PREVIEW_RECT.height * 100}%`,
+          }}
+        >
+          {outputPreviewCrop.top > 0 && (
+            <div className="absolute inset-x-0 top-0 bg-black/50" style={{ height: `${outputPreviewCrop.top * 100}%` }} />
+          )}
+          {outputPreviewCrop.top + outputPreviewCrop.height < 1 && (
+            <div className="absolute inset-x-0 bottom-0 bg-black/50" style={{ height: `${(1 - outputPreviewCrop.top - outputPreviewCrop.height) * 100}%` }} />
+          )}
+          {outputPreviewCrop.left > 0 && (
+            <div
+              className="absolute bg-black/50"
+              style={{
+                left: 0,
+                top: `${outputPreviewCrop.top * 100}%`,
+                width: `${outputPreviewCrop.left * 100}%`,
+                height: `${outputPreviewCrop.height * 100}%`,
+              }}
+            />
+          )}
+          {outputPreviewCrop.left + outputPreviewCrop.width < 1 && (
+            <div
+              className="absolute right-0 bg-black/50"
+              style={{
+                top: `${outputPreviewCrop.top * 100}%`,
+                width: `${(1 - outputPreviewCrop.left - outputPreviewCrop.width) * 100}%`,
+                height: `${outputPreviewCrop.height * 100}%`,
+              }}
+            />
+          )}
+          <div
+            className="absolute border border-amber-200/90 shadow-[0_0_0_1px_rgba(0,0,0,0.38)]"
+            style={{
+              left: `${outputPreviewCrop.left * 100}%`,
+              top: `${outputPreviewCrop.top * 100}%`,
+              width: `${outputPreviewCrop.width * 100}%`,
+              height: `${outputPreviewCrop.height * 100}%`,
+            }}
+          >
+            <span className="absolute left-1 top-0.5 rounded bg-black/55 px-1 text-[9px] leading-[14px] text-white/80">
+              {frameAspect}
+            </span>
+          </div>
+        </div>
+      )}
       {showInteractionHint && !interactionActive && (
         <button
           type="button"

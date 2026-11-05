@@ -72,6 +72,56 @@ def edit_graph(ctx, cid, edit):
     path.write_text(json.dumps(graph))
 
 
+def _concept_canvas(ctx, request_prefix):
+    store = ObjectStore(ctx.state_dir)
+    created = CanvasWorkspace(store, project_id='p').create(
+        'alice', CanvasCreate(request_id=f'{request_prefix}-canvas', kind='concept', title='正式剧本'))
+    ProjectionService(store).apply(created.operation_id)
+    canvas_id = created.object_refs[0]['canvas_id']
+    conversation = ConversationStore('alice', 'project', 'p').create(
+        '正式剧本讨论', canvas_id=canvas_id, request_id=f'{request_prefix}-conversation')
+    return canvas_id, conversation['id']
+
+
+def _script_root_body(canvas_id, conversation_id, allowed_operations):
+    return {'canvas_id': canvas_id, 'conversation_id': conversation_id,
+            'scope': {'kind': 'canvas'}, 'agent': {'kind': 'main'}, 'input_refs': [],
+            'goal': '准备第一集正式剧本并独立审阅',
+            'allowed_operations': allowed_operations, 'acceptance': ['完成正式剧本草稿和审阅']}
+
+
+async def _create_root_script_draft(ctx, root, canvas_id, conversation_id, request_prefix):
+    from novelvideo.creation.agent_tools import AgentTools
+    from novelvideo.creation.library_references import packed
+
+    run_id = f'{request_prefix}-run'
+    request_id = f'run:{run_id}:0:action:0'
+
+    async def resolve_context(_role):
+        return ctx
+
+    tools = AgentTools(ctx, username='alice', canvas_id=canvas_id,
+        conversation_id=conversation_id, delegation_id=root['delegation_id'],
+        resolve_context=resolve_context)
+    output = await tools.execute({'request_id': request_id, 'operation': 'script.document.draft',
+        'payload': {'target_node_ids': [], 'input_indices': [], 'acceptance_indices': [0],
+            'episode_number': 1, 'title': '第一集·雨夜来信',
+            'markdown': '# 第一集：雨夜来信\n\n## 1-1 雨夜·外\n林夏发现一封旧信。'}})
+    run = {'id': run_id, 'revision': 1, 'run_schema_version': 2, 'state': 'applying',
+        'delegation_id': root['delegation_id'], 'root_delegation_id': root['delegation_id'],
+        'rounds': [{'delegation_id': root['delegation_id'], 'phase': 'decision_saved',
+            'actions_done': [0], 'decision': {'actions': [{'operation': 'script.document.draft'}]}}]}
+    with ObjectStore(ctx.state_dir).transaction() as conn:
+        conn.execute('''CREATE TABLE IF NOT EXISTS agent_runs (
+            id TEXT PRIMARY KEY, project_id TEXT NOT NULL, owner_id TEXT NOT NULL,
+            username TEXT NOT NULL, canvas_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
+            delegation_id TEXT NOT NULL UNIQUE, revision INTEGER NOT NULL, content TEXT NOT NULL)''')
+        conn.execute('INSERT INTO agent_runs VALUES (?,?,?,?,?,?,?,?,?)',
+            (run_id, ctx.project_id, ctx.requester_user_id, 'alice', canvas_id,
+             conversation_id, root['delegation_id'], run['revision'], packed(run)))
+    return output['output']['projection']['node_id']
+
+
 def test_empty_reads_do_not_initialize(service, ctx):
     assert service.main_agent()['adoption_id'] is None
     assert service.receipt('unknown') is None
@@ -133,6 +183,88 @@ async def test_child_only_narrows_and_revoke_blocks_descendants(service, ready):
     assert service.get(child['delegation_id'])['effective_state'] == 'revoked'
     with pytest.raises(OperationError):
         service.preview(body)
+
+
+async def test_formal_script_root_keeps_only_context_read_and_grants_script_ops_to_direct_children(service, ready):
+    from novelvideo.creation.delegations import Delegations
+
+    canvas_id, conversation_id = ready[:2]
+    formal = Delegations(service.ctx, username='alice', authority='user',
+                         trusted_preparation_kind='formal_episode_script')
+    root_body = _script_root_body(canvas_id, conversation_id, ['context.read'])
+    root = await create(formal, root_body, 'formal-script-root-contract')
+    assert root['contract']['preparation_kind'] == 'formal_episode_script'
+    assert root['contract']['allowed_operations'] == ['context.read']
+    assert root['contract']['delegable_operations'] == [
+        'script.document.draft', 'script.document.review']
+
+    child_service = Delegations(service.ctx, username='alice', authority='agent',
+                                parent_id=root['delegation_id'])
+    child_body = _script_root_body(canvas_id, conversation_id, ['script.document.draft'])
+    child_body['parent_id'] = root['delegation_id']
+    child = await create(child_service, child_body, 'formal-script-root-child')
+    assert child['contract']['allowed_operations'] == ['script.document.draft']
+    assert 'preparation_kind' not in child['contract']
+    assert 'delegable_operations' not in child['contract']
+
+    grandchild_service = Delegations(service.ctx, username='alice', authority='agent',
+                                     parent_id=child['delegation_id'])
+    grandchild_body = _script_root_body(canvas_id, conversation_id, ['script.document.draft'])
+    grandchild_body['parent_id'] = child['delegation_id']
+    with pytest.raises(OperationError):
+        grandchild_service.preview(grandchild_body)
+
+
+async def test_child_scope_ignores_only_its_parent_runs_exact_script_reference(service, ready, ctx):
+    from novelvideo.creation.delegations import Delegations
+
+    canvas_id, conversation_id = _concept_canvas(ctx, 'parent-script-projection')
+    parent_body = _script_root_body(canvas_id, conversation_id, ['script.document.draft'])
+    parent = await create(service, parent_body, 'parent-script-projection-root')
+    projected_node_id = await _create_root_script_draft(
+        ctx, parent, canvas_id, conversation_id, 'parent-script-projection')
+
+    child_service = Delegations(ctx, username='alice', authority='agent',
+                                parent_id=parent['delegation_id'])
+    child_body = _script_root_body(canvas_id, conversation_id, ['script.document.draft'])
+    child_body['parent_id'] = parent['delegation_id']
+    child_preview = child_service.preview(child_body)
+    assert child_preview['contract']['expanded_scope']['node_ids'] == []
+    assert child_preview['contract']['expanded_scope']['nodes'] == []
+    assert projected_node_id not in child_preview['contract']['read_node_ids']
+    assert any(item.get('kind') == 'agent_script_draft_projection'
+               and item.get('delegation_id') == parent['delegation_id']
+               and item.get('projection_node_id') == projected_node_id
+               for item in child_preview['contract']['parent_transition_evidence'])
+
+
+@pytest.mark.parametrize('foreign_projection', [False, True])
+async def test_child_scope_rejects_unrelated_or_cross_delegation_script_projection(
+        service, ready, ctx, foreign_projection):
+    from novelvideo.creation.delegations import Delegations
+
+    canvas_id, conversation_id = _concept_canvas(ctx,
+        'cross-script-projection' if foreign_projection else 'unrelated-script-projection')
+    parent = await create(service, _script_root_body(
+        canvas_id, conversation_id, ['script.document.draft']), 'script-scope-parent')
+    await _create_root_script_draft(ctx, parent, canvas_id, conversation_id, 'script-scope-parent')
+
+    if foreign_projection:
+        foreign = await create(service, _script_root_body(
+            canvas_id, conversation_id, ['script.document.draft']), 'script-scope-foreign')
+        await _create_root_script_draft(ctx, foreign, canvas_id, conversation_id, 'script-scope-foreign')
+    else:
+        edit_graph(ctx, canvas_id, lambda graph: graph['nodes'].append({
+            'id': 'unrelated-after-parent-draft', 'type': 'textAnnotationNode',
+            'position': {'x': 900, 'y': 0}, 'data': {'text': '不属于本委托的节点'}}))
+
+    child_service = Delegations(ctx, username='alice', authority='agent',
+                                parent_id=parent['delegation_id'])
+    child_body = _script_root_body(canvas_id, conversation_id, ['script.document.draft'])
+    child_body['parent_id'] = parent['delegation_id']
+    with pytest.raises(OperationError) as failure:
+        child_service.preview(child_body)
+    assert failure.value.code == 'scope_violation'
 
 
 async def test_execution_authorization_is_frozen_node_scoped_and_child_only_shrinks(service, ready):

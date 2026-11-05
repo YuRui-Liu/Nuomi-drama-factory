@@ -1,6 +1,8 @@
 import { AgentRunStatus } from './AgentRunStatus';
+import { AgentPlanPanel } from './AgentPlanPanel';
 import { DelegationComposer } from './DelegationComposer';
 import { ProjectCrewDialog } from './ProjectCrewDialog';
+import { readinessLabels, runtimeReadiness } from './agentReadiness';
 import type { useAgentRuntime } from './useAgentRuntime';
 
 /**
@@ -12,6 +14,8 @@ export function AgentRuntimePanel({
 }: {
   runtime: ReturnType<typeof useAgentRuntime>;
 }) {
+  const readiness = runtimeReadiness(runtime);
+
   return (
     <div className="max-h-[35vh] shrink-0 space-y-3 overflow-y-auto border-b border-white/10 p-3 text-xs">
       <ProjectCrewDialog runtime={runtime} embedded />
@@ -23,6 +27,10 @@ export function AgentRuntimePanel({
         showAction={false}
         embedded
       />
+      <AgentPlanPanel owner={runtime.owner} nodes={runtime.nodes} />
+      <p role="status" className="text-[11px] text-muted-foreground">
+        {readinessLabels[readiness]}
+      </p>
       <AgentRunStatus runtime={runtime} compact={false} />
     </div>
   );

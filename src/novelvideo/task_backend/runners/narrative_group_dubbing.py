@@ -17,6 +17,14 @@ _INDEX_TTS2_COORDINATORS: dict[str, ProviderConcurrencyCoordinator] = {}
 
 
 def _configured_generator(profile: dict[str, str]):
+    if profile["provider"] == "runninghub":
+        from novelvideo.audio.dubbing_service import configured_runninghub_index_runtime, runninghub_index_profile
+        from novelvideo.media_capabilities.tts.runninghub_indextts2 import RunningHubIndexTTS2Generator
+
+        runtime = configured_runninghub_index_runtime()
+        if runtime is None or runninghub_index_profile(runtime) != profile:
+            raise ValueError("IndexTTS2 provider configuration changed; prepare again")
+        return RunningHubIndexTTS2Generator(runtime)
     from novelvideo.generators.indextts2_fal import IndexTTS2FalClient
 
     return IndexTTS2FalClient(

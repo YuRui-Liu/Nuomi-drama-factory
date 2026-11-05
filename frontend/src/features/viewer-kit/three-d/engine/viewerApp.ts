@@ -3,7 +3,7 @@
 import * as pc from 'playcanvas';
 import { emptyTimeline, sampleKeys, validateTimeline, type SceneTimeline } from '../sceneTimeline';
 
-import { createFlyCameraController, type FlyCameraController } from './flyCamera';
+import { createFlyCameraController, normalizeFlyCameraState, type FlyCameraController, type FlyCameraState } from './flyCamera';
 import { createAxesGridDrawer, type AxesGridDrawer } from './axesGrid';
 import { nextPose, POSES, requirePoseName, type PoseName } from './poses';
 import {
@@ -36,6 +36,7 @@ export interface ViewerAppOptions {
 }
 
 export interface CaptureScreenshotOptions {
+  renderCamera?: 'view' | 'output';
   markers?: boolean;
   renderMode?: 'combined' | 'env_only' | 'actor_overlay_black' | 'actor_mask';
   frameAspect?: CaptureFrameAspect;
@@ -59,6 +60,20 @@ export interface FrameCaptureRect {
   sw: number;
   sh: number;
 }
+
+export interface NormalizedFrameCaptureRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export const OUTPUT_CAMERA_PREVIEW_RECT = {
+  left: 0.69,
+  bottom: 0.68,
+  width: 0.29,
+  height: 0.29,
+} as const;
 
 function captureAspectRatio(aspect: CaptureFrameAspect): number {
   switch (aspect) {
@@ -133,11 +148,32 @@ export function calculateFrameCaptureRect(input: {
   };
 }
 
+export function calculateOutputPreviewCropRect(
+  input: Parameters<typeof calculateFrameCaptureRect>[0],
+): NormalizedFrameCaptureRect {
+  const captureRect = calculateFrameCaptureRect(input);
+  const canvasWidth = Math.max(1, Math.floor(input.canvasWidth));
+  const canvasHeight = Math.max(1, Math.floor(input.canvasHeight));
+  return {
+    left: captureRect.sx / canvasWidth,
+    top: captureRect.sy / canvasHeight,
+    width: captureRect.sw / canvasWidth,
+    height: captureRect.sh / canvasHeight,
+  };
+}
+
 export function shouldHideEditorOverlaysForCapture(
   renderMode: CaptureScreenshotOptions['renderMode'],
 ): boolean {
   void renderMode;
   return true;
+}
+
+export function syncOutputCameraFromViewForAction(
+  action: 'world-load' | 'editor-reset',
+  syncOutputCamera: () => void,
+): void {
+  if (action === 'world-load') syncOutputCamera();
 }
 
 export function distanceSqPointToRay(
@@ -182,7 +218,7 @@ const ACTOR_PROXY_MODEL_URL = '/viewer-kit/quaternius/ual2/UAL2_Standard.glb';
 const ACTOR_ANIMATION_LIBRARY_URLS = ['/viewer-kit/quaternius/ual1/UAL1_Standard.glb'] as const;
 const STAGE_GROUND_Y = 0;
 
-export type MarkerKind = 'actor' | 'prop' | 'staging';
+export type MarkerKind = 'actor' | 'prop' | 'staging' | 'light';
 
 export interface PlaceMarkerOptions {
   color?: string;
@@ -205,6 +241,7 @@ export interface MarkerCounts {
   actor: number;
   prop: number;
   staging: number;
+  light: number;
 }
 
 export interface SelectionState {
@@ -244,10 +281,120 @@ export interface ThreeDSceneSnapshot {
   stagings: ThreeDMarkerSnapshot[];
   world?: {
     splatYOffset?: number;
+    /** Scene scale needed to project the normalized orbit camera outside the viewer. */
+    sceneRadius?: number;
     activeSourceId?: string;
     sourceTransform?: DirectorWorldSourceTransform;
   };
-  camera?: { azim: number; elev: number; distance: number; focalPoint: [number, number, number] };
+  /** Fly camera used to edit the stage. `fov` was added without changing schemaVersion. */
+  camera?: FlyCameraState & { fov?: number };
+  /** Independent camera used by output captures and the in-stage framing preview. */
+  outputCamera?: FlyCameraState & { fov?: number };
+  /** Optional spot lights. They illuminate simplified proxy geometry only. */
+  lights?: ThreeDLightSnapshot[];
+}
+
+export interface ThreeDLightSnapshot {
+  id: string;
+  label: string;
+  color: string;
+  intensity: number;
+  position: [number, number, number];
+  direction: [number, number, number];
+  enabled: boolean;
+}
+
+export type ThreeDCameraSnapshot = FlyCameraState & { fov: number };
+export type NormalizedThreeDSceneSnapshot = Omit<ThreeDSceneSnapshot, 'camera' | 'outputCamera' | 'lights'> & {
+  camera: ThreeDCameraSnapshot;
+  outputCamera: ThreeDCameraSnapshot;
+  lights: ThreeDLightSnapshot[];
+};
+
+const MIN_DIRECTOR_FOV = 20;
+const MAX_DIRECTOR_FOV = 120;
+const MAX_DIRECTOR_LIGHT_INTENSITY = 8;
+
+function normalizedFov(value: unknown, fallback: number): number {
+  const fov = typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  return Math.min(MAX_DIRECTOR_FOV, Math.max(MIN_DIRECTOR_FOV, fov));
+}
+
+function normalizedTuple3(value: unknown, fallback: [number, number, number]): [number, number, number] {
+  if (!Array.isArray(value) || value.length < 3) return [...fallback];
+  const tuple = value.slice(0, 3).map(Number);
+  return tuple.every(Number.isFinite) ? [tuple[0], tuple[1], tuple[2]] : [...fallback];
+}
+
+export function normalizeThreeDLightSnapshot(
+  input: Partial<ThreeDLightSnapshot> | null | undefined,
+  index = 0,
+): ThreeDLightSnapshot {
+  const direction = normalizedTuple3(input?.direction, [0, -1, 0]);
+  const length = Math.hypot(...direction);
+  const normalizedDirection: [number, number, number] = length > 1e-8
+    ? [direction[0] / length, direction[1] / length, direction[2] / length]
+    : [0, -1, 0];
+  const color = typeof input?.color === 'string' && /^#[0-9a-f]{6}$/i.test(input.color)
+    ? input.color
+    : '#ffd166';
+  const rawIntensity = typeof input?.intensity === 'number' && Number.isFinite(input.intensity)
+    ? input.intensity
+    : 1.2;
+  return {
+    id: typeof input?.id === 'string' && input.id.trim() ? input.id : `light-${index + 1}`,
+    label: typeof input?.label === 'string' && input.label.trim() ? input.label : `Light ${index + 1}`,
+    color,
+    intensity: Math.min(MAX_DIRECTOR_LIGHT_INTENSITY, Math.max(0, rawIntensity)),
+    position: normalizedTuple3(input?.position, [0, 2, 0]),
+    direction: normalizedDirection,
+    enabled: input?.enabled !== false,
+  };
+}
+
+export function normalizeThreeDSceneSnapshot(
+  input: Partial<ThreeDSceneSnapshot> | null | undefined,
+  fallbackCamera: ThreeDCameraSnapshot,
+): NormalizedThreeDSceneSnapshot {
+  const cameraInput = input?.camera;
+  const camera: ThreeDCameraSnapshot = {
+    ...normalizeFlyCameraState(cameraInput, fallbackCamera),
+    fov: normalizedFov(cameraInput?.fov, fallbackCamera.fov),
+  };
+  const outputInput = input?.outputCamera;
+  const outputCamera: ThreeDCameraSnapshot = {
+    ...normalizeFlyCameraState(outputInput, camera),
+    fov: normalizedFov(outputInput?.fov, camera.fov),
+  };
+  return {
+    ...(input ?? {}),
+    schemaVersion: 1,
+    savedAt: typeof input?.savedAt === 'number' && Number.isFinite(input.savedAt) ? input.savedAt : Date.now(),
+    actors: Array.isArray(input?.actors) ? input.actors : [],
+    props: Array.isArray(input?.props) ? input.props : [],
+    stagings: Array.isArray(input?.stagings) ? input.stagings : [],
+    camera,
+    outputCamera,
+    lights: Array.isArray(input?.lights)
+      ? input.lights.map((light, index) => normalizeThreeDLightSnapshot(light, index))
+      : [],
+  };
+}
+
+export function spotLightRotationForDirection(direction: [number, number, number]): pc.Quat {
+  const normalized = normalizeThreeDLightSnapshot({ direction }).direction;
+  return new pc.Quat().setFromDirections(
+    new pc.Vec3(0, -1, 0),
+    new pc.Vec3(normalized[0], normalized[1], normalized[2]),
+  );
+}
+
+export function spotLightDirectionFromRotation(rotation: pc.Quat): [number, number, number] {
+  const direction = rotation.transformVector(new pc.Vec3(0, -1, 0));
+  const length = direction.length();
+  return length > 1e-8
+    ? [direction.x / length, direction.y / length, direction.z / length]
+    : [0, -1, 0];
 }
 
 export interface SelectionScreenPosition {
@@ -319,6 +466,14 @@ export interface ViewerApp {
   setHitMarkerEnabled: (enabled: boolean) => void;
   isHitMarkerEnabled: () => boolean;
   resetCamera: () => void;
+  getViewCameraState: () => ThreeDCameraSnapshot;
+  setViewCameraFov: (fov: number) => void;
+  getOutputCameraState: () => ThreeDCameraSnapshot;
+  setOutputCameraState: (state: Partial<ThreeDCameraSnapshot>) => void;
+  setOutputCameraFromView: () => void;
+  setOutputCameraSelected: (selected: boolean) => void;
+  isOutputCameraSelected: () => boolean;
+  onOutputCameraChange: (listener: (state: ThreeDCameraSnapshot) => void) => () => void;
   setStatus: (next: string) => void;
   onStatus: (listener: (status: string) => void) => () => void;
   /** 订阅 3D 世界加载进度(百分比 / 已加载字节 / 高斯点数 / 友好错误)。 */
@@ -381,6 +536,11 @@ export interface ViewerApp {
   // setSelectedShapeHint 返回是否生效（选中不是 staging 时返回 false）。
   getMarkerShapeHint: (kind: 'prop' | 'staging', index: number) => ShapeHintName | null;
   setSelectedShapeHint: (hint: ShapeHintName) => boolean;
+  getSelectedLight: () => ThreeDLightSnapshot | null;
+  setSelectedLightColor: (color: string) => boolean;
+  setSelectedLightIntensity: (intensity: number) => boolean;
+  setSelectedLightDirection: (direction: [number, number, number]) => boolean;
+  onSelectedLightChange: (listener: (light: ThreeDLightSnapshot | null) => void) => () => void;
   // Camera presets：复刻旧 PlayCanvas 3GS 导演台。
   // fitView：把整个 splat 包进画面（target = scene center，offset 与 sceneRadius 同量级）。
   // cameraBehindSelected：摄影机贴到选中对象身后 1.6m、抬高 0.45m，按 entity yaw 取背后方向。
@@ -502,6 +662,39 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
   });
   app.root.addChild(camera);
 
+  const editorOverlayLayer = new pc.Layer({ name: 'NuomiDrama Editor Overlay' });
+  app.scene.layers.push(editorOverlayLayer);
+  if (camera.camera) {
+    camera.camera.layers = [...camera.camera.layers, editorOverlayLayer.id];
+  }
+
+  const outputCameraEntity = new pc.Entity('director_output_camera');
+  outputCameraEntity.addComponent('camera', {
+    clearColor: new pc.Color(0.02, 0.02, 0.025),
+    clearColorBuffer: false,
+    fov,
+    nearClip: 0.01,
+    farClip: 1000,
+    toneMapping: pc.TONEMAP_ACES2,
+  });
+  if (outputCameraEntity.camera) {
+    outputCameraEntity.camera.priority = 1;
+    const previewRect = OUTPUT_CAMERA_PREVIEW_RECT;
+    outputCameraEntity.camera.rect = new pc.Vec4(
+      previewRect.left,
+      previewRect.bottom,
+      previewRect.width,
+      previewRect.height,
+    );
+    outputCameraEntity.camera.scissorRect = new pc.Vec4(
+      previewRect.left,
+      previewRect.bottom,
+      previewRect.width,
+      previewRect.height,
+    );
+  }
+  app.root.addChild(outputCameraEntity);
+
   const light = new pc.Entity('viewer_light');
   light.addComponent('light', {
     type: 'directional',
@@ -519,6 +712,17 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     initialElev: INITIAL_ELEV,
     initialZoom: INITIAL_ZOOM,
   });
+
+  let outputCameraState: ThreeDCameraSnapshot = {
+    azim: INITIAL_AZIM,
+    elev: INITIAL_ELEV,
+    distance: INITIAL_ZOOM,
+    focalPoint: [0, 0.5, 0],
+    fov,
+  };
+  let outputCameraSelected = false;
+  const outputCameraListeners = new Set<(state: ThreeDCameraSnapshot) => void>();
+  const selectedLightListeners = new Set<(light: ThreeDLightSnapshot | null) => void>();
 
   const axesGrid = createAxesGridDrawer({ app, camera });
 
@@ -545,6 +749,110 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
   // 跟踪场景 AABB 用于 camera preset 的 fit_view；splat 加载完后从 gsplat aabb 拷过来。
   let sceneCenter = new pc.Vec3(0, 0, 0);
   let sceneRadiusValue = 1;
+
+  function getViewCameraState(): ThreeDCameraSnapshot {
+    return {
+      ...fly.getCameraState(),
+      fov: camera.camera?.fov ?? fov,
+    };
+  }
+
+  function cameraPositionOffset(state: ThreeDCameraSnapshot): [number, number, number] {
+    const elevRad = state.elev * pc.math.DEG_TO_RAD;
+    const azimRad = state.azim * pc.math.DEG_TO_RAD;
+    const distance = state.distance * sceneRadiusValue / Math.max(
+      1e-6,
+      Math.sin(state.fov * pc.math.DEG_TO_RAD * 0.5),
+    );
+    return [
+      Math.cos(elevRad) * Math.sin(azimRad) * distance,
+      -Math.sin(elevRad) * distance,
+      Math.cos(elevRad) * Math.cos(azimRad) * distance,
+    ];
+  }
+
+  function applyOutputCameraState(): void {
+    if (!outputCameraEntity.camera) return;
+    const offset = cameraPositionOffset(outputCameraState);
+    outputCameraEntity.setPosition(
+      outputCameraState.focalPoint[0] + offset[0],
+      outputCameraState.focalPoint[1] + offset[1],
+      outputCameraState.focalPoint[2] + offset[2],
+    );
+    outputCameraEntity.setEulerAngles(outputCameraState.elev, outputCameraState.azim, 0);
+    outputCameraEntity.camera.fov = outputCameraState.fov;
+    outputCameraEntity.camera.farClip = Math.max(1000, sceneRadiusValue * 8);
+  }
+
+  function emitOutputCameraChange(): void {
+    const snapshot = getOutputCameraState();
+    for (const listener of outputCameraListeners) listener(snapshot);
+  }
+
+  function getOutputCameraState(): ThreeDCameraSnapshot {
+    return { ...outputCameraState, focalPoint: [...outputCameraState.focalPoint] };
+  }
+
+  function setOutputCameraState(next: Partial<ThreeDCameraSnapshot>): void {
+    const outputCamera = normalizeThreeDSceneSnapshot({
+      outputCamera: { ...outputCameraState, ...next },
+    }, outputCameraState).outputCamera;
+    if (!outputCamera) return;
+    outputCameraState = outputCamera;
+    applyOutputCameraState();
+    emitOutputCameraChange();
+  }
+
+  function setOutputCameraFromView(): void {
+    setOutputCameraState(getViewCameraState());
+  }
+
+  function setViewCameraFov(nextFov: number): void {
+    if (!camera.camera || !Number.isFinite(nextFov)) return;
+    camera.camera.horizontalFov = false;
+    camera.camera.fov = normalizedFov(nextFov, camera.camera.fov);
+  }
+
+  function emitSelectedLightChange(): void {
+    const light = getSelectedLight();
+    for (const listener of selectedLightListeners) listener(light);
+  }
+
+  function setOutputCameraSelected(selected: boolean): void {
+    outputCameraSelected = selected;
+    if (selected && selection) setSelection(null);
+    updateTranslateGizmoAttachment();
+  }
+
+  function onOutputCameraChange(listener: (state: ThreeDCameraSnapshot) => void): () => void {
+    outputCameraListeners.add(listener);
+    listener(getOutputCameraState());
+    return () => outputCameraListeners.delete(listener);
+  }
+
+  function onSelectedLightChange(listener: (state: ThreeDLightSnapshot | null) => void): () => void {
+    selectedLightListeners.add(listener);
+    listener(getSelectedLight());
+    return () => selectedLightListeners.delete(listener);
+  }
+
+  function syncOutputCameraStateFromEntity(): void {
+    const position = outputCameraEntity.getPosition();
+    const rotation = outputCameraEntity.getEulerAngles();
+    const next = {
+      ...outputCameraState,
+      azim: rotation.y,
+      elev: rotation.x,
+    };
+    const offset = cameraPositionOffset(next);
+    outputCameraState = {
+      ...next,
+      focalPoint: [position.x - offset[0], position.y - offset[1], position.z - offset[2]],
+    };
+    emitOutputCameraChange();
+  }
+
+  applyOutputCameraState();
 
   function applySourceTransform(): void {
     if (!splatPivotEntity || !splatEntity) return;
@@ -713,14 +1021,18 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     return true;
   }
 
-  function applyDefaultCameraForSplat(url: string): void {
-    if (applySourceViewDefaultCamera(url)) return;
+  function applyDefaultCameraForSplat(url: string, action: 'world-load' | 'editor-reset'): void {
+    if (applySourceViewDefaultCamera(url)) {
+      syncOutputCameraFromViewForAction(action, setOutputCameraFromView);
+      return;
+    }
     if (camera.camera) {
       camera.camera.horizontalFov = false;
       camera.camera.fov = fov;
     }
     fly.resetToInitial();
     enterDefaultInteriorView();
+    syncOutputCameraFromViewForAction(action, setOutputCameraFromView);
   }
 
   // 手动建 Asset(而非 loadFromUrl)以便订阅 'progress' 事件做加载进度;
@@ -844,11 +1156,13 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
       sceneRadiusValue = radius || 1;
       sceneCenter.copy(aabb.center);
       fly.setSceneRadius(sceneRadiusValue);
+      applyOutputCameraState();
       camera.camera!.nearClip = Math.max(0.001, radius / 10000);
       camera.camera!.farClip = Math.max(1000, radius * 8);
+      outputCameraEntity.camera!.nearClip = Math.max(0.001, radius / 10000);
     }
     applySourceTransform();
-    applyDefaultCameraForSplat(url);
+    applyDefaultCameraForSplat(url, 'world-load');
     const gaussians = readSplatCount(asset);
     setStatus(
       gaussians != null
@@ -915,6 +1229,8 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     sceneCenter = new pc.Vec3(0, 1, 0);
     sceneRadiusValue = 1;
     fly.setSceneRadius(1);
+    outputCameraEntity.camera!.nearClip = 0.01;
+    applyOutputCameraState();
     if (camera.camera) {
       camera.camera.horizontalFov = false;
       camera.camera.fov = fov;
@@ -922,6 +1238,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
       camera.camera.farClip = radius * 4;
     }
     fly.resetToInitial();
+    setOutputCameraFromView();
     setStatus('已加载 360 环境 · 可在球内导演摆放');
   }
 
@@ -999,10 +1316,12 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
   // ---------- 占位放置 / 截图 ----------
   // Phase 2a：导演态 actor / prop / staging 还没有后端资产管线，先用原色 primitive
   // 在「准星所指地面」位置放置占位；准星 = 屏幕中央 = 相机正前方。
-  const markers: Record<MarkerKind, pc.Entity[]> = { actor: [], prop: [], staging: [] };
+  const markers: Record<MarkerKind, pc.Entity[]> = { actor: [], prop: [], staging: [], light: [] };
   // 每个 marker 创建时用的 hex 颜色，保存 / 恢复 scene snapshot 用。
   // 直接读 material.diffuse 也行，但 mannequin 是多 bone 多材质，记录原 hex 简单可靠。
   const markerColors = new WeakMap<pc.Entity, string>();
+  const lightSettings = new WeakMap<pc.Entity, ThreeDLightSnapshot>();
+  const lightHandles = new WeakMap<pc.Entity, pc.Entity>();
   type MountTarget = {
     kind: 'prop' | 'staging';
     entity: pc.Entity;
@@ -1015,6 +1334,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
       actor: markers.actor.length,
       prop: markers.prop.length,
       staging: markers.staging.length,
+      light: markers.light.length,
     };
     for (const l of markerListeners) l(counts);
   };
@@ -1033,10 +1353,10 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
   function makeMaterial(color: pc.Color): pc.StandardMaterial {
     const m = new pc.StandardMaterial();
     m.diffuse = color.clone();
-    m.emissive = color.clone();
+    m.emissive = color.clone().mulScalar(0.08);
     m.opacity = 1;
     m.blendType = pc.BLEND_NONE;
-    m.useLighting = false;
+    m.useLighting = true;
     m.useTonemap = false;
     m.update();
     return m;
@@ -1073,10 +1393,10 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
   function makeFlatMaterial(color: pc.Color): pc.StandardMaterial {
     const m = new pc.StandardMaterial();
     m.diffuse = color.clone();
-    m.emissive = color.clone();
+    m.emissive = color.clone().mulScalar(0.08);
     m.opacity = 1;
     m.blendType = pc.BLEND_NONE;
-    m.useLighting = false;
+    m.useLighting = true;
     m.useTonemap = false;
     m.update();
     return m;
@@ -1371,6 +1691,113 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     }
   }
 
+  function setEntityDirection(entity: pc.Entity, directionValue: [number, number, number]): void {
+    const light = normalizeThreeDLightSnapshot({ direction: directionValue });
+    entity.setRotation(spotLightRotationForDirection(light.direction));
+  }
+
+  function readLightSnapshot(entity: pc.Entity): ThreeDLightSnapshot {
+    const previous = lightSettings.get(entity) ?? normalizeThreeDLightSnapshot(null, markers.light.indexOf(entity));
+    const position = entity.getPosition();
+    const direction = spotLightDirectionFromRotation(entity.getRotation());
+    return normalizeThreeDLightSnapshot({
+      ...previous,
+      label: entity.name || previous.label,
+      color: markerColors.get(entity) ?? previous.color,
+      intensity: entity.light?.intensity ?? previous.intensity,
+      enabled: entity.light?.enabled ?? previous.enabled,
+      position: [position.x, position.y, position.z],
+      direction: [direction[0], direction[1], direction[2]],
+    }, markers.light.indexOf(entity));
+  }
+
+  function applyLightSnapshot(entity: pc.Entity, state: ThreeDLightSnapshot): void {
+    const normalized = normalizeThreeDLightSnapshot(state, markers.light.indexOf(entity));
+    lightSettings.set(entity, normalized);
+    markerColors.set(entity, normalized.color);
+    entity.name = normalized.label;
+    entity.setPosition(...normalized.position);
+    setEntityDirection(entity, normalized.direction);
+    if (entity.light) {
+      entity.light.color = parseHex(normalized.color);
+      entity.light.intensity = normalized.intensity;
+      entity.light.enabled = normalized.enabled;
+    }
+    const handle = lightHandles.get(entity);
+    const render = handle?.render;
+    if (render) {
+      const material = lightHandleMaterial(normalized.color);
+      for (const meshInstance of render.meshInstances ?? []) meshInstance.material = material;
+    }
+  }
+
+  const lightHandleMaterials = new Map<string, pc.StandardMaterial>();
+
+  function lightHandleMaterial(colorHex: string): pc.StandardMaterial {
+    const cached = lightHandleMaterials.get(colorHex);
+    if (cached) return cached;
+    const material = new pc.StandardMaterial();
+    material.diffuse = parseHex(colorHex);
+    material.emissive = parseHex(colorHex);
+    material.useLighting = false;
+    material.update();
+    lightHandleMaterials.set(colorHex, material);
+    return material;
+  }
+
+  function createLightEntity(stateInput: Partial<ThreeDLightSnapshot>): pc.Entity {
+    const state = normalizeThreeDLightSnapshot(stateInput, markers.light.length);
+    const entity = new pc.Entity(state.label);
+    entity.addComponent('light', {
+      type: 'spot',
+      color: parseHex(state.color),
+      intensity: state.intensity,
+      range: 24,
+      innerConeAngle: 18,
+      outerConeAngle: 36,
+      castShadows: false,
+    });
+    const handle = new pc.Entity('light_handle');
+    handle.addComponent('render', { type: 'sphere' });
+    handle.setLocalScale(0.18, 0.18, 0.18);
+    handle.render?.meshInstances?.forEach((meshInstance) => {
+      meshInstance.castShadow = false;
+      meshInstance.receiveShadow = false;
+    });
+    if (handle.render) handle.render.layers = [editorOverlayLayer.id];
+    entity.addChild(handle);
+    lightHandles.set(entity, handle);
+    markerIds.set(entity, state.id);
+    applyLightSnapshot(entity, state);
+    return entity;
+  }
+
+  function getSelectedLight(): ThreeDLightSnapshot | null {
+    if (selection?.kind !== 'light') return null;
+    return readLightSnapshot(selection.entity);
+  }
+
+  function updateSelectedLight(patch: Partial<ThreeDLightSnapshot>): boolean {
+    if (selection?.kind !== 'light') return false;
+    applyLightSnapshot(selection.entity, { ...readLightSnapshot(selection.entity), ...patch });
+    emitSelectedLightChange();
+    return true;
+  }
+
+  function setSelectedLightColor(color: string): boolean {
+    if (!/^#[0-9a-f]{6}$/i.test(color)) return false;
+    return updateSelectedLight({ color });
+  }
+
+  function setSelectedLightIntensity(intensity: number): boolean {
+    if (!Number.isFinite(intensity)) return false;
+    return updateSelectedLight({ intensity });
+  }
+
+  function setSelectedLightDirection(direction: [number, number, number]): boolean {
+    return updateSelectedLight({ direction });
+  }
+
   function syncActorProxyMaterials(): void {
     for (const actor of markers.actor) {
       const colorHex = actorProxyMaterialColors.get(actor);
@@ -1404,6 +1831,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
       actor: '#ff3344',
       prop: '#ffd34d',
       staging: '#4587ff',
+      light: '#ffd166',
     };
     const userScale = typeof opts.scale === 'number' && opts.scale > 0 ? opts.scale : 1;
     const explicitScale = validTuple3(opts.scale) ? tupleToVec3(opts.scale) : null;
@@ -1422,6 +1850,19 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
       actorProxyMaterialColors.set(entity, colorHex);
       applyActorProxyMaterial(entity, colorHex);
       applyActorPose(entity, 'standing');
+    } else if (kind === 'light') {
+      const lightPosition: [number, number, number] = explicitPosition
+        ? [hit.x, hit.y, hit.z]
+        : [hit.x, hit.y + 2, hit.z];
+      entity = createLightEntity({
+        id: crypto.randomUUID(),
+        label: opts.label || `灯光 ${markers.light.length + 1}`,
+        color: colorHex,
+        intensity: 2,
+        position: lightPosition,
+        direction: [0, -1, 0],
+        enabled: true,
+      });
     } else {
       entity = new pc.Entity(opts.label || `marker_${kind}_${markers[kind].length + 1}`);
       const defaultSize = kind === 'staging'
@@ -1444,6 +1885,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     app.root.addChild(entity);
     markers[kind].push(entity);
     emitMarkers();
+    if (kind === 'light') setSelection({ kind, entity });
     return true;
   }
 
@@ -1467,7 +1909,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
   }
 
   function clearMarkers(kind?: MarkerKind): void {
-    const kinds: MarkerKind[] = kind ? [kind] : ['actor', 'prop', 'staging'];
+    const kinds: MarkerKind[] = kind ? [kind] : ['actor', 'prop', 'staging', 'light'];
     if (!kind) {
       for (const actor of markers.actor) mountLinks.delete(actor);
     } else if (kind === 'actor') {
@@ -1486,6 +1928,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     if (selection && (!kind || selection.kind === kind)) {
       setSelection(null);
     }
+    if (!kind) setOutputCameraSelected(false);
     emitMarkers();
   }
 
@@ -1510,7 +1953,9 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     const pose = selection.kind === 'actor' ? actorPoses.get(selection.entity) ?? 'standing' : null;
     const actionPlaying = selection.kind === 'actor' ? actorActionPlaying.get(selection.entity) ?? true : null;
     const mounted = selection.kind === 'actor' && mountLinks.has(selection.entity);
-    const shapeHint = selection.kind === 'actor' ? null : getEntityShapeHint(selection.entity);
+    const shapeHint = selection.kind === 'prop' || selection.kind === 'staging'
+      ? getEntityShapeHint(selection.entity)
+      : null;
     return {
       kind: selection.kind,
       index: idx,
@@ -1541,6 +1986,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     mat.update();
     marker.addComponent('render', { type: 'box', material: mat });
     if (marker.render) {
+      marker.render.layers = [editorOverlayLayer.id];
       marker.render.castShadows = false;
       marker.render.receiveShadows = false;
       for (const mi of marker.render.meshInstances ?? []) {
@@ -1561,6 +2007,12 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
   function selectionMarkerTransform(sel: InternalSelection): { position: pc.Vec3; scale: pc.Vec3 } {
     const pos = sel.entity.getPosition();
     const scale = sel.entity.getLocalScale();
+    if (sel.kind === 'light') {
+      return {
+        position: pos,
+        scale: new pc.Vec3(0.32, 0.32, 0.32),
+      };
+    }
     if (sel.kind === 'actor') {
       const sitting = (actorPoses.get(sel.entity) ?? 'standing') === 'sitting';
       const baseHeight = sitting ? 1.45 : 1.9;
@@ -1607,10 +2059,12 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
   }
 
   function setSelection(next: { kind: MarkerKind; entity: pc.Entity } | null): void {
+    if (next) outputCameraSelected = false;
     selection = next ? { kind: next.kind, entity: next.entity } : null;
     updateSelectionMarker();
     updateTranslateGizmoAttachment();
     emitSelection();
+    emitSelectedLightChange();
   }
 
   // ---------- TranslateGizmo（XYZ 轴拖拽） ----------
@@ -1639,6 +2093,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
       }
       translateGizmoLayer = GizmoCtor.createLayer(app, 'NuomiDrama Translate Gizmo');
       const gizmo = new TranslateGizmoCtor(camera.camera, translateGizmoLayer);
+      camera.camera.layers = [...camera.camera.layers, translateGizmoLayer.id];
       gizmo.coordSpace = 'world';
       gizmo.size = 1.08;
       gizmo.axisCenterSize = 0.085;
@@ -1647,17 +2102,32 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
       // 关掉中键 / 右键拖动；中键是飞行 dolly，右键是相机旋转，避免误触 gizmo。
       gizmo.mouseButtons[1] = false;
       gizmo.mouseButtons[2] = false;
+      let flyInputBeforeGizmoDrag = true;
+      gizmo.on('transform:start', () => {
+        flyInputBeforeGizmoDrag = fly.isInputEnabled();
+        fly.setInputEnabled(false);
+      });
       gizmo.on('transform:move', () => {
-        if (!translateGizmoAttachedEntity || !selection) return;
+        if (!translateGizmoAttachedEntity) return;
+        if (outputCameraSelected && translateGizmoAttachedEntity === outputCameraEntity) {
+          syncOutputCameraStateFromEntity();
+          return;
+        }
+        if (!selection) return;
         syncMountedActorsForSelection();
         updateSelectionMarker();
         emitSelection();
+        if (selection.kind === 'light') emitSelectedLightChange();
       });
       gizmo.on('transform:end', () => {
-        if (translateGizmoAttachedEntity && selection) {
+        fly.setInputEnabled(flyInputBeforeGizmoDrag);
+        if (outputCameraSelected && translateGizmoAttachedEntity === outputCameraEntity) {
+          syncOutputCameraStateFromEntity();
+        } else if (translateGizmoAttachedEntity && selection) {
           syncMountedActorsForSelection();
           updateSelectionMarker();
           emitSelection();
+          if (selection.kind === 'light') emitSelectedLightChange();
         }
       });
       translateGizmo = gizmo;
@@ -1670,6 +2140,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
   }
 
   function updateTranslateGizmoAttachment(): void {
+    const target = outputCameraSelected ? outputCameraEntity : selection?.entity ?? null;
     if (!translateGizmoEnabled) {
       if (translateGizmo && translateGizmoAttachedEntity) {
         try { translateGizmo.detach(); } catch (_) { /* ignore */ }
@@ -1678,7 +2149,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
       if (translateGizmo) translateGizmo.enabled = false;
       return;
     }
-    if (!selection) {
+    if (!target) {
       if (translateGizmo && translateGizmoAttachedEntity) {
         try { translateGizmo.detach(); } catch (_) { /* ignore */ }
       }
@@ -1688,11 +2159,11 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     }
     const gizmo = ensureTranslateGizmo();
     if (!gizmo) return;
-    if (translateGizmoAttachedEntity !== selection.entity) {
+    if (translateGizmoAttachedEntity !== target) {
       try { gizmo.detach(); } catch (_) { /* ignore */ }
       try {
-        gizmo.attach([selection.entity]);
-        translateGizmoAttachedEntity = selection.entity;
+        gizmo.attach([target]);
+        translateGizmoAttachedEntity = target;
       } catch (error) {
         console.warn('[viewer] TranslateGizmo attach failed:', error);
         translateGizmoAttachedEntity = null;
@@ -1732,6 +2203,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
 
   function markerPickWorldPosition(kind: MarkerKind, entity: pc.Entity): pc.Vec3 {
     if (kind === 'prop' || kind === 'staging') return mountTargetWorldPosition(entity);
+    if (kind === 'light') return entity.getPosition().clone();
     const pos = entity.getPosition();
     const scale = entity.getLocalScale();
     return new pc.Vec3(pos.x, pos.y + 0.9 * scale.y, pos.z);
@@ -1750,7 +2222,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     let best: { kind: MarkerKind; entity: pc.Entity } | null = null;
     let bestDistance = Infinity;
     const hitPoint = new pc.Vec3();
-    const kinds: MarkerKind[] = ['actor', 'prop', 'staging'];
+    const kinds: MarkerKind[] = ['actor', 'prop', 'staging', 'light'];
     for (const kind of kinds) {
       for (const entity of markers[kind]) {
         const renders = entity.findComponents('render') as pc.RenderComponent[];
@@ -1859,7 +2331,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     // 投影 entity 顶部一点点，便于 tag 浮在头顶不被遮。
     const worldPos = selection.entity.getPosition().clone();
     const localScale = selection.entity.getLocalScale();
-    const lift = selection.kind === 'actor' ? 1.95 * localScale.y : 0.65 * localScale.y;
+    const lift = selection.kind === 'actor' ? 1.95 * localScale.y : selection.kind === 'light' ? 0.2 : 0.65 * localScale.y;
     worldPos.y += lift;
     const screen = camera.camera.worldToScreen(worldPos);
     const rect = canvas.getBoundingClientRect();
@@ -2308,7 +2780,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     if (cameraKey) {
       const current = fly.getCameraState();
       fly.setCameraState(rotationOnly ? { ...cameraKey, distance: current.distance, focalPoint: current.focalPoint } : cameraKey);
-      if (camera.camera) camera.camera.fov = cameraKey.fov;
+      if (typeof cameraKey.fov === 'number') setViewCameraFov(cameraKey.fov);
     }
     emitSelection();
   }
@@ -2353,9 +2825,12 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
       stagings: markers.staging.map((e) => snapshotMarker(e, 'staging')),
       world: {
         splatYOffset: sourceTransform.yOffset,
+        sceneRadius: sceneRadiusValue,
         sourceTransform,
       },
-      camera: fly.getCameraState(),
+      camera: getViewCameraState(),
+      outputCamera: getOutputCameraState(),
+      lights: markers.light.map(readLightSnapshot),
     };
   }
 
@@ -2408,26 +2883,32 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
       console.warn('[viewer] loadSceneSnapshot: unsupported schema', snap?.schemaVersion);
       return;
     }
-    const nextTimeline = snap.timeline ?? emptyTimeline();
+    const normalizedSnapshot = normalizeThreeDSceneSnapshot(snap, getViewCameraState());
+    const nextTimeline = normalizedSnapshot.timeline ?? emptyTimeline();
     validateTimeline(nextTimeline);
-    const ids = [...snap.actors, ...snap.props, ...snap.stagings].map(s => s.id).filter(Boolean);
+    const ids = [
+      ...normalizedSnapshot.actors,
+      ...normalizedSnapshot.props,
+      ...normalizedSnapshot.stagings,
+      ...(normalizedSnapshot.lights ?? []),
+    ].map(s => s.id).filter(Boolean);
     if (new Set(ids).size !== ids.length) throw new Error('场景包含重复物体标识');
     timeline = structuredClone(nextTimeline);
     // 清场：destroy 现有 markers + 解除选中 + 清 pose/color WeakMaps（GC 自动）。
     clearMarkers();
-    if (snap.world?.sourceTransform) {
-      sourceTransform = normalizeDirectorWorldSourceTransform(snap.world.sourceTransform);
+    if (normalizedSnapshot.world?.sourceTransform) {
+      sourceTransform = normalizeDirectorWorldSourceTransform(normalizedSnapshot.world.sourceTransform);
       applySourceTransform();
-    } else if (snap.world && typeof snap.world.splatYOffset === 'number' && Number.isFinite(snap.world.splatYOffset)) {
+    } else if (normalizedSnapshot.world && typeof normalizedSnapshot.world.splatYOffset === 'number' && Number.isFinite(normalizedSnapshot.world.splatYOffset)) {
       sourceTransform = normalizeDirectorWorldSourceTransform({
         ...sourceTransform,
-        yOffset: snap.world.splatYOffset,
+        yOffset: normalizedSnapshot.world.splatYOffset,
       });
       applySourceTransform();
     }
-    for (const s of snap.props ?? []) restoreMarker('prop', s);
-    for (const s of snap.stagings ?? []) restoreMarker('staging', s);
-    for (const s of snap.actors ?? []) {
+    for (const s of normalizedSnapshot.props) restoreMarker('prop', s);
+    for (const s of normalizedSnapshot.stagings) restoreMarker('staging', s);
+    for (const s of normalizedSnapshot.actors) {
       const actor = restoreMarker('actor', s);
       if (!actor || !s.mount) continue;
       const target = markers[s.mount.kind][s.mount.index];
@@ -2435,7 +2916,16 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
         mountActorOn(actor, { kind: s.mount.kind, entity: target, attachPointId: s.mount.attachPointId || '' });
       }
     }
-    if (snap.camera) fly.setCameraState(snap.camera);
+    for (const lightState of normalizedSnapshot.lights ?? []) {
+      const entity = createLightEntity(lightState);
+      app.root.addChild(entity);
+      markers.light.push(entity);
+    }
+    if (normalizedSnapshot.camera) {
+      setViewCameraFov(normalizedSnapshot.camera.fov);
+      fly.setCameraState(normalizedSnapshot.camera);
+    }
+    if (normalizedSnapshot.outputCamera) setOutputCameraState(normalizedSnapshot.outputCamera);
     seekTimeline(0);
     emitMarkers();
     emitSelection();
@@ -2447,6 +2937,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
       ...markers.prop,
       ...markers.staging,
     ];
+    const lightHandleEntities = markers.light.map((entity) => lightHandles.get(entity) ?? null);
     const renderMode = options?.renderMode ?? (options?.markers === false ? 'env_only' : 'combined');
     const hideEditorOverlays = shouldHideEditorOverlaysForCapture(renderMode);
     const hiddenMarkers = renderMode === 'env_only';
@@ -2461,10 +2952,45 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     const collisionEnabled = collisionEntity?.enabled ?? null;
     const axesVisibleBefore = axesGrid.isVisible?.() ?? null;
     const translateGizmoEnabledBefore = translateGizmoEnabled;
+    const viewCameraEnabledBefore = camera.camera?.enabled ?? null;
+    const outputCameraEnabledBefore = outputCameraEntity.camera?.enabled ?? null;
+    const outputCameraRectBefore = outputCameraEntity.camera?.rect
+      ? new pc.Vec4(
+          outputCameraEntity.camera.rect.x,
+          outputCameraEntity.camera.rect.y,
+          outputCameraEntity.camera.rect.z,
+          outputCameraEntity.camera.rect.w,
+        )
+      : null;
+    const outputCameraScissorBefore = outputCameraEntity.camera?.scissorRect
+      ? new pc.Vec4(
+          outputCameraEntity.camera.scissorRect.x,
+          outputCameraEntity.camera.scissorRect.y,
+          outputCameraEntity.camera.scissorRect.z,
+          outputCameraEntity.camera.scissorRect.w,
+        )
+      : null;
+    const outputCameraClearColorBefore = outputCameraEntity.camera?.clearColorBuffer ?? null;
+    const lightHandlesEnabled = lightHandleEntities.map((handle) => handle?.render?.enabled ?? null);
     const originalMaterials: Array<{ meshInstance: pc.MeshInstance; material: pc.Material | null }> = [];
     let maskMaterial: pc.StandardMaterial | null = null;
     try {
       setTranslateGizmoEnabled(false);
+      if (options?.renderCamera === 'output') {
+        if (camera.camera) camera.camera.enabled = false;
+        if (outputCameraEntity.camera) {
+          outputCameraEntity.camera.enabled = true;
+          outputCameraEntity.camera.rect = new pc.Vec4(0, 0, 1, 1);
+          outputCameraEntity.camera.scissorRect = new pc.Vec4(0, 0, 1, 1);
+          outputCameraEntity.camera.clearColorBuffer = true;
+        }
+      } else if (outputCameraEntity.camera) {
+        // The in-canvas preview is editor UI; keep legacy full-frame captures clean.
+        outputCameraEntity.camera.enabled = false;
+      }
+      for (const handle of lightHandleEntities) {
+        if (handle?.render) handle.render.enabled = false;
+      }
       if (hideEditorOverlays) {
         if (selectionMarker) selectionMarker.enabled = false;
         if (hitMarker) hitMarker.enabled = false;
@@ -2548,6 +3074,20 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
         if (item.material) item.meshInstance.material = item.material;
       }
       if (maskMaterial) maskMaterial.destroy();
+      if (camera.camera && viewCameraEnabledBefore !== null) camera.camera.enabled = viewCameraEnabledBefore;
+      if (outputCameraEntity.camera) {
+        if (outputCameraEnabledBefore !== null) outputCameraEntity.camera.enabled = outputCameraEnabledBefore;
+        if (outputCameraRectBefore) outputCameraEntity.camera.rect = outputCameraRectBefore;
+        if (outputCameraScissorBefore) outputCameraEntity.camera.scissorRect = outputCameraScissorBefore;
+        if (outputCameraClearColorBefore !== null) {
+          outputCameraEntity.camera.clearColorBuffer = outputCameraClearColorBefore;
+        }
+      }
+      for (let index = 0; index < lightHandleEntities.length; index += 1) {
+        const handle = lightHandleEntities[index];
+        const enabled = lightHandlesEnabled[index];
+        if (handle?.render && enabled !== null && enabled !== undefined) handle.render.enabled = enabled;
+      }
       for (let index = 0; index < markerEntities.length; index += 1) {
         markerEntities[index].enabled = markerEnabled[index] ?? true;
       }
@@ -2598,6 +3138,10 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
     statusListeners.clear();
     markerListeners.clear();
     selectionListeners.clear();
+    outputCameraListeners.clear();
+    selectedLightListeners.clear();
+    for (const material of lightHandleMaterials.values()) material.destroy();
+    lightHandleMaterials.clear();
     selection = null;
   }
 
@@ -2626,8 +3170,16 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
         fly.resetToInitial();
         return;
       }
-      applyDefaultCameraForSplat(activeSplatUrl);
+      applyDefaultCameraForSplat(activeSplatUrl, 'editor-reset');
     },
+    getViewCameraState,
+    setViewCameraFov,
+    getOutputCameraState,
+    setOutputCameraState,
+    setOutputCameraFromView,
+    setOutputCameraSelected,
+    isOutputCameraSelected: () => outputCameraSelected,
+    onOutputCameraChange,
     setStatus,
     onStatus(listener) {
       statusListeners.add(listener);
@@ -2646,6 +3198,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
       actor: markers.actor.length,
       prop: markers.prop.length,
       staging: markers.staging.length,
+      light: markers.light.length,
     }),
     onMarkersChange(listener) {
       markerListeners.add(listener);
@@ -2653,6 +3206,7 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
         actor: markers.actor.length,
         prop: markers.prop.length,
         staging: markers.staging.length,
+        light: markers.light.length,
       });
       return () => markerListeners.delete(listener);
     },
@@ -2668,6 +3222,11 @@ export async function createViewerApp(options: ViewerAppOptions): Promise<Viewer
       return () => selectionListeners.delete(listener);
     },
     getSelectionScreenPosition,
+    getSelectedLight,
+    setSelectedLightColor,
+    setSelectedLightIntensity,
+    setSelectedLightDirection,
+    onSelectedLightChange,
     getMarkerLabels,
     selectByIndex,
     getActorPose,

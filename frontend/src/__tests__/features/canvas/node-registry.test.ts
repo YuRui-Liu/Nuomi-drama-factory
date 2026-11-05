@@ -9,6 +9,12 @@ import {
 } from "@/features/canvas/domain/nodeRegistry";
 
 describe("canvas node registry", () => {
+  it("starts generic image generation at Grsai GPT Image 2 and its legal 1K tier", () => {
+    const data = canvasNodeDefinitions[CANVAS_NODE_TYPES.imageGen].createDefaultData();
+
+    expect(data).toMatchObject({ model: "gpt-image-2", size: "1K" });
+  });
+
   it("registers a persistent video director with an editable empty draft", () => {
     const type = "videoDirectorNode" as typeof CANVAS_NODE_TYPES.video;
     const definition = canvasNodeDefinitions[type];

@@ -104,6 +104,7 @@ import {
 import { nodeCatalog } from '@/features/canvas/application/nodeCatalog';
 import { applySkillRoleBindingConnection } from '@/features/canvas/domain/skillConnectionEdges';
 import { embedStoryboardImageMetadata } from '@/commands/image';
+import { ensureLightweightVideoPipeline, isImageGenerationJobTarget, isLightweightStoryboardNode, lightweightStoryboardInputSignature, lightweightStoryboardReferenceImages } from '@/features/canvas/production/lightweightVideoPipeline';
 import { nodeTypes as canvasNodeTypes } from './nodes';
 import { edgeTypes as canvasEdgeTypes } from './edges';
 import { NodeSelectionMenu } from './NodeSelectionMenu';
@@ -122,6 +123,7 @@ import { VideoViewerModal } from './ui/VideoViewerModal';
 import { CanvasZoomControl } from './ui/CanvasZoomControl';
 import { useEdgeVisibilityStore } from './ui/edgeVisibilityStore';
 import { CanvasQuickActionBar } from './ui/CanvasQuickActionBar';
+import { isCoreArtifact, projectCoreArtifacts } from './domain/coreArtifacts';
 import { BackToNodesHint } from './ui/BackToNodesHint';
 import { CanvasMinimapButton } from './ui/CanvasMinimapButton';
 import { CanvasFpsMeter } from './ui/CanvasFpsMeter';
@@ -293,6 +295,7 @@ interface GenerationStoryboardMetadata {
   gridRows: number;
   gridCols: number;
   frameNotes: string[];
+  lightweightInputSignature?: string;
 }
 
 function getNodeSize(node: CanvasNode): { width: number; height: number } {
@@ -733,12 +736,19 @@ interface PendingNodePlacement {
 
 interface CanvasProps {
   selectionActions?: ReactNode;
+  workspaceTools?: boolean;
+  /** Render only production artifacts while retaining the complete canvas graph in the store. */
+  lightweightMode?: boolean;
+  addNodeRequest?: number;
   onBlankPaneClick?: () => void;
   controlsPlacement?: 'bottom-right' | 'top-right';
 }
 
 export function Canvas({
   selectionActions,
+  workspaceTools = false,
+  lightweightMode = false,
+  addNodeRequest = 0,
   onBlankPaneClick,
   controlsPlacement = 'bottom-right',
 }: CanvasProps = {}) {
@@ -1030,7 +1040,7 @@ export function Canvas({
     useShallow((state) =>
       state.nodes
         .filter((node) => {
-          if (node.type !== CANVAS_NODE_TYPES.exportImage) return false;
+          if (!isImageGenerationJobTarget(node)) return false;
           const data = node.data as Record<string, unknown>;
           return (
             data.isGenerating === true &&
@@ -1053,7 +1063,11 @@ export function Canvas({
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
   const addNode = useCanvasStore((state) => state.addNode);
   const setSelectedNode = useCanvasStore((state) => state.setSelectedNode);
-  const selectedNodeId = useCanvasStore((state) => state.selectedNodeId);
+  const storedSelectedNodeId = useCanvasStore((state) => state.selectedNodeId);
+  const selectedNodeId = lightweightMode && storedSelectedNodeId
+    && !nodes.some((node) => node.id === storedSelectedNodeId && isCoreArtifact(node))
+    ? null
+    : storedSelectedNodeId;
   const pendingFocusNodeId = useCanvasStore((state) => state.pendingFocusNodeId);
   const clearPendingFocus = useCanvasStore((state) => state.clearPendingFocus);
   const deleteEdge = useCanvasStore((state) => state.deleteEdge);
@@ -1088,11 +1102,15 @@ export function Canvas({
     () => new Map(skillRegistry.map((skill) => [skill.id, skill] as const)),
     [skillRegistry],
   );
+  const coreProjection = useMemo(
+    () => lightweightMode ? projectCoreArtifacts(nodes, edges) : { nodes, edges },
+    [lightweightMode, nodes, edges],
+  );
   const renderedNodes = useMemo(() => {
     if (!placementConfirmNodeId) {
-      return nodes;
+      return coreProjection.nodes;
     }
-    return nodes.map((node) => {
+    return coreProjection.nodes.map((node) => {
       if (node.id !== placementConfirmNodeId) {
         return node;
       }
@@ -1103,14 +1121,14 @@ export function Canvas({
           .join(' '),
       };
     });
-  }, [nodes, placementConfirmNodeId]);
+  }, [coreProjection.nodes, placementConfirmNodeId]);
 
   // 隐藏连线时给每条边补 `hidden: true`——ReactFlow 会跳过渲染但边仍在图里，
   // 连接、reconnect、持久化都不受影响。显示时直接透传真实 edges，零额外分配。
   const renderedEdges = useMemo(() => {
-    if (!edgesHidden) return edges;
-    return edges.map((edge) => (edge.hidden ? edge : { ...edge, hidden: true }));
-  }, [edges, edgesHidden]);
+    if (!edgesHidden) return coreProjection.edges;
+    return coreProjection.edges.map((edge) => (edge.hidden ? edge : { ...edge, hidden: true }));
+  }, [coreProjection.edges, edgesHidden]);
 
   const clearMarqueeSelection = useCallback(() => {
     marqueeSelectionRef.current = null;
@@ -1340,15 +1358,15 @@ export function Canvas({
         window.setTimeout(resolve, delayMs);
       });
 
-    const pendingExportNodes = useCanvasStore.getState().nodes.filter((node) => {
-      if (node.type !== CANVAS_NODE_TYPES.exportImage) {
+    const pendingGenerationNodes = useCanvasStore.getState().nodes.filter((node) => {
+      if (!isImageGenerationJobTarget(node)) {
         return false;
       }
       const data = node.data as Record<string, unknown>;
       return data.isGenerating === true && typeof data.generationJobId === 'string' && data.generationJobId.length > 0;
     });
 
-    for (const pendingNode of pendingExportNodes) {
+    for (const pendingNode of pendingGenerationNodes) {
       if (activeGenerationPollNodeIdsRef.current.has(pendingNode.id)) {
         continue;
       }
@@ -1420,6 +1438,25 @@ export function Canvas({
               }
               const previewImageUrl = imageUrl;
 
+              // The image job may finish after the table, cell descriptions,
+              // grid geometry, or upstream references changed. Keep the result
+              // visible, but only treat it as current when its input snapshot
+              // still matches the live grid at the moment we commit it.
+              const latestState = useCanvasStore.getState();
+              const latestNode = latestState.nodes.find((node) => node.id === pendingNode.id);
+              if (!latestNode) break;
+              const latestData = latestNode.data as Record<string, unknown>;
+              if (latestData.isGenerating !== true || latestData.generationJobId !== jobId) break;
+              const lightweightTarget = isLightweightStoryboardNode(latestNode);
+              const jobMetadata = currentData.generationStoryboardMetadata as GenerationStoryboardMetadata | undefined;
+              const liveInputSignature = lightweightTarget
+                ? lightweightStoryboardInputSignature(latestData,
+                    lightweightStoryboardReferenceImages(latestNode.id, latestState.nodes, latestState.edges))
+                : null;
+              const lightweightInputIsCurrent = !lightweightTarget ||
+                typeof jobMetadata?.lightweightInputSignature === 'string' &&
+                jobMetadata.lightweightInputSignature === liveInputSignature;
+
               updateNodeData(pendingNode.id, {
                 imageUrl,
                 previewImageUrl,
@@ -1433,7 +1470,22 @@ export function Canvas({
                 generationError: null,
                 generationErrorDetails: null,
                 generationDebugContext: undefined,
+                ...(lightweightTarget ? {
+                  needsUpdate: !lightweightInputIsCurrent,
+                  ...(lightweightInputIsCurrent && typeof jobMetadata?.lightweightInputSignature === 'string'
+                    ? { lightweightGeneratedInputSignature: jobMetadata.lightweightInputSignature } : {}),
+                } : {}),
               });
+              if (lightweightTarget && lightweightInputIsCurrent) {
+                try {
+                  ensureLightweightVideoPipeline(pendingNode.id, { focus: false });
+                } catch (error) {
+                  console.warn('[GenerationJob] lightweight video pipeline setup failed', {
+                    nodeId: pendingNode.id,
+                    error,
+                  });
+                }
+              }
               break;
             }
 
@@ -2479,8 +2531,8 @@ export function Canvas({
   ]);
 
   const selectedNodeIds = useMemo(
-    () => nodes.filter((node) => Boolean(node.selected)).map((node) => node.id),
-    [nodes]
+    () => nodes.filter((node) => Boolean(node.selected) && (!lightweightMode || isCoreArtifact(node))).map((node) => node.id),
+    [lightweightMode, nodes]
   );
   const selectedUploadNodeId = useMemo(() => {
     if (selectedNodeIds.length !== 1) {
@@ -2501,10 +2553,10 @@ export function Canvas({
       return;
     }
 
-    if (selectedNodeId !== null) {
+    if (storedSelectedNodeId !== null) {
       setSelectedNode(null);
     }
-  }, [selectedNodeId, selectedNodeIds, setSelectedNode]);
+  }, [selectedNodeId, selectedNodeIds, setSelectedNode, storedSelectedNodeId]);
 
   useEffect(() => {
     const handlePaste = (event: ClipboardEvent) => {
@@ -4844,8 +4896,12 @@ export function Canvas({
         placement={controlsPlacement}
       />
 
-      {!taskPanelOpen && (
+      {(
         <CanvasQuickActionBar
+          hidden={taskPanelOpen}
+          lightweightMode={lightweightMode}
+          alignLeft={workspaceTools}
+          addNodeRequest={addNodeRequest}
           project={canvasProject}
           selectedNodeId={selectedNodeId}
           placement={controlsPlacement}
@@ -4883,10 +4939,11 @@ export function Canvas({
       {showNodeMenu && (
         <NodeSelectionMenu
           position={menuPosition}
+          lightweightMode={lightweightMode}
           allowedTypes={menuAllowedTypes}
           onSelect={handleNodeSelect}
-          skillItems={menuAllowedTypes ? undefined : skillRegistry}
-          onSelectSkill={menuAllowedTypes ? undefined : handleSkillSelect}
+          skillItems={menuAllowedTypes || lightweightMode ? undefined : skillRegistry}
+          onSelectSkill={menuAllowedTypes || lightweightMode ? undefined : handleSkillSelect}
           onClose={closeNodeMenu}
         />
       )}

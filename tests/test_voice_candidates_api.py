@@ -4,6 +4,67 @@ import pytest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_beats", [[], [{"speaker": "旧角色", "dialogue": "旧对白"}]])
+async def test_episode_preflight_reads_active_director_dialogue_lines(tmp_path, monkeypatch, legacy_beats):
+    from novelvideo.api.routes import voice_candidates, characters
+    from novelvideo.director_plan.store import DirectorPlanStore
+    from novelvideo.narrative_groups import service
+    from novelvideo.models import NovelCharacter
+
+    roles = [NovelCharacter(name=name) for name in ("阿远", "小林")]
+    class Store:
+        db_path = str(tmp_path / "data.db")
+        def get_all_characters(self):
+            return roles
+        async def get_beats_as_dicts(self, episode):
+            return legacy_beats
+    async def resolve(*args, **kwargs):
+        return SimpleNamespace(project_id="p"), "user", "p", tmp_path, str(tmp_path), Store()
+    monkeypatch.setattr(characters, "_resolve_character_project", resolve)
+    monkeypatch.setattr(DirectorPlanStore, "load_active", lambda self, episode: SimpleNamespace(groups=[SimpleNamespace(id="g1")]))
+    monkeypatch.setattr(service, "generation_beats_for_group", lambda *args: [{
+        "id": "shot-1", "speaker": "阿远 / 小林", "dialogue": "你好\n请进",
+        "dialogue_lines": [{"speaker": "阿远", "text": "你好"}, {"speaker": "小林", "text": "请进"}],
+    }])
+
+    result = (await voice_candidates.preflight_episode_voice("p", 1, {}))["data"]
+
+    assert result["reason"] == ""
+    assert [row["speaker"] for row in result["characters"]] == ["阿远", "小林"]
+    assert [row["dialogue"] for row in result["characters"]] == ["你好", "请进"]
+    assert all(row["beat"] == "shot-1" for row in result["characters"])
+    assert not result["production_ready"]
+    assert result["paid_calls"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lines, ready", [([], True), ([{"speaker": "", "text": "不可遗漏"}], False)])
+async def test_director_preflight_distinguishes_silent_shot_from_unresolved_dialogue(tmp_path, monkeypatch, lines, ready):
+    from novelvideo.api.routes import voice_candidates, characters
+    from novelvideo.director_plan.store import DirectorPlanStore
+    from novelvideo.narrative_groups import service
+
+    class Store:
+        db_path = str(tmp_path / "data.db")
+        def get_all_characters(self):
+            return []
+        async def get_beats_as_dicts(self, episode):
+            return []
+    async def resolve(*args, **kwargs):
+        return None, "user", "p", tmp_path, str(tmp_path), Store()
+    monkeypatch.setattr(characters, "_resolve_character_project", resolve)
+    monkeypatch.setattr(DirectorPlanStore, "load_active", lambda self, episode: SimpleNamespace(groups=[SimpleNamespace(id="g1")]))
+    monkeypatch.setattr(service, "generation_beats_for_group", lambda *args: [{"id": "s1", "dialogue_lines": lines}])
+
+    result = (await voice_candidates.preflight_episode_voice("p", 1, {}))["data"]
+    assert result["production_ready"] is ready
+    assert result["reason"] == ""
+    if lines:
+        assert result["characters"][0]["reason"] == "speaker_not_resolved"
+        assert result["characters"][0]["dialogue"] == "不可遗漏"
+
+
+@pytest.mark.asyncio
 async def test_candidates_list_is_character_scoped(tmp_path, monkeypatch):
     from novelvideo.api.routes import voice_candidates
     from novelvideo.media_capabilities.tts.candidate_store import VoiceCandidateStore

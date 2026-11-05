@@ -1,7 +1,12 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import {
+  associateDiscussionCanvasBaseline,
   createRunOperation,
+  readDiscussionCanvasBaseline,
+  readDelegationCanvasBaseline,
   readRunIntent,
+  saveDiscussionCanvasBaseline,
+  writeDelegationCanvasBaseline,
 } from '@/features/agent-runtime/runOperation';
 import * as api from '@/api/agentRuns';
 vi.mock('@/api/agentRuns', () => ({
@@ -238,4 +243,51 @@ it('keeps the frozen canvas baseline through a lost start response and re-associ
   };
   expect(writeDelegationCanvasBaseline(owner, 'root-d', advanced as never)).toBe(true);
   expect(readDelegationCanvasBaseline(owner, 'root-d')).toEqual(advanced);
+});
+
+it('associates a persisted discussion canvas baseline with the collaboration task and root run', () => {
+  const baseline = {
+    revision: 7,
+    nodes: [{ id: 'group', type: 'groupNode', data: { title: 'Scene' } }],
+    edges: [],
+    metadata: { shotMetadata: {} },
+  };
+  expect(saveDiscussionCanvasBaseline(owner, 'source-request', baseline as never)).toBe(true);
+  expect(associateDiscussionCanvasBaseline(owner, {
+    sourceRequestId: 'source-request',
+    taskId: 'task-1',
+    canvasId: owner.canvas,
+    conversationId: owner.conversation,
+    delegationId: 'delegation-1',
+    rootDelegationId: 'root-1',
+    runId: 'run-1',
+  })).toEqual(baseline);
+  expect(readDiscussionCanvasBaseline(owner, 'source-request')).toMatchObject({
+    taskId: 'task-1',
+    delegationId: 'delegation-1',
+    rootDelegationId: 'root-1',
+    runId: 'run-1',
+    canvasBaseline: baseline,
+  });
+  expect(readDelegationCanvasBaseline(owner, 'root-1')).toEqual(baseline);
+
+  const advanced = { ...baseline, revision: 8 };
+  expect(writeDelegationCanvasBaseline(owner, 'root-1', advanced as never)).toBe(true);
+  expect(readDelegationCanvasBaseline(owner, 'delegation-1')).toEqual(advanced);
+  expect(readDiscussionCanvasBaseline(owner, 'source-request')?.canvasBaseline).toEqual(advanced);
+});
+
+it('refuses to associate a discussion baseline with a different canvas scope', () => {
+  const baseline = { revision: 1, nodes: [], edges: [] };
+  expect(saveDiscussionCanvasBaseline(owner, 'source-request', baseline as never)).toBe(true);
+  expect(associateDiscussionCanvasBaseline(owner, {
+    sourceRequestId: 'source-request',
+    taskId: 'task-1',
+    canvasId: 'other-canvas',
+    conversationId: owner.conversation,
+    delegationId: 'delegation-1',
+    rootDelegationId: 'delegation-1',
+    runId: 'run-1',
+  })).toBeNull();
+  expect(readDelegationCanvasBaseline(owner, 'delegation-1')).toBeNull();
 });

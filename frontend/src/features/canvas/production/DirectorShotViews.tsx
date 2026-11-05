@@ -7,12 +7,75 @@ import type { PathPoint, SceneBlocking } from './SceneBlockingEditor';
 type RecordValue = Record<string, unknown>;
 type Shot = RecordValue & { group: string; scene: string };
 type TimedItem = { start: number; end: number; label: string; title: string };
+export interface DirectorShotReviewRow {
+  groupId: string;
+  groupTitle: string;
+  scene: string;
+  groupObjective: string;
+  groupVisibleTurn: string;
+  groupRelationToPrevious: string;
+  groupSourceSpanIds: string[];
+  groupDramaticBeatIds: string[];
+  order: number;
+  shotId: string;
+  shotSourceSpanIds: string[];
+  shotDramaticBeatIds: string[];
+  subject: string;
+  description: string;
+  visualDescription: string;
+  action: string;
+  spaceAnchor: string;
+  narrativePurpose: string;
+  audienceAttention: string;
+  emotionalEffect: string;
+  continuityStrategy: string;
+  shotSize: string;
+  cameraAngle: string;
+  cameraMotion: string;
+  composition: string;
+  techniqueIntent: string;
+  visibleStartState: string;
+  visibleEndState: string;
+  durationSeconds: string;
+  dialogue: string[];
+  performance: string[];
+  shot: Shot;
+}
+export interface DirectorShotReviewGroup {
+  id: string;
+  title: string;
+  scene: string;
+  objective: string;
+  visibleTurn: string;
+  relationToPrevious: string;
+  sourceSpanIds: string[];
+  dramaticBeatIds: string[];
+  shots: DirectorShotReviewRow[];
+}
 export interface DirectorPreviewGroup {
   id: string;
   director_revision_id?: string;
   stages: {
     render?: { status?: string; grid_asset?: string; needs_regeneration?: boolean };
-    video?: { status?: string; original_audio_path?: string; needs_regeneration?: boolean };
+    video?: {
+      status?: string;
+      revision?: number;
+      video_asset?: string;
+      original_audio_path?: string;
+      ambience_stem_path?: string;
+      ambience_stem_status?: string;
+      needs_regeneration?: boolean;
+      video_spans?: Array<{
+        span_index?: number;
+        beat_numbers?: number[];
+        start_seconds?: number;
+        end_seconds?: number;
+        has_dialogue?: boolean;
+        dialogue_source?: 'external_tts' | 'h3_native';
+        external_audio_ready?: boolean;
+        external_audio_path?: string;
+      }>;
+    };
   };
 }
 
@@ -23,6 +86,115 @@ function number(value: unknown, fallback = 0): number {
 
 function creativeOf(shot: Shot): RecordValue {
   return shot.creative && typeof shot.creative === 'object' ? shot.creative as RecordValue : {};
+}
+
+function textValue(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map(textValue).filter(Boolean).join('、');
+  return '';
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(textValue).filter(Boolean) : [];
+}
+
+function intentValue(shot: Shot, key: string): string {
+  const intent = shot.intent && typeof shot.intent === 'object' ? shot.intent as RecordValue : {};
+  return textValue(intent[key]);
+}
+
+function performanceDetails(shot: Shot): string[] {
+  const performance = creativeOf(shot).performance as RecordValue | undefined;
+  const characters = Array.isArray(performance?.characters) ? performance.characters as RecordValue[] : [];
+  return characters.flatMap(character => {
+    const actor = textValue(character.subject_id);
+    const details = [
+      ['目標', character.goal], ['阻碍', character.obstacle], ['策略', character.tactics],
+      ['可见行为', character.visible_behavior], ['视线', character.gaze_target],
+      ['接触', character.contact], ['持有物', character.held_objects], ['惯性', character.inertia],
+    ].flatMap(([label, value]) => {
+      const text = textValue(value);
+      return text ? [`${String(label)}：${text}`] : [];
+    });
+    const beats = (Array.isArray(character.beats) ? character.beats as RecordValue[] : []).flatMap(beat => {
+      const at = typeof beat.at_seconds === 'number' ? `${beat.at_seconds} 秒` : '';
+      const event = textValue(beat.event_anchor);
+      const behavior = textValue(beat.behavior);
+      const body = [at, event, behavior].filter(Boolean).join('：');
+      return body ? [body] : [];
+    });
+    const content = [...details, ...beats].join('；');
+    return content ? [`${actor ? `${actor}：` : ''}${content}`] : [];
+  });
+}
+
+export function projectDirectorShotReviewGroups(
+  groups: Array<Record<string, unknown>>,
+  semantics?: SemanticCandidate,
+): DirectorShotReviewGroup[] {
+  const blocks = new Map<string, string>();
+  for (const scene of semantics?.scenes ?? []) for (const block of scene.blocks) blocks.set(block.id, block.text);
+  return groups.map(group => {
+    const context = group.creative_context as RecordValue | undefined;
+    const id = textValue(group.group_id ?? group.id);
+    const scene = textValue(context?.scene_id ?? group.scene_id ?? group.scene_anchor);
+    const groupReview = {
+      id,
+      title: textValue(group.title ?? group.name ?? id),
+      scene,
+      objective: textValue(group.objective),
+      visibleTurn: textValue(group.visible_turn),
+      relationToPrevious: textValue(group.relation_to_previous),
+      sourceSpanIds: stringList(group.source_span_ids),
+      dramaticBeatIds: stringList(group.dramatic_beat_ids),
+    };
+    const shots = Array.isArray(group.shots) ? group.shots as RecordValue[] : [];
+    return {
+      ...groupReview,
+      shots: shots.map((value, index) => {
+        const shot = { ...value, group: id, scene } as Shot;
+        const dialogueIds = stringList(shot.dialogue_source_ids);
+        return {
+          groupId: id,
+          groupTitle: groupReview.title,
+          scene,
+          groupObjective: groupReview.objective,
+          groupVisibleTurn: groupReview.visibleTurn,
+          groupRelationToPrevious: groupReview.relationToPrevious,
+          groupSourceSpanIds: groupReview.sourceSpanIds,
+          groupDramaticBeatIds: groupReview.dramaticBeatIds,
+          order: index + 1,
+          shotId: textValue(shot.id),
+          shotSourceSpanIds: stringList(shot.source_span_ids),
+          shotDramaticBeatIds: stringList(shot.dramatic_beat_ids),
+          subject: textValue(shot.subject),
+          description: textValue(shot.description),
+          visualDescription: textValue(shot.visual_description),
+          action: textValue(shot.action),
+          spaceAnchor: textValue(shot.space_anchor),
+          narrativePurpose: intentValue(shot, 'narrative_purpose'),
+          audienceAttention: intentValue(shot, 'audience_attention'),
+          emotionalEffect: intentValue(shot, 'emotional_effect'),
+          continuityStrategy: intentValue(shot, 'continuity_strategy'),
+          shotSize: textValue(shot.shot_size),
+          cameraAngle: textValue(shot.camera_angle),
+          cameraMotion: textValue(shot.camera_motion),
+          composition: textValue(shot.composition),
+          techniqueIntent: textValue(shot.technique_intent),
+          visibleStartState: textValue(shot.visible_start_state),
+          visibleEndState: textValue(shot.visible_end_state),
+          durationSeconds: textValue(shot.duration_seconds),
+          dialogue: dialogueIds.map(id => {
+            const dialogue = textValue(blocks.get(id));
+            return dialogue ? `${id}：${dialogue}` : id;
+          }),
+          performance: performanceDetails(shot),
+          shot,
+        };
+      }),
+    };
+  });
 }
 
 function performanceBeats(shot: Shot): Array<{ actor: string; at: number; behavior: string; event: string; end: number }> {
@@ -133,6 +305,7 @@ export function DirectorShotViews({ groups, view, mediaGroups = [], semantics, s
   semantics?: SemanticCandidate;
   sceneBlockings?: Record<string, { current?: { blocking?: SceneBlocking } }>;
 }) {
+  const reviewGroups = projectDirectorShotReviewGroups(groups, semantics);
   const shots: Shot[] = groups.flatMap(group => {
     const context = group.creative_context as RecordValue | undefined;
     const groupId = String(group.id ?? group.group_id ?? '');
@@ -201,13 +374,37 @@ export function DirectorShotViews({ groups, view, mediaGroups = [], semantics, s
       if (version === playbackVersion.current && audio.current === player) { setPlaying(false); setMediaError('已有音轨无法播放，请检查文件后重试。'); }
     });
   }, [playing, position, groupStart, audioUrl]);
-  if (view === 'table') return <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr>{['组 / 镜头', '场景', '景别 / 摄影', '人物行动', '对白来源', '起止状态', '时长'].map(label => <th className="border-b p-2" key={label}>{label}</th>)}</tr></thead><tbody>
-    {shots.map((item, i) => {
-      const lineItems = dialogueIntervals(item, semantics);
-      const performance = creativeOf(item).performance as RecordValue | undefined;
-      const characters = Array.isArray(performance?.characters) ? performance.characters as RecordValue[] : [];
-      return <tr key={`${item.group}:${String(item.id ?? i)}`}><td className="border-b p-2">{item.group} / {String(item.id ?? i + 1)}</td><td className="border-b p-2">{item.scene}</td><td className="border-b p-2">{String(item.shot_size ?? '')}<br />{String(item.camera_angle ?? '')}<br />{String(item.camera_motion ?? '')}</td><td className="border-b p-2">{String(item.subject ?? '')}<br />{String(item.action ?? '')}{characters.map(character => <div key={String(character.subject_id)}>{String(character.subject_id)} · {Array.isArray(character.beats) ? (character.beats as RecordValue[]).map(beat => `${number(beat.at_seconds).toFixed(1)}s ${String(beat.behavior ?? '')}`).join(' / ') : ''}</div>)}</td><td className="border-b p-2">{lineItems.map(line => <div key={line.title}>{line.title.split(' · 时间')[0]}</div>)}</td><td className="border-b p-2">{String(item.visible_start_state ?? '')} → {String(item.visible_end_state ?? '')}</td><td className="border-b p-2">{durations[i]} 秒</td></tr>;
-    })}
+  if (view === 'table') return <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr>{['组 / 镜头', '叙事上下文', '画面与动作', '镜头意图', '摄影设计', '对白', '起止状态', '时长'].map(label => <th className="border-b p-2" key={label}>{label}</th>)}</tr></thead><tbody>
+    {reviewGroups.flatMap(group => group.shots.map(row => {
+      const cell = (items: Array<[string, string]>) => items.filter(([, value]) => value).map(([label, value]) => <div key={label}><span className="font-medium">{label}：</span>{value}</div>);
+      const groupContext: Array<[string, string]> = [
+        ['场景', row.scene], ['目标', row.groupObjective], ['可见转折', row.groupVisibleTurn],
+        ['与上一组关系', row.groupRelationToPrevious], ['来源片段', row.groupSourceSpanIds.join('、')],
+        ['戏剧节拍', row.groupDramaticBeatIds.join('、')],
+      ];
+      const shotContent: Array<[string, string]> = [
+        ['主体', row.subject], ['镜头描述', row.description], ['画面描述', row.visualDescription],
+        ['动作', row.action], ['空间锚点', row.spaceAnchor], ...row.performance.map((value, index) => [`表演 ${index + 1}`, value] as [string, string]),
+      ];
+      const shotIntent: Array<[string, string]> = [
+        ['叙事目的', row.narrativePurpose], ['观众注意', row.audienceAttention],
+        ['情绪效果', row.emotionalEffect], ['连续性策略', row.continuityStrategy],
+      ];
+      const camera: Array<[string, string]> = [
+        ['景别', row.shotSize], ['机位', row.cameraAngle], ['运镜', row.cameraMotion],
+        ['构图', row.composition], ['技法意图', row.techniqueIntent],
+      ];
+      return <tr key={`${row.groupId}:${row.shotId || row.order}`}>
+        <td className="border-b p-2">{row.groupTitle} / {row.shotId || row.order}</td>
+        <td className="border-b p-2">{cell(groupContext)}</td>
+        <td className="border-b p-2">{cell(shotContent)}</td>
+        <td className="border-b p-2">{cell(shotIntent)}</td>
+        <td className="border-b p-2">{cell(camera)}</td>
+        <td className="border-b p-2">{row.dialogue.map((line, index) => <div key={`${row.shotId}:${index}`}>{line}</div>)}</td>
+        <td className="border-b p-2">{cell([['起始状态', row.visibleStartState], ['结束状态', row.visibleEndState]])}</td>
+        <td className="border-b p-2">{row.durationSeconds ? `${row.durationSeconds} 秒` : ''}</td>
+      </tr>;
+    }))}
   </tbody></table></div>;
   if (!shot) return <section aria-label="分镜时间预演" className="rounded-lg border p-4 text-sm text-muted-foreground">当前版本没有可预演镜头。</section>;
   return <section aria-label="分镜时间预演" className="space-y-3 rounded-lg border p-4">

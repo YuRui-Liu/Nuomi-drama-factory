@@ -128,7 +128,7 @@ export function Header() {
   const hasSettingsWarning = ceRuntime && canConfigure && Boolean(settingsNotice);
   const settingsWarningBubble = useFloatingBubblePosition(
     settingsAnchorRef,
-    hasSettingsWarning && !settingsOpen && !settingsWarningBubbleDismissed,
+    hasSettingsWarning && !params.project && !settingsOpen && !settingsWarningBubbleDismissed,
   );
   const project = params.project ?? null;
 

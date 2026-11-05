@@ -5,9 +5,9 @@ import { CanvasWorkspaceSwitcher } from '@/features/creation-workspace/CanvasWor
 import type { CreationCanvas } from '@/features/creation-workspace/contracts';
 
 const canvases: CreationCanvas[] = [
-  { canvas_id: 'concept-1', kind: 'concept', episode_id: null, title: '雨夜构思', status: 'applied' },
-  { canvas_id: 'episode-1', kind: 'episode', episode_id: 'episode-1', title: '第一集', status: 'applied' },
-  { canvas_id: 'free-1', kind: 'free', episode_id: null, title: '自由草稿', status: 'applied' },
+  { canvas_id: 'concept-1', kind: 'concept', episode_id: null, episode_number: null, title: '雨夜构思', status: 'applied' },
+  { canvas_id: 'episode-1', kind: 'episode', episode_id: 'episode-1', episode_number: 1, title: '第一集', status: 'applied' },
+  { canvas_id: 'free-1', kind: 'free', episode_id: null, episode_number: null, title: '自由草稿', status: 'applied' },
 ];
 
 describe('CanvasWorkspaceSwitcher', () => {

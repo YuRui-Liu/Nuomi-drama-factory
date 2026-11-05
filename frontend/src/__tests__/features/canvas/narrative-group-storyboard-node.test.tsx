@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { NodeProps } from '@xyflow/react';
+import { ReactFlowProvider, type NodeProps } from '@xyflow/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { NarrativeGroupStoryboardNode } from '@/features/canvas/nodes/NarrativeGroupStoryboardNode';
 
@@ -22,6 +22,10 @@ vi.mock('@/features/canvas/production/DirectorShotEditor', () => ({
   DirectorShotEditor: ({ onSaved }: { onSaved: (revision: Record<string, unknown>) => void }) => <button type="button" onClick={() => onSaved({ revision_id: 'candidate-revision', status: 'candidate', groups: [{ id: 'group-a', shots: [] }] })}>模拟保存候选</button>,
 }));
 vi.mock('@/features/canvas/production/DirectorProductionPanel', () => ({ DirectorProductionPanel: () => null }));
+vi.mock('@/features/canvas/ui/NodeHeader', () => ({
+  NodeHeader: ({ titleText }: { titleText: string }) => <h2>{titleText}</h2>,
+  NODE_HEADER_FLOATING_POSITION_CLASS: '',
+}));
 
 const oldRevision = {
   revision_id: 'revision-old',
@@ -29,11 +33,11 @@ const oldRevision = {
   groups: [{ id: 'group-a', title: '旧版门口对峙', objective: '保持原目的', shots: [{ id: 'old-shot', subject: '旧版本镜头', action: '等待回应', duration_seconds: 3 }] }],
 };
 
-function renderNode(revisionId = 'revision-old') {
+function renderNode(revisionId = 'revision-old', operation?: string, overrides: Record<string, unknown> = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const element = (boundRevisionId: string) => {
-    const props = { id: 'bound-node', data: { episodeNumber: 1, groupId: 'group-a', directorRevisionId: boundRevisionId } } as unknown as NodeProps;
-    return <QueryClientProvider client={client}><NarrativeGroupStoryboardNode {...props} /></QueryClientProvider>;
+    const props = { id: 'bound-node', data: { episodeNumber: 1, groupId: 'group-a', directorRevisionId: boundRevisionId, ...(operation ? { operation } : {}), ...overrides } } as unknown as NodeProps;
+    return <ReactFlowProvider><QueryClientProvider client={client}><NarrativeGroupStoryboardNode {...props} /></QueryClientProvider></ReactFlowProvider>;
   };
   const result = render(element(revisionId));
   return { ...result, client, rerenderRevision: (nextRevisionId: string) => result.rerender(element(nextRevisionId)) };
@@ -89,7 +93,7 @@ it.each([
     directorRevisionId: 'revision-old',
   };
   const props = { id: 'bound-node', data } as unknown as NodeProps;
-  const result = render(<QueryClientProvider client={client}><NarrativeGroupStoryboardNode {...props} /></QueryClientProvider>);
+  const result = render(<ReactFlowProvider><QueryClientProvider client={client}><NarrativeGroupStoryboardNode {...props} /></QueryClientProvider></ReactFlowProvider>);
 
   expect(await screen.findByRole('alert')).toHaveTextContent(/有效集数绑定/);
   expect(mocks.apiCall).not.toHaveBeenCalled();
@@ -131,6 +135,36 @@ it('switches only this node to the newly saved candidate revision', async () => 
   result.rerenderRevision('candidate-revision');
   await waitFor(() => expect(mocks.apiCall).toHaveBeenCalledWith('projects/project/episodes/1/director-plans/candidate-revision'));
   expect(mocks.apiCall).toHaveBeenCalledWith('projects/project/episodes/1/director-plans/candidate-revision');
+  result.unmount();
+  result.client.clear();
+});
+
+it.each(['render', 'retry_render'])('renders %s as a fixed, read-only production graph node', operation => {
+  const result = renderNode('revision-7', operation, {
+    imageUrl: '/static/projects/project/images/group-board.png',
+    orchestration: { status: 'failed', error: { code: 'provider_error', message: '分镜服务暂时不可用' } },
+  });
+
+  expect(screen.getByText(/固定 E01 · 叙事组 group-a · 导演版本 revision-7/)).toBeInTheDocument();
+  expect(screen.getByRole('status')).toHaveTextContent('执行失败');
+  expect(screen.getByRole('alert')).toHaveTextContent('分镜服务暂时不可用');
+  expect(screen.getByRole('img', { name: 'E01 · group-a · 分镜图' })).toHaveAttribute('src', '/static/projects/project/images/group-board.png');
+  expect(screen.queryByRole('button', { name: '模拟保存候选' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '连接至宫格出图' })).not.toBeInTheDocument();
+  expect(mocks.apiCall).not.toHaveBeenCalled();
+  expect(mocks.updateNodeData).not.toHaveBeenCalled();
+
+  result.unmount();
+  result.client.clear();
+});
+
+it('keeps the legacy storyboard editor for validate operation nodes', async () => {
+  mocks.apiCall.mockResolvedValue(oldRevision);
+  const result = renderNode('revision-old', 'validate');
+
+  expect(await screen.findByText('旧版本镜头')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '连接至宫格出图' })).toBeInTheDocument();
+
   result.unmount();
   result.client.clear();
 });

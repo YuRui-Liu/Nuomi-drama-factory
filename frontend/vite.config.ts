@@ -131,6 +131,11 @@ export default defineConfig(({ mode }) => {
       exclude: ["@ffmpeg/ffmpeg", "@ffmpeg/util"],
     },
     server: {
+      watch: {
+        // Vitest files are not app modules. Watching them causes full-page
+        // updates during collaborative test edits and interrupts active work.
+        ignored: ["**/src/__tests__/**"],
+      },
       fs: {
         allow: [searchForWorkspaceRoot(process.cwd()), interFontDirectory],
       },

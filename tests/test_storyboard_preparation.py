@@ -35,6 +35,126 @@ def test_prepare_idempotent_and_manual_conflict(ctx):
     assert kept['draft']['segments'][0]['prompt'] == 'manual'
 
 
+def test_prepare_rejects_clear_dividers_that_conflict_with_grid_metadata(ctx):
+    from PIL import ImageDraw
+    from novelvideo.freezone.video_director.storyboard_preparation import prepare_storyboard
+
+    image = Image.new('RGB', (768, 2048), '#303030')
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((382, 0, 385, 2047), fill='white')
+    for y in (681, 1364):
+        draw.rectangle((0, y, 767, y + 2), fill='white')
+    image.save(ctx.output_dir / 'board.png')
+
+    canvas = read_canvas(ctx.output_dir, 'canvas')
+    canvas['nodes'][0]['data'].update(
+        gridRows=2,
+        gridCols=3,
+        frames=[{'id': f'shot-{index}', 'description': f'镜头{index}'} for index in range(6)],
+    )
+    canvas['nodes'][1]['data']['draft']['aspectRatio'] = '9:16'
+    atomic_write_json(canvas_path(ctx.output_dir, 'canvas'), canvas)
+
+    with pytest.raises(ValueError, match=r'visible storyboard dividers indicate 3 rows x 2 columns.*metadata requests 2 rows x 3 columns'):
+        prepare_storyboard(ctx, canvas_id='canvas', node_id='video', base_revision=1, request_id='grid-conflict')
+
+    canvas = read_canvas(ctx.output_dir, 'canvas')
+    canvas['nodes'][0]['data'].update(gridRows=3, gridCols=2)
+    atomic_write_json(canvas_path(ctx.output_dir, 'canvas'), canvas)
+    matching = prepare_storyboard(
+        ctx, canvas_id='canvas', node_id='video', base_revision=1, request_id='grid-matched',
+    )
+    assert len(matching['draft']['segments']) == 6
+
+
+def test_prepare_uses_explicit_shot_durations_and_reports_h3_aligned_total(ctx):
+    from novelvideo.freezone.video_director.storyboard_preparation import prepare_storyboard
+    from novelvideo.media_capabilities.video.h3_timeline import frames_for_duration
+
+    canvas = read_canvas(ctx.output_dir, 'canvas')
+    board = canvas['nodes'][0]['data']
+    durations = [3, 3, 4, 3, 4]
+    board.update(gridRows=1, gridCols=5, frames=[
+        {'id': f'shot-{index + 1}', 'description': f'镜头{index + 1}', 'duration_seconds': duration}
+        for index, duration in enumerate(durations)
+    ])
+    Image.new('RGB', (505, 57), 'red').save(ctx.output_dir / 'board.png')
+    atomic_write_json(canvas_path(ctx.output_dir, 'canvas'), canvas)
+
+    result = prepare_storyboard(ctx, canvas_id='canvas', node_id='video', base_revision=1,
+                                request_id='five-shot-timing', shots=board['frames'])
+
+    expected_frames = sum(frames_for_duration(duration) for duration in durations)
+    assert result['preparation']['requestedDurationSeconds'] == 17
+    assert result['preparation']['actualTotalFrames'] == expected_frames
+    assert result['preparation']['actualDurationSeconds'] == expected_frames / 24
+    assert [segment['duration_seconds'] for segment in result['draft']['segments']] == durations
+
+
+def test_prepare_selects_stable_shot_ids_without_replacing_full_grid(ctx):
+    from novelvideo.freezone.video_director.storyboard_preparation import prepare_storyboard, guard_prepared
+
+    board_image = Image.new('RGB', (101, 57))
+    for box, color in [((0, 0, 50, 28), 'red'), ((50, 0, 101, 28), 'green'),
+                       ((0, 28, 50, 57), 'blue'), ((50, 28, 101, 57), 'yellow')]:
+        board_image.paste(color, box)
+    board_image.save(ctx.output_dir / 'board.png')
+    canvas = read_canvas(ctx.output_dir, 'canvas')
+    source_frames = [
+        {'id': f'shot-{index}', 'description': f'镜头{index}', 'duration_seconds': 3}
+        for index in range(1, 5)
+    ]
+    canvas['nodes'][0]['data']['frames'] = source_frames
+    atomic_write_json(canvas_path(ctx.output_dir, 'canvas'), canvas)
+
+    result = prepare_storyboard(
+        ctx, canvas_id='canvas', node_id='video', base_revision=1, request_id='selected-shots',
+        shot_ids=['shot-4', 'shot-2'],
+    )
+
+    assert result['preparation']['selectedShotIds'] == ['shot-2', 'shot-4']
+    assert [cell['shotId'] for cell in result['preparation']['selectedCells']] == ['shot-2', 'shot-4']
+    assert result['preparation']['requestedDurationSeconds'] == 6
+    assert [segment['id'] for segment in result['draft']['segments']] == ['shot-2', 'shot-4']
+    assert [segment['first_frame']['image_id'] for segment in result['draft']['segments']] == ['shot-2', 'shot-4']
+    assert [segment['first_frame']['url'] for segment in result['draft']['segments']] == [
+        cell['imageUrl'] for cell in result['preparation']['selectedCells']
+    ]
+    assert result['draft']['references'] == []
+    saved = read_canvas(ctx.output_dir, 'canvas')
+    assert [frame['id'] for frame in saved['nodes'][0]['data']['frames']] == [
+        'shot-1', 'shot-2', 'shot-3', 'shot-4'
+    ]
+    guard_prepared(ctx, 'canvas', 'video', result['draft'])
+
+
+@pytest.mark.parametrize('shot_ids', [['unknown'], ['shot-1', 'shot-1'], [' shot-1'], [{}]])
+def test_prepare_rejects_invalid_shot_id_selection(ctx, shot_ids):
+    from novelvideo.freezone.video_director.storyboard_preparation import prepare_storyboard
+
+    canvas = read_canvas(ctx.output_dir, 'canvas')
+    canvas['nodes'][0]['data']['frames'] = [
+        {'id': f'shot-{index}', 'description': f'镜头{index}', 'duration_seconds': 3}
+        for index in range(1, 5)
+    ]
+    atomic_write_json(canvas_path(ctx.output_dir, 'canvas'), canvas)
+    with pytest.raises(ValueError, match='shot_ids'):
+        prepare_storyboard(ctx, canvas_id='canvas', node_id='video', base_revision=1,
+                           request_id='invalid-selection', shot_ids=shot_ids)
+
+
+def test_guard_reports_malformed_selected_shot_ids_as_stale_preparation(ctx):
+    from novelvideo.freezone.video_director.storyboard_preparation import prepare_storyboard, guard_prepared
+
+    result = prepare_storyboard(ctx, canvas_id='canvas', node_id='video', base_revision=1, request_id='a')
+    canvas = read_canvas(ctx.output_dir, 'canvas')
+    canvas['nodes'][1]['data']['storyboardPreparation']['selectedShotIds'] = [{}]
+    atomic_write_json(canvas_path(ctx.output_dir, 'canvas'), canvas)
+
+    with pytest.raises(ValueError, match='selected shot IDs are invalid'):
+        guard_prepared(ctx, 'canvas', 'video', result['draft'])
+
+
 def test_missing_description_and_stale_guard(ctx):
     from novelvideo.freezone.video_director.storyboard_preparation import prepare_storyboard, guard_prepared
     result = prepare_storyboard(ctx, canvas_id='canvas', node_id='video', base_revision=1, request_id='a')
@@ -74,9 +194,19 @@ async def test_api_prepare_editor_contract(ctx, monkeypatch):
         roles.append(required_role)
         return ctx, None, None, ctx.output_dir, str(ctx.output_dir)
     monkeypatch.setattr(api, '_resolve_freezone_project', resolve)
-    result = await api.prepare('p', api.PrepareStoryboardBody(canvas_id='canvas', node_id='video', base_revision=1, request_id='a'), {})
+    canvas = read_canvas(ctx.output_dir, 'canvas')
+    canvas['nodes'][0]['data']['frames'] = [
+        {'id': f'cell-{index}', 'description': f'镜头{index}'} for index in range(4)
+    ]
+    atomic_write_json(canvas_path(ctx.output_dir, 'canvas'), canvas)
+    result = await api.prepare('p', api.PrepareStoryboardBody(
+        canvas_id='canvas', node_id='video', base_revision=1, request_id='a',
+        shot_ids=['cell-3'],
+    ), {})
     assert result['ok']
     assert roles == ['editor']
+    assert result['data']['preparation']['selectedShotIds'] == ['cell-3']
+    assert len(result['data']['draft']['segments']) == 1
     assert result['data']['draft']['segments'][0]['first_frame']['url']
 
 
@@ -231,7 +361,7 @@ def test_source_change_discards_previous_rectangles(ctx, rows, cols, new_url):
     from novelvideo.freezone.video_director.storyboard_preparation import prepare_storyboard, guard_prepared
     from novelvideo.freezone.video_director.storyboard_adaptation import grid_rects
     prepared = prepare_storyboard(ctx, canvas_id='canvas', node_id='video', base_revision=1, request_id='a',
-        rects=[[0, 0, 10, 10], [10, 0, 20, 10], [0, 10, 10, 20], [10, 10, 20, 20]])
+        rects=[[0, 0, 32, 18], [32, 0, 64, 18], [0, 18, 32, 36], [32, 18, 64, 36]])
     canvas = prepared['canvas']
     board = canvas['nodes'][0]['data']
     board.update(gridRows=rows, gridCols=cols, frames=[{'description': str(i)} for i in range(rows * cols)])
@@ -241,6 +371,10 @@ def test_source_change_discards_previous_rectangles(ctx, rows, cols, new_url):
     atomic_write_json(canvas_path(ctx.state_dir, 'canvas'), canvas)
     with pytest.raises(ValueError, match='stale'):
         guard_prepared(ctx, 'canvas', 'video', prepared['draft'])
+    if rows == 1 and cols == 4:
+        with pytest.raises(ValueError, match='aspect ratio differs too much'):
+            prepare_storyboard(ctx, canvas_id='canvas', node_id='video', base_revision=2, request_id='b')
+        return
     new = prepare_storyboard(ctx, canvas_id='canvas', node_id='video', base_revision=2, request_id='b')
     assert [tuple(c['rect']) for c in new['preparation']['cells']] == grid_rects(101, 57, rows, cols)
     assert new['preparation']['sourceGridRows'] == rows
@@ -259,6 +393,96 @@ def test_post_shots_preserves_frame_identity_and_hash(ctx):
     assert frames[0]['id'] == 'original' and frames[0]['referenceIndex'] == 7
     assert frames[1]['id'] == 'board-cell-2'
     guard_prepared(ctx, 'canvas', 'video', prepared['draft'])
+
+
+def test_prepare_carries_same_scene_director_handoff_from_board_metadata(ctx):
+    from novelvideo.freezone.video_director.storyboard_preparation import prepare_storyboard
+
+    canvas = read_canvas(ctx.state_dir, 'canvas')
+    previous = {
+        'id': 'previous-board', 'type': 'storyboardGenNode',
+        'data': {
+            'scene_id': 'scene-1', 'group_id': 'group-6', 'ordinal': 0,
+            'directorPlan': {
+                'id': 'group-6', 'scene_anchor': 'rainy shop doorway',
+                'geo_layout': 'Door opens toward the north alley',
+                'objective': 'Discover the animal is fading',
+                'shots': [{'id': 'previous-last', 'visible_end_state': 'The rescuer holds the animal by the doorway'}],
+            },
+        },
+    }
+    board = canvas['nodes'][0]
+    board['data'].update(
+        scene_id='scene-1', group_id='group-7', ordinal=1,
+        frames=[
+            {'id': f'current-{index}', 'description': f'Current shot {index}', 'duration_seconds': 3}
+            for index in range(4)
+        ],
+        directorPlan={
+            'id': 'group-7', 'relation_to_previous': 'causal',
+            'scene_anchor': 'rainy shop doorway',
+            'geo_layout': 'Door opens toward the north alley',
+            'objective': 'Carry the animal to the clinic',
+            'shots': [
+                {'id': 'current-0', 'visible_start_state': 'The rescuer begins at the same doorway holding the animal'},
+                {'id': 'current-1', 'visible_start_state': 'The rescuer checks the alley'},
+                {'id': 'current-2', 'visible_start_state': 'The rescuer steps outside'},
+                {'id': 'current-3', 'visible_start_state': 'The rescuer turns toward the clinic'},
+            ],
+        },
+    )
+    canvas['nodes'].append(previous)
+    atomic_write_json(canvas_path(ctx.state_dir, 'canvas'), canvas)
+
+    result = prepare_storyboard(
+        ctx, canvas_id='canvas', node_id='video', base_revision=1, request_id='same-scene-handoff',
+    )
+
+    context = result['draft']['continuity_context']
+    current_plan = board['data']['directorPlan']
+    previous_plan = previous['data']['directorPlan']
+    assert context['director_intent'] == current_plan['objective']
+    assert context['previous_end_state'] == previous_plan['shots'][-1]['visible_end_state']
+    assert context['current_start_state'] == current_plan['shots'][0]['visible_start_state']
+    assert context['shared_space'] == current_plan['scene_anchor']
+    assert context['spatial_layout'] == current_plan['geo_layout']
+    assert context['scene_id'] == board['data']['scene_id']
+    assert context['previous_group_id'] == previous['data']['group_id']
+    assert context['current_group_id'] == board['data']['group_id']
+    assert context['relation_to_previous'] == current_plan['relation_to_previous']
+
+
+@pytest.mark.parametrize(('previous_scene', 'relation'), [('scene-2', 'causal'), ('scene-1', 'time_jump'), ('scene-1', 'single')])
+def test_prepare_does_not_inherit_previous_end_state_across_scene_or_break(ctx, previous_scene, relation):
+    from novelvideo.freezone.video_director.storyboard_preparation import prepare_storyboard
+
+    canvas = read_canvas(ctx.state_dir, 'canvas')
+    previous = {
+        'id': 'previous-board', 'type': 'storyboardGenNode',
+        'data': {
+            'scene_id': previous_scene, 'group_id': 'group-6', 'ordinal': 0,
+            'directorPlan': {'id': 'group-6', 'shots': [{'id': 'previous-last', 'visible_end_state': 'Prior state'}]},
+        },
+    }
+    board = canvas['nodes'][0]
+    board['data'].update(
+        scene_id='scene-1', group_id='group-7', ordinal=1,
+        frames=[{'id': f'current-{index}', 'description': f'Current shot {index}', 'duration_seconds': 3}
+                for index in range(4)],
+        directorPlan={
+            'id': 'group-7', 'relation_to_previous': relation, 'scene_anchor': 'same room',
+            'objective': 'Continue the action',
+            'shots': [{'id': f'current-{index}', 'visible_start_state': 'Current start'} for index in range(4)],
+        },
+    )
+    canvas['nodes'].append(previous)
+    atomic_write_json(canvas_path(ctx.state_dir, 'canvas'), canvas)
+
+    result = prepare_storyboard(
+        ctx, canvas_id='canvas', node_id='video', base_revision=1, request_id=f'no-handoff-{previous_scene}-{relation}',
+    )
+
+    assert result['draft']['continuity_context']['previous_end_state'] is None
 
 
 @pytest.mark.parametrize('change', ['url', 'legacy'])

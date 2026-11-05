@@ -22,6 +22,306 @@ def test_reference_generation_rejects_missing_typed_plan_before_transport():
         )
 
 
+def test_external_tts_h3_preparation_removes_all_dialogue_inputs():
+    from novelvideo.task_backend.runners import narrative_group_video as runner
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+
+    segment = H3DirectorSegment(
+        segment_id="shot-1",
+        beat_number=1,
+        prompt="A figure enters the room.",
+        duration_seconds=4,
+        first_frame="first.png",
+        last_frame="last.png",
+        dialogue="I have arrived.",
+        speaker="Mina",
+        dialogue_lines=({"speaker": "Mina", "text": "I have arrived."},),
+    )
+    beat = {
+        "id": "shot-1",
+        "visual_description": "A figure enters the room.",
+        "dialogue": "I have arrived.",
+        "speaker": "Mina",
+        "dialogue_lines": [{"speaker": "Mina", "text": "I have arrived."}],
+        "dialogue_required": True,
+    }
+
+    [prepared_segment], [prepared_beat] = runner._without_h3_dialogue(
+        [segment], [beat], dialogue_source="external_tts"
+    )
+
+    assert prepared_segment.dialogue == ""
+    assert prepared_segment.speaker == ""
+    assert prepared_segment.dialogue_lines == ()
+    assert prepared_segment.dialogue_source.value == "external_tts"
+    assert prepared_beat["dialogue"] == ""
+    assert prepared_beat["speaker"] == ""
+    assert prepared_beat["dialogue_lines"] == []
+    assert prepared_beat["dialogue_required"] is False
+
+
+def test_external_h3_prepared_digest_is_ordered_and_stable():
+    from novelvideo.task_backend.runners import narrative_group_video as runner
+
+    pins = {"episode": 1, "group_id": "g1", "plan_revision": 4}
+    hashes = [("shot-1", "a" * 64), ("shot-2", "b" * 64)]
+
+    first = runner._prepared_h3_context_digest(pins, hashes)
+    assert first == runner._prepared_h3_context_digest(dict(pins), list(hashes))
+    assert first != runner._prepared_h3_context_digest(pins, list(reversed(hashes)))
+
+
+def test_prepared_h3_reference_binding_digest_tracks_order_and_reference_bytes():
+    import hashlib
+
+    from novelvideo.media_capabilities.video.h3_prepared_plans import (
+        prepared_h3_reference_binding_digest,
+    )
+    from novelvideo.narrative_groups.video_references import ResolvedVideoReference
+
+    def reference(reference_id: str, content: bytes):
+        return ResolvedVideoReference(
+            reference_id=reference_id,
+            source_kind="character_identity",
+            label=reference_id,
+            subject_description=f"Identity {reference_id}",
+            path=Path(f"/{reference_id}.png"),
+            content=content,
+            sha256=hashlib.sha256(content).hexdigest(),
+            asset_id=reference_id,
+        )
+
+    first = reference("identity-a", b"first identity bytes")
+    second = reference("identity-b", b"second identity bytes")
+    original = prepared_h3_reference_binding_digest((first, second))
+
+    assert original == prepared_h3_reference_binding_digest((first, second))
+    assert original != prepared_h3_reference_binding_digest((second, first))
+    assert original != prepared_h3_reference_binding_digest(
+        (first, second), provider_workflow_id="provider-workflow-v2"
+    )
+    assert original != prepared_h3_reference_binding_digest((
+        reference("identity-a", b"changed identity bytes"), second
+    ))
+
+
+def test_prepared_ref2va_plan_keeps_exact_endpoint_frames_for_transport(monkeypatch):
+    import hashlib
+
+    from novelvideo.media_capabilities.video import h3_episode_pack
+    from novelvideo.media_capabilities.video.h3_director_plan import (
+        H3DirectorPlan,
+        H3ReferenceSubjectPlan,
+    )
+    from novelvideo.media_capabilities.video.h3_episode_pack import (
+        H3EpisodeInput,
+        H3EpisodeVideoSegment,
+        _segment_input_hash,
+    )
+    from novelvideo.media_capabilities.video.h3_prepared_plans import (
+        H3PreparedPlanImport,
+        H3PreparedPlanPins,
+        H3PreparedPlanSegment,
+        prepared_h3_context_digest,
+        prepared_h3_reference_binding_digest,
+    )
+    from novelvideo.media_capabilities.video.h3_prompt_compiler import (
+        project_director_plan_to_wire,
+    )
+    from novelvideo.media_capabilities.video.h3_prompt_optimizer import H3PromptContext
+    from novelvideo.media_capabilities.video.h3_reference_payload import (
+        build_h3_resolved_reference_facts,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.media_capabilities.video.h3_wire import compile_h3_wire
+    from novelvideo.narrative_groups.video_references import ResolvedVideoReference
+    from novelvideo.task_backend.runners import narrative_group_video as runner
+    from tests.media_capabilities.video.test_h3_episode_pack import _plan
+
+    first_frame = "/frozen/first-endpoint.png"
+    last_frame = "/frozen/last-endpoint.png"
+    first_bytes, last_bytes = b"first endpoint bytes", b"last endpoint bytes"
+    first_sha = hashlib.sha256(first_bytes).hexdigest()
+    last_sha = hashlib.sha256(last_bytes).hexdigest()
+    reference_bytes = b"ordered identity image"
+    reference = ResolvedVideoReference(
+        reference_id="hero-identity", source_kind="character_identity",
+        label="Hero identity", subject_description="approved hero appearance",
+        path=Path("/frozen/identity.png"), content=reference_bytes,
+        sha256=hashlib.sha256(reference_bytes).hexdigest(), asset_id="hero-v1",
+    )
+    facts = build_h3_resolved_reference_facts((reference,))
+    source = H3DirectorSegment(
+        segment_id="shot-1", beat_number=1, prompt="The hero opens the door.",
+        duration_seconds=4, first_frame=first_frame, last_frame=last_frame,
+    )
+    entry = H3EpisodeVideoSegment(
+        segment_id="shot-1", group_id="g1", shot_ids=("shot-1",),
+        duration_seconds=4, style_snapshot_id="style-1", source_segment=source,
+        context=H3PromptContext(
+            visual_description=source.prompt, narration="", prev_summary="",
+            next_summary="", first_frame_sha256=first_sha,
+            last_frame_sha256=last_sha, model_id="test-model",
+            style_prefix="cinematic realism", resolved_references=facts,
+        ),
+        mode="ref2va", summary=source.prompt,
+    )
+    episode_input = H3EpisodeInput(
+        episode=1, director_revision_id="rev-1", style_hash="style-hash",
+        style_video={"projection": "cinematic realism"}, segments=(entry,),
+    )
+    input_hash = _segment_input_hash(episode_input, entry)
+    pins = H3PreparedPlanPins(
+        project_id="demo", episode=1, group_id="g1",
+        workflow_id="runninghub:minimax-h3-ref", requested_mode="auto",
+        dialogue_source="external_tts", video_revision=0, plan_revision=1,
+        settings_revision=0, reference_revision=3,
+        reference_binding_sha256=prepared_h3_reference_binding_digest(
+            (reference,), provider_workflow_id="provider-workflow-v1"
+        ),
+        director_revision_id="rev-1", keyframe_revision=0,
+        keyframe_binding_sha256="a" * 64,
+    )
+    base_plan = _plan().model_dump(mode="json")
+    base_plan.update({
+        "mode": "ref2va", "total_frames": 96, "rigid_prompt": None,
+        "first_frame_anchor": None, "last_frame_anchor": None,
+        "reference_summary": "The hero retains the selected identity.",
+        "reference_subjects": [H3ReferenceSubjectPlan(
+            subject_index=1, source_picture_indexes=(1,),
+            description="The selected hero identity",
+            retention_marker="fully_preserved",
+            retention_detail="Keep the approved identity and clothing.",
+            shot_ids=("1",),
+        ).model_dump(mode="json")],
+    })
+    base_plan["shots"][0]["end_frame"] = 96
+    base_plan["shots"][0]["actions"] = [
+        {"phase": "establish", "start_frame": 0, "end_frame": 24,
+         "description": "Establish the hero at the doorway."},
+        {"phase": "execute", "start_frame": 24, "end_frame": 72,
+         "description": "The hero turns and opens the door."},
+        {"phase": "settle", "start_frame": 72, "end_frame": 96,
+         "description": "The hero holds at the open doorway."},
+    ]
+    plan = H3DirectorPlan.model_validate(base_plan)
+    wire = project_director_plan_to_wire(plan)
+    monkeypatch.setattr(
+        h3_episode_pack,
+        "_compile",
+        lambda _entry, typed_plan, value_hash: SimpleNamespace(
+            plan=typed_plan, prompt=compile_h3_wire(wire),
+            quality_report=SimpleNamespace(
+                model_dump=lambda **_: {"passed": True, "issues": []}
+            ),
+        ),
+    )
+    prepared = H3PreparedPlanImport(
+        preparation_sha256=prepared_h3_context_digest(
+            pins, [("shot-1", input_hash)]
+        ),
+        pins=pins,
+        segments=(H3PreparedPlanSegment(
+            segment_id="shot-1", input_hash=input_hash, director_plan=plan
+        ),),
+    )
+
+    compiled, evidence = runner._prepared_plan_results(
+        prepared, episode_input, [source], pins
+    )
+    reference_wire = runner._reference_wire_from_evidence(
+        evidence["shot-1"], segment=compiled[0]
+    )
+
+    assert reference_wire.mode.value == "ref2va"
+    assert "<Subject 1>" in reference_wire.subject_definitions
+    assert compiled[0].first_frame == first_frame
+    assert compiled[0].last_frame == last_frame
+
+
+def test_prepared_h3_plans_compile_without_optimizer_and_reject_stale_inputs(monkeypatch):
+    from types import SimpleNamespace
+
+    from novelvideo.media_capabilities.video import h3_episode_pack
+    from novelvideo.media_capabilities.video.h3_episode_pack import (
+        H3EpisodeInput,
+        H3EpisodeVideoSegment,
+        _segment_input_hash,
+    )
+    from novelvideo.media_capabilities.video.h3_prepared_plans import (
+        EMPTY_VIDEO_KEYFRAME_BINDING_SHA256,
+        H3PreparedPlanImport,
+        H3PreparedPlanPins,
+        H3PreparedPlanSegment,
+        prepared_h3_context_digest,
+    )
+    from novelvideo.media_capabilities.video.h3_prompt_optimizer import H3PromptContext
+    from novelvideo.media_capabilities.video.h3_timeline import H3DirectorSegment
+    from novelvideo.task_backend.runners import narrative_group_video as runner
+    from tests.media_capabilities.video.test_h3_episode_pack import _plan
+
+    source = H3DirectorSegment(
+        segment_id="shot-1", beat_number=1, prompt="A person opens a door.",
+        duration_seconds=5, first_frame="first.png",
+    )
+    entry = H3EpisodeVideoSegment(
+        segment_id="shot-1", group_id="g1", shot_ids=("shot-1",),
+        duration_seconds=5, style_snapshot_id="style-1", source_segment=source,
+        context=H3PromptContext(
+            visual_description="A person opens a door.", narration="",
+            prev_summary="", next_summary="", first_frame_sha256="a" * 64,
+            model_id="test-model", style_prefix="cinematic realism",
+        ),
+        mode="i2va", summary="A person opens a door.",
+    )
+    episode_input = H3EpisodeInput(
+        episode=1, director_revision_id="rev-1", style_hash="style-hash",
+        style_video={"projection": "cinematic realism"}, segments=(entry,),
+    )
+    input_hash = _segment_input_hash(episode_input, entry)
+    pins = H3PreparedPlanPins(
+        project_id="demo", episode=1, group_id="g1",
+        workflow_id="runninghub:minimax-h3", requested_mode="auto",
+        dialogue_source="external_tts", video_revision=0, plan_revision=1,
+        settings_revision=0, reference_revision=0, director_revision_id="rev-1",
+        keyframe_revision=0,
+        keyframe_binding_sha256=EMPTY_VIDEO_KEYFRAME_BINDING_SHA256,
+    )
+    imported = H3PreparedPlanImport(
+        preparation_sha256=prepared_h3_context_digest(
+            pins, [("shot-1", input_hash)]
+        ),
+        pins=pins,
+        segments=(H3PreparedPlanSegment(
+            segment_id="shot-1", input_hash=input_hash, director_plan=_plan()
+        ),),
+    )
+    monkeypatch.setattr(runner, "create_h3_episode_pack_optimizer", lambda **_: pytest.fail("optimizer must not run"))
+    monkeypatch.setattr(
+        h3_episode_pack,
+        "_compile",
+        lambda _entry, plan, value_hash: SimpleNamespace(
+            plan=plan,
+            prompt="compiled H3 wire",
+            quality_report=SimpleNamespace(
+                model_dump=lambda **_: {"passed": True, "issues": []}
+            ),
+        ),
+    )
+
+    compiled, evidence = runner._prepared_plan_results(
+        imported, episode_input, [source], pins
+    )
+
+    assert compiled[0].prompt == "compiled H3 wire"
+    assert evidence["shot-1"]["input_summary"]["prepared_input_hash"] == input_hash
+    stale = imported.model_copy(update={
+        "segments": (imported.segments[0].model_copy(update={"input_hash": "c" * 64}),)
+    })
+    with pytest.raises(ValueError, match="input is stale"):
+        runner._prepared_plan_results(stale, episode_input, [source], pins)
+
+
 def test_group_video_mode_accepts_every_selector_mode():
     """Regression: "ref2va" — the mode the H3-Ref workflow exists for — used to
     be rejected by an inline allowlist that only knew auto/i2va/fl2va, so asking
@@ -580,6 +880,30 @@ def test_group_video_builds_dialogue_from_canonical_beat_fields(tmp_path):
     assert segments[0].speaker == "老郑_中年时期"
     assert segments[0].tone == ""
     assert _dialogue_required(beat, segments[0]) is True
+
+
+def test_group_video_frozen_dialogue_source_overrides_canonical_beats_before_building(tmp_path):
+    from novelvideo.task_backend.runners.narrative_group_video import _build_segments
+
+    frame = tmp_path / "frame.png"
+    frame.write_bytes(b"frame")
+    beats = [
+        {"id": "beat-1", "beat_number": 1, "dialogue_source": "external_tts"},
+        {"id": "beat-2", "beat_number": 2, "dialogue_source": "external_tts"},
+    ]
+    saved = {
+        "beat_ids": ["beat-1", "beat-2"],
+        "cell_assets": [
+            {"beat_id": "beat-1", "path": str(frame)},
+            {"beat_id": "beat-2", "path": str(frame)},
+        ],
+        "video_plan": {"units": [{"beat_ids": ["beat-1", "beat-2"], "mode": "fl2va", "duration_seconds": 8}]},
+    }
+
+    segments = _build_segments({"mode": "auto", "dialogue_source": "h3_native"}, beats, saved)
+
+    assert len(segments) == 1
+    assert segments[0].dialogue_source.value == "h3_native"
 
 
 def test_group_video_rejects_explicit_fl2va_without_last_frames(tmp_path):
@@ -1280,6 +1604,339 @@ def test_runner_reuses_one_reference_snapshot_for_every_physical_segment(
 
     assert requests == []
     assert len(cleanup_calls) == 1
+
+
+@pytest.mark.parametrize("provider_fails", [False, True])
+@pytest.mark.asyncio
+async def test_prepared_h3_repair_only_calls_selected_segment_and_composes_verified_siblings(
+    tmp_path: Path, monkeypatch, provider_fails: bool
+) -> None:
+    import hashlib
+
+    from PIL import Image
+
+    from novelvideo.media_capabilities.video.adapters import NarrativeGroupVideoResult
+    from novelvideo.media_capabilities.video.h3_prompt import H3Mode
+    from novelvideo.media_capabilities.video.h3_reference_runtime import (
+        freeze_h3_reference_frames,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        H3DirectorOutputManifest,
+        H3DirectorSegment,
+        H3TimelineEntry,
+        load_h3_director_manifest,
+        save_h3_director_manifest,
+    )
+    from novelvideo.media_capabilities.video.h3_wire import (
+        H3ReferenceWire,
+        H3RetentionItem,
+        compile_h3_wire,
+    )
+    from novelvideo.narrative_groups.execution_contract import freeze_execution_contract
+    from novelvideo.narrative_groups.video_references import ResolvedVideoReference
+    from novelvideo.narrative_groups.video_repairs import freeze_video_repair_snapshot
+    from novelvideo.task_backend.runners import narrative_group_video as runner
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    segments = []
+    prior_entries = []
+    for index, shot_id in enumerate(("S01", "S02", "S03"), start=1):
+        frame = project_dir / f"{shot_id}.png"
+        Image.new("RGB", (8, 8), (index, 0, 0)).save(frame)
+        segment = H3DirectorSegment(
+            segment_id=shot_id,
+            source_shot_ids=(shot_id,),
+            beat_number=index,
+            prompt=f"Original prompt {shot_id}",
+            duration_seconds=4,
+            first_frame=str(frame),
+            dialogue_source="h3_native",
+        )
+        segments.append(segment)
+        clip = project_dir / "prior" / f"{shot_id}.mp4"
+        clip.parent.mkdir(exist_ok=True)
+        clip.write_bytes(f"verified-old-{shot_id}".encode())
+        prior_entries.append(H3TimelineEntry(
+            segment=segment,
+            start_frame=(index - 1) * 96,
+            frame_count=96,
+            physical_video=str(clip),
+            status="completed",
+        ))
+
+    group_id = "G01"
+    director_revision_id = "director-r7"
+    shot_ids = ("S01", "S02", "S03")
+    source_manifest_path = project_dir / "prior.manifest.json"
+    provenance = {
+        "episode": 1,
+        "group_id": group_id,
+        "storyboard_binding": {
+            "project_id": "project-123", "episode": 1,
+            "group_id": group_id, "shot_ids": list(shot_ids),
+        },
+        "video_keyframe_binding": {
+            "project_id": "project-123", "episode": 1,
+            "group_id": group_id, "director_revision_id": director_revision_id,
+            "shot_ids": list(shot_ids),
+        },
+    }
+    save_h3_director_manifest(source_manifest_path, H3DirectorOutputManifest(
+        entries=tuple(prior_entries),
+        total_frames=288,
+        execution_contract=freeze_execution_contract(provenance),
+        status="completed",
+    ))
+    reuse_snapshot = freeze_video_repair_snapshot(
+        source_manifest_path,
+        project_dir,
+        episode=1,
+        group_id=group_id,
+        director_revision_id=director_revision_id,
+        expected_source_shot_ids=shot_ids,
+        repair_shot_ids=("S02",),
+    )
+    old_clip_bytes = {
+        shot_id: (project_dir / "prior" / f"{shot_id}.mp4").read_bytes()
+        for shot_id in ("S01", "S03")
+    }
+    frozen_frames = freeze_h3_reference_frames(segments, project_root=project_dir)
+
+    reference_bytes = b"approved-identity-image"
+    reference = ResolvedVideoReference(
+        reference_id="hero-identity",
+        source_kind="character_identity",
+        label="Hero",
+        subject_description="approved hero identity",
+        path=project_dir / "identity.png",
+        content=reference_bytes,
+        sha256=hashlib.sha256(reference_bytes).hexdigest(),
+        asset_id="hero-v1",
+    )
+    reference_wire = H3ReferenceWire(
+        mode=H3Mode.REF2VA,
+        duration_seconds=4,
+        subject_definitions="<Subject 1>: Hero from <Picture 1>.",
+        summary="[reference generation] Hero enters.",
+        retention_analysis=(H3RetentionItem(
+            subject="<Subject 1> (appears in [Shot 1])",
+            retain="fully_preserved - identity and proportions",
+        ),),
+        detailed_description="[Shot 1] [0-4s] <Subject 1> enters.",
+        overall_soundscape="Quiet room tone.",
+        non_diegetic_music="N/A",
+    )
+    workflow = SimpleNamespace(
+        id="runninghub:minimax-h3-ref",
+        provider="runninghub",
+        adapter_key="minimax-h3-ref",
+        default_mode="auto",
+        supported_modes=("ref2va",),
+        reference_policy=SimpleNamespace(required=True, max_images=5),
+    )
+    group = SimpleNamespace(
+        id=group_id,
+        director_revision_id=director_revision_id,
+        video_settings=SimpleNamespace(revision=3),
+        video_reference_settings=SimpleNamespace(revision=7),
+        video_segments=tuple({"id": shot_id} for shot_id in shot_ids),
+        stages={},
+    )
+    queued_input_snapshot = SimpleNamespace(
+        reference_revision=7,
+        reference_limit=5,
+        provider_workflow_id="provider-workflow-v1",
+        digest="b" * 64,
+        references=(reference,),
+        frames=frozen_frames,
+    )
+    request_calls = []
+    composed_paths = []
+    record_calls = []
+    stage_calls = []
+
+    class _PreparedImporter:
+        @staticmethod
+        def model_validate(_value):
+            return SimpleNamespace(
+                preparation_sha256="c" * 64,
+                segments=(SimpleNamespace(
+                    segment_id="S02", director_plan={},
+                ),),
+            )
+
+    class Adapter:
+        async def generate_narrative_group(self, _ctx, request):
+            request_calls.append(request)
+            if provider_fails:
+                raise RuntimeError("provider rejected repaired S02")
+            Path(request.output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(request.output_path).write_bytes(b"new-S02-video")
+            return NarrativeGroupVideoResult(
+                output_path=request.output_path,
+                provider_task_id="provider-S02",
+                actual_mode="ref2va",
+                provider_parameters={"width": 720, "height": 1280},
+                actual_output={"width": 720, "height": 1280},
+            )
+
+    monkeypatch.setattr(runner, "H3PreparedPlanImport", _PreparedImporter)
+    monkeypatch.setattr(runner, "stage_payload", lambda *_a, **_k: (
+        {"revision": 2, "video_plan": {"revision": 1}}
+        if _a[3] == "video" else {"video_plan": {"revision": 1}}
+    ))
+    monkeypatch.setattr(runner, "_assert_stage_revision", lambda *_a, **_k: None)
+    monkeypatch.setattr(runner, "_workflow_definition_for_payload", lambda _p: workflow)
+    monkeypatch.setattr(runner, "load_materialized_groups", lambda *_a: [group])
+    monkeypatch.setattr(
+        runner, "_reference_execution_snapshot", lambda **_k: asyncio.sleep(0)
+    )
+    monkeypatch.setattr(
+        runner,
+        "load_h3_reference_input_snapshot",
+        lambda **_k: queued_input_snapshot,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_video_workflow_adapters",
+        lambda: SimpleNamespace(resolve=lambda _key: Adapter()),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_load_canonical_beats",
+        lambda *_a: asyncio.sleep(0, result=[{"id": shot_id} for shot_id in shot_ids]),
+    )
+    monkeypatch.setattr(
+        runner,
+        "generation_beats_for_group",
+        lambda *_a: [{"id": shot_id} for shot_id in shot_ids],
+    )
+    monkeypatch.setattr(runner, "_build_segments", lambda *_a: list(segments))
+    monkeypatch.setattr(
+        runner,
+        "_canonical_beats_for_segments",
+        lambda selected, _beats: [{"id": item.segment_id} for item in selected],
+    )
+    monkeypatch.setattr(
+        runner,
+        "_resolve_workflow_modes",
+        lambda *, segments, **_k: {
+            item.segment_id: H3Mode.REF2VA for item in segments
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_prepared_h3_episode_input",
+        lambda *_a, **_k: asyncio.sleep(0, result=SimpleNamespace(
+            director_revision_id=director_revision_id,
+        )),
+    )
+    repaired_segment = segments[1].model_copy(update={
+        "prompt": compile_h3_wire(reference_wire),
+    })
+    monkeypatch.setattr(
+        runner,
+        "_prepared_plan_results",
+        lambda _prepared, _input, provider_segments, _pins: (
+            [repaired_segment] if [item.segment_id for item in provider_segments] == ["S02"]
+            else pytest.fail("prepared plans must receive only selected repair segments"),
+            {"S02": {"director_plan": {}}},
+        ),
+    )
+    monkeypatch.setattr(runner, "_ensure_reference_plan_evidence", lambda *_a: None)
+    monkeypatch.setattr(runner, "_reference_wire_from_evidence", lambda *_a, **_k: reference_wire)
+    monkeypatch.setattr(runner, "_load_active_director_plan", lambda *_a: None)
+    monkeypatch.setattr(runner, "_progress_reporter", lambda *_a: lambda *_b: None)
+    monkeypatch.setattr(
+        runner,
+        "record_stage_result",
+        lambda *_a, **kwargs: stage_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        runner,
+        "record_video_segment_result",
+        lambda *_a, **kwargs: record_calls.append(kwargs),
+    )
+    monkeypatch.setattr(runner, "save_h3_director_manifest", save_h3_director_manifest)
+    from novelvideo.task_backend.runners import narrative_group_video_compose as compose
+
+    def composition_plan(items):
+        composed_paths.extend(item.path for item in items)
+        return SimpleNamespace(paths=tuple(item.path for item in items))
+
+    def compose_segments(_plan, output, **_kwargs):
+        Path(output).write_bytes(b"composed-group")
+
+    monkeypatch.setattr(compose, "build_local_composition_plan", composition_plan)
+    monkeypatch.setattr(compose, "compose_local_segments", compose_segments)
+
+    ctx = SimpleNamespace(
+        output_dir=str(project_dir),
+        runtime_dir=str(tmp_path),
+        state_dir=tmp_path / "state",
+        project_id="project-123",
+    )
+    payload = {
+        "project_dir": str(project_dir),
+        "group_id": group_id,
+        "revision": 2,
+        "plan_revision": 1,
+        "prepared_h3_source_video_revision": 1,
+        "settings_revision": 3,
+        "reference_revision": 7,
+        "model": workflow.id,
+        "mode": "auto",
+        "dialogue_source": "h3_native",
+        "workflow_parameters": {"resolution": "720p"},
+        "reference_contract_version": 1,
+        "reference_limit": 5,
+        "provider_workflow_id": "provider-workflow-v1",
+        "reference_snapshot_id": "a" * 32,
+        "reference_snapshot_digest": "b" * 64,
+        "prepared_h3_plans": {},
+        "repair_shot_ids": ["S02"],
+        "source_reuse_snapshot": reuse_snapshot.model_dump(mode="json"),
+    }
+
+    result = await runner._execute_inner({"episode": 1, "payload": payload}, ctx)
+
+    assert len(request_calls) == 1
+    assert [item.segment_id for item in request_calls[0].segments] == ["S02"]
+    assert {
+        shot_id: (project_dir / "prior" / f"{shot_id}.mp4").read_bytes()
+        for shot_id in ("S01", "S03")
+    } == old_clip_bytes
+    assert any(call.get("result", {}).get("reused") is True for call in record_calls)
+    final_manifest_path = Path(result["manifest_asset"])
+    final_manifest = load_h3_director_manifest(final_manifest_path)
+    assert [entry.segment.segment_id for entry in final_manifest.entries] == list(shot_ids)
+    assert final_manifest.entries[0].physical_video == str(project_dir / "prior" / "S01.mp4")
+    assert final_manifest.entries[2].physical_video == str(project_dir / "prior" / "S03.mp4")
+    if provider_fails:
+        assert result["status"] == "partial_failure"
+        assert "provider rejected repaired S02" in result["error"]
+        assert result["video_asset"] == ""
+        assert composed_paths == []
+        assert [entry.status for entry in final_manifest.entries] == [
+            "completed", "transport_failed", "completed",
+        ]
+        assert final_manifest.physical_video is None
+        assert any(
+            call.get("status") == "partial_failure"
+            and "provider rejected repaired S02" in call.get("error", "")
+            for call in stage_calls
+        )
+    else:
+        assert result["status"] == "completed"
+        assert composed_paths == [
+            str(project_dir / "prior" / "S01.mp4"),
+            request_calls[0].output_path,
+            str(project_dir / "prior" / "S03.mp4"),
+        ]
+        assert [entry.status for entry in final_manifest.entries] == [
+            "completed", "completed", "completed",
+        ]
 
 
 @pytest.mark.parametrize("source_mutation", ["delete", "replace"])
@@ -2749,6 +3406,68 @@ def test_director_context_uses_saved_camera_actor_and_prop_data(tmp_path):
     assert '"azim":12' in context
     assert "阿远" in context
     assert "手电筒" in context
+
+
+def test_director_context_uses_output_camera_and_lights(tmp_path):
+    import json
+
+    from novelvideo.director_world.store import save_beat_blocking
+    from novelvideo.task_backend.runners.narrative_group_video import _director_context
+
+    output_camera = {
+        "azim": 82,
+        "elev": 18,
+        "distance": 5.5,
+        "focalPoint": [1, 2, 3],
+        "fov": 48,
+    }
+    lights = [{
+        "id": "key-light",
+        "label": "主光",
+        "color": "#ffe0b2",
+        "intensity": 1.4,
+        "position": [2, 4, 1],
+        "direction": [-1, -1, 0],
+        "enabled": True,
+    }]
+    save_beat_blocking(tmp_path, 1, 5, {
+        "camera": {"azim": 1, "elev": 2, "distance": 3},
+        "frame_meta": {"camera": {"mode": "sog", "state": output_camera}},
+        "snapshot": {
+            "camera": {"azim": 10, "elev": 11, "distance": 12},
+            "outputCamera": output_camera,
+            "lights": lights,
+        },
+    })
+
+    context = json.loads(_director_context(tmp_path, 1, 5))
+
+    assert context["camera"] == output_camera
+    assert context["lights"] == lights
+
+
+def test_director_context_uses_frame_meta_camera_before_legacy_editor_camera(tmp_path):
+    import json
+
+    from novelvideo.director_world.store import save_beat_blocking
+    from novelvideo.task_backend.runners.narrative_group_video import _director_context
+
+    output_camera = {
+        "azim": 74,
+        "elev": 22,
+        "distance": 7,
+        "focalPoint": [2, 1, -1],
+        "fov": 56,
+    }
+    save_beat_blocking(tmp_path, 1, 6, {
+        "camera": {"azim": 1, "elev": 2, "distance": 3},
+        "frame_meta": {"camera": {"mode": "sog", "state": output_camera}},
+        "snapshot": {"camera": {"azim": 10, "elev": 11, "distance": 12}},
+    })
+
+    context = json.loads(_director_context(tmp_path, 1, 6))
+
+    assert context["camera"] == output_camera
 
 
 def test_nonvisual_production_note_is_not_shootable():

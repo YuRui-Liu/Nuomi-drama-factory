@@ -85,3 +85,32 @@ it('shows all cell previews, editable descriptions, crop bounds and quantized ti
   fireEvent.click(screen.getByRole('button', { name: '保留手动编辑并刷新' }));
   expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ resolution: 'keep_edits', shots: expect.arrayContaining([expect.objectContaining({ description: 'New action' })]) }));
 });
+
+it('prepares only the selected persisted frames for a lightweight batch', () => {
+  const prepare = vi.fn();
+  const data = { ...preparedData(), storyboardPreparation: undefined, activeInputMode: 'frames' as const,
+    inputModeIntent: 'manual' as const, lightweightShotIds: ['shot-2', 'shot-3'] };
+  render(<StoryboardAdaptation data={data} source={{ imageUrl: '/board.png', gridRows: 1, gridCols: 3,
+    frames: [{ id: 'shot-1', description: '一', duration_seconds: 4 },
+      { id: 'shot-2', description: '二', duration_seconds: 5 },
+      { id: 'shot-3', description: '三', duration_seconds: 6 }] }} prepare={prepare} busy={false} conflict={false} />);
+
+  expect(screen.getAllByRole('textbox')).toHaveLength(2);
+  fireEvent.click(screen.getByRole('button', { name: '准备 / 刷新分镜首帧' }));
+  expect(prepare).toHaveBeenCalledWith({ resolution: 'safe', shot_ids: ['shot-2', 'shot-3'] });
+});
+
+it('marks prepared cell crops stale when the selected batch changes', () => {
+  const data = preparedData();
+  const cells = [1, 2, 3].map((id) => ({ id: String(id), rect: [0, 0, 1, 1] as [number, number, number, number],
+    cropUrl: `/crop${id}.png`, imageUrl: `/cell${id}.png` }));
+  data.lightweightShotIds = ['shot-2', 'shot-3'];
+  data.storyboardPreparation = { ...data.storyboardPreparation!, sourceGridRows: 1, sourceGridCols: 3, cells,
+    selectedShotIds: ['shot-1', 'shot-2'], selectedCells: [
+      { ...cells[0], shotId: 'shot-1' }, { ...cells[1], shotId: 'shot-2' },
+    ] };
+  render(<StoryboardAdaptation data={data} sourceNodeId="board" source={{ imageUrl: '/board.png', gridRows: 1, gridCols: 3,
+    frames: ['shot-1', 'shot-2', 'shot-3'].map((id) => ({ id, description: id })) }} prepare={vi.fn()} busy={false} conflict={false} />);
+  expect(screen.getByRole('alert')).toHaveTextContent('来源已变化');
+  expect(screen.queryAllByRole('img')).toHaveLength(0);
+});

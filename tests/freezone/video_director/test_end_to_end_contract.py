@@ -46,7 +46,7 @@ class StructuredRuntime:
                     "summary": "; ".join(subjects) + " moves",
                     "retention_analysis": [{"subject": subject, "retain": "fully_preserved - identity"}
                                            for subject in subjects],
-                    "detailed_description": "; ".join(subjects) + " moves through a room."
+                    "detailed_description": "[Shot 1] " + "; ".join(subjects) + " moves through a room."
                     + (" two-person gaze intent" if "technique" in data else ""),
                     "overall_soundscape": "Footsteps", "non_diegetic_music": "N/A"}
         else:
@@ -131,11 +131,11 @@ async def test_asset_selection_to_durable_two_segment_result(tmp_path, mode, sel
     costume = image("costume", asset_id="character:hero", character_id="hero",
                     variant_id="coat", variant_label="红外套", asset_kind="identity_costume")
     technique = TechniqueSelection(id="two-person-gaze", version="1.0.0") if selected else None
-    segments = ((DirectorSegment(id="opening", prompt="Original opening", duration_seconds=15,
+    segments = ((DirectorSegment(id="opening", prompt="Original opening", duration_seconds=8,
                                  technique=technique),
                  DirectorSegment(id="closing", prompt="Original closing", duration_seconds=5))
                 if reference_mode else
-                (DirectorSegment(id="opening", prompt="Original opening", duration_seconds=15,
+                (DirectorSegment(id="opening", prompt="Original opening", duration_seconds=8,
                                  first_frame=base,
                                  last_frame=image("last") if mode == "fl2v" else None,
                                  technique=technique),
@@ -197,14 +197,14 @@ async def test_asset_selection_to_durable_two_segment_result(tmp_path, mode, sel
         [(originals["base"], originals["last"]) if mode == "fl2v"
          else (originals["base"],), (originals["costume"],)])
     assert [s["prompt"] for s in queued["optimized"]["segments"]] != [s.prompt for s in draft.segments]
-    assert [s["frames"] for s in queued["optimized"]["segments"]] == [362, 124]
+    assert [s["frames"] for s in queued["optimized"]["segments"]] == [192, 124]
     timeline = json.loads(provider.prepared.timeline_data)
     assert [s["id"] for s in timeline["segments"]] == ["opening", "closing"]
-    assert [s["start"] for s in timeline["segments"]] == [0, 362]
-    assert [s["length"] for s in timeline["segments"]] == [362, 124]
-    assert timeline["totalFrames"] == 486
+    assert [s["start"] for s in timeline["segments"]] == [0, 192]
+    assert [s["length"] for s in timeline["segments"]] == [192, 124]
+    assert timeline["totalFrames"] == 316
     assert all((s["length"] - 5) % 17 == 0 for s in timeline["segments"])
-    assert queued["actual_parameters"]["duration_seconds"] == pytest.approx(486 / 24)
+    assert queued["actual_parameters"]["duration_seconds"] == pytest.approx(316 / 24)
     assert [shot["prompt"] for shot in timeline["shots"]] == [
         segment["prompt"] for segment in queued["optimized"]["segments"]]
     assert ("two-person gaze intent" in timeline["shots"][0]["prompt"]) == selected

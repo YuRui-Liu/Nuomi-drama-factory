@@ -65,6 +65,8 @@ class GroupGenerationInput:
     warnings: tuple[str, ...] = ()
     reference_audit: Mapping[str, Any] = dataclass_field(default_factory=dict)
     reference_mappings: tuple[str, ...] = ()
+    static_panels: tuple[Mapping[str, Any], ...] = ()
+    static_references: tuple[Mapping[str, Any], ...] = ()
 
 
 class ReferenceSnapshotInvalid(RuntimeError):
@@ -74,6 +76,158 @@ class ReferenceSnapshotInvalid(RuntimeError):
 
     def __init__(self) -> None:
         super().__init__(self.error_code)
+
+
+def _static_panels_for_payload(payload: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    """Return a complete manual static-panel contract, if one was authored.
+
+    Creative-contract v1 has its own keyframe projection and remains on that
+    path. For manual plans, never quietly drop a partially supplied set of
+    static panels into the older action-description prompt.
+    """
+    beats = list(payload.get("beats") or ())
+    if payload.get("stage") == "sketch" or not beats or any(
+        not isinstance(beat, Mapping)
+        or beat.get("creative_contract_version") == 1
+        for beat in beats
+    ):
+        return ()
+    raw_panels = [beat.get("static_panel") for beat in beats]
+    if not any(panel is not None for panel in raw_panels):
+        return ()
+    if any(not isinstance(panel, Mapping) for panel in raw_panels):
+        raise ValueError("static storyboard requires a panel for every shot")
+    panels = tuple(dict(panel) for panel in raw_panels)
+    for beat, panel in zip(beats, panels, strict=True):
+        shot_id = str(beat.get("id") or beat.get("beat_id") or "")
+        if str(panel.get("shot_id") or "") != shot_id:
+            raise ValueError("static panel shot_id differs from generation beat")
+    return panels
+
+
+def _static_reference_role(asset_kind: str) -> str:
+    if asset_kind.startswith("character_"):
+        return "base_design"
+    if asset_kind.startswith("scene_"):
+        return "scene"
+    if asset_kind == "prop":
+        return "prop"
+    return "composition"
+
+
+def _character_name_from_slot(asset_slot_id: str) -> str:
+    parts = asset_slot_id.split(":")
+    return parts[1].strip() if len(parts) >= 3 and parts[0] == "character" else ""
+
+
+def _bind_static_panel_subjects(
+    panels: tuple[dict[str, Any], ...],
+    reference_entries: list[dict[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Resolve authored character names to actual scoped identity references."""
+    bound: list[dict[str, Any]] = []
+    for raw_panel in panels:
+        panel = {**raw_panel, "subjects": [dict(item) for item in raw_panel.get("subjects", ())]}
+        for subject in panel["subjects"]:
+            if not isinstance(subject, Mapping):
+                raise ValueError("static panel subjects must be objects")
+            subject_entity = str(subject.get("entity_id") or "").strip()
+            requested_reference = str(subject.get("appearance_reference") or "").strip()
+            matches = []
+            for entry in reference_entries:
+                reference = entry["reference"]
+                if reference["role"] != "base_design" or panel["id"] not in reference["panel_ids"]:
+                    continue
+                aliases = entry["aliases"]
+                identity_id = reference["entity_id"]
+                character_name = entry["character_name"]
+                if subject_entity not in {identity_id, character_name}:
+                    continue
+                if requested_reference not in aliases | {identity_id, character_name}:
+                    continue
+                matches.append(entry)
+            exact = [
+                entry for entry in matches
+                if requested_reference in entry["aliases"]
+            ]
+            if exact:
+                matches = exact
+            if len(matches) != 1:
+                raise ValueError(
+                    "static panel subject must resolve to one scoped character identity"
+                )
+            reference = matches[0]["reference"]
+            subject["entity_id"] = reference["entity_id"]
+            subject["appearance_reference"] = reference["id"]
+        bound.append(panel)
+    return tuple(bound)
+
+
+def _static_reference_entries(
+    sources: list[tuple[Mapping[str, Any], Any]],
+    panels: tuple[dict[str, Any], ...],
+    *,
+    style_reference: Any | None = None,
+) -> list[dict[str, Any]]:
+    panel_ids = [str(panel["id"]) for panel in panels]
+    panel_by_shot = {str(panel["shot_id"]): str(panel["id"]) for panel in panels}
+    entries: list[dict[str, Any]] = []
+    if style_reference is not None:
+        entries.append({
+            "reference": {
+                "id": "project-style-reference",
+                "entity_id": "project-style",
+                "name": "Project visual style",
+                "role": "style",
+                "url": style_reference.image_path,
+                "version": f"sha256:{style_reference.sha256}",
+                "panel_ids": panel_ids,
+            },
+            "aliases": {"project-style-reference"},
+            "character_name": "",
+        })
+    for raw, validated in sources:
+        source = str(raw.get("source") or "")
+        asset_kind = str(raw.get("asset_kind") or "additional")
+        reference_id = str(
+            raw.get("binding_id") or raw.get("source_id") or raw.get("requirement_id") or ""
+        ).strip()
+        entity_id = str(raw.get("entity_id") or reference_id).strip()
+        asset_slot_id = str(raw.get("asset_slot_id") or "").strip()
+        if not reference_id or not entity_id:
+            raise ValueError("static reference is missing a stable identity")
+        if source == "upload":
+            applies_to = panel_ids
+        else:
+            shot_ids = raw.get("shot_ids")
+            if not isinstance(shot_ids, (list, tuple)) or not shot_ids:
+                raise ValueError("static reference requires an explicit shot scope")
+            applies_to = list(dict.fromkeys(
+                panel_by_shot[str(shot_id)] for shot_id in shot_ids
+                if str(shot_id) in panel_by_shot
+            ))
+            if not applies_to:
+                raise ValueError("static reference has no panel in its frozen shot scope")
+        digest = str(raw.get("sha256") or validated.sha256).strip()
+        version_id = str(raw.get("version_id") or "").strip()
+        version = f"{version_id}:{digest}" if version_id else f"sha256:{digest}"
+        aliases = {reference_id, entity_id}
+        if asset_slot_id:
+            aliases.add(asset_slot_id)
+        entries.append({
+            "reference": {
+                "id": reference_id,
+                "entity_id": entity_id,
+                "name": str(raw.get("display_label") or entity_id),
+                "role": _static_reference_role(asset_kind),
+                "url": validated.image_path,
+                "version": version,
+                "panel_ids": applies_to,
+            },
+            "aliases": aliases,
+            "character_name": _character_name_from_slot(asset_slot_id),
+        })
+    return entries
 
 
 # Fields the grid runner itself writes for the selection frozen into a snapshot.
@@ -96,6 +250,7 @@ def _snapshot_generation_input(
         }:
             raise ValueError
         planned_snapshot = schema_version == "narrative-reference-decision/v2"
+        static_panels = _static_panels_for_payload(payload)
         snapshot_id = str(snapshot["id"]).strip()
         images = snapshot["images"]
         ignored = snapshot["ignored_requirement_ids"]
@@ -113,6 +268,7 @@ def _snapshot_generation_input(
         uploads_root = project_dir / ".runtime" / "reference_uploads"
         references: list[str] = []
         reference_mappings: list[str] = []
+        static_sources: list[tuple[Mapping[str, Any], Any]] = []
         asset_references: list[dict[str, Any]] = []
         missing_mappings = 0
         out_of_scope = 0
@@ -205,6 +361,7 @@ def _snapshot_generation_input(
                 out_of_scope += 1
                 continue
             references.append(validated.image_path)
+            static_sources.append((raw, validated))
             if planned_snapshot and binding_id and entity_id:
                 # Retain the exact verified input version for downstream video
                 # continuity; current catalogue entries are not provenance.
@@ -270,12 +427,21 @@ def _snapshot_generation_input(
                 missing_mappings += 1
 
         style_reference = str(snapshot.get("style_reference") or "")
+        validated_style = None
         if style_reference and bool(payload.get("use_style", True)):
             validated_style = validate_reference_image(
                 style_reference, allowed_roots=(assets_root,)
             )
             references.insert(0, validated_style.image_path)
             reference_mappings.insert(0, "")
+        static_entries = (
+            _static_reference_entries(
+                static_sources, static_panels, style_reference=validated_style
+            )
+            if static_panels else []
+        )
+        if static_panels:
+            static_panels = _bind_static_panel_subjects(static_panels, static_entries)
         normalized_warnings = [str(item) for item in warnings]
         if missing_mappings:
             normalized_warnings.append(
@@ -361,6 +527,13 @@ def _snapshot_generation_input(
     prompt_payload = payload
     if not bool(payload.get("use_style", True)):
         prompt_payload = {**payload, "image_projection": "", "panel_tag": ""}
+    static_references = tuple(entry["reference"] for entry in static_entries)
+    if static_panels:
+        prompt_payload = {
+            **prompt_payload,
+            "static_panels": list(static_panels),
+            "static_references": list(static_references),
+        }
     return GroupGenerationInput(
         prompt=_grid_prompt(
             prompt_payload, reference_mappings=tuple(reference_mappings)
@@ -369,6 +542,8 @@ def _snapshot_generation_input(
         warnings=tuple(normalized_warnings),
         reference_audit=audit,
         reference_mappings=tuple(reference_mappings),
+        static_panels=static_panels,
+        static_references=static_references,
     )
 
 
@@ -383,9 +558,16 @@ def _grid_prompt(
     if 'static_panels' in payload:
         from novelvideo.narrative_groups.storyboard_prompt import compile_storyboard
         layout = payload.get('layout') or {}
+        style_parts = [style_prompt]
+        if bool(payload.get("use_style", True)):
+            style_parts.extend((
+                str(payload.get("image_projection") or ""),
+                str(payload.get("panel_tag") or ""),
+            ))
+        selected_style = "\n".join(part.strip() for part in style_parts if part and part.strip())
         return compile_storyboard(payload['static_panels'], payload.get('static_references', []),
             rows=layout.get('rows', 1), cols=layout.get('columns', 1),
-            aspect_ratio=payload.get('aspect_ratio'), style=style_prompt)['prompt']
+            aspect_ratio=payload.get('aspect_ratio'), style=selected_style)['prompt']
 
     layout = payload.get("layout") or {}
     beats = list(payload.get("beats") or [])
@@ -508,6 +690,10 @@ def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
         style_prompt = ""
         reference_audit = generation_input.reference_audit
         reference_mappings = generation_input.reference_mappings
+        prompt_payload = (
+            payload if bool(payload.get("use_style", True))
+            else {**payload, "image_projection": "", "panel_tag": ""}
+        )
     else:
         raise ReferenceSnapshotInvalid()
     if str(payload.get("constraint_mode") or "") == "strong_sketch":
@@ -537,20 +723,46 @@ def _generation_input(payload: Mapping[str, Any]) -> GroupGenerationInput:
             warnings.append("强构图模式为草图保留首个参考位，仅使用前 8 张其他参考图")
         references = (str(frozen_asset), *references[:8])
         reference_mappings = reference_mappings[:8]
+        static_references = generation_input.static_references
+        if generation_input.static_panels:
+            sketch_reference = {
+                "id": "approved-sketch-composition",
+                "entity_id": "approved-sketch",
+                "name": "Approved storyboard sketch",
+                "role": "composition",
+                "url": str(frozen_asset),
+                "version": f"sha256:{sha256(frozen_asset.read_bytes()).hexdigest()}",
+                "panel_ids": [str(panel["id"]) for panel in generation_input.static_panels],
+            }
+            static_references = (
+                sketch_reference,
+                *generation_input.static_references[: len(references) - 1],
+            )
+            prompt_payload = {
+                **prompt_payload,
+                "static_panels": list(generation_input.static_panels),
+                "static_references": list(static_references),
+            }
+            prompt = _grid_prompt(
+                prompt_payload, reference_mappings=reference_mappings
+            )
+        else:
+            prompt = _grid_prompt(
+                prompt_payload,
+                style_prompt=style_prompt,
+                reference_mappings=reference_mappings,
+            )
+    else:
+        static_references = generation_input.static_references
+        prompt = generation_input.prompt
     return GroupGenerationInput(
-        prompt=_grid_prompt(
-            (
-                payload
-                if bool(payload.get("use_style", True))
-                else {**payload, "image_projection": "", "panel_tag": ""}
-            ),
-            style_prompt=style_prompt,
-            reference_mappings=reference_mappings,
-        ),
+        prompt=prompt,
         references=tuple(references),
         warnings=tuple(warnings),
         reference_audit=reference_audit,
         reference_mappings=reference_mappings,
+        static_panels=generation_input.static_panels,
+        static_references=static_references,
     )
 
 
@@ -624,11 +836,18 @@ def _rebuild_normalized_grid(
             cell.close()
 
 
-def _validate_static_attachments(payload: Mapping[str, Any], references: tuple[str, ...]) -> None:
+def _validate_static_attachments(
+    payload: Mapping[str, Any],
+    references: tuple[str, ...],
+    *,
+    static_panels: tuple[Mapping[str, Any], ...] = (),
+    static_references: tuple[Mapping[str, Any], ...] = (),
+) -> None:
     """Never submit a numbered manifest for a different actual attachment list."""
-    if 'static_panels' not in payload:
+    if 'static_panels' not in payload and not static_panels:
         return
-    declared = tuple(str(item.get('url') or '') for item in payload.get('static_references', []))
+    declared_refs = payload.get('static_references', static_references)
+    declared = tuple(str(item.get('url') or '') for item in declared_refs)
     if declared != tuple(str(item) for item in references):
         raise ValueError('static reference manifest differs from actual attachments; rebuild the static contract')
 
@@ -649,7 +868,11 @@ async def _generate_grid(payload: Mapping[str, Any], ctx: ProjectContext) -> dic
         provider_id=provider_id,
     )
     generation_input = _generation_input(payload)
-    _validate_static_attachments(payload, generation_input.references)
+    _validate_static_attachments(
+        payload, generation_input.references,
+        static_panels=generation_input.static_panels,
+        static_references=generation_input.static_references,
+    )
     model = str(payload.get("model") or runtime.model)
     requested_tier = str(payload.get("image_size") or "1K")
     resolution = None

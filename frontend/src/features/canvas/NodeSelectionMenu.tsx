@@ -31,9 +31,11 @@ import {
   CANVAS_MENU_ICON_CELL_CLASS,
   CANVAS_MENU_ROW_CLASS,
 } from '@/features/canvas/ui/canvas-node-menu-shared';
+import { getCoreArtifactKind } from '@/features/canvas/domain/coreArtifacts';
 
 interface NodeSelectionMenuProps {
   position: { x: number; y: number };
+  lightweightMode?: boolean;
   allowedTypes?: CanvasNodeType[];
   onSelect: (
     type: CanvasNodeType,
@@ -71,6 +73,7 @@ interface ReferenceGenerateAction {
 
 export function NodeSelectionMenu({
   position,
+  lightweightMode = false,
   allowedTypes,
   onSelect,
   skillItems,
@@ -182,11 +185,16 @@ export function NodeSelectionMenu({
       },
     ];
 
-    const enabled = items.filter((item) => !item.disabled && item.type);
+    const enabled = items.filter((item) => !item.disabled && item.type && (!lightweightMode
+      || getCoreArtifactKind({ type: item.type, data: {
+        artifactKind: item.type === CANVAS_NODE_TYPES.imageGen ? 'asset'
+          : item.type === CANVAS_NODE_TYPES.script ? 'storyboard' : undefined,
+      } }) !== null));
     return enabled.length > 0 ? enabled : null;
-  }, [allowedTypeSet]);
+  }, [allowedTypeSet, lightweightMode]);
 
   const skillGroups = useMemo(() => {
+    if (lightweightMode) return [];
     if (!skillItems || skillItems.length === 0) {
       return [];
     }
@@ -203,7 +211,7 @@ export function NodeSelectionMenu({
     return skillProviderOrder
       .map((provider) => ({ provider, items: byProvider.get(provider) ?? [] }))
       .filter((group) => group.items.length > 0);
-  }, [skillItems]);
+  }, [lightweightMode, skillItems]);
 
   const activeSkillGroup = useMemo(() => {
     if (!activeSkillProvider) {
@@ -386,7 +394,11 @@ export function NodeSelectionMenu({
                       }
                       const clientPosition = { x: event.clientX, y: event.clientY };
                       handleClose();
-                      setTimeout(() => onSelect(selectedType, clientPosition), UI_POPOVER_TRANSITION_MS + 10);
+                      const initialData = lightweightMode ? {
+                        artifactKind: selectedType === CANVAS_NODE_TYPES.imageGen ? 'asset'
+                          : selectedType === CANVAS_NODE_TYPES.script ? 'storyboard' : undefined,
+                      } as Partial<CanvasNodeData> : undefined;
+                      setTimeout(() => onSelect(selectedType, clientPosition, initialData), UI_POPOVER_TRANSITION_MS + 10);
                     }}
                   >
                     <div className="flex h-10 w-10 items-center justify-center rounded-full bg-cyan-300/[0.12]">
@@ -403,6 +415,7 @@ export function NodeSelectionMenu({
             <>
               <CanvasMenuSectionHeader label={t('node.menu.sectionAddNode')} className="pb-4" />
               <CanvasAddNodeGrid
+                lightweightMode={lightweightMode}
                 onItemPointerEnter={scheduleSkillPanelClose}
                 transitionDelayForIndex={(index) => (isVisible ? `${index * 30}ms` : '0ms')}
                 onSelectNode={(type, initialData, clientPosition) => {

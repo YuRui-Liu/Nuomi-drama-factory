@@ -9,6 +9,7 @@ import inspect
 from novelvideo.freezone.canvas_lock import canvas_write_lock
 from .capabilities import catalog_by_type
 from ..canvas_store import read_canvas
+from .projection import mark_stale_result
 from .models import (OrchestrationError, RESULT_FIELDS, dependency_edge_fingerprint, fingerprint,
                      frozen_node_result, input_fingerprint, media_projection, result_projection)
 from .store import RunStore, TERMINAL
@@ -134,6 +135,32 @@ class Scheduler:
             return result
         return await project(run, attempt, authorize_projection=fence)
 
+    async def _verify_asset_design_execution(self, run):
+        if not run.get("asset_design_execution"):
+            return
+        verifier = getattr(self.adapter, "verify_asset_design_execution", None)
+        if verifier is None:
+            raise OrchestrationError("asset_design_binding_unverified",
+                                     "Asset-design reference verification is unavailable")
+        await verifier(run)
+
+    def _settle_stale_projection(self, run, attempt) -> bool:
+        marker = run.get("agent_execution") or run.get("asset_design_execution") or {}
+        status = mark_stale_result(
+            self.store.project_dir,
+            run["canvas_id"],
+            node_id=attempt["node_id"],
+            expected_input=run["input_fingerprints"][attempt["node_id"]],
+            attempt_id=attempt["id"],
+            expected_source_output_fingerprints=marker.get("source_output_fingerprints"),
+            expected_dependency_edge_fingerprint=marker.get("dependency_edge_fingerprint"),
+        )
+        if status not in {"stale", "superseded"}:
+            return False
+        attempt.update(status="succeeded", projection_status=status, error=None)
+        self.store.save(run, "stale_result_retained" if status == "stale" else "projection_superseded")
+        return True
+
     async def tick(self, run_id: str) -> dict:
         run = self.store.get(run_id)
         if run["status"] in TERMINAL:
@@ -200,6 +227,8 @@ class Scheduler:
                     self.store.save(run, "reconcile_error")
             if attempt["status"] == "verifying":
                 try:
+                    if run.get("asset_design_execution") and key == run.get("target"):
+                        await self._verify_asset_design_execution(run)
                     if not attempt["artifacts"]:
                         attempt["artifacts"] = await self.adapter.verify(run, attempt)
                         self.store.save(run, "verified")
@@ -237,10 +266,20 @@ class Scheduler:
                         attempt.update(status="succeeded", error=None)
                         self.store.save(run, "projected")
                 except OrchestrationError as exc:
-                    attempt["error"] = exc.as_dict()
-                    if exc.code == "invalid_artifact":
-                        attempt["status"] = "failed"
-                    self.store.save(run, "verification_blocked")
+                    settled_stale = False
+                    if exc.code == "input_conflict":
+                        try:
+                            settled_stale = self._settle_stale_projection(run, attempt)
+                        except Exception:
+                            # Keep the original projection conflict as the
+                            # actionable backend error if recording staleness
+                            # itself is unavailable.
+                            pass
+                    if not settled_stale:
+                        attempt["error"] = exc.as_dict()
+                        if exc.code == "invalid_artifact":
+                            attempt["status"] = "failed"
+                        self.store.save(run, "verification_blocked")
                 except Exception as exc:
                     attempt["error"] = {"code": "projection_error", "message": str(exc)}
                     self.store.save(run, "projection_blocked")
@@ -259,7 +298,11 @@ class Scheduler:
             upstream = [latest[source] for source in dependencies[key]]
             if run.get("agent_execution") and key == run["agent_execution"].get("target_node_id"):
                 upstream = deepcopy(run["agent_execution"].get("frozen_inputs", upstream))
-            elif any(a["status"] in {"failed", "blocked", "submission_unknown", "cancelled"} for a in upstream):
+            elif run.get("asset_design_execution") and key == run.get("target"):
+                upstream.extend(deepcopy(run["asset_design_execution"].get("frozen_inputs", [])))
+            if (not run.get("agent_execution") and any(
+                    a["status"] in {"failed", "blocked", "submission_unknown", "cancelled"}
+                    for a in upstream)):
                 attempt.update(status="blocked", error={"code": "dependency_failed"})
                 continue
             frozen_agent_inputs = bool(run.get("agent_execution")
@@ -314,6 +357,8 @@ class Scheduler:
                                        error={"code": "cancelled_before_submit"})
                         self.store.save(run, "cancelled_before_submit")
                         continue
+                if run.get("asset_design_execution") and key == run.get("target"):
+                    await self._verify_asset_design_execution(run)
                 attempt["submission"] = await self.adapter.submit(run, attempt, upstream)
                 attempt["status"] = "running"
                 active += 1
@@ -327,9 +372,11 @@ class Scheduler:
                 }
                 if release:
                     self.store.release_node_run(marker["root_delegation_id"], attempt["id"])
-                status = "pending" if exc.code == "capacity_wait" else "blocked" if marker and (
+                status = "submission_unknown" if exc.code == "submission_unknown" else "pending" if exc.code == "capacity_wait" else "blocked" if marker and (
                     exc.code.startswith("authorization_") or exc.code in {"input_conflict", "scope_violation", "node_run_budget_exhausted"}
-                ) else "failed"
+                ) else "blocked" if run.get("asset_design_execution") and key == run.get("target") and exc.code in {
+                    "input_conflict", "asset_design_binding_unverified", "invalid_frozen_dependency",
+                } else "failed"
                 attempt.update(status=status, error=exc.as_dict())
             except Exception as exc:
                 if marker and external:

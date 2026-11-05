@@ -8,6 +8,7 @@ from novelvideo.creation import builtin_agents, professional_agents
 from novelvideo.creation.agent_profiles import AgentProfiles
 from novelvideo.creation.personal_library import PersonalLibrary
 from novelvideo.creation.operations import OperationError
+from novelvideo.creation.professional_roles import role_configuration
 from .test_ontology import ctx, command
 from .test_agent_profiles import configuration, save
 
@@ -163,6 +164,31 @@ def test_legacy_builtin_v1_proofs_and_content_remain_fixed(identifier, proof):
     assert not {'delivery_requirements','collaboration_rules','required_node_operations','examples'} & fixed['configuration'].keys()
 
 
+def test_hidden_legacy_role_references_remain_resolvable_without_entering_default_catalog(service):
+    assert 'builtin:producer' not in {entry['id'] for entry in service.builtin_catalog()}
+    fixed = builtin_agents.resolve({'id':'builtin:producer','revision':1})
+    assert fixed['configuration'] == {
+        **role_configuration('producer'),
+        'capability_policy':AgentProfiles.capabilities(),
+    }
+
+
+async def test_conflicting_legacy_role_proof_cannot_adopt_new_professional_revision(service):
+    ref = {'id':'builtin:lighting-designer','revision':1}
+    legacy_fixed = builtin_agents._fixed({
+        'id':ref['id'], 'revision':ref['revision'],
+        'configuration':role_configuration('lighting-designer'),
+    })
+    current_fixed = builtin_agents.resolve(ref)
+    assert legacy_fixed['source']['content_hash'] != current_fixed['source']['content_hash']
+    with pytest.raises(OperationError) as error:
+        await service.apply(command('adopt', {
+            'source':'builtin','ref':ref,'proof':legacy_fixed['proof'],
+        }, 'legacy-role-conflict'))
+    assert error.value.code == 'source_conflict'
+    assert service.catalog() == [] and service.receipt('legacy-role-conflict') is None
+
+
 async def test_explicit_adoption_freezes_builtin_source_without_personal_seed(service, monkeypatch):
     result, body = await adopt(service)
     original = service.adoption(result['adoption_id'])
@@ -244,6 +270,46 @@ async def test_personal_source_shape_unchanged_and_cannot_upgrade_to_builtin(ser
     assert service.adoption(personal['adoption_id']) == original
 
 
+async def test_formal_script_builtin_upgrade_is_explicit_and_preserves_old_snapshot(service, monkeypatch):
+    identifier = 'builtin:text-writer'
+    old_ref = {'id': identifier, 'revision': 3}
+    latest_ref = {'id': identifier, 'revision': 4}
+    old_catalog = []
+    for entry in builtin_agents.BUILTIN_AGENTS:
+        fixed = deepcopy(entry)
+        if fixed['id'] == identifier and fixed['revision'] == old_ref['revision']:
+            fixed['configuration']['capabilities'] = [
+                capability for capability in fixed['configuration']['capabilities']
+                if capability != 'script.document.draft'
+            ]
+        old_catalog.append(fixed)
+    monkeypatch.setattr(builtin_agents, 'BUILTIN_AGENTS', tuple(old_catalog))
+
+    old_fixed = builtin_agents.resolve(old_ref)
+    assert 'script.document.draft' not in old_fixed['configuration']['capabilities']
+    adopted = await service.apply(command('adopt', {
+        'source': 'builtin', 'ref': old_ref, 'proof': old_fixed['proof'],
+    }, 'adopt-old-writer'))
+    pinned = service.adoption(adopted['adoption_id'])
+
+    latest = builtin_agents.resolve(latest_ref)
+    assert 'script.document.draft' in latest['configuration']['capabilities']
+    preview = service.upgrade_preview(adopted['adoption_id'], latest_ref, source='builtin')
+    await service.apply(command('upgrade', {
+        'source': 'builtin',
+        'adoption_id': adopted['adoption_id'],
+        'expected_revision': pinned['revision'],
+        'ref': latest_ref,
+        'proof': preview['proof'],
+        'resolutions': {},
+    }, 'upgrade-writer-script-capability'))
+
+    current = service.adoption(adopted['adoption_id'])
+    assert current['source']['ref'] == latest_ref
+    assert 'script.document.draft' in current['effective']['capabilities']
+    assert service.adoption(adopted['adoption_id'], pinned['revision']) == pinned
+
+
 async def test_builtin_first_use_reaches_real_main_and_delegation(service, ctx, monkeypatch, tmp_path):
     from novelvideo.creation.delegations import Delegations
     from novelvideo.creation.store import ObjectStore
@@ -303,11 +369,20 @@ async def test_real_builtin_api_and_agent_token_rejection(ctx, tmp_path, monkeyp
         catalog = await client.get(prefix+'/builtins')
         assert catalog.status_code == 200, catalog.text
         entries = catalog.json()['data']
-        assert len(entries) == 35
+        assert len(entries) == 22
         entry = next(item for item in entries if item['id'] == 'builtin:lighting-designer')
         ref = {'id':entry['id'],'revision':entry['revision']}
+        fixed = await client.get(prefix+f"/builtins/{ref['id']}/revisions/{ref['revision']}")
+        assert fixed.status_code == 200, fixed.text
+        assert fixed.json()['data'] == entry
         preview = await client.post(prefix+'/adoption-preview', json={'source':'builtin','ref':ref})
         assert preview.json()['data'] == entry
+        legacy = await client.get(prefix+'/builtins/builtin:ideation/revisions/1')
+        assert legacy.status_code == 200, legacy.text
+        assert legacy.json()['data']['source']['ref'] == {'id':'builtin:ideation','revision':1}
+        missing = await client.get(prefix+'/builtins/builtin:missing/revisions/1')
+        assert missing.status_code == 409
+        assert missing.json()['detail']['code'] == 'source_conflict'
         assert not ctx.state_dir.exists() and not config.STATE_DIR.exists()
         request = command('adopt', {'source':'builtin','ref':ref,'proof':entry['proof']}, 'http-adopt')
         user['credential_kind'] = 'agent_session'

@@ -18,6 +18,7 @@ import {
   type PersonalAgent,
   type UpgradePreview,
 } from '@/api/reusableAgents';
+import { listBuiltinAgents } from '@/api/agentRuns';
 import { AgentEditor, AgentSummary, agentFields, emptyAgent } from './AgentEditor';
 import {
   agentScopeKey,
@@ -61,10 +62,14 @@ export function AgentConfigurationPanel({
   owner,
   isCurrent,
   draftGuardRef,
+  initialUpgradeAdoptionId,
+  onProjectConfigurationChanged,
 }: {
   owner: AgentOwner;
   isCurrent: () => boolean;
   draftGuardRef?: { current: SettingsDraftGuard | null };
+  initialUpgradeAdoptionId?: string;
+  onProjectConfigurationChanged?: () => void;
 }) {
   const client = useQueryClient();
   const [tab, setTab] = useState<'project' | 'personal'>('project');
@@ -76,6 +81,10 @@ export function AgentConfigurationPanel({
     queryKey: ['project-agent-adoptions', owner.user, owner.project],
     queryFn: () => listAgentAdoptions(owner.project),
   });
+  const builtins = useQuery({
+    queryKey: ['builtin-agents', owner.user, owner.project],
+    queryFn: () => listBuiltinAgents(owner.project),
+  });
   const capabilities = useQuery({
     queryKey: ['agent-capabilities', owner.user, owner.project],
     queryFn: () => getAgentCapabilities(owner.project),
@@ -84,8 +93,11 @@ export function AgentConfigurationPanel({
   const editSequence = useRef(0);
   const [prepared, setPrepared] = useState<Prepared | null>(null);
   const [upgrade, setUpgrade] = useState<UpgradePreview | null>(null);
+  const [upgradeSource, setUpgradeSource] = useState<'personal' | 'builtin'>('personal');
   const [resolutions, setResolutions] = useState<Record<string, 'keep' | 'drop'>>({});
   const [intent, setIntent] = useState<AgentIntent | null>(null);
+  const [intentLoaded, setIntentLoaded] = useState(false);
+  const initialUpgradeStarted = useRef<string | null>(null);
   const [error, setError] = useState('');
   const [storageError, setStorageError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -114,6 +126,7 @@ export function AgentConfigurationPanel({
     try {
       setIntent(readAgentIntent(owner));
       reloadDrafts();
+      setIntentLoaded(true);
     } catch (e) {
       setStorageError(message(e));
     }
@@ -237,11 +250,13 @@ export function AgentConfigurationPanel({
     try {
       const outcome = await createAgentOperation(owner, current).run(value);
       if (!current()) return;
-      setIntent(readAgentIntent(owner));
+      const savedIntent = readAgentIntent(owner);
+      setIntent(savedIntent);
       if (outcome.status === 'applied') {
         setPrepared(null);
         setUpgrade(null);
         refresh();
+        if ((value?.channel ?? savedIntent?.channel) === 'project') onProjectConfigurationChanged?.();
       } else setError(outcome.message ?? '请求尚未完成');
     } catch (e) {
       if (current()) setError(message(e));
@@ -262,6 +277,7 @@ export function AgentConfigurationPanel({
       setEdit(null);
       setError('');
       refresh();
+      if (intent.channel === 'project') onProjectConfigurationChanged?.();
     } catch (e) {
       if (current()) setError(message(e));
     } finally {
@@ -301,7 +317,11 @@ export function AgentConfigurationPanel({
       button: '保存个人副本',
     });
   }
-  async function compare(adoption: AgentAdoption, fixed: PersonalAgent) {
+  async function compare(
+    adoption: AgentAdoption,
+    ref: AgentRef,
+    source: 'personal' | 'builtin' = 'personal',
+  ) {
     if (!current() || busy || intent) return;
     setBusy(true);
     setError('');
@@ -310,11 +330,12 @@ export function AgentConfigurationPanel({
     setPrepared(null);
     try {
       const preview = await previewAgentUpgrade(owner.project, adoption.adoption_id, {
-        id: fixed.id,
-        revision: fixed.revision,
-      });
+        id: ref.id,
+        revision: ref.revision,
+      }, source === 'builtin' ? 'builtin' : undefined);
       if (current() && sequence === editSequence.current) {
         setUpgrade(preview);
+        setUpgradeSource(source);
         setResolutions({});
       }
     } catch (e) {
@@ -323,6 +344,22 @@ export function AgentConfigurationPanel({
       if (current()) setBusy(false);
     }
   }
+  useEffect(() => {
+    const requestKey = initialUpgradeAdoptionId
+      ? `${owner.project}:${initialUpgradeAdoptionId}`
+      : null;
+    if (
+      !requestKey ||
+      initialUpgradeStarted.current === requestKey ||
+      !intentLoaded || intent || !projects.data || !builtins.data
+    ) return;
+    const adoption = projects.data.find((item) => item.adoption_id === initialUpgradeAdoptionId);
+    if (!adoption || adoption.source.kind !== 'builtin') return;
+    const latest = builtins.data.find((item) => item.source.ref.id === adoption.source.ref.id);
+    if (!latest || latest.source.ref.revision <= adoption.source.ref.revision) return;
+    initialUpgradeStarted.current = requestKey;
+    void compare(adoption, latest.source.ref, 'builtin');
+  }, [builtins.data, initialUpgradeAdoptionId, intent, intentLoaded, owner.project, projects.data]);
   const value = edit
     ? {
         ...edit.base,
@@ -584,12 +621,18 @@ export function AgentConfigurationPanel({
                 )}
                 {projects.data?.map((a) => {
                   const builtin = a.source.kind === 'builtin';
-                  const latest = builtin ? undefined : personal.data?.find((p) => p.id === a.fixed.id);
+                  const latestPersonal = builtin
+                    ? undefined
+                    : personal.data?.find((p) => p.id === a.fixed.id);
+                  const latestBuiltin = builtin
+                    ? builtins.data?.find((item) => item.source.ref.id === a.source.ref.id)
+                    : undefined;
+                  const sourceRevision = builtin ? a.source.ref.revision : a.fixed.revision;
                   return (
                     <article key={a.adoption_id} className="space-y-2 border-b py-2 last:border-0">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="text-sm font-medium">
-                          {a.effective.name} · {builtin ? '内置' : '个人'} v{a.fixed.revision} · 项目修订 {a.revision}
+                          {a.effective.name} · {builtin ? '内置' : '个人'} v{sourceRevision} · 项目修订 {a.revision}
                         </span>
                         <Button
                           variant="outline"
@@ -615,14 +658,24 @@ export function AgentConfigurationPanel({
                               .join('、')}`
                           : `使用固定${builtin ? '内置' : '个人'}版本，无局部覆盖`}
                       </p>
-                      {latest && latest.revision !== a.fixed.revision && (
+                      {latestPersonal && latestPersonal.revision > sourceRevision && (
                         <Button
                           size="sm"
                           variant="outline"
                           disabled={busy}
-                          onClick={() => void compare(a, latest)}
+                          onClick={() => void compare(a, { id: latestPersonal.id, revision: latestPersonal.revision })}
                         >
-                          比较个人新版 v{latest.revision}
+                          比较个人新版 v{latestPersonal.revision}
+                        </Button>
+                      )}
+                      {latestBuiltin && latestBuiltin.source.ref.revision > sourceRevision && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={busy || builtins.isLoading}
+                          onClick={() => void compare(a, latestBuiltin.source.ref, 'builtin')}
+                        >
+                          比较内置新版 v{latestBuiltin.source.ref.revision}
                         </Button>
                       )}
                     </article>
@@ -714,7 +767,7 @@ export function AgentConfigurationPanel({
           )}
           {upgrade && (
             <section className="space-y-3 rounded-lg border p-4">
-              <h3 className="font-medium">显式升级到个人 v{upgrade.ref.revision}</h3>
+              <h3 className="font-medium">显式升级到{upgradeSource === 'builtin' ? '内置' : '个人'} v{upgrade.ref.revision}</h3>
               <div className="grid gap-4 sm:grid-cols-2">
                 <details>
                   <summary>原固定配置与依赖</summary>
@@ -784,6 +837,7 @@ export function AgentConfigurationPanel({
                     request_id: crypto.randomUUID(),
                     action: 'upgrade',
                     payload: {
+                      ...(upgradeSource === 'builtin' ? { source: 'builtin' } : {}),
                       adoption_id: upgrade.adoption_id,
                       expected_revision: upgrade.expected_revision,
                       ref: upgrade.ref,

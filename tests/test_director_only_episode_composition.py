@@ -56,6 +56,95 @@ def test_runner_rejects_changed_frozen_director_groups_before_ffmpeg(monkeypatch
         video.run_compose_episode({"episode": 1, "payload": {"beats": [], "director_composition": {"revision_id": "old", "group_ids": ["old"]}}}, SimpleNamespace(output_dir=tmp_path))
 
 
+def test_node_runner_rechecks_frozen_groups_even_when_legacy_beats_exist(monkeypatch, tmp_path):
+    _director(monkeypatch, tmp_path)
+    monkeypatch.setattr(video, "get_task_manager", lambda: SimpleNamespace())
+    envelope = {"episode": 1, "payload": {
+        "beats": [{"beat_number": 1}],
+        "client_mutation_id": "attempt-1",
+        "director_composition": {"revision_id": "old", "group_ids": ["old"]},
+    }}
+    with pytest.raises(ValueError, match="DIRECTOR_COMPOSITION_CHANGED"):
+        video.run_compose_episode(envelope, SimpleNamespace(output_dir=tmp_path))
+
+
+@pytest.mark.parametrize("revision_id,group_ids", [("old", ["group-1"]), ("r1", ["group-1", "extra"])])
+async def test_node_compose_api_requires_the_exact_frozen_revision_and_group_set(
+    monkeypatch, tmp_path, revision_id, group_ids,
+):
+    from fastapi import HTTPException
+    from novelvideo.api.routes import generation
+
+    groups, _ = _director(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "novelvideo.narrative_groups.service.load_materialized_groups",
+        lambda *_: groups,
+    )
+    ctx = SimpleNamespace(project_id="project")
+    resolved = SimpleNamespace(ctx=ctx, username="alice", project_name="demo", output_dir=str(tmp_path))
+    monkeypatch.setattr(generation, "_resolve_generation_project", AsyncMock(return_value=resolved))
+    monkeypatch.setattr(generation, "make_sqlite_store_for_context", AsyncMock(return_value=SimpleNamespace(
+        get_beats_as_dicts=AsyncMock(return_value=[{"beat_number": 1}]),
+    )))
+    enqueue = AsyncMock()
+    monkeypatch.setattr(generation, "get_task_backend", lambda: SimpleNamespace(enqueue_project_task=enqueue))
+
+    with pytest.raises(HTTPException) as rejected:
+        await generation.compose_video("project", 1, generation.VideoComposeRequest(
+            client_mutation_id="attempt-1", director_revision_id=revision_id,
+            production_group_ids=group_ids,
+        ), {"username": "alice"})
+    assert rejected.value.status_code == 409
+    assert enqueue.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_node_compose_idempotent_replay_returns_the_original_request_fingerprint(
+    monkeypatch, tmp_path,
+):
+    from novelvideo.api.routes import generation
+    from novelvideo.freezone.orchestration.models import fingerprint
+
+    groups, _ = _director(monkeypatch, tmp_path)
+    snapshot = {"revision_id": "r1", "group_ids": ["group-1"],
+                "video_sources": [{"group_id": "group-1", "revision": 2, "manifest_asset": "group-1.json"}]}
+    monkeypatch.setattr(video, "director_composition_snapshot", lambda *args, **kwargs: snapshot)
+    monkeypatch.setattr(
+        "novelvideo.narrative_groups.service.load_materialized_groups",
+        lambda *_: groups,
+    )
+    ctx = SimpleNamespace(project_id="project")
+    resolved = SimpleNamespace(ctx=ctx, username="alice", project_name="demo", output_dir=str(tmp_path))
+    monkeypatch.setattr(generation, "_resolve_generation_project", AsyncMock(return_value=resolved))
+    monkeypatch.setattr(generation, "make_sqlite_store_for_context", AsyncMock(return_value=SimpleNamespace(
+        get_beats_as_dicts=AsyncMock(return_value=[{"beat_number": 1}]),
+    )))
+    body = generation.VideoComposeRequest(
+        client_mutation_id="attempt-replay", director_revision_id="r1",
+        production_group_ids=["group-1"],
+    )
+    expected = fingerprint({
+        "episode": 1,
+        "director_composition": snapshot,
+        "body": body.model_dump(mode="json", exclude={"client_mutation_id"}),
+    })
+
+    class Manager:
+        def get_task_for_project(self, *args, **kwargs):
+            return SimpleNamespace(
+                task_id="compose-task", status="queued",
+                metadata={"request_fingerprint": expected, "backend": "inline", "queue_kind": "ffmpeg"},
+            )
+
+    monkeypatch.setattr(generation, "get_task_manager", lambda: Manager())
+    monkeypatch.setattr(generation, "get_task_backend", lambda: pytest.fail("replay must not enqueue"))
+
+    result = await generation.compose_video("project", 1, body, {"username": "alice"})
+
+    assert result["task_id"] == "compose-task"
+    assert result["request_fingerprint"] == expected
+
+
 @pytest.mark.parametrize("change_during_compose", (False, True))
 def test_three_shots_in_two_native_spans_compose_without_legacy_beats(monkeypatch, tmp_path, change_during_compose):
     from novelvideo.media_capabilities.video.h3_timeline import (
@@ -99,4 +188,4 @@ def test_director_only_stale_group_is_blocked(monkeypatch, tmp_path):
     groups, _ = _director(monkeypatch, tmp_path)
     groups[0].stages["video"].needs_regeneration = True
     with pytest.raises(ValueError, match="DIRECTOR_COMPOSITION_INCOMPLETE.*group-1"):
-        video.director_composition_snapshot(tmp_path, 1)
+        video.director_composition_snapshot(tmp_path, 1, require_current=True)

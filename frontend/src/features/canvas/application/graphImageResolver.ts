@@ -2,6 +2,7 @@
 // Copyright (c) 2026 ClaymoreLab
 import {
   isExportImageNode,
+  isImageGenNode,
   isImageEditNode,
   isUploadNode,
   type CanvasEdge,
@@ -36,6 +37,15 @@ export function extractUpstreamImages(node: CanvasNode | undefined): string[] {
 
   if (isUploadNode(node) || isImageEditNode(node) || isExportImageNode(node)) {
     return node.data.imageUrl ? [node.data.imageUrl] : [];
+  }
+
+  if (isImageGenNode(node)) {
+    // Match the reference thumbnail ordering used by ScriptNode: the preview
+    // can carry a cache-busted/current selection URL while imageUrl remains
+    // the canonical generated result. Keep the imageGen node's own uploaded
+    // reference as a final fallback when it has no generated output yet.
+    const imageUrl = node.data.previewImageUrl || node.data.imageUrl || node.data.referenceImageUrl;
+    return typeof imageUrl === 'string' && imageUrl.length > 0 ? [imageUrl] : [];
   }
 
   return [];

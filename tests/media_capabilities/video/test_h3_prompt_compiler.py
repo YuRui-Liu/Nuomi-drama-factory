@@ -262,7 +262,7 @@ def _v3_plan(mode: H3Mode, *, music: str = "No music.") -> H3DirectorPlan:
 
 def test_compiler_and_profile_versions_are_explicit():
     assert H3_PROMPT_PROFILE_VERSION == 28
-    assert H3_PROMPT_COMPILER_VERSION == 5
+    assert H3_PROMPT_COMPILER_VERSION == 6
 
 
 def test_v2_fuses_rigid_facts_naturally_and_keeps_dialogue_verbatim():

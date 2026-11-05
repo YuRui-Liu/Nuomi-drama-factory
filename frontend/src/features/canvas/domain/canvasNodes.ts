@@ -8,6 +8,7 @@ import type {
   DirectorWorldSource,
 } from '@/features/viewer-kit/three-d/directorManifest';
 import type { ScriptSettings } from '@/features/script-creation/types';
+import type { FreezoneStoryScriptRow } from '@/api/ops';
 
 export const CANVAS_NODE_TYPES = {
   upload: 'uploadNode',
@@ -30,6 +31,8 @@ export const CANVAS_NODE_TYPES = {
   screenplay: 'screenplayNode',
   directorWorkspace: 'directorWorkspaceNode',
   narrativeGroupStoryboard: 'narrativeGroupStoryboardNode',
+  narrativeGroupVideo: 'narrativeGroupVideoNode',
+  episodeCompose: 'episodeComposeNode',
   characterVoice: 'characterVoiceNode',
   pano360Viewer: 'pano360ViewerNode',
   threeDWorld: 'threeDWorldNode',
@@ -309,6 +312,8 @@ export interface StoryboardPreparation {
   sourceNodeId: string; sourceUrl: string; sourceWidth: number; sourceHeight: number;
   sourceFingerprint: string; settingsFingerprint: string; status: 'prepared';
   cells: { id: string; rect: [number, number, number, number]; cropUrl: string; imageUrl: string }[];
+  selectedShotIds?: string[];
+  selectedCells?: { shotId: string; id: string; rect: [number, number, number, number]; cropUrl: string; imageUrl: string }[];
   baselineDraft: Record<string, unknown>;
   requestedDurationSeconds: number; actualDurationSeconds: number; actualTotalFrames: number;
 }
@@ -319,6 +324,11 @@ export interface VideoDirectorNodeData extends NodeDisplayData {
   draft: DirectorDraft;
   /** Active image input route; absent on nodes saved before input modes existed. */
   activeInputMode?: 'ref' | 'frames';
+  lightweightShotIds?: string[];
+  lightweightBatchIndex?: number;
+  lightweightBatchCount?: number;
+  lightweightBatchAlignedFrames?: number;
+  lightweightBatchActive?: boolean;
   visibleSegmentId?: string | null;
   pendingSubmission?: { requestId: string; frozenDraftSnapshot: DirectorDraft } | null;
   activeAttemptId: string | null;
@@ -373,6 +383,14 @@ export type TextNodeMode =
 
 export interface TextAnnotationNodeData extends NodeDisplayData {
   content: string;
+  formalScriptRef?: {
+    kind: 'episode_script';
+    project_id: string;
+    document_id: string;
+    revision_id: string;
+    episode_number: number;
+    title: string;
+  };
   /**
    * 节点被作为「上游引用素材」使用（例如脚本节点 spawn 出来的）。
    * 此时只显示编辑卡片，不渲染 mode 列表 / 模型选择 / 提交按钮。
@@ -709,6 +727,35 @@ export interface VideoStoryNodeData extends NodeDisplayData {
 
 export type ScriptGenAction = 'fromScript' | 'fromVideoRef' | 'fromCharacter';
 
+/**
+ * 分镜表行上由「分镜导演计划」投影出来的结构化块（只读展示）。
+ *
+ * 六个维度对应导演计划里的景别 / 轴线 / 主光 / 表演 / 道具 / 连续性，
+ * `panel_spec` 是一行拍摄语言摘要。字段缺省表示该维度未投影，
+ * 渲染时按需省略，不占位。
+ */
+export interface StoryboardDirectorBlock {
+  /** 景别，如「近景 · 平视」。 */
+  framing?: string | null;
+  /** 轴线 / 机位关系，如「A→B · 机位左」。 */
+  blocking?: string | null;
+  /** 主光，如「右后逆光 · 冷」。 */
+  lights?: string | null;
+  /** 表演，如「紧张克制」。 */
+  performance?: string | null;
+  /** 道具，如「背包带垂下」。 */
+  props?: string | null;
+  /** 连续性约束，如「东侧不越轴」。 */
+  continuity?: string | null;
+  /** 一行拍摄语言摘要，展示在结构化块底部。 */
+  panel_spec?: string | null;
+}
+
+/** 分镜表行：后端 story-script 行 + 导演计划投影附加的 director 块。 */
+export type StoryboardScriptRow = FreezoneStoryScriptRow & {
+  director?: StoryboardDirectorBlock;
+};
+
 export interface ScriptNodeData extends NodeDisplayData {
   /** 操作区输入的剧情/参考说明文本 */
   prompt?: string;
@@ -725,6 +772,11 @@ export interface ScriptNodeData extends NodeDisplayData {
   generationDurationMs?: number;
   /** 最近一次生成失败的错误信息，渲染在节点本体上（提交面板取消选中后仍可见）。 */
   generationError?: string | null;
+  /**
+   * 这份分镜表来自哪一次「分镜导演计划」投影。存在时表格头部展示
+   * 「计划投影 · hash 前 6 位」徽标；缺省表示这份表不是投影产物。
+   */
+  directorBinding?: { episode: number; revisionId: string; projectionHash: string };
   [key: string]: unknown;
 }
 
@@ -830,6 +882,12 @@ export interface AgentRunRef {
   id: string;
   revision: number;
   state: string;
+  delegationId?: string;
+  inputSignature?: string;
+  agentId?: string;
+  agentRevision?: number;
+  objectId?: string;
+  objectRevision?: number;
 }
 
 /** A stable pointer to a selected ideation candidate; the candidate body lives remotely. */
@@ -864,6 +922,11 @@ export interface ProductionContentNodeData extends NodeDisplayData {
   voiceVersionId?: string;
   directorRevisionId?: string;
   groupId?: string;
+  productionGroupIds?: string[];
+  operation?: string;
+  videoUrl?: string | null;
+  resultVideoUrl?: string | null;
+  orchestration?: Record<string, unknown>;
   [key: string]: unknown;
 }
 

@@ -38,6 +38,7 @@ vi.mock("@/api/client", async (importOriginal) => {
 import { server } from "@/__mocks__/msw/server";
 import { useAgentDiscussion, type AgentDiscussionOwner } from "@/features/agent-runtime/useAgentDiscussion";
 import { useAuthStore } from "@/stores/auth-store";
+import { useCanvasStore } from "@/stores/canvasStore";
 
 const owner: AgentDiscussionOwner = {
   project: "project-a",
@@ -47,6 +48,30 @@ const owner: AgentDiscussionOwner = {
 
 const scopeKey = (project: string, canvas: string, conversation: string) =>
   `${project}:${canvas}:${conversation}`;
+const canvasCapture = vi.hoisted(() => ({
+  order: [] as string[],
+  flush: vi.fn(),
+  serverBaseline: vi.fn(),
+  apply: vi.fn(),
+  reportConflict: vi.fn(),
+  get: vi.fn(),
+}));
+vi.mock("@/features/freezone/canvasSyncRuntime", () => ({
+  captureFreezoneCanvasRuntime: () => ({
+    isCurrent: () => true,
+    flush: async () => {
+      canvasCapture.order.push("flush");
+      return canvasCapture.flush();
+    },
+    serverBaseline: () => {
+      canvasCapture.order.push("server-baseline");
+      return canvasCapture.serverBaseline();
+    },
+  }),
+  applyRemoteFreezoneCanvas: (...args: unknown[]) => canvasCapture.apply(...args),
+  reportFreezoneCanvasConflict: canvasCapture.reportConflict,
+}));
+vi.mock("@/api/canvas", () => ({ getFreezoneCanvas: canvasCapture.get }));
 
 function message(
   requestId: string,
@@ -86,6 +111,7 @@ function setupApi() {
     http.post("*/api/v1/projects/:project/creation/discussions", async ({ params, request }) => {
       const project = String(params.project);
       const body = (await request.json()) as Record<string, unknown>;
+      canvasCapture.order.push("post");
       posts.push({ project, body });
       const key = scopeKey(
         project,
@@ -140,6 +166,45 @@ describe("useAgentDiscussion", () => {
 
   beforeEach(() => {
     localStorage.clear();
+    canvasCapture.order = [];
+    canvasCapture.flush.mockReset().mockResolvedValue(true);
+    canvasCapture.serverBaseline.mockReset().mockReturnValue({
+      revision: 7,
+      nodes: [{ id: "scene", type: "groupNode", data: { title: "场景" } }],
+      edges: [],
+      metadata: { shotMetadata: {} },
+    });
+    canvasCapture.apply.mockReset().mockImplementation((
+      _project: unknown,
+      _canvas: unknown,
+      remote: { nodes: unknown[]; edges: unknown[] },
+      merge?: (remoteNodes: unknown[], remoteEdges: unknown[], localNodes: unknown[], localEdges: unknown[]) => { nodes: unknown[]; edges: unknown[] },
+    ) => {
+      canvasCapture.order.push("apply");
+      const local = useCanvasStore.getState();
+      const next = merge
+        ? merge(remote.nodes, remote.edges, local.nodes, local.edges)
+        : { nodes: remote.nodes, edges: remote.edges };
+      useCanvasStore.setState({ nodes: next.nodes as never, edges: next.edges as never });
+      return true;
+    });
+    canvasCapture.get.mockReset().mockImplementation(async () => {
+      canvasCapture.order.push("get");
+      return {
+        revision: 8,
+        nodes: [
+          { id: "scene", type: "groupNode", data: { title: "场景" } },
+          { id: "remote-b", type: "agentNode", data: { title: "远端新增节点 B" } },
+        ],
+        edges: [],
+        metadata: { shotMetadata: {} },
+      };
+    });
+    useCanvasStore.setState({
+      nodes: [{ id: "scene", type: "groupNode", data: { title: "场景" } }] as never,
+      edges: [],
+      viewportBookmarks: [],
+    });
     useAuthStore.setState({ username: "alice", role: "writer" });
   });
 
@@ -178,6 +243,25 @@ describe("useAgentDiscussion", () => {
       conversation_id: owner.conversation,
       message: "讨论一下开场",
     });
+    expect(canvasCapture.order).toEqual(["flush", "server-baseline", "get", "apply", "post"]);
+    expect(canvasCapture.apply).toHaveBeenCalledOnce();
+    expect(useCanvasStore.getState().nodes).toContainEqual({
+      id: "remote-b", type: "agentNode", data: { title: "远端新增节点 B" },
+    });
+    const { readDiscussionCanvasBaseline } = await import("@/features/agent-runtime/runOperation");
+    expect(readDiscussionCanvasBaseline(
+      { user: "alice", ...owner },
+      String(api.posts[0].body.request_id),
+    )?.canvasBaseline).toEqual({
+      revision: 8,
+      nodes: [
+        { id: "scene", type: "groupNode", data: { title: "场景" } },
+        { id: "remote-b", type: "agentNode", data: { title: "远端新增节点 B" } },
+      ],
+      edges: [],
+      metadata: { shotMetadata: {} },
+    });
+    expect(canvasCapture.serverBaseline).toHaveBeenCalledOnce();
     expect(api.gets).toContain(scopeKey(owner.project, owner.canvas, owner.conversation));
     expect(api.unexpectedApiRequests).toEqual([]);
     await waitFor(() => expect(result.current.messages).toHaveLength(2));
@@ -185,6 +269,68 @@ describe("useAgentDiscussion", () => {
       "讨论一下开场",
       "回复",
     ]);
+  });
+
+  it("does not submit a discussion when the current canvas cannot be flushed", async () => {
+    const api = setupApi();
+    canvasCapture.flush.mockResolvedValue(false);
+    const { result } = renderDiscussion();
+    await waitFor(() => expect(result.current.availability?.available).toBe(true));
+
+    let sent = true;
+    await act(async () => { sent = await result.current.send("创建角色资产"); });
+
+    expect(sent).toBe(false);
+    expect(api.posts).toHaveLength(0);
+    expect(canvasCapture.serverBaseline).not.toHaveBeenCalled();
+    expect(canvasCapture.apply).not.toHaveBeenCalled();
+    expect(canvasCapture.get).not.toHaveBeenCalled();
+    expect(canvasCapture.order).toEqual(["flush"]);
+  });
+
+  it("keeps local edits and blocks submission when the preflight merge conflicts", async () => {
+    const api = setupApi();
+    useCanvasStore.setState({
+      nodes: [{ id: "scene", type: "groupNode", data: { title: "本地修改" } }] as never,
+    });
+    canvasCapture.get.mockResolvedValue({
+      revision: 8,
+      nodes: [{ id: "scene", type: "groupNode", data: { title: "服务端修改" } }],
+      edges: [],
+      metadata: { shotMetadata: {} },
+    });
+    const { result } = renderDiscussion();
+    await waitFor(() => expect(result.current.availability?.available).toBe(true));
+
+    let sent = true;
+    await act(async () => { sent = await result.current.send("继续讨论"); });
+
+    expect(sent).toBe(false);
+    expect(api.posts).toHaveLength(0);
+    expect(result.current.error).toContain("冲突");
+    expect(canvasCapture.apply).not.toHaveBeenCalled();
+    expect(canvasCapture.reportConflict).toHaveBeenCalledWith(
+      owner.project,
+      owner.canvas,
+      expect.stringContaining("nodes.scene.data.title"),
+    );
+    expect(useCanvasStore.getState().nodes).toEqual([
+      { id: "scene", type: "groupNode", data: { title: "本地修改" } },
+    ]);
+  });
+
+  it("does not submit when the live canvas runtime rejects the preflight apply", async () => {
+    const api = setupApi();
+    canvasCapture.apply.mockReturnValue(false);
+    const { result } = renderDiscussion();
+    await waitFor(() => expect(result.current.availability?.available).toBe(true));
+
+    let sent = true;
+    await act(async () => { sent = await result.current.send("继续讨论"); });
+
+    expect(sent).toBe(false);
+    expect(api.posts).toHaveLength(0);
+    expect(result.current.error).toContain("安全同步最新画布");
   });
 
   it("keeps A and B histories isolated when switching owners and returning", async () => {

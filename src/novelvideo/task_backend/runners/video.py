@@ -56,6 +56,7 @@ class VideoSpan:
 
 def director_composition_snapshot(
     project_dir: str | Path, episode: int, *, groups: list[Any] | None = None,
+    require_current: bool = False,
 ) -> dict[str, Any]:
     """Require every active Director group, independently of legacy beat rows."""
     from novelvideo.director_plan.store import DirectorPlanStore
@@ -73,12 +74,19 @@ def director_composition_snapshot(
         group = by_id[group_id]
         stage = group.stages.get("video")
         if (group.director_revision_id != active.revision_id
-            or getattr(stage, "status", "") != "completed"):
+            or getattr(stage, "status", "") != "completed"
+            or (require_current and bool(getattr(stage, "needs_regeneration", False)))):
             raise ValueError(f"DIRECTOR_COMPOSITION_INCOMPLETE: {group_id} 视频未完成或不属于当前规划")
+        render = group.stages.get("render")
         video_sources.append({
             "group_id": group_id,
             "revision": getattr(stage, "revision", 0),
             "manifest_asset": str(getattr(stage, "manifest_asset", "") or ""),
+            "render_revision": getattr(render, "revision", 0),
+            "storyboard_source_id": str(getattr(render, "selected_storyboard_id", "") or ""),
+            "plan_revision": getattr(getattr(group, "video_plan", None), "revision", 0),
+            "settings_revision": getattr(getattr(group, "video_settings", None), "revision", 0),
+            "reference_revision": getattr(getattr(group, "video_reference_settings", None), "revision", 0),
         })
     return {"revision_id": active.revision_id, "group_ids": group_ids, "video_sources": video_sources}
 
@@ -110,7 +118,7 @@ def resolve_episode_composition_sources(
             raise
         groups = []
     if strict_audio and not beats:
-        director_composition_snapshot(root, episode, groups=groups)
+        director_composition_snapshot(root, episode, groups=groups, require_current=False)
     for group in sorted(groups, key=lambda item: int(getattr(item, "ordinal", 0))):
         stage = getattr(group, "stages", {}).get("video")
         # Input changes are advisory: compose the retained completed video and
@@ -134,6 +142,13 @@ def resolve_episode_composition_sources(
                 raise RuntimeError(f"Director video is missing: {video_path}")
             continue
         entries = tuple(manifest.entries)
+        if any(entry.dialogue_source is DialogueSource.H3_NATIVE for entry in entries):
+            if not _video_has_audio_stream(video_path):
+                if strict_audio:
+                    raise RuntimeError(
+                        f"Director manifest {manifest_path} requires embedded H3-native audio"
+                    )
+                continue
         if any(entry.dialogue_source is DialogueSource.EXTERNAL_TTS for entry in entries):
             ambience = Path(manifest.ambience_stem_path or "")
             if manifest.ambience_stem_status != "succeeded" or not ambience.exists():
@@ -892,9 +907,12 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
     beats = list(payload.get("beats") or [])
     resolution = str(payload.get("resolution") or "720x1280")
     director_snapshot = None
-    if not beats:
-        director_snapshot = director_composition_snapshot(output_dir, episode)
-        frozen_snapshot = payload.get("director_composition")
+    frozen_snapshot = payload.get("director_composition")
+    require_current_snapshot = bool(payload.get("client_mutation_id"))
+    if frozen_snapshot is not None or not beats:
+        director_snapshot = director_composition_snapshot(
+            output_dir, episode, require_current=require_current_snapshot,
+        )
         if frozen_snapshot is not None and frozen_snapshot != director_snapshot:
             raise ValueError("DIRECTOR_COMPOSITION_CHANGED: 活动导演组或视频来源已改变，请重新合成")
     add_subtitles = bool(payload.get("add_subtitles"))
@@ -1216,7 +1234,9 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
             if not candidate_path.is_file() or candidate_path.stat().st_size == 0:
                 raise RuntimeError("拼接失败: ffmpeg 生成了空的视频文件")
             if director_snapshot is not None:
-                current_snapshot = director_composition_snapshot(output_dir, episode)
+                current_snapshot = director_composition_snapshot(
+                    output_dir, episode, require_current=require_current_snapshot,
+                )
                 if current_snapshot != director_snapshot:
                     raise ValueError("DIRECTOR_COMPOSITION_CHANGED: 合成期间导演组或视频来源已改变")
             candidate_path.chmod(output_mode)

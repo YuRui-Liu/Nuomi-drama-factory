@@ -29,4 +29,39 @@ describe('director validation', () => {
     draft.modelId = 'retired-model';
     expect(validateDirectorDraft(draft, capabilities).model_id).toBeTruthy();
   });
+
+  it('blocks a manually edited draft when H3-aligned total duration exceeds the submission cap', () => {
+    const draft = createDirectorDraft('s1');
+    draft.references = [{ imageId: 'r1', url: '/r1.png' }];
+    draft.segments = [
+      { id: 's1', prompt: 'Shot one', durationSeconds: 4.5, firstFrame: null, lastFrame: null, technique: null },
+      { id: 's2', prompt: 'Shot two', durationSeconds: 4.5, firstFrame: null, lastFrame: null, technique: null },
+      { id: 's3', prompt: 'Shot three', durationSeconds: 4.5, firstFrame: null, lastFrame: null, technique: null },
+    ];
+
+    const errors = validateDirectorDraft(draft, capabilities);
+
+    expect(errors.segments).toContain('15.500000 秒');
+    expect(errors.segments).toContain('0.500000 秒');
+    expect(errors.segments).toContain('372 帧');
+    expect(errors.segments).toContain('12 帧');
+  });
+
+  it('uses a capability-provided H3 submission frame limit', () => {
+    const draft = createDirectorDraft('s1');
+    draft.references = [{ imageId: 'r1', url: '/r1.png' }];
+    draft.segments = [
+      { id: 's1', prompt: 'Shot one', durationSeconds: 7, firstFrame: null, lastFrame: null, technique: null },
+      { id: 's2', prompt: 'Shot two', durationSeconds: 7, firstFrame: null, lastFrame: null, technique: null },
+    ];
+
+    const customCapabilities = { ...capabilities, maxSubmissionFrames: 349 };
+    const exactBoundaryCapabilities = { ...capabilities, maxSubmissionFrames: 350 };
+    expect(validateDirectorDraft(draft, customCapabilities).segments).toContain('350 帧');
+    expect(validateDirectorDraft(draft, exactBoundaryCapabilities).segments).toBeUndefined();
+
+    draft.segments.push({ id: 's3', prompt: 'Shot three', durationSeconds: 7, firstFrame: null, lastFrame: null, technique: null });
+    const higherServerLimit = { ...capabilities, maxSubmissionFrames: 500 };
+    expect(validateDirectorDraft(draft, higherServerLimit).segments).toContain('15.000000 秒上限');
+  });
 });

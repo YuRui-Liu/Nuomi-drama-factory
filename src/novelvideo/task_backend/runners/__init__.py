@@ -38,6 +38,7 @@ from novelvideo.task_backend.runners import (  # noqa: F401
     screenplay_semantic_repair,
     script,
     script_creation,
+    script_creation_episode_asset_supplement,
     script_creation_consistency,
     sketch,
     sketch_edit_execute,

@@ -34,6 +34,16 @@ export const getCreationOperation = (project: string, operationId: string) =>
 export function listCreationCanvases(project: string, signal?: AbortSignal) {
   return apiCall<CreationCanvas[]>(`${root(project)}/canvases`, { signal });
 }
+export function renameCreationCanvas(project: string, canvasId: string, title: string) {
+  return apiCall<CreationCanvas>(`${root(project)}/canvases/${encodeURIComponent(canvasId)}`, {
+    method: 'PATCH', json: { title },
+  });
+}
+export function deleteCreationCanvas(project: string, canvasId: string) {
+  return apiCall<{ deleted: boolean }>(`${root(project)}/canvases/${encodeURIComponent(canvasId)}`, {
+    method: 'DELETE',
+  });
+}
 export async function createWorkspace(project: string, input: CreateWorkspaceInput): Promise<CreationResult> {
   const { kind, ...body } = input;
   const result = await apiCall<CreationResult>(`${root(project)}/${kind === 'episode' ? 'episodes' : 'canvases'}`, {

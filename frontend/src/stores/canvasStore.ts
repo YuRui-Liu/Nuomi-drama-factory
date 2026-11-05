@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { independentAssetCopy } from '@/features/canvas/domain/assetCopy';
+import { currentFreezoneCanvasScope } from '@/features/freezone/canvasSyncRuntime';
 import { create } from 'zustand';
 import {
   type Viewport,
@@ -75,6 +76,8 @@ import {
   isPresetManagedNode,
 } from '@/features/canvas/domain/mainlineNodeFlags';
 import { scopeProjectionGraphIds } from '@/features/freezone/projectionGraphIds';
+import { getConfiguredFreezoneImageModel } from '@/features/canvas/hooks/useFreezoneImageModels';
+import { readUrl } from '@/lib/url-params';
 
 export type {
   ActiveToolDialog,
@@ -1605,10 +1608,39 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
   addNode: (type, position, data = {}) => {
     const state = get();
-    const createdNode = maybeApplyImageAutoResize(
-      canvasNodeFactory.createNode(type, position, data),
-      data,
+    const configuredImageModel = type === CANVAS_NODE_TYPES.imageGen && !data.model
+      ? getConfiguredFreezoneImageModel(readUrl().project)
+      : null;
+    const initialData = configuredImageModel
+      ? { ...data, model: configuredImageModel.id }
+      : data;
+    let createdNode = maybeApplyImageAutoResize(
+      canvasNodeFactory.createNode(type, position, initialData),
+      initialData,
     );
+    const runtime = currentFreezoneCanvasScope();
+    const episodeBoundTypes = new Set<CanvasNodeType>([
+      CANVAS_NODE_TYPES.screenplay,
+      CANVAS_NODE_TYPES.directorWorkspace,
+      CANVAS_NODE_TYPES.narrativeGroupStoryboard,
+      CANVAS_NODE_TYPES.narrativeGroupVideo,
+      CANVAS_NODE_TYPES.episodeCompose,
+    ]);
+    if (runtime && episodeBoundTypes.has(type)) {
+      const scope = runtime.workspaceScope;
+      const canonicalEpisode = runtime.project === scope?.projectId
+        && runtime.canvasId === scope?.canvasId
+        && scope.status === 'applied'
+        && scope.kind === 'episode'
+        && typeof scope.episodeNumber === 'number'
+        && Number.isInteger(scope.episodeNumber)
+        && scope.episodeNumber > 0
+        ? scope.episodeNumber : null;
+      const nodeData = { ...createdNode.data } as Record<string, unknown>;
+      if (canonicalEpisode === null) delete nodeData.episodeNumber;
+      else nodeData.episodeNumber = canonicalEpisode;
+      createdNode = { ...createdNode, data: nodeData as CanvasNodeData };
+    }
     const newNode =
       createdNode.type === CANVAS_NODE_TYPES.skill && !createdNode.measured
         ? ({ ...createdNode, measured: SKILL_NODE_DEFAULT_MEASURED } as CanvasNode)

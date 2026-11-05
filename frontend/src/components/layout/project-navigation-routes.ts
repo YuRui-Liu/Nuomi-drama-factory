@@ -16,6 +16,12 @@ export const PROJECT_SECTION_ROUTES = {
 
 export type ProjectSection = keyof typeof PROJECT_SECTION_ROUTES;
 
+/** Resolve the project-card landing route while keeping legacy creation explicit-only. */
+export function projectEntryRoute(section?: ProjectSection | null): string {
+  if (!section || section === "creation") return PROJECT_SECTION_ROUTES.freezone;
+  return PROJECT_SECTION_ROUTES[section] ?? PROJECT_SECTION_ROUTES.freezone;
+}
+
 export const PROJECT_NAV_ITEMS = [
   { labelKey: "nav.freezone", to: PROJECT_SECTION_ROUTES.freezone },
   { labelKey: "nav.assets", to: PROJECT_SECTION_ROUTES.characters },

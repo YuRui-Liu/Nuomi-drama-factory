@@ -21,7 +21,7 @@ def test_scene_blocking_edits_are_versioned_and_group_references_stay_pinned(tmp
     )
 
     store = DirectorWorkspaceStore(tmp_path)
-    first = store.save_scene_blocking(
+    store.save_scene_blocking(
         1,
         "scene-a",
         base_version=0,
@@ -97,7 +97,7 @@ def test_replacing_scene_group_references_moves_selected_groups_and_unpins_remov
     from novelvideo.director_plan.workspace import DirectorWorkspaceStore
 
     store = DirectorWorkspaceStore(tmp_path)
-    scene_a = store.save_scene_blocking(
+    store.save_scene_blocking(
         3, "scene-a", base_version=None, semantic_revision_id="sem-1",
         director_revision_id="director-1", blocking=_blocking("A"), group_ids=("old-group",),
     )
@@ -262,6 +262,25 @@ def test_scene_blocking_compiles_to_reviewable_director_candidate_with_provenanc
     assert candidate.scene_blocking_references[0].revision_id == "blocking-revision-1"
     assert candidate.scene_blocking_references[0].director_revision_id == active.revision_id
     assert "x=31%" in compiled.prompt_facts()
+
+    stage_snapshot = {
+        "schemaVersion": 1, "savedAt": 123, "props": [], "stagings": [],
+        "actors": [{"id": "hero", "label": "Hero", "color": "#ffffff", "position": [1, 0, -2], "yawDeg": 45, "scale": [1, 1, 1]}],
+        "outputCamera": {"azim": 20, "elev": 10, "distance": 5, "focalPoint": [1, 1, 0], "fov": 45},
+        "lights": [{"id": "key", "label": "Key", "color": "#ffffff", "position": [2, 3, 4], "direction": [0, -1, 0], "intensity": 2, "enabled": True}],
+    }
+    staged_reference = {**reference, "blocking": {**reference["blocking"], "stage_snapshot": stage_snapshot}}
+    staged = compile_scene_blocking_candidate(active, [staged_reference], source_spans=(SourceSpan(id="span-1", ordinal=1, scene="hallway", time="night", text="waits"),))
+    staged_facts = staged.groups[0].shots[0].cinematography.prompt_facts()
+    assert "3D proxy world xyz=(1, 0, -2)" in staged_facts
+    assert "fov=45" in staged_facts
+    assert "xyz=(2, 3, 4)" in staged_facts
+    assert "x=31%" not in staged_facts
+    from novelvideo.narrative_groups.image_prompt import panel_description
+    staged_shot = staged.groups[0].shots[0]
+    image_prompt = panel_description({**staged_shot.model_dump(mode="json"), "geo_layout": "doorway"})
+    assert "screen-right" in image_prompt
+    assert "left third" not in image_prompt
 
     store = DirectorWorkspaceStore(tmp_path)
     first_pin = store.save_scene_blocking(

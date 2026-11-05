@@ -175,6 +175,16 @@ def _codex_status(
     )
 
 
+def resolve_codex_executable(codex_bin: str | None = None) -> str:
+    """Resolve a configured or PATH Codex CLI without probing authentication."""
+    requested = (
+        (codex_bin or "").strip()
+        or os.getenv("CODEX_BIN", "").strip()
+        or "codex"
+    )
+    return shutil.which(requested) or ""
+
+
 def parse_codex_login_status(
     returncode: int,
     stdout: str,
@@ -556,6 +566,7 @@ class CodexCliStructuredBackend:
     async def _run_once(
         self, prompt: str, *, schema: dict[str, Any] | None,
         images: list[StructuredImage] | None = None,
+        request_started_observer: Any | None = None,
     ) -> str:
         timeout_seconds = parse_exec_timeout_seconds(
             os.getenv("CODEX_EXEC_TIMEOUT_SECONDS")
@@ -606,6 +617,8 @@ class CodexCliStructuredBackend:
                 ) from exc
             external_id = attempt.attempt_id if attempt is not None else ''
             self._cost_capture.accepted(attempt, external_id)
+            if request_started_observer is not None:
+                request_started_observer()
             try:
                 outcome = await supervise_codex_process(
                     process, prompt, output_path, timeout_seconds,

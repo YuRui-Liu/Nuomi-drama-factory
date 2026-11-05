@@ -208,20 +208,60 @@ def project_director_inputs(node: dict, upstream: list[dict], edges: list[dict])
     mode = data.get('activeInputMode', 'ref')
     by_id = {s['id']: s for s in draft.get('segments', [])}
     incoming = {e['source']: e for e in edges if e['target'] == node['id']}
-    refs = list(draft.get('references', [])) if mode == 'ref' else []
+    refs = {r['image_id']: deepcopy(r) for r in draft.get('references', [])} if mode == 'ref' else {}
     for item in ordered_upstream(data, upstream):
-        url = (item.get('result') or {}).get('imageUrl')
+        result = item.get('result') or {}
+        url = result.get('imageUrl')
         if not url:
             continue
         image = {'image_id': item['node_id'], 'url': url}
         slot = incoming.get(item['node_id'], {}).get('data', {}).get('slot', {})
         if mode == 'ref' and slot.get('kind', 'reference') == 'reference':
-            refs.append(image)
+            merged = refs.get(item['node_id'], {'image_id': item['node_id']})
+            def upstream_value(snake: str, camel: str):
+                value = result.get(snake)
+                return result.get(camel) if value is None or value == '' else value
+
+            old_url = merged.get('url')
+            old_character_id = merged.get('character_id')
+            old_variant_id = merged.get('variant_id')
+            upstream_character_id = upstream_value('character_id', 'characterId')
+            upstream_variant_id = upstream_value('variant_id', 'variantId')
+            upstream_sha256 = upstream_value('sha256', 'sha256')
+            character_changed = (upstream_character_id not in (None, '')
+                                 and upstream_character_id != old_character_id)
+            variant_changed = (upstream_variant_id not in (None, '')
+                               and upstream_variant_id != old_variant_id)
+            if old_url != url and upstream_sha256 in (None, ''):
+                # A digest belongs to the old bytes and must not survive a URL refresh.
+                merged.pop('sha256', None)
+            if character_changed or variant_changed:
+                # A label describes a specific character/identity pair and cannot
+                # be carried across a change unless the upstream supplies a new one.
+                merged.pop('variant_label', None)
+            if character_changed and upstream_variant_id in (None, ''):
+                # Variant metadata names a character's identity/costume. Drop it
+                # when the upstream explicitly binds this image to another character.
+                merged.pop('variant_id', None)
+            merged.update(image)
+            metadata_fields = (
+                ('asset_id', 'assetId'),
+                ('character_id', 'characterId'),
+                ('variant_id', 'variantId'),
+                ('variant_label', 'variantLabel'),
+                ('asset_kind', 'assetKind'),
+                ('sha256', 'sha256'),
+            )
+            for snake, camel in metadata_fields:
+                value = upstream_value(snake, camel)
+                if value is not None and value != '':
+                    merged[snake] = value
+            refs[item['node_id']] = merged
         elif slot.get('kind') in {'firstFrame', 'lastFrame', 'first', 'last'}:
             segment = by_id.get(slot.get('segmentId'))
             if segment is not None:
                 segment['first_frame' if slot['kind'] in {'firstFrame', 'first'} else 'last_frame'] = image
-    draft['references'] = list({r['image_id']: r for r in refs}.values())
+    draft['references'] = list(refs.values())
     return draft
 
 

@@ -24,6 +24,25 @@ const viewerMock = vi.hoisted(() => ({
   setCollisionVisible: vi.fn(),
   fly: { setSpeedScale: vi.fn() },
   resetCamera: vi.fn(),
+  getViewCameraState: vi.fn(() => ({ azim: -45, elev: -10, distance: 3, focalPoint: [0, 0.5, 0] as [number, number, number], fov: 96 })),
+  setViewCameraFov: vi.fn(),
+  getOutputCameraState: vi.fn(() => ({ azim: -45, elev: -10, distance: 3, focalPoint: [0, 0.5, 0] as [number, number, number], fov: 96 })),
+  setOutputCameraState: vi.fn(),
+  setOutputCameraFromView: vi.fn(),
+  setOutputCameraSelected: vi.fn(),
+  isOutputCameraSelected: vi.fn(() => false),
+  onOutputCameraChange: vi.fn((listener) => {
+    listener({ azim: -45, elev: -10, distance: 3, focalPoint: [0, 0.5, 0], fov: 96 });
+    return () => undefined;
+  }),
+  getSelectedLight: vi.fn(() => null),
+  setSelectedLightColor: vi.fn(),
+  setSelectedLightIntensity: vi.fn(),
+  setSelectedLightDirection: vi.fn(),
+  onSelectedLightChange: vi.fn((listener) => {
+    listener(null);
+    return () => undefined;
+  }),
   getSourceTransform: vi.fn(() => ({
     xOffset: 0,
     yOffset: 0,
@@ -65,7 +84,7 @@ const viewerMock = vi.hoisted(() => ({
   getMarkerLabels: vi.fn(() => []),
   getSelectionScreenPosition: vi.fn(() => ({ x: 100, y: 100, visible: true })),
   onMarkersChange: vi.fn((listener) => {
-    listener({ actor: 1, prop: 1, staging: 0 });
+    listener({ actor: 1, prop: 1, staging: 0, light: 0 });
     return () => undefined;
   }),
   onSelectionChange: vi.fn((listener) => {
@@ -360,6 +379,27 @@ describe("ThreeDDirectorDialog", () => {
 
     expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "viewer.threeD.close" })).toBeInTheDocument();
+  });
+
+  it("adds proxy lights without invoking the AI staging generator and explains their limits", async () => {
+    const user = userEvent.setup();
+    render(
+      <ThreeDDirectorDialog
+        open
+        onOpenChange={() => undefined}
+        manifest={manifest}
+      />,
+    );
+
+    expect(screen.getByText(/全景只提供背景方向，没有真实视差/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /4 · 代理灯光/ }));
+    await user.click(screen.getByRole("button", { name: "viewer.threeD.placeAtCrosshair" }));
+
+    expect(viewerMock.placeMarker).toHaveBeenCalledWith("light", {
+      color: "#ffd166",
+      label: "代理灯光 1",
+    });
+    expect(generateAiStagingProp).not.toHaveBeenCalled();
   });
 
   it("opens a blank Director World when the Director World manifest is missing", async () => {
@@ -920,6 +960,65 @@ describe("ThreeDDirectorDialog", () => {
         && item.semantic_label === "门口光"
         && item.marker_color === "#4587ff"
     ))).toBe(true);
+  });
+
+  it("captures the saved output camera and carries its light rig into delivery metadata", async () => {
+    const user = userEvent.setup();
+    const onCaptureCanvasNode = vi.fn();
+    const freezoneManifest: DirectorStageManifest = {
+      ...manifest,
+      mode: "scene",
+      beat_context: undefined,
+      blockings_dir_fs: undefined,
+      control_frames_dir_fs: undefined,
+      slate_beat: undefined,
+      allowed_destinations: ["view", "download", "canvas_screenshot_node"],
+    };
+    viewerMock.exportSceneSnapshot.mockReturnValueOnce({
+      schemaVersion: 1,
+      savedAt: 1,
+      actors: [],
+      props: [],
+      stagings: [],
+      camera: { azim: -10, elev: 4, distance: 3, focalPoint: [0, 1, 0], fov: 72 },
+      outputCamera: { azim: 35, elev: -8, distance: 5, focalPoint: [2, 1, -1], fov: 48 },
+      lights: [{
+        id: "key-1",
+        label: "主灯",
+        color: "#ffd166",
+        intensity: 2.5,
+        position: [1, 2, 3],
+        direction: [0, -1, 0],
+        enabled: true,
+      }],
+    });
+
+    render(
+      <ThreeDDirectorDialog
+        open
+        onOpenChange={() => undefined}
+        manifest={freezoneManifest}
+        viewerPurpose="freezone"
+        onCaptureCanvasNode={onCaptureCanvasNode}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "viewer.threeD.panoOutputToCanvasNode" }));
+
+    await waitFor(() => expect(onCaptureCanvasNode).toHaveBeenCalledTimes(1));
+    expect(viewerMock.captureScreenshot).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ renderCamera: "output", renderMode: "combined" }),
+    );
+    const [, meta] = onCaptureCanvasNode.mock.calls[0];
+    expect(meta.snapshot.camera).toMatchObject({ azim: -10, fov: 72 });
+    expect(meta.snapshot.outputCamera).toMatchObject({ azim: 35, fov: 48 });
+    expect(meta.snapshot.lights).toEqual([expect.objectContaining({ id: "key-1", intensity: 2.5 })]);
+    expect(meta.captureBundle?.frame_meta.camera.state).toMatchObject({ azim: 35, fov: 48 });
+    expect(meta.captureBundle?.frame_meta.camera.view_state).toMatchObject({ azim: -10, fov: 72 });
+    expect(meta.captureBundle?.frame_meta).toMatchObject({
+      lights: [expect.objectContaining({ id: "key-1", color: "#ffd166" })],
+    });
   });
 
   it("captures only env_only for selected background without writing control-frame bundle", async () => {

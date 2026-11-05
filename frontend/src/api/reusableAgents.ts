@@ -129,10 +129,15 @@ export const previewAgentOverride = (p: string, adoption_id: string, changes: Ag
     method: 'POST',
     json: { adoption_id, changes },
   });
-export const previewAgentUpgrade = (p: string, adoption_id: string, ref: AgentRef) =>
+export const previewAgentUpgrade = (
+  p: string,
+  adoption_id: string,
+  ref: AgentRef,
+  source?: 'builtin',
+) =>
   apiCall<UpgradePreview>(`${root(p)}/upgrade-preview`, {
     method: 'POST',
-    json: { adoption_id, ref },
+    json: { adoption_id, ref, ...(source ? { source } : {}) },
   });
 export const postAgentOperation = (p: string, channel: AgentChannel, request: AgentCommand) =>
   apiCall<AgentResult>(`${root(p)}/${channel === 'personal' ? 'personal/' : ''}operations`, {

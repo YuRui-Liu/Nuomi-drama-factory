@@ -12,6 +12,37 @@ from novelvideo.models import CharacterIdentity, NovelCharacter
 pytestmark = pytest.mark.m04
 
 
+@pytest.mark.asyncio
+async def test_patch_voice_facts_persists_typed_human_facts(tmp_path, monkeypatch):
+    from novelvideo.api.routes import characters
+    from novelvideo.api.schemas import CharacterUpdate
+    from novelvideo.character_voice_facts import VoiceFacts
+    from novelvideo.sqlite_store import SQLiteStore
+
+    store = SQLiteStore("voice-patch", str(tmp_path / "output"), str(tmp_path / "state"))
+    await store.initialize()
+    try:
+        await store.add_character(NovelCharacter(name="步知遥"))
+        async def resolve(*args, **kwargs):
+            return None, "user", "voice-patch", tmp_path / "output", str(tmp_path / "output"), store
+        monkeypatch.setattr(characters, "_resolve_character_project", resolve)
+        body = CharacterUpdate(voice_facts={
+            "species": "人类", "age_group": "youth", "vocalization_mode": "dialogue",
+            "evidence": ["已确认E1剧本：里面有活物。"], "provenance": "source",
+        })
+        result = await characters.update_character("voice-patch", "步知遥", body, {})
+        assert result["ok"]
+        await store.load_graph_state()
+        facts = store.get_character("步知遥").voice_facts
+        assert isinstance(facts, VoiceFacts)
+        assert facts.vocalization_mode == "dialogue"
+        assert facts.provenance == "human"
+        assert facts.evidence == ["已确认E1剧本：里面有活物。"]
+        assert body.voice_facts.provenance == "source"
+    finally:
+        await store.close()
+
+
 class _CharacterStore:
     def __init__(self, characters: list[NovelCharacter] | None = None):
         self.characters = {character.name: character for character in characters or []}

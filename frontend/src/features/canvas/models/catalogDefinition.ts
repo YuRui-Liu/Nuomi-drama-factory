@@ -4,7 +4,9 @@ import type { ImageModelDefinition } from './types';
 /** Adapt the project's executable catalog to the canvas parameter controls. */
 export function catalogImageDefinition(model: ModelOption): ImageModelDefinition {
   const sizes = model.resolutionOptions?.length ? model.resolutionOptions
-    : model.apiModel === 'gpt-image-2' ? ['1K'] : ['1K', '2K', '4K'];
+    : model.providerId === 'grsai' && model.apiModel === 'gpt-image-2'
+      ? ['1K']
+      : ['1K', '2K', '4K'];
   return {
     id: model.id, mediaType: 'image', displayName: model.label,
     providerId: model.providerId, description: '', eta: '',

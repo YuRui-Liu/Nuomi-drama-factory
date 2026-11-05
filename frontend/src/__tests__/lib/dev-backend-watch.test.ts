@@ -58,23 +58,31 @@ describe("dev-backend-watch", () => {
     teardown();
   });
 
-  it("hard-refreshes to the home page once when the backend instance changes", async () => {
-    const assign = vi.fn();
+  it("reloads the current project URL once when the backend instance changes", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/projects/demo/freezone?workspace=work-1&canvas=canvas-1#selected",
+    );
+    const reload = vi.fn();
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(configResponse("ee", "instance-a"))
       .mockResolvedValueOnce(configResponse("ee", "instance-b"))
       .mockResolvedValueOnce(configResponse("ce", "instance-c"));
     vi.stubGlobal("fetch", fetch);
-    vi.stubGlobal("location", { ...window.location, assign });
+    vi.stubGlobal("location", { ...window.location, reload });
 
     const { initDevBackendWatch } = await import("@/lib/dev-backend-watch");
     const teardown = initDevBackendWatch();
     await vi.runOnlyPendingTimersAsync();
     await vi.runOnlyPendingTimersAsync();
 
-    expect(assign).toHaveBeenCalledTimes(1);
-    expect(assign).toHaveBeenCalledWith("/");
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(reload).toHaveBeenCalledWith();
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe(
+      "/projects/demo/freezone?workspace=work-1&canvas=canvas-1#selected",
+    );
     expect(fetch).toHaveBeenCalledWith("/api/v1/config", {
       credentials: "include",
       cache: "no-store",
@@ -84,7 +92,7 @@ describe("dev-backend-watch", () => {
   });
 
   it("falls back to comparing edition when instance_id is absent", async () => {
-    const assign = vi.fn();
+    const reload = vi.fn();
     vi.stubGlobal(
       "fetch",
       vi
@@ -92,21 +100,20 @@ describe("dev-backend-watch", () => {
         .mockResolvedValueOnce(configResponse("ee"))
         .mockResolvedValueOnce(configResponse("ce")),
     );
-    vi.stubGlobal("location", { ...window.location, assign });
+    vi.stubGlobal("location", { ...window.location, reload });
 
     const { initDevBackendWatch } = await import("@/lib/dev-backend-watch");
     const teardown = initDevBackendWatch();
     await vi.runOnlyPendingTimersAsync();
     await vi.runOnlyPendingTimersAsync();
 
-    expect(assign).toHaveBeenCalledTimes(1);
-    expect(assign).toHaveBeenCalledWith("/");
+    expect(reload).toHaveBeenCalledTimes(1);
 
     teardown();
   });
 
   it("does not refresh when the backend identity is unchanged", async () => {
-    const assign = vi.fn();
+    const reload = vi.fn();
     vi.stubGlobal(
       "fetch",
       vi
@@ -114,28 +121,28 @@ describe("dev-backend-watch", () => {
         .mockResolvedValueOnce(configResponse("ce", "same-instance"))
         .mockResolvedValueOnce(configResponse("ce", "same-instance")),
     );
-    vi.stubGlobal("location", { ...window.location, assign });
+    vi.stubGlobal("location", { ...window.location, reload });
 
     const { initDevBackendWatch } = await import("@/lib/dev-backend-watch");
     const teardown = initDevBackendWatch();
     await vi.runOnlyPendingTimersAsync();
     await vi.runOnlyPendingTimersAsync();
 
-    expect(assign).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
 
     teardown();
   });
 
   it("does not hard-refresh preauth pages when the backend instance changes", async () => {
     window.history.replaceState(null, "", "/login");
-    const assign = vi.fn();
+    const reload = vi.fn();
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(configResponse("ee", "instance-a"))
       .mockResolvedValueOnce(configResponse("ee", "instance-b"))
       .mockResolvedValueOnce(configResponse("ee", "instance-b"));
     vi.stubGlobal("fetch", fetch);
-    vi.stubGlobal("location", { ...window.location, assign });
+    vi.stubGlobal("location", { ...window.location, reload });
 
     const { initDevBackendWatch } = await import("@/lib/dev-backend-watch");
     const teardown = initDevBackendWatch();
@@ -143,7 +150,7 @@ describe("dev-backend-watch", () => {
     await vi.runOnlyPendingTimersAsync();
     await vi.runOnlyPendingTimersAsync();
 
-    expect(assign).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
     expect(fetch).toHaveBeenCalledTimes(3);
 
     teardown();

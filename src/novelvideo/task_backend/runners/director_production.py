@@ -118,7 +118,13 @@ def _active_revision(store: DirectorPlanStore, episode: int, revision_id: str):
 def run_director_workspace_production(
     envelope: dict[str, Any], ctx: ProjectContext
 ) -> dict[str, Any]:
-    """Run selected narrative groups through the existing group batch algorithm."""
+    """Reject legacy queued work without submitting any new media operations."""
+    raise BatchFailure(
+        "director_workspace_production_retired: use the episode canvas production graph"
+    )
+
+    # Keep the old implementation below for historical context. The admission guard above
+    # also applies to queued tasks recovered after a worker restart.
     payload = envelope.get("payload") or {}
     try:
         episode = int(payload.get("episode"))

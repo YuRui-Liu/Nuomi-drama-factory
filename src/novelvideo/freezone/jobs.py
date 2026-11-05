@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import shutil
 import subprocess
 import tempfile
@@ -89,56 +90,70 @@ async def run_freezone_gen(
     out = output_path_for_job(project_dir, output_task_type or "freezone_gen", job_id)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    if provider == "grsai":
-        return await _run_grsai_image(out=out, prompt=prompt, reference_paths=reference_paths or [],
-                                      model=model, aspect_ratio=aspect_ratio, image_size=image_size)
+    # Providers write directly to their output path. Keep their partial output
+    # private until the completed image can be atomically published, and retain
+    # the final extension so provider format inference remains unchanged.
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{out.stem}.", suffix=out.suffix or ".png", dir=out.parent, delete=False
+    ) as staged_file:
+        staged_out = Path(staged_file.name)
 
-    # Routing (v1.2):
-    #   provider == "volcengine"  → Volcengine Seedream (text-only path; refs ignored)
-    #   anything else (including None default) → nanobanana_grid:
-    #     - with refs → generate_reference_edit_image
-    #     - no refs   → generate_text_to_image  (NEW v1.2)
-    if (provider or "").lower() == "volcengine":
-        return await _run_volcengine_text_to_image(
-            out=out,
-            prompt=prompt,
-            aspect_ratio=aspect_ratio,
-            image_size=image_size,
-        )
+    try:
+        if provider == "grsai":
+            await _run_grsai_image(out=staged_out, prompt=prompt, reference_paths=reference_paths or [],
+                                   model=model, aspect_ratio=aspect_ratio, image_size=image_size)
+        # Routing (v1.2):
+        #   provider == "volcengine"  → Volcengine Seedream (text-only path; refs ignored)
+        #   anything else (including None default) → nanobanana_grid:
+        #     - with refs → generate_reference_edit_image
+        #     - no refs   → generate_text_to_image  (NEW v1.2)
+        elif (provider or "").lower() == "volcengine":
+            await _run_volcengine_text_to_image(
+                out=staged_out,
+                prompt=prompt,
+                aspect_ratio=aspect_ratio,
+                image_size=image_size,
+            )
+        else:
+            from novelvideo.config import get_grid_generation_config
+            from novelvideo.generators.nanobanana_grid import (
+                generate_reference_edit_image,
+                generate_text_to_image,
+            )
 
-    from novelvideo.config import get_grid_generation_config
-    from novelvideo.generators.nanobanana_grid import (
-        generate_reference_edit_image,
-        generate_text_to_image,
-    )
+            cfg = get_grid_generation_config(
+                provider_override=provider,
+                model_override=model,
+                image_size_override=image_size,
+            )
+            if reference_paths:
+                await generate_reference_edit_image(
+                    prompt=prompt,
+                    reference_images=reference_paths,
+                    output_path=str(staged_out),
+                    aspect_ratio=aspect_ratio,
+                    image_size=image_size,
+                    quality=quality,
+                    api_key=api_key,
+                    config=cfg,
+                )
+            else:
+                await generate_text_to_image(
+                    prompt=prompt,
+                    output_path=str(staged_out),
+                    aspect_ratio=aspect_ratio,
+                    image_size=image_size,
+                    quality=quality,
+                    api_key=api_key,
+                    config=cfg,
+                )
 
-    cfg = get_grid_generation_config(
-        provider_override=provider,
-        model_override=model,
-        image_size_override=image_size,
-    )
-    if reference_paths:
-        await generate_reference_edit_image(
-            prompt=prompt,
-            reference_images=reference_paths,
-            output_path=str(out),
-            aspect_ratio=aspect_ratio,
-            image_size=image_size,
-            quality=quality,
-            api_key=api_key,
-            config=cfg,
-        )
-    else:
-        await generate_text_to_image(
-            prompt=prompt,
-            output_path=str(out),
-            aspect_ratio=aspect_ratio,
-            image_size=image_size,
-            quality=quality,
-            api_key=api_key,
-            config=cfg,
-        )
-    return out
+        if not staged_out.is_file() or staged_out.stat().st_size == 0:
+            raise RuntimeError("Image generation produced no output")
+        os.replace(staged_out, out)
+        return out
+    finally:
+        staged_out.unlink(missing_ok=True)
 
 
 async def run_freezone_mask_edit(
@@ -805,7 +820,8 @@ async def _mix_audio_tracks(
         filter_parts.append(f"[{idx}:a]adelay={delay_ms}|{delay_ms}[a{idx}]")
         labels.append(f"[a{idx}]")
     filter_parts.append(
-        f"{''.join(labels)}amix=inputs={len(labels)}:duration=first:dropout_transition=0[aout]"
+        f"{''.join(labels)}amix=inputs={len(labels)}:duration=first:normalize=0:dropout_transition=0,"
+        "alimiter=limit=0.891251:level=false:latency=true[aout]"
     )
     cmd.extend(
         [

@@ -62,6 +62,21 @@ class FakeRuntime:
         mode = data["mode"]
         if self.wrong_mode:
             mode = "ref2va" if mode != "ref2va" else "i2va"
+        from novelvideo.freezone.video_director.prepared_validation import (
+            h3_dialogue_language, spoken_text,
+        )
+        speaker_ids = {}
+        dialogue_lines = []
+        for locked in data["locked_dialogue"]:
+            speaker_id = speaker_ids.setdefault(locked["speaker"], len(speaker_ids) + 1)
+            if any("\u3400" <= char <= "\u9fff" for char in locked["speaker"]):
+                cue = f"{locked['speaker']}（S{speaker_id}）说："
+            else:
+                cue = f"{locked['speaker']} (S{speaker_id}) says:"
+            dialogue_lines.append(
+                f"{cue}<d>[{h3_dialogue_language(locked)}] {spoken_text(locked['quote'])}</d>"
+            )
+        dialogue = " " + " ".join(dialogue_lines) if dialogue_lines else ""
         refs = data["references"]
         subjects = list(dict.fromkeys(ref["subject_tag"] for ref in refs))
         definitions = []
@@ -74,12 +89,12 @@ class FakeRuntime:
                  "subject_definitions": "\n".join(definitions),
                  "summary": "; ".join(subjects) + " walks", "retention_analysis": [
                      {"subject": subject, "retain": "fully_preserved - identity"} for subject in subjects],
-                 "detailed_description": "; ".join(subjects) + " walk across the room.",
+                 "detailed_description": "[Shot 1] " + "; ".join(subjects) + " walk across the room." + dialogue,
                  "overall_soundscape": "Footsteps", "non_diegetic_music": "N/A"}
                 if mode == "ref2va" else
                 {"mode": mode, "duration_seconds": data["duration_seconds"],
                  "final_shot_number": 1,
-                 "integrated_multimodal_description": "[Shot 1] " + data["source_prompt"] + " while walking.",
+                 "integrated_multimodal_description": "[Shot 1] A continuous shot." + dialogue,
                  "overall_soundscape": "Footsteps", "non_diegetic_music": "N/A"})
         if self.wire_transform:
             wire = self.wire_transform(wire)
@@ -168,6 +183,39 @@ async def test_each_call_sees_ordered_adjacent_segment_context_without_extra_ima
     assert [part["source_prompt"] for part in contexts[1]] == ["Opening", "Transition", "Ending"]
     assert [part["requested_duration_seconds"] for part in contexts[1]] == [3, 4, 5]
     assert [len(call[3]) for call in runtime.calls] == [1, 1, 1]
+
+
+@pytest.mark.asyncio
+async def test_cross_batch_continuity_is_structured_and_only_applies_at_batch_opening():
+    runtime = FakeRuntime()
+    continuity = {
+        "director_intent": "Take the injured animal to the clinic",
+        "previous_end_state": "The rescuer holds the animal beside the open door",
+        "current_start_state": "The rescuer begins at the same doorway with the animal",
+        "shared_space": "Rainy alley doorway",
+        "spatial_layout": "The clinic sign is visible down the alley",
+        "scene_id": "scene-2",
+        "previous_group_id": "group-6",
+        "current_group_id": "group-7",
+        "relation_to_previous": "causal",
+    }
+    item = DirectorDraft.model_validate({
+        **draft(segments=(
+            DirectorSegment(id="opening", prompt="Carry the animal outside", duration_seconds=5,
+                            first_frame=image("f1")),
+            DirectorSegment(id="followup", prompt="Walk down the alley", duration_seconds=5,
+                            first_frame=image("f2")),
+        )).model_dump(mode="python"),
+        "continuity_context": continuity,
+    })
+
+    await optimize(runtime, item, frozen_images={
+        "f1": StructuredImage(b"f1", "image/png"),
+        "f2": StructuredImage(b"f2", "image/png"),
+    })
+
+    contexts = [_input(call).get("continuity_context") for call in runtime.calls]
+    assert contexts == [continuity, None]
 
 
 @pytest.mark.asyncio
@@ -320,7 +368,7 @@ async def test_chinese_speaker_and_quote_are_exact_locked_dialogue():
     import json
     data = json.loads(runtime.calls[0][0].partition("INPUT_JSON:\n")[2])
     assert data["locked_dialogue"] == [{"speaker": "张三", "quote": "“等一下！”"}]
-    assert '张三说：“等一下！”' in result.segments[0].prompt
+    assert '张三（S1）说：<d>[Chinese] 等一下！</d>' in result.segments[0].prompt
 
 
 @pytest.mark.asyncio

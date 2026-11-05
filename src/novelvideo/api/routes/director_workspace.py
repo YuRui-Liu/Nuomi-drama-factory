@@ -4,18 +4,18 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from contextlib import asynccontextmanager
 import hashlib
 import json
 from pathlib import Path
 from typing import Any, Literal
+from types import SimpleNamespace
 
-import portalocker
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.deps import make_sqlite_store_for_context, resolve_project_scope
+from novelvideo.creation.production_admission import admit_registered_episode_stage
 from novelvideo.director_plan.models import DirectorPlanRevision
 from novelvideo.director_plan.store import DirectorPlanStore
 from novelvideo.director_plan.workspace import (
@@ -31,7 +31,8 @@ from novelvideo.episode_source_store import EpisodeSourceStore
 from novelvideo.ports import get_task_backend
 from novelvideo.screenplay_semantics import ScreenplaySemanticStore
 from novelvideo.screenplay_semantics.store import ScreenplaySemanticActivationConflict
-from novelvideo.script_creation.handoff import HandoffService
+from novelvideo.script_creation.handoff import HandoffService, write_handoff_receipt
+from novelvideo.episode_sources import content_sha256
 from novelvideo.script_creation.store import (
     DocumentConflict,
     DocumentNotFound,
@@ -39,6 +40,7 @@ from novelvideo.script_creation.store import (
     DocumentValidation,
 )
 from novelvideo.task_state import get_task_manager
+from novelvideo.freezone.orchestration.models import OrchestrationError
 
 router = APIRouter()
 
@@ -351,7 +353,6 @@ async def _serialize_workspace(
         for item in await documents.list()
         if item.kind == "episode_script"
         and item.episode_number == episode
-        and item.adopted_revision_id == item.current_revision_id
     ]
     script = max(scripts, key=lambda item: item.updated_at) if scripts else None
     handoffs = await handoff.list(episode)
@@ -362,12 +363,24 @@ async def _serialize_workspace(
             if script is not None
             and item.get("document_id") == script.id
             and item.get("revision_id") == script.current_revision_id
+            and item.get("source_revision") is not None
+            and item.get("source_hash") is not None
         ),
         None,
     )
 
     sources = await handoff.sources.list_sources()
     source = next((item for item in sources if item.episode_number == episode), None)
+    latest_script_handoff = next(
+        (
+            item for item in handoffs
+            if script is not None
+            and item.get("document_id") == script.id
+            and item.get("source_revision") is not None
+            and item.get("source_hash") is not None
+        ),
+        None,
+    )
     semantics_store = ScreenplaySemanticStore(ctx.output_dir)
     active_semantic = semantics_store.load_active(episode)
     semantic_candidates = semantics_store.list_revisions(episode)
@@ -488,14 +501,63 @@ async def _serialize_workspace(
         "asset_breakdown": asset_stage,
         "group_plan": group_stage,
     }
+    script_payload = None
+    if script is not None:
+        if current_handoff is not None:
+            try:
+                artifact = {
+                    "status": "ready",
+                    **write_handoff_receipt(ctx.output_dir, current_handoff),
+                }
+            except Exception as exc:
+                artifact = {
+                    "status": "conflict",
+                    "path": (
+                        f"episodes/{episode:03d}/handoff-receipts/"
+                        f"{script.current_revision_id}.md"
+                    ),
+                    "sha256": hashlib.sha256(
+                        script.revision.markdown.encode("utf-8")
+                    ).hexdigest(),
+                    "source_revision": current_handoff.get("source_revision"),
+                    "matches_episode_source": False,
+                    "message": str(exc),
+                }
+            source_matches_handoff = bool(
+                source is not None
+                and source.source_revision == current_handoff.get("source_revision")
+                and source.content_hash == current_handoff.get("source_hash")
+                and source.content_hash == content_sha256(script.revision.markdown)
+            )
+            artifact["matches_episode_source"] = source_matches_handoff
+            source_sync_status = "synced" if source_matches_handoff else "conflict"
+        else:
+            artifact = None
+            source_matches_handoff = False
+            if latest_script_handoff is None:
+                source_sync_status = "requires_explicit_handoff"
+            elif (source is None
+                    or source.source_revision != latest_script_handoff.get("source_revision")
+                    or source.content_hash != latest_script_handoff.get("source_hash")):
+                source_sync_status = "conflict"
+            else:
+                source_sync_status = "pending_sync"
+        script_payload = {
+            "document_id": script.id,
+            "revision_id": script.current_revision_id,
+            "adopted_revision_id": script.adopted_revision_id,
+            "source_sync": {
+                "status": source_sync_status,
+                "source_revision": source.source_revision if source is not None else None,
+                "matches_episode_source": source_matches_handoff,
+            },
+        }
+        if artifact is not None:
+            script_payload["artifact"] = artifact
     return {
         "episode": episode,
         "stages": stages,
-        "script": (
-            {"document_id": script.id, "revision_id": script.current_revision_id}
-            if script is not None
-            else None
-        ),
+        "script": script_payload,
         "semantics": semantic_review,
         "revision": revision_dump,
         "groups": groups,
@@ -522,12 +584,27 @@ async def _current_episode_source(ctx: Any, episode: int) -> Any | None:
 async def _enqueue_director_plan(ctx: Any, episode: int, semantic: Any) -> Any:
     source_revision = int(semantic.source_revision)
     semantic_revision_id = str(semantic.revision_id)
+    scope = f"revision:{source_revision}:semantic:{semantic_revision_id}"
+    existing = await asyncio.to_thread(
+        get_task_manager().get_task_for_project,
+        ctx, "director_plan", episode, scope=scope,
+    )
+    if existing is not None and existing.status in {
+        "submitting", "queued", "running", "completed", "succeeded",
+    }:
+        return SimpleNamespace(task_state=existing)
+    try:
+        admit_registered_episode_stage(
+            ctx.state_dir, ctx.output_dir, episode, "storyboard", planning_only=True,
+        )
+    except OrchestrationError as exc:
+        raise HTTPException(status_code=409, detail=exc.as_dict()) from exc
     return await get_task_backend().enqueue_project_task(
         ctx,
         task_type="director_plan",
         queue_kind="default",
         episode=episode,
-        scope=f"revision:{source_revision}:semantic:{semantic_revision_id}",
+        scope=scope,
         payload={
             "project_id": str(ctx.project_id),
             "episode": episode,
@@ -535,35 +612,6 @@ async def _enqueue_director_plan(ctx: Any, episode: int, semantic: Any) -> Any:
             "semantic_revision_id": semantic_revision_id,
         },
     )
-
-
-@asynccontextmanager
-async def _async_production_enqueue_lock(path: str | Path):
-    """Acquire and release the process lock off the event-loop thread."""
-    lock = portalocker.Lock(str(path), mode="a+", timeout=60)
-    acquire_task = asyncio.create_task(asyncio.to_thread(lock.acquire))
-    try:
-        await asyncio.shield(acquire_task)
-    except asyncio.CancelledError:
-        try:
-            await asyncio.shield(acquire_task)
-        except BaseException:
-            pass
-        else:
-            release_task = asyncio.create_task(asyncio.to_thread(lock.release))
-            try:
-                await asyncio.shield(release_task)
-            except asyncio.CancelledError:
-                await asyncio.shield(release_task)
-        raise
-    try:
-        yield
-    finally:
-        release_task = asyncio.create_task(asyncio.to_thread(lock.release))
-        try:
-            await asyncio.shield(release_task)
-        except asyncio.CancelledError:
-            await asyncio.shield(release_task)
 
 
 def _handoff_stage(item: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -577,6 +625,10 @@ def _handoff_stage(item: Mapping[str, Any] | None) -> dict[str, Any]:
     stage: dict[str, Any] = {"status": status_value}
     if item.get("task_id"):
         stage["task_id"] = item["task_id"]
+    if item.get("source_revision") is not None:
+        stage["source_revision"] = item["source_revision"]
+    if item.get("source_hash"):
+        stage["source_hash"] = item["source_hash"]
     if item.get("error"):
         stage["error"] = str(item["error"])
     return stage
@@ -1044,36 +1096,10 @@ async def start_director_workspace_production(
     body: DirectorWorkspaceProductionRequest,
     user: dict[str, Any] = Depends(require_scope("tasks:submit")),
 ):
-    """Queue bounded narrative groups through render or video, never composition."""
+    """Reconcile an exact legacy receipt; new production starts on the episode canvas."""
     if episode <= 0:
         raise HTTPException(status_code=422, detail={"code": "INVALID_EPISODE"})
     ctx = await _resolve(project, user, role="editor")
-    try:
-        revision = DirectorPlanStore(ctx.output_dir).load_active(episode)
-    except FileNotFoundError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "DIRECTOR_WORKSPACE_ADOPTED_PLAN_REQUIRED"},
-        ) from exc
-    except Exception as exc:
-        from novelvideo.episode_source_versions import SourceVersionConflict
-
-        if not isinstance(exc, SourceVersionConflict):
-            raise
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "DIRECTOR_WORKSPACE_ADOPTED_PLAN_STALE"},
-        ) from exc
-    if revision is None or revision.status != "active":
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "DIRECTOR_WORKSPACE_ADOPTED_PLAN_REQUIRED"},
-        )
-    if revision.revision_id != body.revision_id:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "DIRECTOR_WORKSPACE_ACTIVE_REVISION_CHANGED"},
-        )
     try:
         requested_group_ids = [_safe_production_group_id(item) for item in body.group_ids]
     except ValueError as exc:
@@ -1086,31 +1112,10 @@ async def start_director_workspace_production(
             status_code=422,
             detail={"code": "DIRECTOR_WORKSPACE_DUPLICATE_GROUP_ID"},
         )
-    try:
-        active_group_ids = [_safe_production_group_id(item.id) for item in revision.groups]
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "DIRECTOR_WORKSPACE_INVALID_ADOPTED_PLAN"},
-        ) from exc
-    if len(active_group_ids) != len(set(active_group_ids)):
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "DIRECTOR_WORKSPACE_INVALID_ADOPTED_PLAN"},
-        )
-    unknown = sorted(set(requested_group_ids) - set(active_group_ids))
-    if unknown:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "DIRECTOR_WORKSPACE_GROUPS_CHANGED",
-                "group_ids": unknown[:10],
-            },
-        )
 
     scope_payload = {
         "episode": episode,
-        "revision_id": revision.revision_id,
+        "revision_id": body.revision_id,
         "group_ids": sorted(requested_group_ids),
         "client_mutation_id": body.client_mutation_id.strip(),
         "retry_failed": body.retry_failed,
@@ -1122,63 +1127,26 @@ async def start_director_workspace_production(
         json.dumps(scope_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     scope = f"director-workspace-production:{digest}"
-    lock_directory = ctx.output_dir / "director_workspace" / f"episode_{episode:03d}"
-    lock_directory.mkdir(parents=True, exist_ok=True)
-    async with _async_production_enqueue_lock(
-        lock_directory / ".production-enqueue.lock"
-    ):
-        manager = get_task_manager()
-        existing = await asyncio.to_thread(
-            manager.get_task_for_project,
-            ctx,
-            "director_workspace_production",
-            episode,
-            scope=scope,
-        )
-        if existing is not None:
-            return _production_task_response(existing, reused=True, through=body.through)
-
-        active_tasks = await asyncio.to_thread(manager.list_tasks_for_project, ctx)
-        active_coordinators = [
-            task
-            for task in active_tasks
-            if task.task_type == "director_workspace_production"
-            and task.episode == episode
-            and task.status in {"submitting", "queued", "pending", "running"}
-        ]
-        if active_coordinators:
-            task = active_coordinators[0]
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "DIRECTOR_WORKSPACE_PRODUCTION_ALREADY_RUNNING",
-                    "task_id": task.task_id,
-                },
-            )
-
-        queued = await get_task_backend().enqueue_project_task(
-            ctx,
-            task_type="director_workspace_production",
-            queue_kind="world",
-            episode=episode,
-            scope=scope,
-            payload={
-                "episode": episode,
-                "revision_id": revision.revision_id,
-                "group_ids": sorted(requested_group_ids),
-                "retry_failed": body.retry_failed,
-                **({'through': body.through} if body.through != 'video' else {}),
-            },
-        )
-    response = _production_task_response(queued.task_state, through=body.through)
-    response["data"].update(
-        {
-            "backend": queued.backend,
-            "queue": queued.queue,
-            "reused": False,
-        }
+    existing = await asyncio.to_thread(
+        get_task_manager().get_task_for_project,
+        ctx,
+        "director_workspace_production",
+        episode,
+        scope=scope,
     )
-    return response
+    if existing is not None:
+        return _production_task_response(existing, reused=True, through=body.through)
+
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "DIRECTOR_WORKSPACE_PRODUCTION_RETIRED",
+            "message": (
+                "This endpoint no longer starts production tasks. Use the episode canvas "
+                "production graph; exact existing task receipts remain available for reconciliation."
+            ),
+        },
+    )
 
 
 @router.post("/projects/{project}/episodes/{episode}/director-workspace/adopt")
@@ -1191,15 +1159,11 @@ async def adopt_director_workspace(
     if episode <= 0:
         raise HTTPException(status_code=422, detail={"code": "INVALID_EPISODE"})
     ctx = await _resolve(project, user, role="editor")
-    try:
-        revision = DirectorPlanStore(ctx.output_dir).activate(episode, body.revision_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(404, detail={"code": "DIRECTOR_PLAN_REVISION_NOT_FOUND"}) from exc
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(
-            409,
-            detail={"code": "DIRECTOR_PLAN_ACTIVATION_CONFLICT", "message": str(exc)},
-        ) from exc
+    from novelvideo.api.routes.director_plans import _activate_and_sync_director_plan
+
+    revision = await _activate_and_sync_director_plan(
+        ctx, episode, body.revision_id
+    )
     return {"ok": True, "data": revision.model_dump(mode="json")}
 
 

@@ -175,6 +175,13 @@ export const TextAnnotationNode = memo(({
   const findNodePosition = useCanvasStore((state) => state.findNodePosition);
   const content = typeof data.content === 'string' ? data.content : '';
   const instruction = typeof data.instruction === 'string' ? data.instruction : '';
+  const formalScript = data.formalScriptRef;
+  const formalScriptProject = typeof formalScript?.project_id === 'string'
+    ? formalScript.project_id : readUrl().project;
+  const formalScriptHref = formalScript?.kind === 'episode_script'
+    && typeof formalScript.document_id === 'string' && formalScriptProject
+    ? `/projects/${encodeURIComponent(formalScriptProject)}/creation?document=${encodeURIComponent(formalScript.document_id)}`
+    : null;
   const mode: TextNodeMode = data.mode && REAL_MODES.has(data.mode) ? data.mode : 'writing';
   // 已从能力 picker 选过一次(如「文字生成音乐」)：恒为纯文本编辑区,空内容也不再弹「试试」。
   const pickerDismissed = Boolean(data.pickerDismissed);
@@ -594,6 +601,12 @@ export const TextAnnotationNode = memo(({
               />
             )}
           </div>
+          {formalScriptHref && <a
+            href={formalScriptHref}
+            className="nodrag absolute bottom-2 right-3 z-[300] rounded-md border border-white/15 bg-background/90 px-2 py-1 text-xs text-primary underline shadow"
+            onClick={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+          >打开正式剧本文档</a>}
 
           {selected && !isBoxSelecting && !isReferenceOnly && !isSystemManaged && !isEditingContent && (
             <div

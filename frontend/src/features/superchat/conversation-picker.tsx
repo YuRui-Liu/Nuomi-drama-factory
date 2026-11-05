@@ -87,15 +87,15 @@ function PickerInstance({ project, canvasId, managedWorkspace = false, value = '
       }
     } finally { if (current.current) setBusy(false); }
   };
-  return <div className={`space-y-1 border-b px-3 ${managedWorkspace ? 'py-1' : 'py-2'}`} aria-label="助手会话管理">
+  return <div className={`space-y-1 border-b border-white/[0.06] px-3 ${managedWorkspace ? 'py-1' : 'py-2'}`} aria-label="助手会话管理">
     <div className="flex items-center gap-2">
-      <label className="flex min-w-0 flex-1 items-center gap-2 text-xs">会话
-        <select aria-label="切换助手会话" className="min-h-9 min-w-0 flex-1 rounded border bg-background px-2 py-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" value={value} onChange={event => select(event.target.value)}>
+      <label className="flex min-w-0 flex-1 items-center gap-2 text-xs"><span className={managedWorkspace ? 'sr-only' : ''}>会话</span>
+        <select aria-label="切换助手会话" title="切换会话保留上下文，不会停止正在执行的任务" className="min-h-9 min-w-0 flex-1 rounded-lg border border-white/10 bg-background px-2 py-1.5 text-xs text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" value={value} onChange={event => select(event.target.value)}>
           {managedWorkspace && <option value="">{items.length ? '请选择会话' : '此画布暂无会话'}</option>}
           {items.map(item => <option key={item.id} value={item.id}>{item.title}{item.running ? ' · 运行中' : ''}</option>)}
         </select>
       </label>
-      <Button size="sm" variant="outline" className="min-h-9" disabled={!ready || busy} onClick={() => setCreating(true)}>新建会话</Button>
+      <Button size="sm" variant="ghost" className="h-7 shrink-0 px-2 text-xs" disabled={!ready || busy} onClick={() => setCreating(true)}>新建会话</Button>
     </div>
     <p className={`text-[10px] text-muted-foreground ${managedWorkspace ? 'sr-only' : ''}`}>各会话独立保存上下文；切换会话不会停止正在执行的任务。</p>
     {creating && <form className="flex flex-wrap gap-2" onSubmit={event => { event.preventDefault(); void create(); }}>

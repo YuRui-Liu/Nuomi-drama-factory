@@ -39,6 +39,7 @@ import type { ViewerPurpose } from "../viewerPurpose";
 import type {
   DirectorControlFrameBundle,
   DirectorFrameMeta,
+  DirectorFrameMetaLight,
   DirectorFrameMetaPlacement,
   DirectorObjectLayer,
   DirectorStageManifest,
@@ -66,12 +67,15 @@ import type {
   MarkerCounts,
   SelectionState,
   ThreeDSceneSnapshot,
+  ThreeDCameraSnapshot,
+  ThreeDLightSnapshot,
+  FrameCaptureCssRect,
   ViewerApp,
 } from "./engine/viewerApp";
 import { dataUrlToBlob as decodeDataUrl } from "@/features/canvas/application/imageData";
 
 type FrameAspect = "16:9" | "2:3" | "9:16" | "1:1" | "4:3";
-type ToolMode = "actor" | "prop" | "staging";
+type ToolMode = "actor" | "prop" | "staging" | "light";
 type CaptureKind = "combined" | "env_only";
 type CaptureDestination = "download" | "selected_background" | "canvas_screenshot_node" | "director_combined";
 const DIRECTOR_CONTROL_FRAME_MAX_LONG_EDGE = 1280;
@@ -355,6 +359,22 @@ function numberTuple3(value: unknown, fallback: [number, number, number]): [numb
     : fallback;
 }
 
+function lightAnglesFromDirection(direction: [number, number, number]): { yawDeg: number; pitchDeg: number } {
+  const length = Math.hypot(...direction) || 1;
+  const [x, y, z] = direction.map((value) => value / length);
+  return {
+    yawDeg: Math.atan2(x, -z) * 180 / Math.PI,
+    pitchDeg: Math.asin(clamp(y, -1, 1)) * 180 / Math.PI,
+  };
+}
+
+function lightDirectionFromAngles(yawDeg: number, pitchDeg: number): [number, number, number] {
+  const yaw = yawDeg * Math.PI / 180;
+  const pitch = pitchDeg * Math.PI / 180;
+  const horizontal = Math.cos(pitch);
+  return [Math.sin(yaw) * horizontal, Math.sin(pitch), -Math.cos(yaw) * horizontal];
+}
+
 type MarkerSnapshot = ThreeDSceneSnapshot["actors"][number];
 
 function objectRecord(value: unknown): Record<string, unknown> {
@@ -441,7 +461,10 @@ function snapshotFromOverlay(
   const actors = Array.isArray(overlay.actors) ? overlay.actors : [];
   const props = Array.isArray(overlay.props) ? overlay.props : [];
   const stagings = Array.isArray(overlay.stagings) ? overlay.stagings : [];
-  if (!actors.length && !props.length && !stagings.length) {
+  const lights = Array.isArray(overlay.lights)
+    ? overlay.lights
+    : overlay.frame_meta?.lights ?? [];
+  if (!actors.length && !props.length && !stagings.length && !lights.length) {
     return null;
   }
   const isStagingItem = (item: unknown) => {
@@ -474,6 +497,8 @@ function snapshotFromOverlay(
     props: propItems.map((item) => propSnapshotFromOverlayItem(item, "#ffd34d")),
     stagings: stagingItems.map((item) => stagingSnapshotFromOverlayItem(item, "#4587ff")),
     camera: overlay.camera as ThreeDSceneSnapshot["camera"],
+    outputCamera: (overlay.outputCamera ?? overlay.frame_meta?.camera?.state ?? overlay.camera) as ThreeDSceneSnapshot["outputCamera"],
+    lights: lights as ThreeDLightSnapshot[],
     world: overlaySourceId ? { activeSourceId: overlaySourceId } : undefined,
   };
 }
@@ -593,12 +618,14 @@ function frameMetaFromSnapshot({
     camera: {
       mode: cameraMode,
       frame_aspect: frameAspect,
-      state: snapshot.camera ? { ...snapshot.camera } : {},
+      state: snapshot.outputCamera ? { ...snapshot.outputCamera } : snapshot.camera ? { ...snapshot.camera } : {},
+      ...(snapshot.camera ? { view_state: { ...snapshot.camera } } : {}),
     },
     layer,
     actors,
     props: [...props, ...stagings],
     stagings,
+    ...(snapshot.lights?.length ? { lights: snapshot.lights.map((light) => ({ ...light })) as DirectorFrameMetaLight[] } : {}),
     ...(beatContext ? { beat_context: beatContext } : {}),
   };
 }
@@ -670,7 +697,9 @@ function richOverlayFromSnapshot(
     };
   });
   return {
-    camera: snapshot.camera ?? {},
+    camera: snapshot.outputCamera ?? snapshot.camera ?? {},
+    outputCamera: snapshot.outputCamera ?? snapshot.camera ?? {},
+    lights: snapshot.lights?.map((light) => ({ ...light })) ?? [],
     actors,
     props,
     stagings,
@@ -863,8 +892,14 @@ function ThreeDDirectorSurface({
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [quickActionsOpen, setQuickActionsOpen] = useState(false);
   const [sourceCalibrationAdvancedOpen, setSourceCalibrationAdvancedOpen] = useState(false);
-  const [counts, setCounts] = useState<MarkerCounts>({ actor: 0, prop: 0, staging: 0 });
+  const [counts, setCounts] = useState<MarkerCounts>({ actor: 0, prop: 0, staging: 0, light: 0 });
   const [selection, setSelection] = useState<SelectionState | null>(null);
+  const [selectedLight, setSelectedLight] = useState<ThreeDLightSnapshot | null>(null);
+  const [outputCameraState, setOutputCameraStateView] = useState<ThreeDCameraSnapshot | null>(null);
+  const [outputCameraSelected, setOutputCameraSelectedView] = useState(false);
+  const [viewCameraFov, setViewCameraFovView] = useState(96);
+  const [frameGuideRectForPreview, setFrameGuideRectForPreview] = useState<FrameCaptureCssRect | null>(null);
+  const [newLightColor, setNewLightColor] = useState("#ffd166");
   const [captureBusy, setCaptureBusy] = useState<CaptureKind | null>(null);
   const [exportStatus, setExportStatus] = useState("");
   const [overlayStatus, setOverlayStatus] = useState<DirectorStageOverlayStatus | null>(null);
@@ -922,6 +957,30 @@ function ThreeDDirectorSurface({
   const [orientationMode, setOrientationMode] = useState(
     manifest.source_orientation_mode ?? "supersplat_auto",
   );
+
+  useEffect(() => {
+    const frameGuide = frameGuideRef.current;
+    if (!frameGuide) return undefined;
+    const measureFrame = () => {
+      const rect = frameGuide.getBoundingClientRect();
+      const next = { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+      setFrameGuideRectForPreview((current) => (
+        current && current.left === next.left && current.top === next.top
+        && current.width === next.width && current.height === next.height
+          ? current
+          : next
+      ));
+    };
+    measureFrame();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measureFrame);
+    observer?.observe(frameGuide);
+    if (frameGuide.parentElement) observer?.observe(frameGuide.parentElement);
+    window.addEventListener("resize", measureFrame);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measureFrame);
+    };
+  }, [frameAspect, panelHidden]);
 
   const actorChoices = useMemo(() => {
     if (manifest.palette.actors.length > 0) return manifest.palette.actors;
@@ -1220,7 +1279,22 @@ function ThreeDDirectorSurface({
 
   useEffect(() => {
     if (!viewer) return undefined;
-    return viewer.onSelectionChange(setSelection);
+    return viewer.onSelectionChange((next) => {
+      setSelection(next);
+      setSelectedLight(viewer.getSelectedLight());
+      setOutputCameraSelectedView(viewer.isOutputCameraSelected());
+    });
+  }, [viewer]);
+
+  useEffect(() => {
+    if (!viewer) return undefined;
+    setViewCameraFovView(viewer.getViewCameraState().fov);
+    return viewer.onOutputCameraChange(setOutputCameraStateView);
+  }, [viewer]);
+
+  useEffect(() => {
+    if (!viewer) return undefined;
+    return viewer.onSelectedLightChange(setSelectedLight);
   }, [viewer]);
 
   const applyOverlayStatus = useCallback((next: DirectorStageOverlayStatus, requestedBeat?: number) => {
@@ -1528,6 +1602,15 @@ function ThreeDDirectorSurface({
     recordCommand("place_staging");
   }, [propLikeColor, recordCommand, trimmedStagingName]);
 
+  const placeLight = useCallback(() => {
+    const label = `代理灯光 ${counts.light + 1}`;
+    const placed = viewerRef.current?.placeMarker("light", {
+      color: newLightColor,
+      label,
+    }) ?? false;
+    if (placed) recordCommand("place_proxy_light", { label, color: newLightColor });
+  }, [counts.light, newLightColor, recordCommand]);
+
   const createAiStaging = useCallback(async () => {
     const viewerApp = viewerRef.current;
     if (!viewerApp || aiStagingBusy) return;
@@ -1606,10 +1689,12 @@ function ThreeDDirectorSurface({
   const placeCurrentTool = useCallback(() => {
     if (toolMode === "actor") placeActor();
     else if (toolMode === "prop") placeProp();
-    else void createAiStaging();
-  }, [createAiStaging, placeActor, placeProp, toolMode]);
+    else if (toolMode === "staging") void createAiStaging();
+    else placeLight();
+  }, [createAiStaging, placeActor, placeLight, placeProp, toolMode]);
 
   const captureFrameOptions = useCallback((options?: { directorBundle?: boolean }) => ({
+    renderCamera: "output" as const,
     frameAspect,
     frameRectCss: frameGuideRef.current?.getBoundingClientRect(),
     ...(options?.directorBundle ? { maxLongEdge: DIRECTOR_CONTROL_FRAME_MAX_LONG_EDGE } : {}),
@@ -1926,6 +2011,9 @@ function ThreeDDirectorSurface({
     ? t(`viewer.threeD.markerKinds.${selectedKind}`, { defaultValue: selectedKind })
     : null;
   const selectedPoseLabel = selection?.pose ? POSE_LABELS[selection.pose] : "";
+  const selectedLightAngles = selectedLight
+    ? lightAnglesFromDirection(selectedLight.direction)
+    : { yawDeg: 0, pitchDeg: -90 };
   const selectedPositionLabel = selection
     ? `(${selection.position.map((value) => value.toFixed(2)).join(", ")})`
     : "";
@@ -1941,8 +2029,28 @@ function ThreeDDirectorSurface({
       return;
     }
     viewerApp.resetCamera();
+    setViewCameraFovView(viewerApp.getViewCameraState().fov);
     setStatus(t("viewer.threeD.resetCamera"));
   }, [t]);
+  const setViewFov = useCallback((nextFov: number) => {
+    viewerRef.current?.setViewCameraFov(nextFov);
+    setViewCameraFovView(nextFov);
+  }, []);
+  const updateOutputCamera = useCallback((patch: Partial<ThreeDCameraSnapshot>) => {
+    viewerRef.current?.setOutputCameraState(patch);
+  }, []);
+  const copyViewToOutputCamera = useCallback(() => {
+    viewerRef.current?.setOutputCameraFromView();
+    setStatus("已将编辑视角复制到输出机位");
+  }, []);
+  const toggleOutputCameraSelection = useCallback(() => {
+    const next = !viewerRef.current?.isOutputCameraSelected();
+    viewerRef.current?.setOutputCameraSelected(next);
+    setOutputCameraSelectedView(next);
+  }, []);
+  const updateSelectedLightDirection = useCallback((yawDeg: number, pitchDeg: number) => {
+    viewerRef.current?.setSelectedLightDirection(lightDirectionFromAngles(yawDeg, pitchDeg));
+  }, []);
   const updateSourceTransform = useCallback((patch: Partial<DirectorWorldSourceTransform>) => {
     const next = constrainSourceTransformForType(
       {
@@ -2157,7 +2265,75 @@ function ThreeDDirectorSurface({
                 ))}
               </SelectField>
             </div>
+          <RangeField
+            label={`编辑视角 FOV · ${viewCameraFov.toFixed(0)}°`}
+            min={20}
+            max={120}
+            step={1}
+            value={viewCameraFov}
+            onChange={setViewFov}
+          />
           </PanelSection>
+
+        <PanelSection title="输出摄影机">
+          <p className="text-[11px] leading-[1.7] text-white/48">
+            右上角是独立取景预览；编辑视角变化不会移动输出机位。拖动 XYZ 轴可移动机位，截图使用此机位。全景只提供背景方向，没有真实视差；灯光只即时照亮简化代理几何，不会自动重建场景。
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant={outputCameraSelected ? "default" : "outline"}
+              className="h-8 rounded-[10px] text-[11px]"
+              onClick={toggleOutputCameraSelection}
+              disabled={!viewer}
+            >
+              {outputCameraSelected ? "正在拖动机位" : "选择并拖动机位"}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 rounded-[10px] text-[11px]"
+              onClick={copyViewToOutputCamera}
+              disabled={!viewer}
+            >
+              从编辑视角复制
+            </Button>
+          </div>
+          <RangeField
+            label={`输出 FOV · ${(outputCameraState?.fov ?? 96).toFixed(0)}°`}
+            min={20}
+            max={120}
+            step={1}
+            value={outputCameraState?.fov ?? 96}
+            onChange={(fov) => updateOutputCamera({ fov })}
+          />
+          <RangeField
+            label={`输出方位 · ${(outputCameraState?.azim ?? -45).toFixed(0)}°`}
+            min={-180}
+            max={180}
+            step={1}
+            value={outputCameraState?.azim ?? -45}
+            onChange={(azim) => updateOutputCamera({ azim })}
+          />
+          <RangeField
+            label={`输出俯仰 · ${(outputCameraState?.elev ?? -10).toFixed(0)}°`}
+            min={-80}
+            max={80}
+            step={1}
+            value={outputCameraState?.elev ?? -10}
+            onChange={(elev) => updateOutputCamera({ elev })}
+          />
+          <RangeField
+            label={`输出距离 · ${(outputCameraState?.distance ?? 3).toFixed(1)}`}
+            min={0.3}
+            max={10}
+            step={0.1}
+            value={outputCameraState?.distance ?? 3}
+            onChange={(distance) => updateOutputCamera({ distance })}
+          />
+        </PanelSection>
 
         <PanelSection title={t("viewer.threeD.sourceCalibration.title")}>
           <p className="text-[11px] leading-[1.7] text-white/42">
@@ -2266,7 +2442,13 @@ function ThreeDDirectorSurface({
         <PanelSection title={t("viewer.threeD.sections.add")}>
           <div className="rounded-[12px] border border-white/[0.08] bg-black/20 px-3 py-2 text-[12px] text-white/54">
             {t("viewer.threeD.currentCreate", {
-              type: toolMode === "actor" ? t("viewer.threeD.actor") : toolMode === "prop" ? t("viewer.threeD.prop") : t("viewer.threeD.staging"),
+              type: toolMode === "actor"
+                ? t("viewer.threeD.actor")
+                : toolMode === "prop"
+                  ? t("viewer.threeD.prop")
+                  : toolMode === "staging"
+                    ? t("viewer.threeD.staging")
+                    : "代理灯光",
             })}
           </div>
           {toolMode === "actor" && (
@@ -2416,6 +2598,23 @@ function ThreeDDirectorSurface({
               </div>
             </div>
           )}
+          {toolMode === "light" && (
+            <div className="mt-3 space-y-2">
+              <label className="flex items-center justify-between gap-3 text-[12px] font-medium text-white/56">
+                代理灯光颜色
+                <input
+                  type="color"
+                  aria-label="代理灯光颜色"
+                  value={newLightColor}
+                  onChange={(event) => setNewLightColor(event.target.value)}
+                  className="h-8 w-12 cursor-pointer rounded border border-white/15 bg-transparent p-0.5"
+                />
+              </label>
+              <p className="text-[11px] leading-[1.7] text-white/42">
+                灯光是可拖动的聚光灯代理，只影响简化代理几何的即时预览。
+              </p>
+            </div>
+          )}
           <Button
             type="button"
             size="sm"
@@ -2456,6 +2655,40 @@ function ThreeDDirectorSurface({
                 className="mt-1.5 h-9 w-full rounded-[10px] border border-white/[0.10] bg-black/25 px-3 text-[12px] text-white outline-none transition-colors focus:border-white/22"
               />
             </label>
+          )}
+          {selection?.kind === "light" && selectedLight && (
+            <div className="space-y-3 rounded-[12px] border border-white/[0.08] bg-black/20 p-3">
+              <label className="flex items-center justify-between gap-3 text-[12px] font-medium text-white/56">
+                灯光颜色
+                <input
+                  type="color"
+                  aria-label="灯光颜色"
+                  value={selectedLight.color}
+                  onChange={(event) => viewer?.setSelectedLightColor(event.target.value)}
+                  className="h-8 w-12 cursor-pointer rounded border border-white/15 bg-transparent p-0.5"
+                />
+              </label>
+              <RangeField
+                label={`灯光强度 · ${selectedLight.intensity.toFixed(1)}`}
+                min={0}
+                max={8}
+                step={0.1}
+                value={selectedLight.intensity}
+                onChange={(intensity) => viewer?.setSelectedLightIntensity(intensity)}
+              />
+              <div>
+                <div className="mb-2 text-[12px] font-medium text-white/56">
+                  灯光朝向 · 方位 {selectedLightAngles.yawDeg.toFixed(0)}° / 俯仰 {selectedLightAngles.pitchDeg.toFixed(0)}°
+                </div>
+                <SourceDirectionBall
+                  ariaLabel="灯光朝向"
+                  ariaValueText={`方位 ${selectedLightAngles.yawDeg.toFixed(0)} 度，俯仰 ${selectedLightAngles.pitchDeg.toFixed(0)} 度`}
+                  yawDeg={selectedLightAngles.yawDeg}
+                  pitchDeg={selectedLightAngles.pitchDeg}
+                  onChange={({ yawDeg, pitchDeg }) => updateSelectedLightDirection(yawDeg, pitchDeg)}
+                />
+              </div>
+            </div>
           )}
           <Button
             size="sm"
@@ -2639,6 +2872,8 @@ function ThreeDDirectorSurface({
               orientationMode={orientationMode}
               sourceTransform={activeSourceInitialTransform}
               collisionUrl={resolveMediaUrl(activeCollisionUrl) ?? activeCollisionUrl}
+              frameAspect={frameAspect}
+              outputPreviewFrameRectCss={frameGuideRectForPreview}
               interactionActive={stageActive}
               onInteractionActiveChange={setStageActive}
               onReady={handleReady}
@@ -2690,6 +2925,13 @@ function ThreeDDirectorSurface({
                     setToolMode("staging");
                     viewer?.cycleSelection("staging");
                   },
+                },
+                {
+                  key: "4",
+                  title: "代理灯光",
+                  value: `${counts.light} 盏`,
+                  active: toolMode === "light",
+                  onClick: () => setToolMode("light"),
                 },
               ].map((slot) => (
                 <button

@@ -11,8 +11,22 @@ def test_odd_grid_and_preserved_crops():
     Image.new('RGB', (101, 57), 'red').save(image, 'PNG')
     result = adapt_image(image.getvalue(), 2, 2, '16:9')
     assert result['fingerprint'] == adapt_image(image.getvalue(), 2, 2, '16:9')['fingerprint']
-    assert Image.open(BytesIO(result['cells'][0]['crop'])).size == (50, 28)
-    assert len({Image.open(BytesIO(c['normalized'])).size for c in result['cells']}) == 1
+    crop = Image.open(BytesIO(result['cells'][0]['crop']))
+    assert crop.size == (48, 27)
+    assert crop.width * 9 == crop.height * 16
+    assert result['cells'][0]['rect'] == [0, 0, 50, 28]
+    assert result['cells'][0]['cropRect'] == [1, 0, 49, 27]
+    normalized = [Image.open(BytesIO(c['normalized'])) for c in result['cells']]
+    assert len({image.size for image in normalized}) == 1
+    assert all(image.width * 9 == image.height * 16 for image in normalized)
+
+
+def test_cell_ratio_outside_safe_crop_limit_returns_visible_error():
+    from novelvideo.freezone.video_director.storyboard_adaptation import adapt_image
+    image = BytesIO()
+    Image.new('RGB', (100, 100), 'red').save(image, 'PNG')
+    with pytest.raises(ValueError, match='cell 1 aspect ratio.*16:9'):
+        adapt_image(image.getvalue(), 1, 1, '16:9')
 
 
 @pytest.mark.parametrize('args', [(0, 10, 2, 2), (10, 10, 0, 2), (1, 10, 2, 2)])
@@ -114,6 +128,130 @@ def test_director_slots_are_mode_specific():
     draft = project_director_inputs(node, inputs, [edge])
     assert draft['segments'][0]['first_frame']['url'] == '/a.png'
     assert len(draft['references']) == 1
+
+
+def test_director_reference_projection_merges_image_identity_and_reference_facts():
+    from novelvideo.freezone.orchestration.adapters.requests import project_director_inputs
+    from novelvideo.freezone.video_director.models import DirectorDraft
+    from novelvideo.freezone.video_director.prepared_validation import reference_facts
+
+    node = {'id': 'd', 'data': {'activeInputMode': 'ref', 'draft': {
+        'revision': 3, 'aspect_ratio': '16:9', 'resolution': '720p',
+        'references': [
+            {'image_id': 'front', 'url': '/old/front.png', 'character_id': 'hero',
+             'variant_id': 'day', 'variant_label': '日装正面', 'asset_kind': 'portrait'},
+            {'image_id': 'profile', 'url': '/old/profile.png', 'character_id': 'hero',
+             'variant_id': 'night', 'variant_label': '夜装侧面', 'asset_kind': 'costume'},
+            {'image_id': 'other', 'url': '/old/other.png', 'character_id': 'outdated',
+             'variant_id': 'old', 'variant_label': '旧身份', 'asset_kind': 'portrait'},
+        ],
+    }}}
+    upstream = [
+        {'node_id': 'front', 'result': {'imageUrl': '/current/front.png'}},
+        {'node_id': 'profile', 'result': {
+            'imageUrl': '/current/profile.png', 'characterId': 'hero', 'variantId': 'profile-v2',
+            'variantLabel': '实际侧面', 'assetKind': 'portrait',
+        }},
+        {'node_id': 'other', 'result': {
+            'imageUrl': '/current/other.png', 'characterId': 'villain', 'variantId': 'villain-v3',
+            'variantLabel': '反派新身份', 'assetKind': 'identity',
+        }},
+        {'node_id': 'unlabeled', 'result': {'imageUrl': '/current/unlabeled.png'}},
+    ]
+    edges = [{'source': item['node_id'], 'target': 'd', 'data': {'slot': {'kind': 'reference'}}}
+             for item in upstream]
+
+    projected = project_director_inputs(node, upstream, edges)
+    references = projected['references']
+    assert references == [
+        {'image_id': 'front', 'url': '/current/front.png', 'character_id': 'hero',
+         'variant_id': 'day', 'variant_label': '日装正面', 'asset_kind': 'portrait'},
+        {'image_id': 'profile', 'url': '/current/profile.png', 'character_id': 'hero',
+         'variant_id': 'profile-v2', 'variant_label': '实际侧面', 'asset_kind': 'portrait'},
+        {'image_id': 'other', 'url': '/current/other.png', 'character_id': 'villain',
+         'variant_id': 'villain-v3', 'variant_label': '反派新身份', 'asset_kind': 'identity'},
+        {'image_id': 'unlabeled', 'url': '/current/unlabeled.png'},
+    ]
+
+    facts = reference_facts(DirectorDraft.model_validate(projected))
+    assert [fact['subject_tag'] for fact in facts] == [
+        '<Subject 1>', '<Subject 1>', '<Subject 2>', '<Subject 3>',
+    ]
+    assert [fact['variant_id'] for fact in facts] == ['day', 'profile-v2', 'villain-v3', None]
+
+
+def test_director_reference_url_refresh_drops_stale_sha256_without_a_new_hash():
+    from novelvideo.freezone.orchestration.adapters.requests import project_director_inputs
+
+    node = {'id': 'd', 'data': {'activeInputMode': 'ref', 'draft': {
+        'references': [{'image_id': 'image', 'url': '/old.png', 'sha256': 'old-digest'}],
+    }}}
+    upstream = [{'node_id': 'image', 'result': {'imageUrl': '/current.png'}}]
+    edges = [{'source': 'image', 'target': 'd', 'data': {'slot': {'kind': 'reference'}}}]
+
+    projected = project_director_inputs(node, upstream, edges)
+
+    assert projected['references'] == [{'image_id': 'image', 'url': '/current.png'}]
+
+
+def test_director_reference_character_switch_clears_previous_costume_variant():
+    from novelvideo.freezone.orchestration.adapters.requests import project_director_inputs
+
+    node = {'id': 'd', 'data': {'activeInputMode': 'ref', 'draft': {
+        'references': [{'image_id': 'switch', 'url': '/old.png', 'character_id': 'former',
+                        'variant_id': 'former-costume', 'variant_label': '旧角色服装',
+                        'asset_kind': 'identity_costume'}],
+    }}}
+    upstream = [{'node_id': 'switch', 'result': {
+        'imageUrl': '/current.png', 'characterId': 'replacement',
+    }}]
+    edges = [{'source': 'switch', 'target': 'd', 'data': {'slot': {'kind': 'reference'}}}]
+
+    projected = project_director_inputs(node, upstream, edges)
+
+    assert projected['references'] == [{
+        'image_id': 'switch', 'url': '/current.png', 'character_id': 'replacement',
+        'asset_kind': 'identity_costume',
+    }]
+
+
+def test_director_reference_variant_switch_clears_old_label_without_a_new_label():
+    from novelvideo.freezone.orchestration.adapters.requests import project_director_inputs
+
+    node = {'id': 'd', 'data': {'activeInputMode': 'ref', 'draft': {
+        'references': [{'image_id': 'image', 'url': '/day.png', 'character_id': 'hero',
+                        'variant_id': 'day', 'variant_label': '白衣日装'}],
+    }}}
+    upstream = [{'node_id': 'image', 'result': {
+        'imageUrl': '/night.png', 'variantId': 'night',
+    }}]
+    edges = [{'source': 'image', 'target': 'd', 'data': {'slot': {'kind': 'reference'}}}]
+
+    projected = project_director_inputs(node, upstream, edges)
+
+    assert projected['references'] == [{
+        'image_id': 'image', 'url': '/night.png', 'character_id': 'hero', 'variant_id': 'night',
+    }]
+
+
+def test_director_reference_character_and_variant_switch_clears_old_label():
+    from novelvideo.freezone.orchestration.adapters.requests import project_director_inputs
+
+    node = {'id': 'd', 'data': {'activeInputMode': 'ref', 'draft': {
+        'references': [{'image_id': 'image', 'url': '/old.png', 'character_id': 'former',
+                        'variant_id': 'day', 'variant_label': '白衣日装'}],
+    }}}
+    upstream = [{'node_id': 'image', 'result': {
+        'imageUrl': '/replacement-night.png', 'characterId': 'replacement', 'variantId': 'night',
+    }}]
+    edges = [{'source': 'image', 'target': 'd', 'data': {'slot': {'kind': 'reference'}}}]
+
+    projected = project_director_inputs(node, upstream, edges)
+
+    assert projected['references'] == [{
+        'image_id': 'image', 'url': '/replacement-night.png',
+        'character_id': 'replacement', 'variant_id': 'night',
+    }]
 
 
 @pytest.mark.asyncio

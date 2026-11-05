@@ -4,6 +4,8 @@ import type { StoryboardPreparation } from '@/features/canvas/domain/canvasNodes
 
 export interface StoryboardPreparationOptions {
   resolution?: 'safe' | 'keep_edits' | 'replace_generated';
+  /** Persisted storyboard frame IDs; the server selects them in source order. */
+  shot_ids?: string[];
   shots?: { description: string; duration_seconds?: number }[];
   rects?: [number, number, number, number][];
 }
@@ -24,6 +26,8 @@ export interface DirectorCapabilities {
   fps: number;
   frameStep: number;
   frameOffset: number;
+  maxSubmissionDurationSeconds?: number;
+  maxSubmissionFrames?: number;
   params: { resolution: string[]; aspectRatio: string[] };
   sizes: { resolution: string; aspectRatio: string; width: number; height: number; megapixels: number }[];
   modes: { id: string; supported: boolean }[];
@@ -101,7 +105,9 @@ export async function getDirectorCapabilities(project: string): Promise<Director
   return { models: d.models.map((m: Wire) => ({ ...m, referenceAdapter: m.reference_adapter })),
     referenceLimit: d.reference_limit, effectiveReferenceLimit: d.effective_reference_limit,
     configuredReferenceLimit: d.configured_reference_limit, fps: d.fps, frameStep: d.frame_step,
-    frameOffset: d.frame_offset, params: { resolution: d.params.resolution, aspectRatio: d.params.aspect_ratio },
+    frameOffset: d.frame_offset, maxSubmissionDurationSeconds: d.max_submission_duration_seconds,
+    maxSubmissionFrames: d.max_submission_frames,
+    params: { resolution: d.params.resolution, aspectRatio: d.params.aspect_ratio },
     sizes: d.sizes.map((s: Wire) => ({ ...s, aspectRatio: s.aspect_ratio })), modes: d.modes };
 }
 export async function listDirectorAttempts(project: string, canvasId: string, nodeId: string): Promise<DirectorAttempt[]> {

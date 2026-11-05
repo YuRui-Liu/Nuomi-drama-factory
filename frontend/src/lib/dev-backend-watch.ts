@@ -76,7 +76,9 @@ export function initDevBackendWatch(): () => void {
           return;
         }
         window.clearInterval(interval);
-        window.location.assign("/");
+        // Reloading the current document applies the new backend runtime config
+        // while retaining project, canvas, and selected-node URL context.
+        window.location.reload();
         return;
       }
       current = next;

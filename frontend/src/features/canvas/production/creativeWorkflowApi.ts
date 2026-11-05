@@ -16,6 +16,7 @@ export interface IdeaCandidate extends IdeaFields {
 export interface IdeationRun {
   id: string;
   status: string;
+  task_id?: string | null;
   brief_document_id: string;
   brief_revision_id: string;
   candidates: IdeaCandidate[];
@@ -23,7 +24,8 @@ export interface IdeationRun {
   error?: string | null;
   regenerations?: Record<string, { candidate_id: string; status: string; error?: string | null }>;
 }
-export interface WorkflowRun extends GenerationRun {
+export interface WorkflowRun extends Omit<GenerationRun, 'mode'> {
+  mode: 'bootstrap' | 'continue' | 'planning' | 'screenplay';
   phase?: 'planning' | 'screenplay';
   confirmed_revisions?: Record<string, string>;
 }

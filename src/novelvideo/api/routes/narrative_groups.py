@@ -14,10 +14,11 @@ import uuid
 from dataclasses import asdict, replace
 from io import BytesIO
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from types import SimpleNamespace
 from typing import Any, Literal, Mapping
 from urllib.parse import quote
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
@@ -50,6 +51,14 @@ from novelvideo.media_capabilities.video.workflow_registry import (
     VideoWorkflowUnavailable,
     build_video_workflow_registry,
 )
+from novelvideo.media_capabilities.video.h3_prepared_plans import (
+    EMPTY_H3_SOURCE_REUSE_DIGEST,
+    EMPTY_VIDEO_KEYFRAME_BINDING_SHA256,
+    H3PreparedPlanImport,
+    H3PreparedPlanPins,
+    prepared_h3_context_digest,
+    prepared_h3_reference_binding_digest,
+)
 from novelvideo.narrative_groups.models import NarrativeGroup, StageName
 from novelvideo.narrative_groups.planned_binding_service import (
     PlannedReferenceError,
@@ -67,6 +76,8 @@ from novelvideo.narrative_groups.reference_uploads import (
     save_reference_upload,
 )
 from novelvideo.production_workflow import ProductionWorkflowStore
+from novelvideo.creation.production_admission import admit_registered_episode_stage
+from novelvideo.freezone.orchestration.models import OrchestrationError
 from novelvideo.utils.path_resolver import (
     canonical_identity_path,
     canonical_portrait_path,
@@ -75,12 +86,14 @@ from novelvideo.utils.path_resolver import (
 )
 from novelvideo.narrative_groups.service import (
     advance_revision,
+    find_stage_submission,
     generation_beats_for_group,
     load_effective_groups,
     load_group_video_prompt_manifest,
     load_materialized_groups,
     narrative_group_sidecar_guard,
     rebuild_groups,
+    record_stage_submission_task,
     record_stage_result,
     rollback_stage_revision,
     reserve_video_revision,
@@ -91,6 +104,7 @@ from novelvideo.narrative_groups.service import (
     update_video_manifest_dialogue_source,
     update_video_plan,
     update_video_reference_settings,
+    load_video_reference_group_for_revision,
     update_video_settings,
 )
 from novelvideo.narrative_groups.video_references import (
@@ -105,6 +119,7 @@ from novelvideo.narrative_groups.video_references import (
     temporary_upload_path,
     write_temporary_video_reference,
 )
+from novelvideo.narrative_groups.video_keyframes import VideoKeyframeBindingRequest
 from novelvideo.shot_continuity.models import H3RequestedMode
 
 from novelvideo.media_capabilities.video.h3_timeline import (
@@ -114,6 +129,7 @@ from novelvideo.media_capabilities.video.h3_timeline import (
     save_h3_director_manifest,
     source_shot_ids_for,
 )
+
 from novelvideo.ports import get_task_backend
 from novelvideo.shot_continuity import (
     ContinuityRevisionConflict,
@@ -126,6 +142,8 @@ from novelvideo.task_state import (
     get_task_manager,
 )
 from novelvideo.utils.upload_safety import MAX_UPLOAD_BYTES
+
+_NO_DIRECTOR_REVISION_FORM_VALUE = "__none__"
 
 MAX_GROUP_IMAGE_REFERENCES = 9
 
@@ -262,6 +280,12 @@ class NarrativeGroupGenerationRequest(BaseModel):
     image_size: Literal["1K", "2K", "4K"] | None = None
     allow_unconstrained: bool = True
     reference_resolution: NarrativeReferenceResolutionRequest | None = None
+    client_mutation_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @field_validator("client_mutation_id", mode="before")
+    @classmethod
+    def normalize_client_mutation_id(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 def _generation_aspect_ratio(resolved, requested: str | None) -> str:
@@ -332,10 +356,47 @@ class NarrativeGroupVideoRequest(BaseModel):
     resolution: str | None = None
     revision: int = Field(ge=0)
     plan_revision: int = Field(ge=1)
+    # None preserves the beat-level policy for historical callers. New callers
+    # can freeze one audio source for every H3 segment in this submission.
+    dialogue_source: Literal["external_tts", "h3_native"] | None = None
     settings_revision: int | None = Field(default=None, ge=0)
     reference_revision: int | None = Field(default=None, ge=0)
     cinematography_review: bool = False
     retry_planning: bool = False
+    prepared_h3_plans: H3PreparedPlanImport | None = None
+    repair_shot_ids: tuple[str, ...] = ()
+    source_reuse_snapshot: dict[str, Any] | None = None
+    client_mutation_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @field_validator("repair_shot_ids", mode="before")
+    @classmethod
+    def normalize_repair_shot_ids(cls, value):
+        if isinstance(value, str):
+            value = value.split(",")
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("repair_shot_ids must be a list of source shot IDs")
+        return tuple(item.strip() if isinstance(item, str) else item for item in value)
+
+    @model_validator(mode="after")
+    def validate_repair_snapshot_contract(self):
+        if any(not isinstance(item, str) or not item for item in self.repair_shot_ids):
+            raise ValueError("repair_shot_ids must contain nonblank source shot IDs")
+        if len(set(self.repair_shot_ids)) != len(self.repair_shot_ids):
+            raise ValueError("repair_shot_ids must not contain duplicates")
+        if bool(self.repair_shot_ids) != (self.source_reuse_snapshot is not None):
+            raise ValueError(
+                "repair_shot_ids and source_reuse_snapshot must be provided together"
+            )
+        if self.repair_shot_ids and self.prepared_h3_plans is None:
+            raise ValueError("group video repair requires prepared H3 plans")
+        return self
+
+    @field_validator("client_mutation_id", mode="before")
+    @classmethod
+    def normalize_client_mutation_id(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 class VideoReferenceSelectionRequest(BaseModel):
@@ -371,7 +432,22 @@ class VideoReferenceSelectionRequest(BaseModel):
 class UpdateVideoReferencesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: int = Field(ge=0)
+    expected_director_revision_id: str | None
     references: list[VideoReferenceSelectionRequest]
+
+    @field_validator("expected_director_revision_id", mode="before")
+    @classmethod
+    def normalize_expected_director_revision_id(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("expected_director_revision_id cannot be blank")
+        if len(normalized) > 128:
+            raise ValueError("expected_director_revision_id is too long")
+        return normalized
 
 
 class NarrativeGroupVideoSettingsRequest(BaseModel):
@@ -533,6 +609,172 @@ def _stage_task_scope(group_id: str, stage: StageName, revision: int) -> str:
     return f"group_{group_id}_{stage}_r{int(revision)}"
 
 
+def _parse_video_repair_shot_ids(value: str | None) -> tuple[str, ...]:
+    raw = str(value or "")
+    if not raw.strip():
+        return ()
+    shot_ids = tuple(item.strip() for item in raw.split(","))
+    if any(not item for item in shot_ids) or len(set(shot_ids)) != len(shot_ids):
+        raise HTTPException(status_code=422, detail={
+            "code": "video_repair_scope_invalid",
+        })
+    return shot_ids
+
+
+def _video_repair_snapshot(
+    project_dir: Path,
+    group: NarrativeGroup,
+    *,
+    episode: int,
+    source_shot_ids: tuple[str, ...],
+    repair_shot_ids: tuple[str, ...],
+    submitted_snapshot: Mapping[str, Any] | None = None,
+):
+    from novelvideo.narrative_groups.video_repairs import (
+        freeze_video_repair_snapshot,
+        validate_video_repair_snapshot,
+    )
+
+    stage = group.stages["video"]
+    if stage.status != "completed" or not stage.manifest_asset:
+        raise HTTPException(status_code=409, detail={
+            "code": "video_repair_source_incomplete",
+            "message": "A completed group video is required before shot repair.",
+        })
+    manifest_path = _postflight_manifest_path(project_dir, stage)
+    kwargs = {
+        "project_root": project_dir,
+        "episode": episode,
+        "group_id": group.id,
+        "director_revision_id": str(group.director_revision_id or ""),
+        "expected_source_shot_ids": source_shot_ids,
+        "repair_shot_ids": repair_shot_ids,
+    }
+    try:
+        if submitted_snapshot is None:
+            return freeze_video_repair_snapshot(manifest_path, **kwargs)
+        return validate_video_repair_snapshot(submitted_snapshot, **kwargs)
+    except (OSError, TypeError, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": "video_repair_source_stale",
+            "reason": str(exc),
+        }) from exc
+
+
+def _video_repair_segments(segments, snapshot):
+    source_entries = tuple(snapshot.prior_entries)
+    actual_shape = tuple(
+        (segment.segment_id, source_shot_ids_for(segment)) for segment in segments
+    )
+    pinned_shape = tuple(
+        (entry.segment_id, tuple(entry.source_shot_ids)) for entry in source_entries
+    )
+    if actual_shape != pinned_shape:
+        raise HTTPException(status_code=409, detail={
+            "code": "video_repair_segment_scope_stale",
+        })
+    repair_ids = {
+        entry.segment_id for entry in source_entries if not entry.reuse
+    }
+    selected = tuple(
+        segment for segment in segments if segment.segment_id in repair_ids
+    )
+    if not selected or {item.segment_id for item in selected} != repair_ids:
+        raise HTTPException(status_code=409, detail={
+            "code": "video_repair_segment_scope_stale",
+        })
+    return selected
+
+
+def _group_submission_fingerprint(operation: str, body: BaseModel, **scope: Any) -> str:
+    from novelvideo.freezone.orchestration.models import fingerprint
+
+    values = body.model_dump(mode="json", exclude={"client_mutation_id"})
+    return fingerprint({"operation": operation, "body": values, "scope": scope})
+
+
+async def _replay_group_submission(
+    *, resolved, episode: int, group_id: str, stage: StageName,
+    mutation_id: str | None, request_fingerprint: str,
+) -> dict[str, Any] | None:
+    """Return the accepted task for a stable request, or an explicit unknown receipt."""
+    if mutation_id is None:
+        return None
+    try:
+        record = await asyncio.to_thread(
+            find_stage_submission, resolved.project_dir, episode, group_id, stage,
+            mutation_id, request_fingerprint=request_fingerprint,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail={"code": "IDEMPOTENCY_CONFLICT"}) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail={"code": "SUBMISSION_RECORD_UNAVAILABLE"}) from exc
+    if record is None:
+        return None
+    scope = str(record.get("scope") or "")
+    task_type = str(record.get("task_type") or "")
+    if not scope or not task_type:
+        return {"ok": True, "data": {"status": "submission_unknown", "scope": scope}}
+    try:
+        task = await asyncio.to_thread(
+            get_task_manager().get_task_for_project,
+            resolved.ctx, task_type, episode, scope=scope,
+        )
+    except Exception:
+        task = None
+    if task is None:
+        # The reservation is durable. Missing task ownership after it exists is
+        # ambiguous and must never authorize another provider submission.
+        return {"ok": True, "data": {
+            "status": "submission_unknown", "scope": scope,
+            "metadata": {"group_id": group_id, "stage": stage,
+                         "revision": int(record.get("revision") or 0)},
+        }}
+    task_id = str(task.task_id)
+    recorded_task_id = str(record.get("task_id") or "")
+    if recorded_task_id and recorded_task_id != task_id:
+        return {"ok": True, "data": {
+            "status": "submission_unknown", "scope": scope,
+            "metadata": {"group_id": group_id, "stage": stage,
+                         "revision": int(record.get("revision") or 0)},
+        }}
+    if not recorded_task_id:
+        try:
+            await asyncio.to_thread(
+                record_stage_submission_task, resolved.project_dir, episode,
+                group_id, stage, mutation_id, task_id,
+            )
+        except Exception:
+            return {"ok": True, "data": {"status": "submission_unknown", "scope": scope}}
+    metadata = dict(task.metadata or {})
+    receipt = record.get("receipt") if isinstance(record.get("receipt"), dict) else {}
+    return {"ok": True, "data": {
+        "task_id": task_id, "task_type": task_type, "scope": scope,
+        "backend": metadata.get("backend"), "queue": metadata.get("queue_kind"),
+        "status": task.status,
+        "metadata": {**receipt, "group_id": group_id, "stage": stage,
+                     "revision": int(record.get("revision") or 0)},
+    }}
+
+
+async def _record_group_task_receipt(
+    resolved, episode: int, group_id: str, stage: StageName,
+    mutation_id: str | None, task_id: str, *, receipt: dict[str, Any] | None = None,
+) -> bool:
+    if mutation_id is None:
+        return True
+    try:
+        await asyncio.to_thread(
+            record_stage_submission_task, resolved.project_dir, episode,
+            group_id, stage, mutation_id, task_id, receipt=receipt,
+        )
+        return True
+    except Exception:
+        # The original task may already be running. Returning unknown prevents
+        # the node scheduler from treating this as permission to submit again.
+        return False
+
+
 def _reconcile_orphan_stages(
     resolved, episode: int, groups: list[NarrativeGroup]
 ) -> list[NarrativeGroup]:
@@ -655,6 +897,22 @@ async def _resolve_groups(project: str, episode: int, user: dict, *, rebuild: bo
     return resolved, groups, beats
 
 
+def _admit_managed_episode_stage(
+    resolved, episode: int, stage: str, *, requires_audio: bool = False,
+    planning_only: bool = False,
+) -> bool:
+    ctx = getattr(resolved, "ctx", None)
+    if ctx is None:
+        return False
+    try:
+        return admit_registered_episode_stage(
+            ctx.state_dir, resolved.output_dir, episode, stage,
+            requires_audio=requires_audio, planning_only=planning_only,
+        )
+    except OrchestrationError as exc:
+        raise HTTPException(status_code=409, detail=exc.as_dict()) from exc
+
+
 def _project_video_workflow_defaults(resolved, workflow) -> dict[str, str]:
     from novelvideo.project_config import load_project_config_from_state_dir
 
@@ -764,9 +1022,12 @@ def _serialize_video_reference_preview(
     episode: int,
     group_id: str,
     preview: VideoReferencePreview,
+    *,
+    director_revision_id: str | None,
 ) -> dict[str, Any]:
     return {
         "revision": preview.revision,
+        "director_revision_id": director_revision_id,
         "max_images": preview.max_images,
         "candidates": [
             _serialize_video_reference_candidate(
@@ -913,21 +1174,31 @@ def _serialize(project: str, project_dir: Path, groups: list[NarrativeGroup], ep
 
                         manifest = load_h3_director_manifest(manifest_name)
                         _serialize_video_quality(project, project_dir, state, manifest)
-                        state["video_spans"] = [
-                            {
+                        state["video_spans"] = []
+                        for index, entry in enumerate(manifest.entries):
+                            segment = entry.segment
+                            dialogue_lines = getattr(segment, "dialogue_lines", ()) or ()
+                            has_dialogue = bool(
+                                str(getattr(segment, "dialogue", "") or "").strip()
+                                or any(str(getattr(line, "text", "") or "").strip()
+                                       for line in dialogue_lines)
+                            )
+                            state["video_spans"].append({
                                 "span_index": index,
-                                "beat_numbers": [entry.segment.beat_number],
+                                "beat_numbers": [segment.beat_number],
                                 "start_seconds": entry.start_seconds,
                                 "end_seconds": entry.end_seconds,
                                 "dialogue_source": entry.dialogue_source.value,
+                                "has_dialogue": has_dialogue,
+                                "external_audio_path": _asset_url(
+                                    project, project_dir, entry.external_audio_path or "",
+                                ),
                                 "external_audio_ready": (
                                     Path(entry.external_audio_path).is_file()
                                     if entry.external_audio_path else
-                                    PathResolver(str(project_dir), episode).audio(entry.segment.beat_number).is_file()
+                                    PathResolver(str(project_dir), episode).audio(segment.beat_number).is_file()
                                 ),
-                            }
-                            for index, entry in enumerate(manifest.entries)
-                        ]
+                            })
                         if not state.get("video_asset"):
                             state["video_asset"] = manifest.physical_video
                         if not state.get("original_audio_path"):
@@ -1731,6 +2002,236 @@ async def get_group_video_prompts(
     }
 
 
+@router.get(
+    "/projects/{project}/episodes/{episode}/narrative-groups/"
+    "{group_id}/video/prepared-context"
+)
+async def get_group_video_prepared_context(
+    project: str,
+    episode: int,
+    group_id: str,
+    model: str | None = None,
+    mode: H3RequestedMode = "auto",
+    dialogue_source: Literal["external_tts", "h3_native"] = "external_tts",
+    repair_shot_ids: str = "",
+    media_store: MediaCapabilityStore = Depends(get_media_capability_store),
+    credential_resolver: CredentialResolver = Depends(get_media_credential_resolver),
+    user: dict = Depends(get_api_user),
+):
+    """Return current immutable compiler inputs for an externally authored H3 plan."""
+    from novelvideo.task_backend.runners.narrative_group_video import (
+        _canonical_beats_for_segments,
+        _build_prepared_h3_episode_input,
+        _build_segments,
+        _resolve_workflow_modes,
+    )
+    from novelvideo.narrative_groups.video_keyframes import (
+        load_current_video_keyframe_binding,
+        resolved_video_keyframes,
+    )
+
+    resolved, groups, beats = await _resolve_groups(project, episode, user)
+    group = next((item for item in groups if item.id == group_id), None)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Narrative group not found")
+    requested_repair_shot_ids = _parse_video_repair_shot_ids(repair_shot_ids)
+    registry = build_video_workflow_registry(media_store, credential_resolver)
+    selected_model = str(
+        model or getattr(getattr(group, "video_settings", None), "workflow_id", "")
+        or "runninghub:minimax-h3"
+    ).strip()
+    try:
+        workflow = registry.resolve(selected_model, VideoWorkflowScene.NARRATIVE_GROUP)
+    except VideoWorkflowUnavailable as exc:
+        raise HTTPException(status_code=422, detail="MiniMax H3 is unavailable") from exc
+    if workflow.adapter_key not in {"minimax-h3", "minimax-h3-ref"}:
+        raise HTTPException(status_code=422, detail={
+            "code": "prepared_h3_workflow_unsupported",
+            "workflow": workflow.id,
+        })
+    if mode != "auto" and mode not in workflow.supported_modes:
+        raise HTTPException(status_code=422, detail={
+            "code": "h3.mode_unsupported_by_workflow", "mode": mode,
+            "workflow": workflow.id,
+        })
+    if group.director_revision_id is None:
+        raise HTTPException(status_code=409, detail="An active director plan is required")
+    reference_policy = getattr(workflow, "reference_policy", None)
+    reference_required = (
+        getattr(reference_policy, "required", False)
+        or workflow.adapter_key == "minimax-h3-ref"
+    )
+    resolved_references = ()
+    provider_workflow_id = ""
+    if reference_required:
+        provider_workflow_id = str(
+            getattr(workflow, "provider_workflow_id", "") or ""
+        ).strip()
+        if not provider_workflow_id or reference_policy is None:
+            raise HTTPException(status_code=422, detail={
+                "code": "prepared_h3_reference_workflow_unavailable",
+            })
+        try:
+            store = await make_sqlite_store_for_context(resolved.ctx)
+            resolved_references = await resolve_saved_video_references(
+                store=store,
+                project_dir=resolved.project_dir,
+                episode_number=episode,
+                group=group,
+                max_images=reference_policy.max_images,
+            )
+        except (OSError, TypeError, ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail={
+                "code": "prepared_h3_references_unavailable",
+                "reason": str(exc),
+            }) from exc
+    try:
+        binding = load_current_video_keyframe_binding(
+            resolved.project_dir,
+            project_id=str(resolved.ctx.project_id),
+            episode=episode,
+            group_id=group_id,
+            expected_director_revision_id=group.director_revision_id,
+        )
+        keyframes = resolved_video_keyframes(binding, resolved.project_dir) if binding else {}
+        render = group.stages["render"]
+        runner_payload = {"mode": mode, "dialogue_source": dialogue_source}
+        segments = _build_segments(
+            runner_payload,
+            generation_beats_for_group(
+                resolved.project_dir, episode, group_id, beats
+            ),
+            {
+                "beat_ids": list(group.beat_ids),
+                "cell_assets": list(render.cell_assets),
+                "video_plan": group.video_plan.to_dict(),
+                **({"video_keyframes": keyframes} if keyframes else {}),
+            },
+        )
+        source_reuse_snapshot = None
+        if requested_repair_shot_ids:
+            source_shot_ids = tuple(
+                shot_id
+                for segment in segments
+                for shot_id in source_shot_ids_for(segment)
+            )
+            source_reuse_snapshot = _video_repair_snapshot(
+                Path(resolved.project_dir),
+                group,
+                episode=episode,
+                source_shot_ids=source_shot_ids,
+                repair_shot_ids=requested_repair_shot_ids,
+            )
+            segments = list(_video_repair_segments(segments, source_reuse_snapshot))
+        resolved_modes = _resolve_workflow_modes(
+            requested=mode, segments=segments, workflow=workflow,
+            references=resolved_references,
+        )
+        frozen_frames = (
+            freeze_h3_reference_frames(
+                segments, project_root=Path(resolved.project_dir)
+            )
+            if reference_required else None
+        )
+        episode_input = await _build_prepared_h3_episode_input(
+            segments,
+            _canonical_beats_for_segments(
+                segments,
+                generation_beats_for_group(
+                    resolved.project_dir, episode, group_id, beats
+                ),
+            ),
+            ctx=resolved.ctx,
+            project_dir=Path(resolved.project_dir),
+            episode=episode,
+            group_id=group_id,
+            resolved_modes=resolved_modes,
+            global_references=resolved_references,
+            frozen_frames=frozen_frames,
+            dialogue_source=dialogue_source,
+        )
+        from novelvideo.media_capabilities.video.h3_episode_pack import _segment_input_hash
+
+        segment_hashes = [
+            (entry.segment_id, _segment_input_hash(episode_input, entry))
+            for entry in episode_input.segments
+        ]
+        pins = H3PreparedPlanPins(
+            project_id=str(resolved.ctx.project_id),
+            episode=episode,
+            group_id=group_id,
+            workflow_id=workflow.id,
+            requested_mode=mode,
+            dialogue_source=dialogue_source,
+            video_revision=group.stages["video"].revision,
+            plan_revision=group.video_plan.revision,
+            settings_revision=group.video_settings.revision,
+            reference_revision=group.video_reference_settings.revision,
+            reference_binding_sha256=prepared_h3_reference_binding_digest(
+                resolved_references,
+                provider_workflow_id=(
+                    provider_workflow_id if reference_required else ""
+                ),
+            ),
+            source_reuse_digest=(
+                source_reuse_snapshot.snapshot_sha256
+                if source_reuse_snapshot is not None
+                else EMPTY_H3_SOURCE_REUSE_DIGEST
+            ),
+            director_revision_id=episode_input.director_revision_id,
+            keyframe_revision=binding.revision if binding else 0,
+            keyframe_binding_sha256=(
+                binding.binding_sha256
+                if binding is not None and binding.binding_sha256
+                else EMPTY_VIDEO_KEYFRAME_BINDING_SHA256
+            ),
+        )
+        preparation_sha256 = prepared_h3_context_digest(pins, segment_hashes)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Narrative group not found") from exc
+    except (OSError, TypeError, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": "prepared_h3_context_unavailable", "reason": str(exc),
+        }) from exc
+
+    entries_by_id = {entry.segment_id: entry for entry in episode_input.segments}
+    input_hash_by_id = dict(segment_hashes)
+    prepared_segments = []
+    for segment in segments:
+        entry = entries_by_id[segment.segment_id]
+        prepared_segments.append({
+            "segment_id": segment.segment_id,
+            "source_shot_ids": list(entry.shot_ids),
+            "mode": entry.mode.value,
+            "duration_seconds": entry.duration_seconds,
+            "total_frames": round(entry.duration_seconds * 24),
+            "first_frame_sha256": entry.context.first_frame_sha256,
+            "last_frame_sha256": entry.context.last_frame_sha256,
+            "input_hash": input_hash_by_id[segment.segment_id],
+            "source_segment": entry.source_segment.model_dump(mode="json"),
+            "compiler_context": entry.context.model_dump(mode="json"),
+        })
+    return {"ok": True, "data": {
+        "schema_version": 1,
+        "workflow_id": workflow.id,
+        "pins": pins.model_dump(mode="json"),
+        "preparation_sha256": preparation_sha256,
+        **({"source_reuse_snapshot": source_reuse_snapshot.model_dump(mode="json")}
+           if source_reuse_snapshot is not None else {}),
+        "segments": prepared_segments,
+        "import_template": {
+            "schema_version": 1,
+            "preparation_sha256": preparation_sha256,
+            "pins": pins.model_dump(mode="json"),
+            "segments": [
+                {"segment_id": segment_id, "input_hash": input_hash,
+                 "director_plan": "<H3DirectorPlan JSON>"}
+                for segment_id, input_hash in segment_hashes
+            ],
+        },
+    }}
+
+
 @router.put(
     "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/"
     "video/segments/{segment_id}/continuity"
@@ -2122,6 +2623,18 @@ async def list_stage_revisions(
     group = next((item for item in groups if item.id == group_id), None)
     if group is None:
         raise HTTPException(status_code=404, detail="Narrative group not found")
+    try:
+        group = load_video_reference_group_for_revision(
+            resolved.project_dir,
+            episode,
+            group_id,
+            expected_director_revision_id=str(group.director_revision_id or "") or None,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "DIRECTOR_REVISION_CONFLICT", "message": str(exc)},
+        ) from exc
     items = stage_history(resolved.project_dir, episode, group_id, stage_name)
     for item in items:
         item["grid_asset"] = _asset_url(
@@ -2175,12 +2688,32 @@ async def _enqueue_group_action(
     *,
     regenerate: bool = False,
     split_only: bool = False,
+    explicit_retry: bool = False,
     generation_request: NarrativeGroupGenerationRequest | None = None,
 ):
     resolved, groups, beats = await _resolve_groups(project, episode, user)
     request = generation_request or NarrativeGroupGenerationRequest()
+    task_type = "narrative_group_split" if split_only else "narrative_group_grid"
+    submission_hash = _group_submission_fingerprint(
+        "retry_render" if explicit_retry else "split" if split_only else "regenerate" if regenerate else "generate",
+        request, episode=episode, group_id=group_id, stage=stage,
+    )
+    replay = await _replay_group_submission(
+        resolved=resolved, episode=episode, group_id=group_id, stage=stage,
+        mutation_id=request.client_mutation_id, request_fingerprint=submission_hash,
+    )
+    if replay is not None:
+        return replay
+    if not split_only:
+        _admit_managed_episode_stage(resolved, episode, "storyboard")
     try:
         source_group, selected_beats = _group_beats(groups, beats, group_id)
+        if request.client_mutation_id is not None:
+            current_status = source_group.stages[stage].status
+            if explicit_retry and current_status != "failed":
+                raise HTTPException(status_code=409, detail={"code": "EXPLICIT_RETRY_REQUIRES_FAILED_STAGE"})
+            if not explicit_retry and current_status == "failed":
+                raise HTTPException(status_code=409, detail={"code": "EXPLICIT_RETRY_REQUIRED"})
         if request.director_revision_id is not None:
             bound_plan = DirectorPlanStore(resolved.project_dir).load_active(episode)
             if (bound_plan is None
@@ -2380,7 +2913,7 @@ async def _enqueue_group_action(
             else:
                 constraint_mode = "unconstrained"
     try:
-        group, revision = advance_revision(
+        reserved = advance_revision(
             resolved.project_dir,
             episode,
             group_id,
@@ -2388,15 +2921,41 @@ async def _enqueue_group_action(
             regenerate=regenerate,
             regenerate_completed=not split_only,
             expected_director_revision_id=request.director_revision_id,
+            **({
+                "submission_id": request.client_mutation_id,
+                "submission_fingerprint": submission_hash,
+                "submission_task_type": task_type,
+                "return_reused": True,
+            } if request.client_mutation_id is not None else {}),
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found") from exc
 
+    if request.client_mutation_id is not None:
+        group, revision, reused = reserved
+        if reused:
+            replay = await _replay_group_submission(
+                resolved=resolved, episode=episode, group_id=group_id, stage=stage,
+                mutation_id=request.client_mutation_id, request_fingerprint=submission_hash,
+            )
+            return replay or {"ok": True, "data": {"status": "submission_unknown"}}
+    else:
+        group, revision = reserved
     scope = f"group_{group_id}_{stage}_r{revision}"
     mapping = [item.__dict__ for item in group.cell_to_beat]
-    task_type = "narrative_group_split" if split_only else "narrative_group_grid"
+    layout = group.layout.__dict__
+    if not split_only and len(group.generation_batches) == 1:
+        # A frozen production batch can have a tighter shape than the legacy
+        # group view (for example, three planned shots use a 1x3 triptych).
+        # Use that exact shape for both prompt compilation and cell splitting.
+        batch = group.generation_batches[0]
+        layout = {
+            "rows": int(batch["rows"]),
+            "columns": int(batch["columns"]),
+            "capacity": int(batch["capacity"]),
+        }
     payload = {
         "episode": episode,
         "output_dir": resolved.output_dir,
@@ -2404,7 +2963,7 @@ async def _enqueue_group_action(
         "group_id": group_id,
         "stage": stage,
         "revision": revision,
-        "layout": group.layout.__dict__,
+        "layout": layout,
         "aspect_ratio": _generation_aspect_ratio(resolved, request.aspect_ratio),
         "beat_ids": list(group.beat_ids),
         "cell_to_beat": mapping,
@@ -2417,6 +2976,14 @@ async def _enqueue_group_action(
         payload["director_revision_id"] = request.director_revision_id
     if reference_snapshot is not None:
         payload["reference_resolution"] = jsonable_encoder(asdict(reference_snapshot))
+        if stage == "render":
+            payload["reference_selection"] = {
+                "selected_binding_ids": list(
+                    request.reference_resolution.selected_binding_ids
+                ),
+                "upload_ids": list(request.reference_resolution.upload_ids),
+                "reference_revision": request.reference_resolution.reference_revision,
+            }
         payload["use_style"] = request.use_style
         payload["project_id"] = str(resolved.ctx.project_id)
         payload["reference_scope"] = frozen_reference_scope
@@ -2446,10 +3013,43 @@ async def _enqueue_group_action(
             # Unknown task ownership must retain its reservation for recovery.
             pass
         raise
+    from novelvideo.freezone.orchestration.models import fingerprint
+    reference_resolution = request.reference_resolution
+    receipt = {
+        "group_id": group_id,
+        "stage": stage,
+        "revision": revision,
+        "director_revision_id": source_group.director_revision_id,
+        "aspect_ratio": payload["aspect_ratio"],
+        "provider_id": provider_id,
+        "model": model,
+        "image_size": image_size,
+        "constraint_mode": constraint_mode,
+        "source_sketch_revision": source_sketch_revision,
+        "selected_binding_ids": (
+            list(reference_resolution.selected_binding_ids)
+            if reference_resolution is not None else []
+        ),
+        "reference_revision": (
+            reference_resolution.reference_revision
+            if reference_resolution is not None else None
+        ),
+        "reference_snapshot_fingerprint": (
+            fingerprint(jsonable_encoder(asdict(reference_snapshot)))
+            if reference_snapshot is not None else None
+        ),
+        "use_style": request.use_style,
+    }
+    task_id = str(queued.task_state.task_id)
+    if not await _record_group_task_receipt(
+        resolved, episode, group_id, stage, request.client_mutation_id,
+        task_id, receipt=receipt,
+    ):
+        return {"ok": True, "data": {"status": "submission_unknown", "scope": scope}}
     return {"ok": True, "data": {
-        "task_id": queued.task_state.task_id, "scope": scope,
+        "task_id": task_id, "scope": scope,
         "backend": queued.backend, "queue": queued.queue,
-        "metadata": {"group_id": group_id, "stage": stage, "revision": revision},
+        "metadata": receipt,
     }}
 
 
@@ -2476,7 +3076,20 @@ async def _enqueue_group_video(
     credential_resolver: CredentialResolver,
     *,
     segment_id: str = "",
+    explicit_retry: bool = False,
 ):
+    resolved, groups, beats = await _resolve_groups(project, episode, user)
+    submission_hash = _group_submission_fingerprint(
+        "retry_video" if explicit_retry else "video", request,
+        episode=episode, group_id=group_id, segment_id=segment_id,
+    )
+    replay = await _replay_group_submission(
+        resolved=resolved, episode=episode, group_id=group_id, stage="video",
+        mutation_id=request.client_mutation_id, request_fingerprint=submission_hash,
+    )
+    if replay is not None:
+        return replay
+    _admit_managed_episode_stage(resolved, episode, "video")
     registry = build_video_workflow_registry(media_store, credential_resolver)
     try:
         workflow = registry.resolve(request.model, VideoWorkflowScene.NARRATIVE_GROUP)
@@ -2485,6 +3098,13 @@ async def _enqueue_group_video(
             status_code=422,
             detail="Video workflow is unavailable for narrative groups",
         ) from exc
+    if (request.dialogue_source == "h3_native"
+            and workflow.adapter_key not in {"minimax-h3", "minimax-h3-ref"}):
+        raise HTTPException(status_code=422, detail={
+            "code": "dialogue_source_unsupported",
+            "dialogue_source": request.dialogue_source,
+            "workflow": workflow.id,
+        })
     if request.mode != "auto" and request.mode not in workflow.supported_modes:
         raise HTTPException(
             status_code=422,
@@ -2494,10 +3114,13 @@ async def _enqueue_group_video(
                 "workflow": workflow.id,
             },
         )
-    resolved, groups, beats = await _resolve_groups(project, episode, user)
     source_group = next((item for item in groups if item.id == group_id), None)
     if source_group is None:
         raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found")
+    if (request.client_mutation_id is not None
+            and source_group.stages["video"].status == "failed"
+            and not explicit_retry):
+        raise HTTPException(status_code=409, detail={"code": "EXPLICIT_RETRY_REQUIRED"})
     capability_error = source_group.stages["video"].provider_parameters.get("capability_conflict")
     if capability_error:
         raise HTTPException(status_code=422, detail={"code": "capability_conflict", "message": capability_error})
@@ -2515,6 +3138,8 @@ async def _enqueue_group_video(
         })
     if request.retry_planning and source_group.stages["video"].status != "failed":
         raise HTTPException(status_code=409, detail="Only failed planning can be explicitly retried")
+    if explicit_retry and source_group.stages["video"].status != "failed":
+        raise HTTPException(status_code=409, detail="Only a failed narrative-group video can be explicitly retried")
     if request.settings_revision is not None:
         if request.settings_revision != settings.revision:
             raise HTTPException(
@@ -2538,6 +3163,41 @@ async def _enqueue_group_video(
         "minimax-h3",
         "minimax-h3-ref",
     }
+    video_keyframe_binding = None
+    video_keyframes = {}
+    video_keyframe_sources = ()
+    if source_group.director_revision_id:
+        from novelvideo.narrative_groups.video_keyframes import (
+            load_current_video_keyframe_binding,
+            resolved_video_keyframes,
+            video_keyframe_frame_sources,
+        )
+
+        try:
+            video_keyframe_binding = load_current_video_keyframe_binding(
+                resolved.project_dir,
+                project_id=str(resolved.ctx.project_id),
+                episode=episode,
+                group_id=group_id,
+                expected_director_revision_id=source_group.director_revision_id,
+            )
+            if video_keyframe_binding is not None:
+                if not h3_input_snapshot_required:
+                    raise ValueError("group video keyframe bindings require an H3 workflow")
+                video_keyframes = resolved_video_keyframes(
+                    video_keyframe_binding, resolved.project_dir
+                )
+                video_keyframe_sources = video_keyframe_frame_sources(
+                    video_keyframe_binding, resolved.project_dir
+                )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Narrative group not found") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (OSError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail={
+                "code": "video_keyframe_binding_invalid", "reason": str(exc),
+            }) from exc
     if h3_input_snapshot_required:
         _require_h3_production_directions(resolved.project_dir, episode, group_id)
     if source_group.storyboard_contract_version:
@@ -2589,7 +3249,11 @@ async def _enqueue_group_video(
 
             render = source_group.stages["render"]
             segments = _build_segments(
-                {"mode": request.mode},
+                {
+                    "mode": request.mode,
+                    **({"dialogue_source": request.dialogue_source}
+                       if request.dialogue_source is not None else {}),
+                },
                 generation_beats_for_group(
                     resolved.project_dir, episode, group_id, beats
                 ),
@@ -2597,6 +3261,7 @@ async def _enqueue_group_video(
                     "beat_ids": list(source_group.beat_ids),
                     "cell_assets": list(render.cell_assets),
                     "video_plan": source_group.video_plan.to_dict(),
+                    **({"video_keyframes": video_keyframes} if video_keyframes else {}),
                 },
             )
             if segment_id:
@@ -2630,7 +3295,11 @@ async def _enqueue_group_video(
 
             render = source_group.stages["render"]
             segments = _build_segments(
-                {"mode": request.mode},
+                {
+                    "mode": request.mode,
+                    **({"dialogue_source": request.dialogue_source}
+                       if request.dialogue_source is not None else {}),
+                },
                 generation_beats_for_group(
                     resolved.project_dir, episode, group_id, beats
                 ),
@@ -2638,6 +3307,7 @@ async def _enqueue_group_video(
                     "beat_ids": list(source_group.beat_ids),
                     "cell_assets": list(render.cell_assets),
                     "video_plan": source_group.video_plan.to_dict(),
+                    **({"video_keyframes": video_keyframes} if video_keyframes else {}),
                 },
             )
             if segment_id:
@@ -2662,7 +3332,86 @@ async def _enqueue_group_video(
                         raise ValueError("rendered video frame path is unsafe")
         except (IndexError, OSError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+    video_repair_snapshot = None
+    prepared_reference_segments = tuple(reference_segments)
+    if request.repair_shot_ids:
+        if not h3_input_snapshot_required or segment_id:
+            raise HTTPException(status_code=422, detail={
+                "code": "video_repair_requires_group_h3_workflow",
+            })
+        source_shot_ids = tuple(
+            shot_id
+            for segment in reference_segments
+            for shot_id in source_shot_ids_for(segment)
+        )
+        video_repair_snapshot = _video_repair_snapshot(
+            Path(resolved.project_dir),
+            source_group,
+            episode=episode,
+            source_shot_ids=source_shot_ids,
+            repair_shot_ids=request.repair_shot_ids,
+            submitted_snapshot=request.source_reuse_snapshot,
+        )
+        prepared_reference_segments = _video_repair_segments(
+            reference_segments, video_repair_snapshot
+        )
     try:
+        if request.prepared_h3_plans is not None:
+            if not h3_input_snapshot_required or segment_id:
+                raise HTTPException(status_code=422, detail={
+                    "code": "prepared_h3_plans_require_group_h3_workflow",
+                })
+            if storyboard_binding is not None and video_keyframe_binding is None:
+                raise HTTPException(status_code=422, detail={
+                    "code": "prepared_h3_storyboard_context_unsupported",
+                })
+            if str(settings.overrides.get("continuity_policy") or "legacy") != "legacy":
+                raise HTTPException(status_code=422, detail={
+                    "code": "prepared_h3_continuity_policy_unsupported",
+                })
+            binding_sha = (
+                video_keyframe_binding.binding_sha256
+                if video_keyframe_binding is not None
+                and video_keyframe_binding.binding_sha256
+                else EMPTY_VIDEO_KEYFRAME_BINDING_SHA256
+            )
+            expected_pins = H3PreparedPlanPins(
+                project_id=str(resolved.ctx.project_id),
+                episode=episode,
+                group_id=group_id,
+                workflow_id=workflow.id,
+                requested_mode=request.mode,
+                dialogue_source=request.dialogue_source,
+                video_revision=request.revision,
+                plan_revision=request.plan_revision,
+                settings_revision=settings.revision,
+                reference_revision=source_group.video_reference_settings.revision,
+                reference_binding_sha256=prepared_h3_reference_binding_digest(
+                    resolved_references,
+                    provider_workflow_id=(provider_workflow_id or ""),
+                ),
+                source_reuse_digest=(
+                    video_repair_snapshot.snapshot_sha256
+                    if video_repair_snapshot is not None
+                    else EMPTY_H3_SOURCE_REUSE_DIGEST
+                ),
+                director_revision_id=str(source_group.director_revision_id or ""),
+                keyframe_revision=(
+                    video_keyframe_binding.revision if video_keyframe_binding else 0
+                ),
+                keyframe_binding_sha256=binding_sha,
+            )
+            if request.prepared_h3_plans.pins != expected_pins:
+                raise HTTPException(status_code=409, detail={
+                    "code": "prepared_h3_context_stale",
+                    "message": "Director, video, settings, references, or keyframe inputs changed; refresh prepared context.",
+                })
+            if tuple(item.segment_id for item in request.prepared_h3_plans.segments) != tuple(
+                item.segment_id for item in prepared_reference_segments
+            ):
+                raise HTTPException(status_code=409, detail={
+                    "code": "prepared_h3_segment_coverage_stale",
+                })
         project_defaults = _project_video_workflow_defaults(resolved, workflow)
         parameter_overrides = dict(settings.overrides)
         if request.settings_revision is None and request.resolution is not None:
@@ -2678,8 +3427,14 @@ async def _enqueue_group_video(
             expected_plan_revision=request.plan_revision,
             expected_settings_revision=settings.revision,
             expected_reference_revision=reference_revision,
+            dialogue_source=request.dialogue_source,
             **({"expected_storyboard_id": storyboard_binding.selection_id}
                if storyboard_binding is not None else {}),
+            **({
+                "submission_id": request.client_mutation_id,
+                "submission_fingerprint": submission_hash,
+                "submission_task_type": "narrative_group_video",
+            } if request.client_mutation_id is not None else {}),
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Narrative group '{group_id}' not found") from exc
@@ -2687,6 +3442,12 @@ async def _enqueue_group_video(
         raise HTTPException(status_code=409, detail="Narrative group video revision is stale")
     revision = reservation.revision
     scope = f"group_{group_id}_video_r{revision}"
+    if reservation.reused:
+        replay = await _replay_group_submission(
+            resolved=resolved, episode=episode, group_id=group_id, stage="video",
+            mutation_id=request.client_mutation_id, request_fingerprint=submission_hash,
+        )
+        return replay or {"ok": True, "data": {"status": "submission_unknown"}}
     payload = {
         "episode": episode,
         "group_id": group.id,
@@ -2699,6 +3460,15 @@ async def _enqueue_group_video(
         "cinematography_review_required": h3_input_snapshot_required and request.cinematography_review,
         **({"retry_planning": True} if request.retry_planning else {}),
         "settings_revision": group.video_settings.revision,
+        **({"prepared_h3_source_video_revision": request.revision}
+           if request.prepared_h3_plans is not None else {}),
+        **({"prepared_h3_plans": request.prepared_h3_plans.model_dump(mode="json")}
+           if request.prepared_h3_plans is not None else {}),
+        **({"repair_shot_ids": list(request.repair_shot_ids),
+            "source_reuse_snapshot": video_repair_snapshot.model_dump(mode="json")}
+           if video_repair_snapshot is not None else {}),
+        **({"dialogue_source": request.dialogue_source}
+           if request.dialogue_source is not None else {}),
     }
     if segment_id:
         payload["segment_id"] = segment_id
@@ -2708,12 +3478,39 @@ async def _enqueue_group_video(
             "storyboard_source_id": storyboard_binding.selection_id,
             "storyboard_binding": storyboard_binding.model_dump(mode="json"),
         })
+    if video_keyframe_binding is not None:
+        payload["video_keyframe_binding"] = video_keyframe_binding.model_dump(mode="json")
     if h3_input_snapshot_required:
         try:
-            frozen_frames = storyboard_frames if storyboard_frames is not None else freeze_h3_reference_frames(
-                reference_segments,
-                project_root=resolved.project_dir,
-            )
+            if video_keyframe_binding is not None:
+                endpoint_frames = freeze_h3_reference_frames(
+                    tuple(
+                        SimpleNamespace(first_frame=source, last_frame=None)
+                        for source in video_keyframe_sources
+                    ),
+                    project_root=resolved.project_dir,
+                )
+                selected_segment_frames = freeze_h3_reference_frames(
+                    reference_segments,
+                    project_root=resolved.project_dir,
+                )
+                frozen_frames = {
+                    **dict(storyboard_frames or {}),
+                    **dict(selected_segment_frames),
+                    **dict(endpoint_frames),
+                }
+                from novelvideo.narrative_groups.video_keyframes import (
+                    validate_frozen_video_keyframes,
+                )
+
+                validate_frozen_video_keyframes(
+                    video_keyframe_binding, frozen_frames, resolved.project_dir
+                )
+            else:
+                frozen_frames = storyboard_frames if storyboard_frames is not None else freeze_h3_reference_frames(
+                    reference_segments,
+                    project_root=resolved.project_dir,
+                )
             persisted_snapshot = persist_h3_reference_input_snapshot(
                 state_root=resolved.ctx.state_dir,
                 references=resolved_references,
@@ -2728,6 +3525,8 @@ async def _enqueue_group_video(
                 provider_workflow_id=str(provider_workflow_id or workflow.id),
                 **({"storyboard_binding": storyboard_binding}
                    if storyboard_binding is not None else {}),
+                **({"video_keyframe_binding": payload["video_keyframe_binding"]}
+                   if video_keyframe_binding is not None else {}),
             )
             reference_snapshot_id = persisted_snapshot.snapshot_id
             if storyboard_binding is not None:
@@ -2740,14 +3539,37 @@ async def _enqueue_group_video(
                             "code": "storyboard_selection_changed",
                             "reason": "分镜选择已变更，请刷新后重新提交",
                         })
+            if video_keyframe_binding is not None:
+                from novelvideo.narrative_groups.video_keyframes import (
+                    load_current_video_keyframe_binding,
+                )
+
+                latest_binding = load_current_video_keyframe_binding(
+                    resolved.project_dir,
+                    project_id=str(resolved.ctx.project_id),
+                    episode=episode,
+                    group_id=group_id,
+                    expected_director_revision_id=video_keyframe_binding.director_revision_id,
+                )
+                if (
+                    latest_binding is None
+                    or latest_binding.revision != video_keyframe_binding.revision
+                    or latest_binding.binding_sha256 != video_keyframe_binding.binding_sha256
+                ):
+                    raise HTTPException(status_code=409, detail={
+                        "code": "video_keyframe_binding_changed",
+                        "reason": "视频端点绑定已更新，请刷新后重新提交",
+                    })
         except (OSError, TypeError, ValueError) as exc:
-            restore_video_reservation(resolved.project_dir, episode, reservation)
+            if request.client_mutation_id is None:
+                restore_video_reservation(resolved.project_dir, episode, reservation)
             raise HTTPException(
                 status_code=422,
                 detail="Video reference input snapshot is invalid",
             ) from exc
         except Exception:
-            restore_video_reservation(resolved.project_dir, episode, reservation)
+            if request.client_mutation_id is None:
+                restore_video_reservation(resolved.project_dir, episode, reservation)
             raise
         payload.update({
             "reference_snapshot_id": reference_snapshot_id,
@@ -2793,7 +3615,8 @@ async def _enqueue_group_video(
                     resolved.project_dir, episode, reservation
                 )
         else:
-            restore_video_reservation(resolved.project_dir, episode, reservation)
+            if request.client_mutation_id is None:
+                restore_video_reservation(resolved.project_dir, episode, reservation)
         raise HTTPException(status_code=503, detail="Narrative group video queue is unavailable") from exc
     if reference_snapshot_id is not None:
         try:
@@ -2811,11 +3634,41 @@ async def _enqueue_group_video(
                 )
             except (OSError, ValueError):
                 pass
+    from novelvideo.freezone.orchestration.models import fingerprint
+    receipt = {
+        "group_id": group_id,
+        "stage": "video",
+        "revision": revision,
+        "director_revision_id": group.director_revision_id,
+        "workflow_id": workflow.id,
+        "provider": workflow.provider,
+        "provider_workflow_id": provider_workflow_id or workflow.provider_workflow_id,
+        "requested_mode": request.mode,
+        "dialogue_source": request.dialogue_source,
+        "aspect_ratio": payload["aspect_ratio"],
+        "workflow_parameters": dict(workflow_parameters),
+        "video_plan_revision": group.video_plan.revision,
+        "video_settings_revision": group.video_settings.revision,
+        "video_reference_revision": group.video_reference_settings.revision,
+        "reference_limit": reference_limit,
+        "reference_snapshot_id": reference_snapshot_id,
+        "reference_snapshot_digest": (
+            persisted_snapshot.digest if reference_snapshot_id is not None else None
+        ),
+        "render_revision": group.stages["render"].revision,
+        "selected_storyboard_id": group.stages["render"].selected_storyboard_id,
+        "execution_contract_fingerprint": fingerprint(payload["execution_contract"]),
+    }
+    task_id = str(queued.task_state.task_id)
+    if not await _record_group_task_receipt(
+        resolved, episode, group_id, "video", request.client_mutation_id,
+        task_id, receipt=receipt,
+    ):
+        return {"ok": True, "data": {"status": "submission_unknown", "scope": scope}}
     return {"ok": True, "data": {
-        "task_id": queued.task_state.task_id, "scope": scope,
+        "task_id": task_id, "scope": scope,
         "backend": queued.backend, "queue": queued.queue,
-        "metadata": {"group_id": group_id, "stage": "video", "revision": revision,
-                     "execution_contract": payload["execution_contract"]},
+        "metadata": receipt,
     }}
 @router.post(
     "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/sketch/generate",
@@ -2882,7 +3735,8 @@ async def get_group_video_reference_preview(
             max_images=_video_reference_max_images(media_store),
         )
         data = _serialize_video_reference_preview(
-            project, resolved.project_dir, episode, group_id, preview
+            project, resolved.project_dir, episode, group_id, preview,
+            director_revision_id=str(group.director_revision_id or "") or None,
         )
     except (OSError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -2897,6 +3751,7 @@ async def upload_group_video_reference(
     project: str,
     episode: int,
     group_id: str,
+    expected_director_revision_id: str = Form(...),
     file: UploadFile = File(...),
     media_store: MediaCapabilityStore = Depends(get_media_capability_store),
     user: dict = Depends(get_api_user),
@@ -2905,10 +3760,22 @@ async def upload_group_video_reference(
     group = next((item for item in groups if item.id == group_id), None)
     if group is None:
         raise HTTPException(status_code=404, detail="Narrative group not found")
+    expected_revision_id = expected_director_revision_id.strip()
+    if expected_revision_id == _NO_DIRECTOR_REVISION_FORM_VALUE:
+        expected_revision_id = ""
+    expected_revision_id = expected_revision_id or None
+    if len(expected_revision_id or "") > 128:
+        raise HTTPException(status_code=422, detail="expected_director_revision_id is too long")
     limit = min(MAX_UPLOAD_BYTES, MAX_VIDEO_REFERENCE_BYTES)
     target: Path | None = None
     upload_id = ""
     try:
+        group = load_video_reference_group_for_revision(
+            resolved.project_dir,
+            episode,
+            group_id,
+            expected_director_revision_id=expected_revision_id,
+        )
         content = await file.read(limit + 1)
         if len(content) > limit:
             raise ValueError("video reference upload exceeds the size limit")
@@ -2935,6 +3802,14 @@ async def upload_group_video_reference(
             group=group,
             max_images=_video_reference_max_images(media_store),
         )
+        # Uploads are temporary files. Re-check after image decoding/storage so an
+        # activation racing the upload cannot return an R1 candidate to an R2 dialog.
+        group = load_video_reference_group_for_revision(
+            resolved.project_dir,
+            episode,
+            group_id,
+            expected_director_revision_id=expected_revision_id,
+        )
         candidate = next(
             (
                 item
@@ -2949,6 +3824,24 @@ async def upload_group_video_reference(
         data = _serialize_video_reference_candidate(
             project, resolved.project_dir, episode, group_id, candidate
         )
+    except RuntimeError as exc:
+        if target is not None:
+            delete_temporary_video_reference(
+                project_dir=resolved.project_dir,
+                episode_number=episode,
+                group_id=group_id,
+                upload_id=upload_id,
+                target=target,
+            )
+        if str(exc) not in {
+            "director plan revision is stale",
+            "group director revision is stale",
+        }:
+            raise
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "DIRECTOR_REVISION_CONFLICT", "message": str(exc)},
+        ) from exc
     except (ValueError, Image.DecompressionBombError) as exc:
         if target is not None:
             delete_temporary_video_reference(
@@ -2996,6 +3889,7 @@ async def put_group_video_references(
             episode_number=episode,
             group_id=group_id,
             expected_revision=request.expected_revision,
+            expected_director_revision_id=request.expected_director_revision_id,
             selections=[
                 VideoReferenceSelection(
                     reference_id=item.reference_id,
@@ -3013,12 +3907,17 @@ async def put_group_video_references(
             max_images=max_images,
         )
         data = _serialize_video_reference_preview(
-            project, resolved.project_dir, episode, group_id, preview
+            project, resolved.project_dir, episode, group_id, preview,
+            director_revision_id=str(group.director_revision_id or "") or None,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Narrative group not found") from exc
     except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "DIRECTOR_REVISION_CONFLICT" if "director" in str(exc) and "revision" in str(exc) else "VIDEO_REFERENCE_CONFLICT",
+                    "message": str(exc)},
+        ) from exc
     except (OSError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"ok": True, "data": data}
@@ -3072,6 +3971,64 @@ async def put_group_video_settings(
         "ok": True,
         "data": _serialize(project, resolved.project_dir, [group], episode)[0],
     }
+
+
+@router.get(
+    "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/video/keyframes"
+)
+async def get_group_video_keyframes(
+    project: str,
+    episode: int,
+    group_id: str,
+    user: dict = Depends(get_api_user),
+):
+    from novelvideo.narrative_groups.video_keyframes import get_video_keyframes
+
+    resolved, _, _ = await _resolve_groups(project, episode, user)
+    try:
+        data = get_video_keyframes(
+            resolved.project_dir,
+            project_id=str(resolved.ctx.project_id),
+            episode=episode,
+            group_id=group_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Narrative group not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "data": data}
+
+
+@router.put(
+    "/projects/{project}/episodes/{episode}/narrative-groups/{group_id}/video/keyframes"
+)
+async def put_group_video_keyframes(
+    project: str,
+    episode: int,
+    group_id: str,
+    request: VideoKeyframeBindingRequest,
+    user: dict = Depends(get_api_user),
+):
+    from novelvideo.narrative_groups.video_keyframes import update_video_keyframes
+
+    resolved, _, _ = await _resolve_groups(project, episode, user)
+    try:
+        data = update_video_keyframes(
+            resolved.project_dir,
+            project_id=str(resolved.ctx.project_id),
+            episode=episode,
+            group_id=group_id,
+            request=request,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Narrative group not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "data": data}
 
 
 @router.put(
@@ -3260,12 +4217,35 @@ def _episode_group_audio_ready(project_dir: Path, episode: int, groups: list[Nar
             return False
         external_entries = [entry for entry in manifest.entries
                             if entry.dialogue_source is DialogueSource.EXTERNAL_TTS]
-        if external_entries and (
-            manifest.ambience_stem_status != "succeeded"
-            or not Path(manifest.ambience_stem_path or "").is_file()
-            or any(not (Path(entry.external_audio_path) if entry.external_audio_path else paths.audio(entry.segment.beat_number)).is_file() for entry in external_entries)
-        ):
-            return False
+        native_entries = [entry for entry in manifest.entries
+                          if entry.dialogue_source is DialogueSource.H3_NATIVE]
+        if native_entries:
+            from novelvideo.task_backend.runners.video import _video_has_audio_stream
+
+            native_video = Path(manifest.physical_video or "")
+            if not native_video.is_absolute():
+                native_video = project_dir / native_video
+            if not _video_has_audio_stream(native_video):
+                return False
+        external_audio_paths = []
+        for entry in external_entries:
+            audio_path = Path(entry.external_audio_path) if entry.external_audio_path else paths.audio(entry.segment.beat_number)
+            if not audio_path.is_absolute():
+                audio_path = project_dir / audio_path
+            external_audio_paths.append(audio_path)
+        if external_entries:
+            ambience_path = Path(manifest.ambience_stem_path or "")
+            if not ambience_path.is_absolute():
+                ambience_path = project_dir / ambience_path
+            try:
+                if (manifest.ambience_stem_status != "succeeded"
+                        or not ambience_path.is_file()
+                        or ambience_path.stat().st_size <= 0
+                        or any(not audio_path.is_file() or audio_path.stat().st_size <= 0
+                               for audio_path in external_audio_paths)):
+                    return False
+            except OSError:
+                return False
     return True
 
 
@@ -3283,17 +4263,27 @@ async def change_group_video_dialogue_source(
     resolved, groups, _ = await _resolve_groups(project, episode, user)
     prepare_external = request.dialogue_source == "external_tts"
     try:
-        if prepare_external:
-            from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
-            target = next((group for group in groups if group.id == group_id), None)
-            if target is None:
-                raise KeyError(group_id)
-            if target.stages["video"].revision != request.revision:
-                raise RuntimeError("narrative group video revision is stale")
-            manifest = load_h3_director_manifest(target.stages["video"].manifest_asset)
-            if not 0 <= request.span_index < len(manifest.entries):
-                raise IndexError(request.span_index)
-        else:
+        target = next((group for group in groups if group.id == group_id), None)
+        if target is None:
+            raise KeyError(group_id)
+        if request.dialogue_source == "h3_native":
+            registry = build_video_workflow_registry(
+                get_media_capability_store(), get_media_credential_resolver(),
+            )
+            configured = next((item for item in registry.list(VideoWorkflowScene.NARRATIVE_GROUP)
+                               if item.id == target.video_settings.workflow_id), None)
+            if configured is None or configured.adapter_key not in {
+                "minimax-h3", "minimax-h3-ref",
+            }:
+                raise ValueError("dialogue_source_unsupported")
+        from novelvideo.media_capabilities.video.h3_timeline import load_h3_director_manifest
+        if target.stages["video"].revision != request.revision:
+            raise RuntimeError("narrative group video revision is stale")
+        manifest = load_h3_director_manifest(target.stages["video"].manifest_asset)
+        if not 0 <= request.span_index < len(manifest.entries):
+            raise IndexError(request.span_index)
+        _admit_managed_episode_stage(resolved, episode, "audio")
+        if not prepare_external:
             update_video_manifest_dialogue_source(
                 resolved.project_dir,
                 episode,
@@ -3307,6 +4297,10 @@ async def change_group_video_dialogue_source(
     except (FileNotFoundError, IndexError) as exc:
         raise HTTPException(status_code=404, detail="Narrative group video span not found") from exc
     except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        if str(exc) == "dialogue_source_unsupported":
+            raise HTTPException(status_code=422, detail={"code": str(exc)}) from exc
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     revision = request.revision

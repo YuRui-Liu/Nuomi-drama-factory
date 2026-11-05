@@ -19,10 +19,16 @@ class TextRuntime:
     def __init__(self, *outputs):
         self.outputs = list(outputs)
         self.prompts = []
+        self.last_markdown = ""
 
     async def run_structured(self, *, prompt, output_type, **_):
         self.prompts.append(prompt)
-        return output_type(markdown=self.outputs.pop(0) + "\n\n人物沿着已经建立的选择继续行动，场景中的阻力让下一步决定更明确。")
+        if output_type.__name__ == "CraftReview":
+            quote = self.last_markdown.splitlines()[-1]
+            return output_type(summary="结构审阅通过", issues=[], coverage=["结构完整"],
+                               strengths=[{"quote": quote, "reason": "内容完整且可继续创作"}])
+        self.last_markdown = self.outputs.pop(0) + "\n\n人物沿着已经建立的选择继续行动，场景中的阻力让下一步决定更明确。"
+        return output_type(markdown=self.last_markdown)
 
 
 class IssueRuntime:
@@ -42,9 +48,13 @@ class IssueRuntime:
 
 
 class RewriteRuntime:
-    async def run_structured(self, **_):
-        return {"after": "# 第 1 集\n\n## 1-1｜旧码头 · 夜 · 外\n\n阿宁说：我还不知道密钥。",
-                "reason": "按人物弧光修正知情顺序"}
+    async def run_structured(self, *, output_type, **_):
+        markdown = "# 第 1 集\n\n## 1-1｜旧码头 · 夜 · 外\n\n阿宁说：我还不知道密钥。"
+        if output_type.__name__ == "CraftReview":
+            quote = markdown.splitlines()[-1]
+            return {"summary": "结构审阅通过", "issues": [], "coverage": ["结构完整"],
+                    "strengths": [{"quote": quote, "reason": "符合已建立的人物知情顺序"}]}
+        return {"markdown": markdown}
 
 
 @pytest.fixture
@@ -75,16 +85,18 @@ async def test_three_episode_creation_review_links_and_frozen_handoff(workspace)
         episode_count=3, instruction="克制悬疑", mutation_id="bootstrap")
     text = TextRuntime(
         "# 故事大纲\n\n阿宁在旧城寻找失踪父亲。",
-        "# 分集梗概\n\n## 第 1 集\n\n阿宁在码头找到钥匙。\n\n## 第 2 集\n\n阿宁在旧仓库追查密钥来源。\n\n## 第 3 集\n\n阿宁在旧仓库找到父亲并揭晓真相。",
         "# 人物小传\n\n## 阿宁\n\n阿宁直到第二集才知道密钥。",
         "# 场景设计\n\n## 旧码头\n\n首次出场计划第一集，潮湿狭窄。",
         "# 道具设计\n\n## 铜钥匙\n\n首次出现计划第一集，由阿宁持有。",
+        "# 分集梗概\n01 找到钥匙：阿宁在码头取得钥匙。\n02 追查密钥：阿宁在旧仓库追查密钥来源。\n03 父女重逢：阿宁在旧仓库找到父亲并揭晓真相。",
         "# 第 1 集\n\n## 1-1｜旧码头 · 夜 · 外\n\n阿宁说：我知道密钥。",
     )
     finished = await generation.execute(bootstrap["id"], runtime=text, task_id="bootstrap-task")
-    assert finished["status"] == "completed" and len(text.prompts) == 6
+    # Each of the six generated documents now gets a structure review, and
+    # the episode screenplay also receives a dialogue review.
+    assert finished["status"] == "completed" and len(text.prompts) == 13
     docs = await documents.list()
-    assert [doc.kind for doc in docs] == ["brief", "outline", "episode_synopsis", "people", "scenes", "props", "episode_script"]
+    assert {doc.kind for doc in docs} == {"brief", "outline", "episode_synopsis", "people", "scenes", "props", "episode_script"}
     assert [doc.episode_number for doc in docs if doc.kind == "episode_script"] == [1]
     by_kind = {doc.kind: doc for doc in docs}
     people = await documents.save(by_kind["people"].id,

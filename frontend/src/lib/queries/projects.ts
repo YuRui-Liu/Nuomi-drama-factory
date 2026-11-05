@@ -116,6 +116,10 @@ function toSummary(p: SummaryPayload): ProjectSummary {
 export function useAllProjectSummaries(): {
   data: ProjectSummary[] | undefined;
   isLoading: boolean;
+  isFetching: boolean;
+  isError: boolean;
+  isSuccess: boolean;
+  refetch: () => Promise<unknown>;
 } {
   const query = useQuery({
     queryKey: queryKeys.projectSummaries(),
@@ -134,7 +138,14 @@ export function useAllProjectSummaries(): {
     [query.data],
   );
 
-  return { data, isLoading: query.isLoading };
+  return {
+    data,
+    isLoading: query.isLoading,
+    isFetching: query.isFetching,
+    isError: query.isError,
+    isSuccess: query.isSuccess,
+    refetch: query.refetch,
+  };
 }
 
 export function useProjectSummaries(status: ProjectStatus): {

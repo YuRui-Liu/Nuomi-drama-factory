@@ -182,6 +182,27 @@ Do not impose a universal lens, single light, opening wide shot, micro-movement,
 music ban, fixed heading count or prompt length from a reference film's particular choices.
 """ + CRAFT_ACCEPTANCE_RUBRIC + KEYFRAME_INSTANT_CONTRACT + VIDEO_EXECUTION_CONTRACT + ASSET_REFERENCE_CONTRACT
 
+PROFESSIONAL_COLLABORATION_AUTHORITY = """
+PROFESSIONAL COLLABORATION DECISION:
+In the returned DirectorPlanDraft include both `professional_decision` and
+`professional_assignments`. You are the director and must decide whether this
+specific plan needs a separate specialist contribution. An empty
+professional_assignments list is valid only when professional_decision explains
+why the director plan is already sufficient. Do not assign every role by default.
+Use only these fixed builtin roles: builtin:storyboard-artist, builtin:blocking-designer,
+builtin:cinematographer, builtin:lighting-designer, builtin:expression-designer,
+builtin:art-asset-designer. Each assignment contains role_id, group_id, shot_ids,
+task and reason. group_id and every shot_id must exactly match the returned plan.
+Scope a role to only the shots it needs to address; provide one assignment per
+role/group. The specialist cannot edit structure or any field beyond its assigned
+allowlist. The runtime validates the assignment and merges only its typed fields.
+Do not return profile revisions, run IDs, statuses, validation/QC decisions,
+adoption, media claims or activation. Those are server-owned facts.
+The specialist receives the fixed source script hash, active semantic revision,
+source spans, beats and your base shot plan. Never invent screenplay facts to
+justify a specialist contribution.
+"""
+
 _CINEMATOGRAPHY_AUTHORITY = """
 Write visible_start_state as a self-contained still frame before the main action:
 name visible characters, their current pose and wardrobe continuity, held objects,
@@ -271,7 +292,7 @@ def build_episode_prompt(input: Any) -> str:
     authority = _EPISODE_AUTHORITY + VIDEO_EXECUTION_CONTRACT
     if getattr(input, "creative_contract_version", None) == 1:
         authority = authority.replace("Each narrative group has 1 to 4 shots.",
-            "Each narrative group has one or more dramatically motivated shots.") + CREATIVE_AUTHORITY
+            "Each narrative group has one or more dramatically motivated shots.") + CREATIVE_AUTHORITY + PROFESSIONAL_COLLABORATION_AUTHORITY
     payload = {
         "episode": input.episode,
         "source_script_hash": input.source_script_hash,

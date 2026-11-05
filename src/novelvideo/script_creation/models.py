@@ -17,6 +17,33 @@ class SceneIdentity:
     anchor_block_ids: tuple[str, ...] = ()
 
 @dataclass(frozen=True, slots=True)
+class OutlineItem:
+    id: str
+    parent_id: str | None
+    ordinal: int
+    title: str
+    kind: str
+    episode_start: int | None = None
+    episode_end: int | None = None
+    source_document_id: str | None = None
+    source_revision_id: str | None = None
+    source_locator: str | None = None
+
+@dataclass(frozen=True, slots=True)
+class ContinuityFact:
+    id: str
+    subject_id: str
+    predicate: str
+    object_id: str
+    state: str
+    episode_start: int | None
+    episode_end: int | None
+    source_document_id: str | None
+    source_revision_id: str | None
+    source_locator: str | None
+    adoption_status: str = "adopted"
+
+@dataclass(frozen=True, slots=True)
 class Revision:
     id: str
     document_id: str
@@ -27,6 +54,7 @@ class Revision:
     created_at: str
     restored_from_revision_id: str | None = None
     scene_identities: tuple[SceneIdentity, ...] = ()
+    outline_items: tuple[OutlineItem, ...] = ()
 
 @dataclass(frozen=True, slots=True)
 class Document:

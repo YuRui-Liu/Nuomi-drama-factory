@@ -31,6 +31,8 @@ from novelvideo.audio.dubbing_store import (
     DubbingRevisionConflict,
     DubbingStore,
 )
+from novelvideo.creation.production_admission import admit_registered_episode_stage
+from novelvideo.freezone.orchestration.models import OrchestrationError
 from novelvideo.media_capabilities.tts.voice_versions import VoiceVersionStore
 from novelvideo.narrative_groups.service import load_effective_groups
 from novelvideo.ports import get_task_backend
@@ -60,6 +62,18 @@ def _actor(user: dict) -> str:
     if not actor:
         raise HTTPException(status_code=403, detail="Authenticated user identity is unavailable")
     return actor
+
+
+def _admit_new_dubbing_submission(resolved, episode: int) -> None:
+    ctx = getattr(resolved, "ctx", None)
+    if ctx is None:
+        return
+    try:
+        admit_registered_episode_stage(
+            ctx.state_dir, getattr(resolved, "output_dir", ctx.output_dir), episode, "audio",
+        )
+    except OrchestrationError as exc:
+        raise HTTPException(status_code=409, detail=exc.as_dict()) from exc
 
 
 def _error(exc: Exception) -> HTTPException:
@@ -202,6 +216,8 @@ async def generate_dubbing(project: str, episode: int, group_id: str, body: Dubb
         preparation = store.get_preparation(body.preparation_id)
         if preparation is None or preparation.episode != episode or preparation.group_id != group_id:
             raise HTTPException(status_code=404, detail="Dubbing preparation not found")
+        if store.get_task_by_request(episode, group_id, body.request_id) is None:
+            _admit_new_dubbing_submission(resolved, episode)
         try:
             result = await enqueue_group_dubbing(
                 ctx=resolved.ctx,
@@ -258,6 +274,8 @@ async def retry_dubbing(project: str, episode: int, group_id: str, body: Dubbing
     )
     try:
         store = DubbingStore(sqlite_store.db_path, resolved.project_dir)
+        if store.get_task_by_request(episode, group_id, body.request_id) is None:
+            _admit_new_dubbing_submission(resolved, episode)
         try:
             result = await retry_group_dubbing(
                 ctx=resolved.ctx,

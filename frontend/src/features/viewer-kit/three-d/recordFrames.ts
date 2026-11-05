@@ -16,7 +16,7 @@ export async function recordFrames(viewer: ViewerApp, signal: AbortSignal, progr
       signal.throwIfAborted();
       viewer.seekTimeline(i / 30, rotationOnly);
       await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
-      const data = viewer.captureScreenshot();
+      const data = viewer.captureScreenshot({ renderCamera: 'output' });
       if (!data) throw new Error('无法采集预演帧');
       const bytes = Uint8Array.from(atob(data.split(',')[1]), c => c.charCodeAt(0));
       await encoder.writeFile(`frame-${String(i).padStart(5, '0')}.png`, bytes);

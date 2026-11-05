@@ -139,7 +139,6 @@ export function productionActionErrorFallback(error: unknown): string {
 /** Format production action failures without exposing raw ky URLs or backend prose. */
 export async function productionActionErrorMessage(error: unknown): Promise<string> {
   const record = asRecord(error);
-  const status = record ? errorStatus(record as ErrorLike) : undefined;
   const body = record ? await responseBody(record as ErrorLike) : undefined;
   const code = detailCode(body);
   const message = detailMessage(body);

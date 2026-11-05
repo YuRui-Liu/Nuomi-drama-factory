@@ -11,8 +11,8 @@ import { CANVAS_NODE_TYPES, type ProductionContentNodeData } from '../domain/can
 import { ProductionNodeShell } from '../production/ProductionNodeShell';
 import { CharacterVoiceWorkspace, type VoiceWorkspaceCharacter } from '../production/voice/CharacterVoiceWorkspace';
 import {
-  connectVoiceNodeToAudio,
   findSelectedAdoptedVoiceVersion,
+  useVoiceVersionInAudio,
   type VoiceVersionRecord,
 } from '../production/voice/voiceNodeBinding';
 
@@ -145,40 +145,25 @@ export const CharacterVoiceNode = memo(function CharacterVoiceNode({ id, data }:
     });
   };
 
-  const bindVersion = (version: VoiceVersionRecord) => update(id, {
-    referenceOnly: true,
-    characterId: version.character_id,
-    identityId: version.identity_id,
-    slot: version.slot,
-    voiceVersionId: version.version_id,
-    voiceReference: {
-      character_id: version.character_id,
-      identity_id: version.identity_id,
-      slot: version.slot,
-      version_id: version.version_id,
-      audio_sha256: version.audio_sha256,
-    },
-  });
-
-  const connectToAudio = () => {
-    if (!character || !selectedVersion) return false;
-    return Boolean(connectVoiceNodeToAudio({
+  const useVersion = (version: VoiceVersionRecord) => {
+    if (!character) return false;
+    return Boolean(useVoiceVersionInAudio({
       projectId: project,
       sourceNodeId: id,
       characterName: character.name,
-      version: selectedVersion,
+      version,
     }));
   };
 
   const summary = selectedVersion
-    ? `${character?.name ?? '角色'} · ${selectedVersion.slot} · 已固定声音版本 ${selectedVersion.version_id}`
-    : '设计音色、导入参考或复用声音；先试听并采用，再固定版本供配音节点使用';
+    ? `${character?.name ?? '角色'} · ${selectedVersion.slot} · 已选用`
+    : '设计、导入或选用角色声音';
   const versionError = versions.error ? String(versions.error) : null;
 
   return <ProductionNodeShell
     title="角色声音"
     summary={summary}
-    status={selectedVersion ? `已固定采用版本 ${selectedVersion.version_id}` : '试听候选与已采用版本分开管理'}
+    status={selectedVersion ? '已选用角色声音' : '试听、设计或导入角色声音'}
     actionLabel="打开角色声音工作区"
     workspace
   >
@@ -194,9 +179,8 @@ export const CharacterVoiceNode = memo(function CharacterVoiceNode({ id, data }:
       charactersError={characters.error ? String(characters.error) : null}
       onBack={controls.requestClose}
       onSelectCharacter={selectCharacter}
-      onBindVersion={bindVersion}
+      onUseVersion={useVersion}
       onRefreshVersions={() => void versions.refetch()}
-      onConnect={connectToAudio}
     >
       {character ? <CharacterVoicePanel
         project={project}
@@ -209,6 +193,38 @@ export const CharacterVoiceNode = memo(function CharacterVoiceNode({ id, data }:
         nodeVoicePerceivedAge={activeDraft?.voicePerceivedAge}
         isNodeContextCurrent={isNodeContextCurrent}
         onNodeDataChange={updateCharacterVoiceDraft}
+        onVoiceCandidateUsed={async versionId => {
+          const expectedVersionId = typeof d.voiceVersionId === 'string' && d.voiceVersionId ? d.voiceVersionId : undefined;
+          const hasExpectedVersion = () => {
+            const current = useCanvasStore.getState().nodes.find(node => node.id === id);
+            const currentData = current?.data as ProductionContentNodeData | undefined;
+            const currentVersionId = typeof currentData?.voiceVersionId === 'string' && currentData.voiceVersionId
+              ? currentData.voiceVersionId
+              : undefined;
+            return Boolean(current && current.type === CANVAS_NODE_TYPES.characterVoice)
+              && currentVersionId === expectedVersionId
+              && isNodeContextCurrent();
+          };
+          if (!characterId || !hasExpectedVersion()) return false;
+
+          const refreshed = await versions.refetch();
+          if (refreshed.isError || !hasExpectedVersion()) return false;
+          const version = findSelectedAdoptedVoiceVersion(
+            { characterId, voiceVersionId: versionId },
+            refreshed.data?.versions,
+          );
+          if (!version) return false;
+
+          const audioNodeId = useVoiceVersionInAudio({
+            projectId: project,
+            sourceNodeId: id,
+            characterName: character.name,
+            version,
+          });
+          if (!audioNodeId) return false;
+          controls.requestClose();
+          return true;
+        }}
       /> : null}
     </CharacterVoiceWorkspace>}
   </ProductionNodeShell>;

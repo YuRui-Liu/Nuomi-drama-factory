@@ -7,13 +7,13 @@ import logging
 from pathlib import Path
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import ValidationError
 
 from novelvideo.api.auth import get_api_user
 from novelvideo.creation.models import OperationRequest
 from novelvideo.creation.discussions import DiscussionRequest, DiscussionScope, Discussions
-from novelvideo.creation.canvas_workspaces import CanvasCreate, CanvasWorkspace, canvas_response, list_canvases
+from novelvideo.creation.canvas_workspaces import CanvasCreate, CanvasRename, CanvasWorkspace, canvas_response, list_canvases
 from novelvideo.creation.operations import OperationError, OperationService
 from novelvideo.creation.projection import ProjectionService
 from novelvideo.creation.store import ObjectStore
@@ -97,7 +97,8 @@ def discussion_service_for(ctx, project, user, canvas_id, conversation_id):
         return await context_for(project, user, role)
 
     return Discussions(ctx, username=user['username'], canvas_id=canvas_id,
-                       conversation_id=conversation_id, resolve_context=resolve_context)
+                       conversation_id=conversation_id, resolve_context=resolve_context,
+                       allow_task_creation=user.get('credential_kind') != 'agent_session')
 
 
 @router.get('/discussions')
@@ -111,12 +112,13 @@ async def read_discussions(project: str, canvas_id: str, conversation_id: str,
 
 
 @router.post('/discussions')
-async def submit_discussion(project: str, body: dict, user: dict = Depends(get_api_user)):
+async def submit_discussion(project: str, body: dict, background: BackgroundTasks,
+                            user: dict = Depends(get_api_user)):
     with errors():
         request = DiscussionRequest.model_validate(body)
         ctx = await context_for(project, user, 'viewer')
         service = discussion_service_for(ctx, project, user, request.canvas_id, request.conversation_id)
-        return {'ok': True, 'data': await service.submit(request)}
+        return {'ok': True, 'data': await service.submit(request, background=background)}
 
 
 @router.get('/direction-catalog')
@@ -255,6 +257,27 @@ async def create_canvas_workspace(project: str, body: dict, user: dict = Depends
         if result.status == 'running':
             result = await asyncio.to_thread(ProjectionService(objects).apply, result.operation_id)
         return {'ok': True, 'data': canvas_response(result)}
+
+
+@router.patch('/canvases/{canvas_id}')
+async def rename_canvas_workspace(project: str, canvas_id: str, body: dict,
+                                  user: dict = Depends(get_api_user)):
+    with errors():
+        ctx = await context_for(project, user, 'editor')
+        request = CanvasRename.model_validate(body)
+        result = CanvasWorkspace(ObjectStore(ctx.state_dir), project_id=ctx.project_id).rename(
+            ctx.requester_user_id, canvas_id, request)
+        return {'ok': True, 'data': result}
+
+
+@router.delete('/canvases/{canvas_id}')
+async def delete_canvas_workspace(project: str, canvas_id: str,
+                                  user: dict = Depends(get_api_user)):
+    with errors():
+        ctx = await context_for(project, user, 'editor')
+        result = CanvasWorkspace(ObjectStore(ctx.state_dir), project_id=ctx.project_id).delete(
+            ctx.requester_user_id, canvas_id)
+        return {'ok': True, 'data': result}
 
 
 @router.post('/episodes')

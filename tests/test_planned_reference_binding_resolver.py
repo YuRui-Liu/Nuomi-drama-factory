@@ -937,12 +937,29 @@ async def test_snapshot_projects_shared_binding_ids_to_the_rendered_group(
         {"id": "shot-02-02", "beat_number": 2, "action": "the prop returns"}
     ]
     payload["reference_scope"] = {"beat_ids": ["beat-02"], "shot_ids": ["shot-02-02"]}
+    payload["reference_selection"] = {
+        "selected_binding_ids": [image.binding_id],
+        "upload_ids": [],
+        "reference_revision": preview.reference_revision,
+    }
     snapshot_payload = asdict(snapshot)
     payload["reference_resolution"] = snapshot_payload
 
     generation = _snapshot_generation_input(payload, snapshot_payload)
     assert generation.references == (image.image_path,)
     assert generation.reference_audit["snapshot_id"] == snapshot.id
+    assert generation.reference_audit["reference_selection"] == {
+        "selected_binding_ids": [image.binding_id],
+        "upload_ids": [],
+        "reference_revision": preview.reference_revision,
+        "bindings": [{
+            "binding_id": image.binding_id,
+            "version_id": image.version_id,
+            "sha256": image.sha256,
+            "asset_slot_id": image.asset_slot_id,
+            "relative_path": image.relative_path,
+        }],
+    }
 
 
 @pytest.mark.asyncio
@@ -1253,3 +1270,103 @@ def test_runner_validates_planned_scope_and_applies_use_style(tmp_path: Path) ->
     )
     with pytest.raises(ReferenceSnapshotInvalid):
         _generation_input(absolute_path)
+
+
+def test_manual_static_panels_compile_from_frozen_references_and_use_exact_grid(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+
+    from novelvideo.task_backend.runners.narrative_group import (
+        _grid_request_aspect_ratio,
+        _snapshot_generation_input,
+        _validate_static_attachments,
+    )
+    from novelvideo.narrative_groups.image_resolution import resolve_grid_image_resolution
+
+    image = _image(tmp_path / "assets" / "alice.png")
+    digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    payload = _planned_runner_payload(tmp_path, image, sha256=digest)
+    payload.update({
+        "layout": {"rows": 1, "columns": 3, "capacity": 3},
+        "aspect_ratio": "9:16",
+        "beats": [
+            {
+                "id": "shot-07",
+                "action": "Alice opens the locked door",
+                "static_panel": {
+                    "id": "panel-07",
+                    "shot_id": "shot-07",
+                    "anchor": "selected",
+                    "state": "Alice's hand rests on the closed door handle",
+                    "framing": "tight hand close-up",
+                    "subjects": [{
+                        "entity_id": "alice",
+                        "appearance_reference": "alice",
+                        "screen_position": "right foreground",
+                        "pose": "fingers resting on the handle",
+                        "gaze": "outside frame",
+                    }],
+                    "setting": "dim apartment hallway",
+                    "lighting": "cool side light",
+                    "visible_text": [],
+                },
+            },
+            {
+                "id": "shot-08",
+                "action": "A shadow crosses the floor",
+                "static_panel": {
+                    "id": "panel-08",
+                    "shot_id": "shot-08",
+                    "anchor": "selected",
+                    "state": "A narrow shadow lies across the hallway floor",
+                    "framing": "low angle close-up",
+                    "subjects": [],
+                    "setting": "dim apartment hallway",
+                    "lighting": "cool side light",
+                    "visible_text": [],
+                },
+            },
+            {
+                "id": "shot-09",
+                "action": "Alice turns toward the stairs",
+                "static_panel": {
+                    "id": "panel-09",
+                    "shot_id": "shot-09",
+                    "anchor": "selected",
+                    "state": "The stairwell stands empty behind the closed door",
+                    "framing": "wide hallway view",
+                    "subjects": [],
+                    "setting": "dim apartment hallway",
+                    "lighting": "cool side light",
+                    "visible_text": [],
+                },
+            },
+        ],
+    })
+    payload["reference_scope"] = {
+        "beat_ids": ["beat-07"],
+        "shot_ids": ["shot-07", "shot-08", "shot-09"],
+    }
+
+    generation = _snapshot_generation_input(
+        payload, payload["reference_resolution"]
+    )
+
+    assert generation.static_panels[0]["subjects"][0]["entity_id"] == "alice-youth"
+    assert generation.static_panels[0]["subjects"][0]["appearance_reference"] == "planned-ref-hero"
+    assert "Alice's hand rests on the closed door handle" in generation.prompt
+    assert "Alice opens the locked door" not in generation.prompt
+    assert _grid_request_aspect_ratio(payload) == "27:16"
+    resolution = resolve_grid_image_resolution(
+        "gpt-image-2", "1K", "9:16", rows=1, columns=3
+    )
+    assert resolution.logical_aspect_ratio == "27:16"
+    assert resolution.provider_aspect_ratio == "27:16"
+    assert (resolution.width, resolution.height) == (2160, 1280)
+    _validate_static_attachments(
+        payload,
+        generation.references,
+        static_panels=generation.static_panels,
+        static_references=generation.static_references,
+    )

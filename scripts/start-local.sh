@@ -11,6 +11,7 @@ api_port="${NOVELVIDEO_API_PORT:-8780}"
 frontend_port="${SUPERTALE_FE_PORT:-5173}"
 stop_timeout="${START_LOCAL_STOP_TIMEOUT:-15}"
 api_ready_timeout="${NOVELVIDEO_API_READY_TIMEOUT:-90}"
+api_reload="${NOVELVIDEO_API_RELOAD:-0}"
 # PID 文件按“端口对”区分：否则用非默认端口启动时会读到默认端口的记录，
 # 把另一个实例（例如你终端里正在跑的那套）误停。
 pid_file="$root_dir/runtime/start-local-${api_port}-${frontend_port}.pid"
@@ -39,7 +40,7 @@ usage() {
 API 就绪后才启动前端（避免 Vite 代理先报 ECONNREFUSED）。
 可覆盖环境变量: NOVELVIDEO_BIN、NOVELVIDEO_DATA_ROOT、NOVELVIDEO_STATE_DIR、
                 NOVELVIDEO_API_PORT、SUPERTALE_FE_PORT、START_LOCAL_STOP_TIMEOUT、
-                NOVELVIDEO_API_READY_TIMEOUT
+                NOVELVIDEO_API_READY_TIMEOUT、NOVELVIDEO_API_RELOAD=1
 --check 仅检查依赖、显示配置和端口占用，不启动也不停止任何服务。
 EOF
 }
@@ -235,7 +236,12 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 cd "$root_dir"
-"$novelvideo_bin" api --host 127.0.0.1 --port "$api_port" &
+api_args=(api --host 127.0.0.1 --port "$api_port")
+if [[ "$api_reload" == "1" || "$api_reload" == "true" ]]; then
+  api_args+=(--reload)
+  echo "后端热重载已开启。"
+fi
+"$novelvideo_bin" "${api_args[@]}" &
 api_pid=$!
 # 先记下 API PID：就绪等待期间被 Ctrl+C 或异常退出时，下次启动仍能定位到它。
 mkdir -p "$(dirname "$pid_file")"

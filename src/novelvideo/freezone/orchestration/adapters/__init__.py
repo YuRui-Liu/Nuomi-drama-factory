@@ -12,22 +12,27 @@ from pydantic import ValidationError
 from novelvideo.task_backend.limits import ProjectTaskLimitExceeded, ProjectUserTaskLimitExceeded, GlobalLaneQueueLimitExceeded
 
 from ..capabilities import catalog_by_type
+from novelvideo.freezone.canvas_store import read_canvas
 from ..models import (OrchestrationError, RESULT_FIELDS, bound_narrative_group_reference,
                       fingerprint, input_fingerprint)
 from ..projection import project_result
 from ..verification import local_media_path, verify_media
 from .requests import (ROUTES, build_request, director_draft,
                        ordered_upstream as ordered_upstream, project_director_inputs)
-from . import production, voice, dubbing, professional_edits
+from . import production, voice, dubbing, professional_edits, narrative_groups, storyboard_projection
+
+_validate_episode_group_ids = narrative_groups._validate_episode_group_ids
 
 LOCAL = {("textAnnotationNode", "validate"), ("beatContextNode", "validate"),
          ("uploadNode", "validate"), ("groupNode", "validate"),
-         ("narrativeGroupStoryboardNode", "validate")}
+         ("narrativeGroupStoryboardNode", "validate"), ("agentNode", "validate")}
 
 
 def available_operations() -> set[tuple[str, str]]:
     return (set(ROUTES) | LOCAL | production.OPERATIONS | voice.OPERATIONS | dubbing.OPERATIONS
             | professional_edits.OPERATIONS
+            | narrative_groups.OPERATIONS
+            | storyboard_projection.OPERATIONS
             | {("videoDirectorNode", "generate"), ("skillNode", "run"), ("scriptNode", "plan_episode")})
 
 
@@ -45,10 +50,65 @@ class NodeAdapter:
     def operation(self, node):
         return node.get("data", {}).get("operation") or catalog_by_type()[node["type"]]["default_operation"]
 
+    async def _route_legacy_asset_image_to_grsai(self, run, node, values, freezone):
+        """Correct only a verified asset-design node carrying the old Huimeng alias."""
+        if (node.get('type') != 'imageGenNode'
+                or values.get('provider') != 'huimeng'
+                or values.get('model') != 'gpt-image-2'
+                or not isinstance((node.get('data') or {}).get('designBinding'), dict)):
+            return
+
+        from novelvideo.creation.asset_generation import AssetGeneration
+        ctx, *_ = await freezone._resolve_freezone_project(
+            run['project_id'], run['actor'], required_role='viewer')
+        candidate = AssetGeneration.verified_candidate_for_node(ctx, run['canvas_id'], node)
+        if candidate is None:
+            raise OrchestrationError(
+                'asset_design_binding_unverified',
+                '资产节点的设计来源无法复核，已停止提交',
+            )
+
+        from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
+        from novelvideo.media_capabilities.runtime.configuration import (
+            MediaRuntimeConfigurationError,
+            load_grsai_runtime_configuration,
+        )
+        try:
+            runtime = load_grsai_runtime_configuration(
+                get_media_capability_store(), get_media_credential_resolver())
+        except MediaRuntimeConfigurationError as exc:
+            raise OrchestrationError(
+                'provider_configuration_unavailable',
+                '项目尚未配置可用的 Grsai 图片服务',
+            ) from exc
+        values['provider'] = 'grsai'
+        values['model'] = runtime.model
+
+    async def verify_asset_design_execution(self, run):
+        """Recheck the applied design receipt and its frozen media references."""
+        from novelvideo.api.routes import freezone
+        from ..asset_design_dependencies import verify_asset_design_execution
+
+        ctx, *_ = await freezone._resolve_freezone_project(
+            run['project_id'], run['actor'], required_role='viewer')
+        current = read_canvas(self.project_dir, run['canvas_id'])
+        if current is None:
+            raise OrchestrationError('input_conflict', 'Asset-design canvas no longer exists')
+        verify_asset_design_execution(ctx, run, current)
+
     def requires_external_submission(self, run, attempt):
         node = self.node(run, attempt)
         pair = (node["type"], self.operation(node))
-        local_operations = LOCAL | voice.LOCAL_OPERATIONS | dubbing.LOCAL_OPERATIONS | production.LOCAL_OPERATIONS
+        if pair in narrative_groups.OPERATIONS:
+            reusable = narrative_groups.reuse_snapshot(self.project_dir, node, pair[1])
+            external = reusable is None
+            attempt["narrative_group_admission"] = {
+                "external": external,
+                "reuse_signature": reusable.get("signature") if reusable else None,
+            }
+            return external
+        local_operations = (LOCAL | voice.LOCAL_OPERATIONS | dubbing.LOCAL_OPERATIONS
+                            | production.LOCAL_OPERATIONS | storyboard_projection.LOCAL_OPERATIONS)
         if pair in local_operations:
             return False
         # These adapters are dispatched before the generic reference-only
@@ -56,7 +116,7 @@ class NodeAdapter:
         # so an explicit node.run cannot perform unbudgeted work.
         dispatched_operations = (
             production.OPERATIONS | voice.OPERATIONS | dubbing.OPERATIONS
-            | professional_edits.OPERATIONS
+            | professional_edits.OPERATIONS | narrative_groups.OPERATIONS
         )
         if pair in dispatched_operations:
             return True
@@ -76,6 +136,10 @@ class NodeAdapter:
                 return await voice.reconcile_submission(run, attempt)
             if pair in production.OPERATIONS:
                 return await production.reconcile_submission(run, attempt)
+            if pair in production.LEGACY_OPERATIONS:
+                return await production.reconcile_submission(run, attempt)
+            if pair in narrative_groups.OPERATIONS:
+                return await narrative_groups.reconcile_submission(run, attempt, node, pair[1])
         # Compatibility for the first journal version, which did not classify
         # local admission rejection. This exact exception occurs before enqueue;
         # provider errors are reported asynchronously through reconcile().
@@ -101,6 +165,17 @@ class NodeAdapter:
                 return await voice.submit(run, attempt, node, operation)
             if (kind, operation) in production.OPERATIONS:
                 return await production.submit(run, attempt, node, operation)
+            if (kind, operation) in production.LEGACY_OPERATIONS:
+                raise OrchestrationError(
+                    "operation_unavailable",
+                    "Legacy batch production is recovery-only; run the narrative-group nodes instead",
+                )
+            if (kind, operation) in narrative_groups.OPERATIONS:
+                return await narrative_groups.submit(run, attempt, node, operation)
+            if (kind, operation) in storyboard_projection.OPERATIONS:
+                return await storyboard_projection.submit(run, attempt, node, operation)
+            if kind == "agentNode" and operation == "validate":
+                return self._validate_agent_node(data)
             if kind == "narrativeGroupStoryboardNode" and operation == "validate":
                 reference = bound_narrative_group_reference(node)
                 if reference is None:
@@ -168,6 +243,7 @@ class NodeAdapter:
                 return {"skill": True, **response}
             from novelvideo.api import schemas
             name, values = build_request(node, operation, upstream, canvas_id=run["canvas_id"], attempt_id=attempt["id"])
+            await self._route_legacy_asset_image_to_grsai(run, node, values, freezone)
             self._validate_urls(run, values)
             schema = getattr(schemas, ROUTES[(kind, operation)][1])
             body = schema.model_validate(values)
@@ -193,6 +269,28 @@ class NodeAdapter:
         elif isinstance(value, str) and (key.endswith("url") or key.endswith("urls")) and value:
             local_media_path(self.project_dir, run["project_id"], value)
 
+    @staticmethod
+    def _validate_agent_node(data):
+        reference = data.get("agentRef") or {"id": "builtin:ideation", "revision": 1}
+        if (not isinstance(reference, dict) or set(reference) != {"id", "revision"}
+                or not isinstance(reference.get("id"), str)
+                or type(reference.get("revision")) is not int
+                or reference["revision"] < 1):
+            raise OrchestrationError("invalid_input", "Agent node requires a fixed agentRef")
+        try:
+            from novelvideo.creation.builtin_agents import resolve
+            fixed = resolve(reference)
+        except ValueError as exc:
+            raise OrchestrationError("source_conflict", "The fixed Agent profile revision is unavailable") from exc
+        configuration = fixed["configuration"]
+        return {"local": True, "result": {"agentIdentity": {
+            "agentRef": {"id": fixed["id"], "revision": fixed["revision"]},
+            "role": {
+                "name": configuration["name"],
+                "responsibilities": configuration["responsibilities"],
+            },
+        }}}
+
     async def reconcile(self, run, attempt):
         submitted = attempt["submission"]
         node = self.node(run, attempt)
@@ -204,6 +302,8 @@ class NodeAdapter:
             return await professional_edits.reconcile(run, submitted)
         if submitted.get('production_workflow'):
             return await production.reconcile(run, submitted)
+        if submitted.get('narrative_group'):
+            return await narrative_groups.reconcile(run, submitted)
         if submitted.get('voice_design'):
             return await voice.reconcile(run, submitted)
         if submitted.get("plan"):
@@ -250,6 +350,7 @@ class NodeAdapter:
         if ((attempt.get("submission") or {}).get("local")
                 and any(key in local_result for key in (
                     "voiceDesignPreview", "dubbingPreparation", "narrativeGroupReference",
+                    "agentIdentity",
                 ))):
             return [{"kind": "json", "sha256": fingerprint(local_result)}]
         if ((attempt.get('submission') or {}).get('dubbing')
@@ -285,6 +386,7 @@ class NodeAdapter:
         allowed = RESULT_FIELDS.get(node["type"], set())
         result = {key: value for key, value in (attempt.get("result") or {}).items() if key in allowed}
         marker = run.get("agent_execution")
+        asset_marker = run.get("asset_design_execution")
         history_entry = None
         if marker:
             history_entry = {
@@ -293,11 +395,24 @@ class NodeAdapter:
                 "artifacts": deepcopy(attempt.get("artifacts", [])),
                 "previous_media": deepcopy(marker.get("previous_media", [])),
             }
+        frozen_guard = marker or run.get("asset_design_execution")
+        frozen_reference_validator = None
+        if asset_marker:
+            from novelvideo.api.routes import freezone
+            from ..asset_design_dependencies import verify_asset_design_execution
+
+            ctx, *_ = await freezone._resolve_freezone_project(
+                run['project_id'], run['actor'], required_role='viewer')
+
+            def frozen_reference_validator(current_canvas):
+                verify_asset_design_execution(ctx, run, current_canvas)
+
         project_result(self.project_dir, run["canvas_id"], node_id=node["id"],
                        expected_input=run["input_fingerprints"][node["id"]], attempt_id=attempt["id"],
                        result=result, history_entry=history_entry,
                        expected_result_fingerprint=marker.get("target_result_fingerprint") if marker else None,
                        expected_media_fingerprint=marker.get("target_media_fingerprint") if marker else None,
-                       expected_source_output_fingerprints=marker.get("source_output_fingerprints") if marker else None,
-                        expected_dependency_edge_fingerprint=marker.get("dependency_edge_fingerprint") if marker else None,
+                       expected_source_output_fingerprints=frozen_guard.get("source_output_fingerprints") if frozen_guard else None,
+                        expected_dependency_edge_fingerprint=frozen_guard.get("dependency_edge_fingerprint") if frozen_guard else None,
+                        frozen_reference_validator=frozen_reference_validator,
                         authorize_projection=authorize_projection if marker else None)

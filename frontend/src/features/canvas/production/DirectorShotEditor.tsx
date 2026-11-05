@@ -117,7 +117,7 @@ export function DirectorShotEditor({ project, episode, revisionId, shot, group, 
     ]);
   };
 
-  return <details className="mt-3 rounded border p-3"><summary className="cursor-pointer text-sm">调整镜头与专业方案</summary><div className="mt-3 space-y-3">
+  return <details className="director-shot-editor mt-3 rounded border p-3"><summary className="cursor-pointer text-sm">调整镜头与专业方案</summary><div className="mt-3 space-y-3">
     <TextFields values={draft} labels={fields} onChange={(key, value) => setDraft(previous => ({ ...previous, [key]: value }))} />
     <label className="grid gap-1 text-sm">目标时长（秒）<input className="rounded border bg-background p-2" type="number" min={0.1} step={0.1} value={Number(draft.duration_seconds ?? 1)} onChange={event => setDraft(previous => ({ ...previous, duration_seconds: Number(event.target.value) }))} /></label>
     {cinema && <><h4 className="text-sm font-medium">摄影与空间连续性</h4><TextFields values={cinema} labels={cinemaFields} onChange={updateCinema} />

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import mimetypes
+import json
 import re
 from dataclasses import dataclass, field
 from ipaddress import ip_address
@@ -98,11 +99,15 @@ class RunningHubError(RuntimeError):
         code: str | None = None,
         http_status: int | None = None,
         retriable: bool = False,
+        details: str | None = None,
+        operation: str | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.http_status = http_status
         self.retriable = retriable
+        self.details = details
+        self.operation = operation
 
 
 class RunningHubClient:
@@ -210,29 +215,28 @@ class RunningHubClient:
         self._reject_sensitive_response(graph)
         return graph
 
-    async def submit(self, workflow_id: str, node_info: Any) -> str:
+    async def submit(self, workflow_id: str, node_info: Any, *, workflow: dict | None = None) -> str:
         media = self._workflow_media.get(workflow_id)
         context = self._cost_capture.resolve()
         media = media or (context.media_type if context is not None and context.media_type != 'text' else None)
         attempt = self._cost_capture.prepare(model=workflow_id, workflow=workflow_id,
                                             media_type=media, usage={'item': '1'} if media == 'image' else {})
         try:
-            task_id = await self._submit(workflow_id, node_info)
+            task_id = await self._submit(workflow_id, node_info, workflow=workflow)
         except BaseException:
             self._cost_capture.interrupted(attempt)
             raise
         self._cost_capture.accepted(attempt, task_id)
         return task_id
 
-    async def _submit(self, workflow_id: str, node_info: Any) -> str:
+    async def _submit(self, workflow_id: str, node_info: Any, *, workflow: dict | None = None) -> str:
+        body = {"apiKey": self._api_key, "workflowId": workflow_id, "nodeInfoList": node_info}
+        if workflow is not None:
+            body["workflow"] = json.dumps(workflow, ensure_ascii=False)
         payload = await self._request_json(
             "POST",
             "/task/openapi/create",
-            json={
-                "apiKey": self._api_key,
-                "workflowId": workflow_id,
-                "nodeInfoList": node_info,
-            },
+            json=body,
         )
         data = self._response_data(payload)
         task_id = self._first_text(data, "taskId", "task_id")
@@ -419,7 +423,29 @@ class RunningHubClient:
             code=self._safe_provider_code(code),
             http_status=response.status_code,
             retriable=False,
+            details=self._safe_rejection_details(payload),
+            operation=url if url in {"/openapi/v2/media/upload/binary", "/task/openapi/create", "/api/openapi/getJsonApiFormat"} else "request",
         )
+
+    def _safe_rejection_details(self, payload: dict[str, Any]) -> str | None:
+        # Never serialize arbitrary provider data (uploaded paths, URLs, request
+        # bodies or credentials). Keep only diagnostic fields and node IDs.
+        fields = {"msg", "message", "error", "errorMessage", "error_message", "node_errors", "errors", "details", "type", "node_id", "nodeId", "fieldName"}
+        def diagnostic(value: Any, depth: int = 0):
+            if depth > 6:
+                return "[truncated]"
+            if isinstance(value, dict):
+                return {key: diagnostic(item, depth + 1) for key, item in list(value.items())[:32]
+                        if isinstance(key, str) and (key in fields or key.isdigit())}
+            if isinstance(value, list):
+                return [diagnostic(item, depth + 1) for item in value[:16]]
+            if isinstance(value, (str, int, float, bool)):
+                return self._safe_provider_message(str(value))
+            return None
+        selected = {key: diagnostic(value) for key, value in payload.items() if key in fields}
+        if isinstance(payload.get("data"), dict):
+            selected["validation"] = diagnostic(payload["data"])
+        return self._safe_provider_message(json.dumps(selected, ensure_ascii=False)) if selected else None
 
     @staticmethod
     def _raise_for_http_status(response: httpx.Response, *, operation: str) -> None:

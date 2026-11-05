@@ -34,6 +34,11 @@ export interface DirectorHandoffPreview {
 const root = (project: string, episode: number) => `projects/${encodeURIComponent(project)}/episodes/${episode}/director-workspace`;
 export const directorWorkspaceApi = {
   get: (project: string, episode: number) => apiCall<DirectorWorkspace>(root(project, episode)),
+  createDirectorPlan: (project: string, episode: number) =>
+    apiCall<{ task_id: string; task_key?: string; source_revision: number }>(
+      `projects/${encodeURIComponent(project)}/episodes/${episode}/director-plans`,
+      { method: 'post', retry: 0 },
+    ),
   previewHandoff: (project: string, episode: number, document: string, revision: string) =>
     apiCall<DirectorHandoffPreview>(`${root(project, episode)}/handoff-preview`, {
       method: 'post', retry: { limit: 0 }, json: { document_id: document, revision_id: revision },

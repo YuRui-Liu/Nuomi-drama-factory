@@ -106,6 +106,47 @@ async def test_director_input_uses_redirect_style_payload(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_director_style_resolution_prefers_frozen_project_direction(tmp_path):
+    import json
+    from types import SimpleNamespace
+
+    from novelvideo.creation.library_references import DirectionReferences
+    from novelvideo.director_plan.style_resolution import resolve_project_style_snapshot
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "project_config.json").write_text(json.dumps({
+        "visual_style": "chinese_period_drama",
+    }))
+    ctx = SimpleNamespace(
+        project_id="project-1", requester_user_id="user-1", state_dir=state_dir,
+        output_dir=tmp_path / "output", owner_username="owner", project_name="project",
+    )
+    directions = DirectionReferences(ctx)
+    selected = next(item for item in directions.catalog("style") if item["id"] == "realistic")
+    scope = {"level": "project"}
+    inspected = directions.inspect(scope)
+    await directions.apply({
+        "request_id": "apply-realistic-style",
+        "scope": scope,
+        "kind": "style",
+        "action": "apply",
+        "expected_revision": inspected["local"]["style"]["revision"],
+        "scope_proof": inspected["proof"],
+        "selection": {
+            "id": selected["id"], "version": selected["version"],
+            "proof": selected["proof"],
+        },
+    })
+
+    resolved = resolve_project_style_snapshot(ctx)
+
+    assert resolved.style_id == "realistic"
+    assert resolved.snapshot_id == selected["configuration"]["snapshot_id"]
+    assert resolved.style_hash == selected["configuration"]["style_hash"]
+
+
+@pytest.mark.asyncio
 async def test_queued_director_plan_rejects_semantic_revision_switch(monkeypatch, tmp_path):
     from novelvideo.task_backend.runners import director_plan
     from novelvideo.screenplay_semantics import parse_screenplay_document

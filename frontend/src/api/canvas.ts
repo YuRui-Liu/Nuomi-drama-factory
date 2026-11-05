@@ -78,6 +78,67 @@ export interface FreezoneCanvasSaveResult {
   backup_status?: CanvasBackupStatus;
 }
 
+export interface CanvasDocument {
+  path: string;
+  text: string;
+  hash: string;
+}
+
+export interface CanvasDocumentWriteRequest {
+  path: string;
+  text: string;
+  /** Null is accepted only when creating a document that does not exist. */
+  expected_hash: string | null;
+}
+
+export async function readCanvasDocument(
+  projectId: string,
+  canvasId: string,
+  path: string,
+): Promise<CanvasDocument> {
+  return await apiCall<CanvasDocument>(
+    `projects/${encodeURIComponent(projectId)}/freezone/orchestration/canvases/${encodeURIComponent(canvasId)}/documents`,
+    { searchParams: { path } },
+  );
+}
+
+export async function writeCanvasDocument(
+  projectId: string,
+  canvasId: string,
+  payload: CanvasDocumentWriteRequest,
+): Promise<CanvasDocument> {
+  return await apiCall<CanvasDocument>(
+    `projects/${encodeURIComponent(projectId)}/freezone/orchestration/canvases/${encodeURIComponent(canvasId)}/documents`,
+    { method: "PUT", json: payload },
+  );
+}
+
+export interface FreezoneProductionGraphRequest {
+  base_revision: number;
+  request_id: string;
+  episode: number;
+  revision_id: string;
+}
+
+export interface FreezoneProductionGraphResponse {
+  canvas: FreezoneCanvasPayload;
+  target: string;
+  node_ids: string[];
+  /** The endpoint materializes graph structure only; a user starts the run separately. */
+  submitted: false;
+}
+
+export async function createFreezoneProductionGraph(
+  projectId: string,
+  canvasId: string,
+  payload: FreezoneProductionGraphRequest,
+): Promise<FreezoneProductionGraphResponse> {
+  return await apiCall<FreezoneProductionGraphResponse>(
+    `projects/${encodeURIComponent(projectId)}/freezone/orchestration/canvases/${encodeURIComponent(canvasId)}/production-graph`,
+    { method: "POST", json: payload },
+  );
+}
+
 /**
  * Mint an idempotency token for a single canvas save attempt. Callers should
  * reuse the same id across retries of the same logical save (network blip,

@@ -21,12 +21,23 @@ from pydantic import ValidationError
 from novelvideo.freezone.paths import resolve_static_url_to_path
 from novelvideo.knowledge_runtime.codex import StructuredImage, validate_structured_images
 from novelvideo.knowledge_runtime.settings import KnowledgeRuntimeError
-from novelvideo.media_capabilities.video.h3_prompt_profile import H3_CANVAS_WRITING_RULES
+from novelvideo.media_capabilities.video.h3_prompt_profile import (
+    H3_CANVAS_WRITING_RULES,
+    H3_PROMPT_PROFILE_ID,
+    H3_PROMPT_PROFILE_VERSION,
+)
 from novelvideo.media_capabilities.runtime.runninghub_client import RunningHubError
 
-from .capabilities import DirectorCapabilityError, validate_generation
+from .capabilities import (
+    DirectorCapabilityError,
+    GenerationValidation,
+    validate_generation,
+    validate_submission,
+)
+from .h3_adapter import compile_director_preview
 from .models import DirectorDraft, DirectorImage, FrozenTechnique, OptimizedDirector
 from .optimizer import TechniqueConflictError, optimize
+from .prepared_validation import director_draft_fingerprint, validate_prepared
 from .store import DirectorAttemptStore
 from . import techniques
 
@@ -142,7 +153,12 @@ def _validation_locations(exc: BaseException) -> list[dict]:
                     wire = error.get('input')
                     if isinstance(wire, dict):
                         # Only protocol tags, never user descriptions or unknown keys.
-                        tags = lambda value: re.findall(r'<(?:Subject|Picture|Video|Audio) [1-9][0-9]*>', str(value))[:20]
+                        def tags(value):
+                            return re.findall(
+                                r'<(?:Subject|Picture|Video|Audio) [1-9][0-9]*>',
+                                str(value),
+                            )[:20]
+
                         item['definition_tags'] = [tags(line) for line in str(wire.get('subject_definitions', '')).splitlines()[:10]]
                         item['active_tags'] = tags(wire.get('detailed_description', ''))
                         defined = {tag for line in item['definition_tags'] for tag in line if tag.startswith('<Subject ')}
@@ -176,7 +192,7 @@ class DirectorService:
             self.provider = RunningHubDirectorProvider(self.ctx)
         return self.provider
 
-    def _freeze(self, draft: DirectorDraft):
+    def _freeze(self, draft: DirectorDraft, *, persist: bool = True):
         seen: dict[str, DirectorImage] = {}
         frozen: dict[str, str] = {}
         references = []
@@ -191,16 +207,18 @@ class DirectorService:
             if image in draft.references:
                 references.append(attachment)
             digest = hashlib.sha256(attachment.data).hexdigest()
-            path = self.store.root / "frozen" / f"{digest}{suffix}"
-            path.parent.mkdir(exist_ok=True, mode=0o700)
-            temporary = path.parent / f".{uuid4().hex}.tmp"
-            with temporary.open("xb") as stream:
-                stream.write(attachment.data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            temporary.chmod(0o600)
-            os.replace(temporary, path)
-            frozen[image.image_id] = path.name
+            filename = f"{digest}{suffix}"
+            if persist:
+                path = self.store.root / "frozen" / filename
+                path.parent.mkdir(exist_ok=True, mode=0o700)
+                temporary = path.parent / f".{uuid4().hex}.tmp"
+                with temporary.open("xb") as stream:
+                    stream.write(attachment.data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                temporary.chmod(0o600)
+                os.replace(temporary, path)
+            frozen[image.image_id] = filename
         validate_structured_images(references)
 
         def replace(image):
@@ -214,17 +232,9 @@ class DirectorService:
         })
         return snapshot, frozen
 
-    def create(self, canvas_id: str, node_id: str, request_id: str, draft: DirectorDraft):
-        if not all(isinstance(x, str) and x.strip() and len(x) <= 128
-                   for x in (canvas_id, node_id, request_id)):
-            raise ValueError("canvas_id, node_id and request_id are required")
-        existing = next((item for item in self.store.list(self.ctx.project_id, canvas_id, node_id)
-                         if item["request_id"] == request_id), None)
-        if existing:
-            return existing, False
-        validation = validate_generation(draft, reference_limit=self.reference_limit)
+    def _freeze_techniques(self, draft: DirectorDraft, validation: GenerationValidation):
         frozen_techniques = {}
-        for index, (segment, aligned) in enumerate(zip(draft.segments, validation.timeline)):
+        for index, (segment, aligned) in enumerate(zip(draft.segments, validation.timeline, strict=True)):
             if segment.technique is None:
                 continue
             selection = segment.technique
@@ -233,8 +243,22 @@ class DirectorService:
                 card = techniques.resolve_technique(selection.id, selection.version)
             except ValueError as exc:
                 raise DirectorCapabilityError(field, str(exc), segment.id) from exc
-            applicability = techniques.check_applicability(card, aligned.mode,
+            technique_mode = "ref_only" if aligned.mode.startswith("ref_plus_") else aligned.mode
+            applicability = techniques.check_applicability(card, technique_mode,
                                                             segment.duration_seconds)
+            frame_constraint = card.applicability.last_frame_constraint
+            if segment.last_frame is not None and frame_constraint == "forbidden":
+                applicability["compatible"] = False
+                applicability["reasons"].append({
+                    "field": "last_frame", "code": "last_frame_forbidden",
+                    "message": "This technique does not support a supplied last frame.",
+                })
+            elif segment.last_frame is None and frame_constraint == "required":
+                applicability["compatible"] = False
+                applicability["reasons"].append({
+                    "field": "last_frame", "code": "last_frame_required",
+                    "message": "This technique requires a supplied last frame.",
+                })
             if not applicability["compatible"]:
                 reason = applicability["reasons"][0]
                 raise DirectorCapabilityError(
@@ -245,10 +269,66 @@ class DirectorService:
             frozen_techniques[segment.id] = FrozenTechnique(
                 card=card, projection=techniques.project_technique(card),
             ).model_dump(mode="json")
+        return frozen_techniques
+
+    def preview(self, draft: DirectorDraft, prepared: OptimizedDirector | None = None):
+        """Return the frozen-input fingerprint and, when supplied, exact H3 compilation."""
+        validation = validate_submission(draft, reference_limit=self.reference_limit)
+        self._freeze_techniques(draft, validation)
+        snapshot, _ = self._freeze(draft, persist=False)
+        result = {
+            "draft_fingerprint": director_draft_fingerprint(snapshot),
+            "revision": snapshot.revision,
+            "profile_id": H3_PROMPT_PROFILE_ID,
+            "profile_version": H3_PROMPT_PROFILE_VERSION,
+            "route": validation.route,
+            "reference_image_ids": list(validation.reference_image_ids),
+            "segments": [{
+                "segment_id": source.id,
+                "mode": "ref2va" if validation.route == "h3_ref"
+                    else {"i2v": "i2va", "fl2v": "fl2va"}[aligned.mode],
+                "requested_duration_seconds": source.duration_seconds,
+                "duration_seconds": aligned.duration_seconds,
+                "frames": aligned.frames,
+            } for source, aligned in zip(draft.segments, validation.timeline, strict=True)],
+        }
+        if prepared is not None:
+            validate_prepared(snapshot, prepared, validation)
+            payload = compile_director_preview(
+                snapshot, prepared, reference_limit=self.reference_limit,
+            )
+            result["preview"] = {
+                "route": payload.route,
+                "timeline_data": payload.timeline_data,
+                "semantic_values": payload.semantic_values,
+            }
+        return result
+
+    def create(self, canvas_id: str, node_id: str, request_id: str, draft: DirectorDraft,
+               prepared: OptimizedDirector | None = None):
+        if not all(isinstance(x, str) and x.strip() and len(x) <= 128
+                   for x in (canvas_id, node_id, request_id)):
+            raise ValueError("canvas_id, node_id and request_id are required")
+        existing = next((item for item in self.store.list(self.ctx.project_id, canvas_id, node_id)
+                         if item["request_id"] == request_id), None)
+        if existing:
+            return existing, False
+        validation = validate_generation(draft, reference_limit=self.reference_limit)
+        frozen_techniques = self._freeze_techniques(draft, validation)
+        if prepared is not None:
+            validation = validate_submission(draft, reference_limit=self.reference_limit)
         snapshot, frozen = self._freeze(draft)
         detail = {"frozen_images": frozen, "reference_limit": self.reference_limit}
         if frozen_techniques:
             detail["frozen_techniques"] = frozen_techniques
+        if prepared is not None:
+            validate_prepared(snapshot, prepared, validation)
+            detail.update(
+                optimized=prepared.model_dump(mode="json"),
+                rules_hash=_current_rules_hash(),
+                techniques_hash=_techniques_hash(frozen_techniques),
+                prepared_by_client=True,
+            )
         attempt, created = self.store.create(self.ctx.project_id, canvas_id, node_id,
                                              request_id, snapshot, detail=detail)
         return attempt, created
@@ -295,18 +375,42 @@ class DirectorService:
         draft = DirectorDraft.model_validate(item["snapshot"])
         reference_limit = int(item.get("reference_limit") or self.reference_limit)
         if not item.get("provider_task_id"):
+            try:
+                validation = validate_submission(draft, reference_limit=reference_limit)
+            except DirectorCapabilityError as exc:
+                return self.store.update(attempt_id, stage="failed", failed_stage="submitting",
+                                         error=str(exc))
             current_hash = _current_rules_hash()
             frozen_techniques = item.get("frozen_techniques") or {}
             current_techniques_hash = _techniques_hash(frozen_techniques)
             cached = item.get("optimized")
-            from novelvideo.media_capabilities.video.h3_prompt_profile import (
-                H3_PROMPT_PROFILE_ID, H3_PROMPT_PROFILE_VERSION,
+            cache_matches = bool(
+                cached
+                and item.get("rules_hash") == current_hash
+                and item.get("techniques_hash") == current_techniques_hash
+                and cached.get("profile_id") == H3_PROMPT_PROFILE_ID
+                and cached.get("profile_version") == H3_PROMPT_PROFILE_VERSION
+                and cached.get("draft_fingerprint") in (None, director_draft_fingerprint(draft))
             )
-            if (cached and item.get("rules_hash") == current_hash and
-                item.get("techniques_hash") == current_techniques_hash and
-                cached.get("profile_id") == H3_PROMPT_PROFILE_ID and
-                cached.get("profile_version") == H3_PROMPT_PROFILE_VERSION):
+            if item.get("prepared_by_client") and not cache_matches:
+                return self.store.update(
+                    attempt_id,
+                    stage="failed",
+                    failed_stage="optimizing",
+                    error="Prepared H3 input no longer matches the frozen draft or current profile; prepare again.",
+                )
+            if cache_matches:
                 optimized = OptimizedDirector.model_validate(cached)
+                if item.get("prepared_by_client"):
+                    try:
+                        validate_prepared(draft, optimized, validation)
+                    except ValueError as exc:
+                        return self.store.update(
+                            attempt_id,
+                            stage="failed",
+                            failed_stage="optimizing",
+                            error=f"Prepared H3 input is invalid: {exc}",
+                        )
             else:
                 item = self.store.update(attempt_id, stage="optimizing")
                 try:
@@ -391,7 +495,6 @@ class DirectorService:
                                               "function": frame.f_code.co_name, "line": line}
                                              for frame, line in islice(traceback.walk_tb(exc.__traceback__), 32)
                                          ])
-            validation = validate_generation(draft, reference_limit=reference_limit)
             item = self.store.update(attempt_id, stage="submitting", workflow_id=prepared["workflow_id"],
                                      workflow_profile_id=prepared["profile_id"],
                                      workflow_profile_version=prepared.get("profile_version"),

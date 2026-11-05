@@ -128,6 +128,176 @@ def test_mode_mismatch_is_rejected_with_segment_field(setup):
     assert captured.value.field == "segments[0].technique.mode"
 
 
+def test_reference_mode_technique_accepts_optional_start_and_end_frames(setup):
+    ctx, service, _, _ = setup
+    for name, color in (("ref.png", "red"), ("first.png", "green"), ("last.png", "blue")):
+        (ctx.output_dir / name).write_bytes(png(color))
+    source = DirectorDraft(
+        revision=1, aspect_ratio="9:16", resolution="720p",
+        references=(DirectorImage(image_id="character", url="ref.png", character_id="hero"),),
+        segments=(DirectorSegment(
+            id="ref-segment", prompt="The hero turns", duration_seconds=5,
+            first_frame=DirectorImage(image_id="first", url="first.png"),
+            last_frame=DirectorImage(image_id="last", url="last.png"),
+            technique=TechniqueSelection(id="two-person-gaze", version="1.0.0"),
+        ),),
+    )
+
+    item, created = service.create("c", "n", "mixed-reference", source)
+
+    assert created
+    assert item["frozen_techniques"]["ref-segment"]["card"]["id"] == "two-person-gaze"
+
+
+def test_reference_mode_still_enforces_technique_last_frame_constraint(setup):
+    ctx, service, _, _ = setup
+    for name, color in (("ref.png", "red"), ("first.png", "green"), ("last.png", "blue")):
+        (ctx.output_dir / name).write_bytes(png(color))
+    source = DirectorDraft(
+        revision=1, aspect_ratio="9:16", resolution="720p",
+        references=(DirectorImage(image_id="character", url="ref.png", character_id="hero"),),
+        segments=(DirectorSegment(
+            id="ref-segment", prompt="The hero turns", duration_seconds=5,
+            first_frame=DirectorImage(image_id="first", url="first.png"),
+            last_frame=DirectorImage(image_id="last", url="last.png"),
+            technique=TechniqueSelection(id="expression-build", version="1.0.0"),
+        ),),
+    )
+
+    with pytest.raises(DirectorCapabilityError) as captured:
+        service.create("c", "n", "forbidden-reference-endpoint", source)
+
+    assert captured.value.segment_id == "ref-segment"
+    assert captured.value.field == "segments[0].technique.last_frame"
+
+
+def _prepared_for(source, fingerprint):
+    from novelvideo.freezone.video_director.capabilities import validate_generation
+    aligned = validate_generation(source).timeline[0]
+    wire = CanvasBaseWire(
+        mode="i2va", duration_seconds=aligned.duration_seconds,
+        integrated_multimodal_description="[Shot 1] A continuous walk.",
+        overall_soundscape="Footsteps", non_diegetic_music="N/A",
+    )
+    return OptimizedDirector(
+        revision=source.revision, route="h3", profile_id="minimax-h3-director",
+        profile_version=H3_PROMPT_PROFILE_VERSION, optimized_at=datetime.now(timezone.utc),
+        draft_fingerprint=fingerprint,
+        segments=(OptimizedSegment(
+            segment_id=source.segments[0].id, mode="i2va",
+            requested_duration_seconds=source.segments[0].duration_seconds,
+            duration_seconds=aligned.duration_seconds, frames=aligned.frames,
+            wire=wire, prompt=compile_h3_wire(wire),
+        ),),
+    )
+
+
+@pytest.mark.asyncio
+async def test_valid_prepared_h3_input_skips_optimizer_and_keeps_shared_execution_path(setup):
+    ctx, service, provider, runtime = setup
+    (ctx.output_dir / "frame.png").write_bytes(png("red"))
+    source = draft("frame.png")
+    preview = service.preview(source)
+    prepared = _prepared_for(source, preview["draft_fingerprint"])
+    optimizer_calls = []
+
+    async def unexpected_optimizer(*args, **kwargs):
+        optimizer_calls.append((args, kwargs))
+        raise AssertionError("valid prepared wire must not trigger a rewrite")
+
+    service.optimizer = unexpected_optimizer
+    item, created = service.create("c", "n", "prepared-click", source, prepared=prepared)
+    assert created
+    assert item["optimized"]["draft_fingerprint"] == preview["draft_fingerprint"]
+
+    submitted = await service.resume(item["id"])
+
+    assert submitted["stage"] == "queued"
+    assert optimizer_calls == []
+    assert runtime == []
+    assert provider.submit_calls == 1
+
+
+def test_preview_is_read_only_and_fingerprint_covers_frozen_image_bytes(setup):
+    ctx, service, _, _ = setup
+    path = ctx.output_dir / "frame.png"
+    path.write_bytes(png("red"))
+
+    first = service.preview(draft("frame.png"))
+    assert not (service.store.root / "frozen").exists()
+    path.write_bytes(png("blue"))
+    second = service.preview(draft("frame.png"))
+
+    assert first["draft_fingerprint"] != second["draft_fingerprint"]
+    assert first["profile_id"] == "minimax-h3-director"
+    assert first["route"] == "h3"
+    assert first["segments"] == [{
+        "segment_id": "one", "mode": "i2va", "requested_duration_seconds": 5.0,
+        "duration_seconds": 5.166666666666667, "frames": 124,
+    }]
+    assert service.store.list("project-1") == []
+
+
+def test_preview_fingerprint_covers_structured_cross_batch_continuity(setup):
+    _, service, _, _ = setup
+    image_path = service.ctx.output_dir / "frame.png"
+    image_path.write_bytes(png("red"))
+    source = draft("frame.png")
+    continuity = {
+        "director_intent": "Move the animal toward help",
+        "previous_end_state": "The rescuer stands at the doorway holding the animal",
+        "current_start_state": "The rescuer begins at that doorway",
+        "shared_space": "Rainy alley doorway",
+        "scene_id": "scene-2",
+        "previous_group_id": "group-6",
+        "current_group_id": "group-7",
+        "relation_to_previous": "causal",
+    }
+    contextual = DirectorDraft.model_validate({
+        **source.model_dump(mode="python"),
+        "continuity_context": continuity,
+    })
+
+    first = service.preview(source)
+    second = service.preview(contextual)
+
+    assert first["draft_fingerprint"] != second["draft_fingerprint"]
+
+
+def test_legacy_preview_fingerprint_omits_absent_continuity_field(setup):
+    import hashlib
+    import json
+    from novelvideo.freezone.video_director.prepared_validation import director_draft_fingerprint
+
+    _, service, _, _ = setup
+    (service.ctx.output_dir / "frame.png").write_bytes(png("red"))
+    source = draft("frame.png", sha256=hashlib.sha256(png("red")).hexdigest())
+    legacy_payload = source.model_dump(mode="json")
+    legacy_payload.pop("continuity_context", None)
+    expected = hashlib.sha256(json.dumps(
+        legacy_payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+
+    assert service.preview(source)["draft_fingerprint"] == expected
+    assert director_draft_fingerprint(source) == expected
+
+
+def test_prepared_fingerprint_mismatch_fails_before_attempt_or_provider_work(setup):
+    ctx, service, provider, _ = setup
+    image_path = ctx.output_dir / "frame.png"
+    image_path.write_bytes(png("red"))
+    source = draft("frame.png")
+    preview = service.preview(source)
+    prepared = _prepared_for(source, preview["draft_fingerprint"])
+    image_path.write_bytes(png("blue"))
+
+    with pytest.raises(ValueError, match="fingerprint"):
+        service.create("c", "n", "stale-prepared", source, prepared=prepared)
+
+    assert service.store.list("project-1") == []
+    assert provider.submit_calls == 0
+
+
 @pytest.mark.asyncio
 async def test_retry_reuses_frozen_card_and_cache_hash(setup, monkeypatch):
     from novelvideo.freezone.video_director import techniques
@@ -249,6 +419,39 @@ async def test_freezes_real_bytes_and_duplicate_resume_never_resubmits(setup):
     await service.resume(first["id"])
     assert images == [png("red")]
     assert provider.submit_calls == 1 and provider.query_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_submission_rejects_more_than_15_h3_aligned_seconds_before_optimization(setup):
+    ctx, service, provider, _ = setup
+    (ctx.output_dir / "frame.png").write_bytes(png("red"))
+    durations = (3, 3, 4, 3, 4)
+    source = DirectorDraft(
+        revision=4,
+        aspect_ratio="9:16",
+        resolution="720p",
+        segments=tuple(
+            DirectorSegment(
+                id=f"s{index}", prompt="Walk", duration_seconds=duration,
+                first_frame=DirectorImage(image_id="image", url="frame.png"),
+            )
+            for index, duration in enumerate(durations, start=1)
+        ),
+    )
+    item, _ = service.create("c", "n", "r", source)
+
+    async def optimization_must_not_run(*args, **kwargs):
+        raise AssertionError("oversized H3 batches must be rejected before optimization")
+
+    service.optimizer = optimization_must_not_run
+    failed = await service.resume(item["id"])
+
+    assert failed["stage"] == "failed"
+    assert failed["failed_stage"] == "submitting"
+    assert "H3-aligned total duration" in failed["error"]
+    assert "18.042s" in failed["error"]
+    assert "split" in failed["error"]
+    assert provider.submit_calls == 0
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,8 @@ CAPABILITIES=(
     {'id':'media.propose','title':'提出媒体生成方案','runtime_permission':'requires_separate_execution_authorization'},
     {'id':'node.patch','title':'提出节点局部修改','runtime_permission':'requires_scoped_edit_authorization'},
     {'id':'node.run','title':'申请受限节点操作','runtime_permission':'requires_scoped_execution_authorization'},
+    {'id':'script.document.draft','title':'提出正式剧本草稿','runtime_permission':'creates_unadopted_versioned_episode_script'},
+    {'id':'script.document.review','title':'审阅固定正式剧本版本','runtime_permission':'records_independent_version_scoped_review'},
 )
 LEGACY_CAPABILITIES=CAPABILITIES[:4]
 STUDIO_TEXT_FIELDS=frozenset({'description','instructions','method','notes','intent'})

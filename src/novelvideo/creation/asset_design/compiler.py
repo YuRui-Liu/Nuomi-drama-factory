@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from .models import AssetDesignBrief, CompileResult, Fingerprint
 from .store import AssetBriefStore
 
-COMPILER_VERSION = "1"
+COMPILER_VERSION = "2"
 
 
 def _as_mapping(value: Any) -> Mapping[str, Any]:
@@ -42,6 +42,7 @@ def compile_brief(
 ) -> CompileResult:
     design = brief.design
     subject_parts = [
+        _line("设计描述", str(design.get("description", ""))),
         _line("剪影", str(design.get("silhouette", ""))),
         _line("面部", str(design.get("face", ""))),
         _line("发型", str(design.get("hair", ""))),
@@ -70,6 +71,7 @@ def compile_brief(
         "wardrobe": wardrobe,
         "anchors": anchors,
         "material": brief.render.material,
+        "volume": brief.render.volume,
         "negative": list(brief.render.negative) + list(brief.consistency.forbidden),
         "params": dict(params),
     }
@@ -82,6 +84,7 @@ def compile_brief(
             "\n".join(wardrobe),
             "\n".join(anchors),
             _line("材质", brief.render.material),
+            _line("体积", brief.render.volume),
             style_fragment.strip(),
         )
         if part

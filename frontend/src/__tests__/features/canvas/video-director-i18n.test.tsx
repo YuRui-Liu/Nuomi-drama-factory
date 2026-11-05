@@ -23,6 +23,60 @@ const resources = Object.fromEntries(['zh', 'en'].map((language) => [language,
 
 describe('video director with real locale resources', () => {
   beforeEach(() => useCanvasStore.setState({ nodes: [], edges: [] }));
+  const renderAutoPrepareNode = async (
+    sourceConnected: boolean,
+    prepare: (options?: { shot_ids?: string[] }) => Promise<boolean>,
+    shotIds?: string[],
+  ) => {
+    const i18n = i18next.createInstance();
+    await i18n.use(initReactI18next).init({ lng: 'en', fallbackLng: 'en', resources });
+    const data: VideoDirectorNodeData = { draft: createDirectorDraft('s1'), activeInputMode: 'ref',
+      activeAttemptId: null, videoUrl: null, resultRevision: null, autoPrepareStoryboard: true,
+      autoStoryboard: { sourceNodeId: 'board' }, ...(shotIds ? { lightweightShotIds: shotIds } : {}) };
+    const director = { id: 'director', type: CANVAS_NODE_TYPES.videoDirector, position: { x: 0, y: 0 }, data };
+    const nodes = sourceConnected ? [director, { id: 'board', type: CANVAS_NODE_TYPES.storyboardGen,
+      position: { x: 0, y: 0 }, data: {} }] : [director];
+    useCanvasStore.setState({ nodes, edges: sourceConnected ? [{ id: 'board-director', source: 'board', target: 'director' }] : [] } as never);
+    useTask.mockReturnValue({ capabilities: null, attempts: [], error: '', fieldErrors: {}, isPreparing: false,
+      prepare, generate: vi.fn(), recoverPending: vi.fn(), retry: vi.fn(), refresh: vi.fn() });
+    render(<I18nextProvider i18n={i18n}><VideoDirectorNode id="director" type="videoDirectorNode" data={data}
+      selected={false} dragging={false} draggable selectable deletable zIndex={0} isConnectable
+      positionAbsoluteX={0} positionAbsoluteY={0} /></I18nextProvider>);
+  };
+
+  it('retains automatic preparation intent until its source is available and preparation succeeds', async () => {
+    const prepare = vi.fn<() => Promise<boolean>>();
+    let finish!: (prepared: boolean) => void;
+    prepare.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    await renderAutoPrepareNode(false, prepare);
+    expect(prepare).not.toHaveBeenCalled();
+    expect((useCanvasStore.getState().nodes[0].data as VideoDirectorNodeData).autoPrepareStoryboard).toBe(true);
+
+    act(() => useCanvasStore.setState({ nodes: [...useCanvasStore.getState().nodes,
+      { id: 'board', type: CANVAS_NODE_TYPES.storyboardGen, position: { x: 0, y: 0 }, data: {} }],
+      edges: [] } as never));
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect((useCanvasStore.getState().nodes[0].data as VideoDirectorNodeData).autoPrepareStoryboard).toBe(true);
+
+    await act(async () => { finish(false); await Promise.resolve(); });
+    expect((useCanvasStore.getState().nodes[0].data as VideoDirectorNodeData).autoPrepareStoryboard).toBe(true);
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears automatic preparation intent after a successful prepare', async () => {
+    const prepare = vi.fn<() => Promise<boolean>>().mockResolvedValue(true);
+    await renderAutoPrepareNode(true, prepare);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    await act(async () => { await Promise.resolve(); });
+    expect((useCanvasStore.getState().nodes[0].data as VideoDirectorNodeData).autoPrepareStoryboard).toBe(false);
+  });
+
+  it('passes the batch shot selection to automatic storyboard preparation', async () => {
+    const prepare = vi.fn<(options?: { shot_ids?: string[] }) => Promise<boolean>>().mockResolvedValue(true);
+    await renderAutoPrepareNode(true, prepare, ['shot-2', 'shot-3']);
+    expect(prepare).toHaveBeenCalledWith({ shot_ids: ['shot-2', 'shot-3'] });
+  });
+
   it('localizes image connection targets and missing-project guidance', async () => {
     window.history.replaceState({}, '', '/freezone');
     const i18n = i18next.createInstance();

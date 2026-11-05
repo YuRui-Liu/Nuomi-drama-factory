@@ -8,6 +8,58 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_saved_runninghub_clone_binding_drives_profile_and_generator(tmp_path, monkeypatch):
+    from novelvideo.api import deps
+    from novelvideo.audio.dubbing_service import configured_index_tts2_profile
+    from novelvideo.media_capabilities.store import MediaCapabilityStore
+    from novelvideo.media_capabilities.models import ProviderAccount, RunningHubWorkflowSettings
+    from novelvideo.media_capabilities.tts.runninghub_indextts2 import RunningHubIndexTTS2Generator
+    from novelvideo.task_backend.runners import narrative_group_dubbing as runner
+
+    store = MediaCapabilityStore(tmp_path / "settings.db")
+    store.save_provider(ProviderAccount(id="runninghub-main", provider_type="runninghub", credential_ref="env://TEST_KEY"))
+    store.save_runninghub_workflows(RunningHubWorkflowSettings(tts_indextts2_voice_clone="101"))
+    monkeypatch.setattr(deps, "get_media_capability_store", lambda: store)
+    monkeypatch.setattr(deps, "get_media_credential_resolver", lambda: SimpleNamespace(resolve=lambda ref: "test-only"))
+    first = configured_index_tts2_profile()
+    assert first["provider"] == "runninghub"
+    assert first["provider_id"] == "runninghub-main"
+    generator = runner._configured_generator(first)
+    assert isinstance(generator, RunningHubIndexTTS2Generator)
+    store.save_runninghub_workflows(RunningHubWorkflowSettings(tts_indextts2_voice_clone="102"))
+    assert configured_index_tts2_profile()["workflow_version"] != first["workflow_version"]
+    with pytest.raises(ValueError, match="configuration changed"):
+        runner._configured_generator(first)
+    monkeypatch.setattr(deps, "get_media_credential_resolver", lambda: SimpleNamespace(resolve=lambda ref: ""))
+    with pytest.raises(ValueError, match="credential"):
+        configured_index_tts2_profile()
+
+
+def test_explicit_clone_policy_wins_over_default_runninghub_account(tmp_path, monkeypatch):
+    from novelvideo.api import deps
+    from novelvideo.audio.dubbing_service import configured_index_tts2_profile
+    from novelvideo.media_capabilities.store import MediaCapabilityStore
+    from novelvideo.media_capabilities.models import (
+        ProviderAccount, RunningHubWorkflowSettings, CapabilityImplementation, RoutingPolicy, MediaCapability,
+    )
+
+    store = MediaCapabilityStore(tmp_path / "settings.db")
+    for name in ("runninghub-main", "runninghub-selected"):
+        store.save_provider(ProviderAccount(id=name, provider_type="runninghub", credential_ref="env://TEST_KEY"))
+    store.save_runninghub_workflows(RunningHubWorkflowSettings(tts_indextts2_voice_clone="101"))
+    store.save_implementation(CapabilityImplementation(
+        id="selected-clone", capability=MediaCapability.TTS_VOICE_CLONE, provider_account="runninghub-selected",
+    ))
+    store.save_policy(RoutingPolicy(capability=MediaCapability.TTS_VOICE_CLONE, default_implementation="selected-clone"))
+    monkeypatch.setattr(deps, "get_media_capability_store", lambda: store)
+    monkeypatch.setattr(deps, "get_media_credential_resolver", lambda: SimpleNamespace(resolve=lambda ref: "test-only"))
+    assert configured_index_tts2_profile()["provider_id"] == "runninghub-selected"
+    selected = store.get_provider("runninghub-selected")
+    store.save_provider(selected.model_copy(update={"enabled": False}))
+    with pytest.raises(ValueError, match="not configured"):
+        configured_index_tts2_profile()
+
+
 def _preparation(dialogues, *, preparation_id="prep-1"):
     from novelvideo.audio.dubbing_contracts import DubbingPreparation
 

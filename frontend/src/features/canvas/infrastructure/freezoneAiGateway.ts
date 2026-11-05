@@ -25,6 +25,7 @@ import {
 } from "@/api/ops";
 import { awaitTaskCompletion } from "@/api/tasks";
 import { readUrl } from "@/lib/url-params";
+import { resolveFreezoneCanvasId } from "@/features/freezone/freezoneCanvasScope";
 import {
   mergeShotMetadata,
   parseInlineShotBlock,
@@ -103,7 +104,8 @@ function currentProjectId(): string {
 
 /** Active canvas id for per-node history; mirrors App.tsx's URL default. */
 function currentCanvasId(): string {
-  return readUrl().canvas ?? "default";
+  const project = readUrl().project;
+  return project ? resolveFreezoneCanvasId(project) : "default";
 }
 
 /** SuperTale's API uses "1:1" / "16:9" etc — pass through. */

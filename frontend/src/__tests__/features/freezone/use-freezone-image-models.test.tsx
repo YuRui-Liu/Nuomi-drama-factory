@@ -11,7 +11,11 @@ vi.mock("@/api/ops", () => ({
   fetchFreezoneImageModels,
 }));
 
-import { useFreezoneImageModels } from "@/features/canvas/hooks/useFreezoneImageModels";
+import {
+  getConfiguredFreezoneImageModel,
+  prefetchFreezoneImageModels,
+  useFreezoneImageModels,
+} from "@/features/canvas/hooks/useFreezoneImageModels";
 
 describe("useFreezoneImageModels", () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
@@ -63,5 +67,22 @@ describe("useFreezoneImageModels", () => {
     expect(result.current.models).toEqual([]);
     expect(result.current.isFallback).toBe(false);
     expect(result.current.error?.message).toBe("catalog offline");
+  });
+
+  it("returns the configured Grsai model first in the project catalog", async () => {
+    const project = "configured-image-model-project";
+    fetchFreezoneImageModels.mockResolvedValue([
+      { id: "gpt-image-2-vip", providerId: "grsai", apiModel: "gpt-image-2-vip", label: "VIP" },
+      { id: "gpt-image-2", providerId: "grsai", apiModel: "gpt-image-2", label: "Standard" },
+    ]);
+
+    prefetchFreezoneImageModels(project);
+
+    await waitFor(() => {
+      expect(getConfiguredFreezoneImageModel(project)).toMatchObject({
+        id: "gpt-image-2-vip",
+        providerId: "grsai",
+      });
+    });
   });
 });

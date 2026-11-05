@@ -34,7 +34,9 @@ export function readUrl(): FreezoneUrl {
   const params = new URLSearchParams(window.location.search);
   return {
     project: projectFromPathname() ?? params.get("p"),
-    canvas: params.get("canvas"),
+    // Creation-workspace routes use `workspace` for the active canvas; retain
+    // `canvas` for the original Freezone route and older links.
+    canvas: params.get("canvas") || params.get("workspace"),
   };
 }
 

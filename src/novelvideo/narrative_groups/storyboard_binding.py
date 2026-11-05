@@ -62,15 +62,16 @@ class StoryboardBinding(BaseModel):
         }
         return tuple(by_shot[shot] for shot in self.shot_ids)
 
-    def validate_frames(self, frames) -> None:
+    def validate_frames(self, frames, *, allow_extra: bool = False) -> None:
         """Validate the frozen byte identities without consulting mutable files."""
         import hashlib
 
         expected = {(cell.sha256, cell.width, cell.height)
                     for source in self.sources for cell in source.cells}
         actual = {(frame.sha256, frame.width, frame.height) for frame in frames.values()}
-        if expected != actual or any(hashlib.sha256(frame.content).hexdigest() != frame.sha256
-                                     for frame in frames.values()):
+        identities_match = expected <= actual if allow_extra else expected == actual
+        if not identities_match or any(hashlib.sha256(frame.content).hexdigest() != frame.sha256
+                                       for frame in frames.values()):
             raise ValueError("storyboard frozen frame digest or dimensions mismatch")
 
 
@@ -109,7 +110,8 @@ def freeze_selected_storyboard(group, *, media_root: Path, project_id: str, epis
 
 
 def load_queued_storyboard(payload, *, media_root: Path, state_root: Path,
-                          project_id: str, episode: int, group_id: str):
+                          project_id: str, episode: int, group_id: str,
+                          extra_frame_sources=()):
     """Recover only enqueue-time inputs, never re-read current cell images."""
     from novelvideo.media_capabilities.video.h3_reference_runtime import load_h3_reference_input_snapshot
 
@@ -121,13 +123,18 @@ def load_queued_storyboard(payload, *, media_root: Path, state_root: Path,
     ):
         raise ValueError("queued storyboard binding scope mismatch")
     cells = binding.cell_assets(media_root)
+    frame_sources = tuple(dict.fromkeys((
+        *(cell["path"] for cell in cells),
+        *(str(source) for source in extra_frame_sources if source),
+    )))
     snapshot = load_h3_reference_input_snapshot(
         state_root=state_root, snapshot_id=payload["reference_snapshot_id"],
         expected_digest=payload["reference_snapshot_digest"],
-        frame_sources=tuple(cell["path"] for cell in cells),
+        frame_sources=frame_sources,
     )
     if snapshot.storyboard_binding != binding:
         raise ValueError("queued storyboard does not match frozen snapshot")
+    binding.validate_frames(snapshot.frames, allow_extra=bool(extra_frame_sources))
     for cell in cells:
         if snapshot.frames[cell["path"]].sha256 != cell["sha256"]:
             raise ValueError("queued storyboard frame mapping mismatch")

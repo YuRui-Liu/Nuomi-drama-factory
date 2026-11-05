@@ -6,6 +6,7 @@ import { apiCall } from "@/api/client";
 import {
   buildProjectionFromPreset,
   createBlankFreezoneCanvas,
+  createFreezoneProductionGraph,
   getFreezoneCanvas,
   getProjectionStatuses,
   putFreezoneCanvas,
@@ -73,6 +74,36 @@ describe("canvas projection api", () => {
           beat: 4,
           projection_key: "beat:1:4",
           base_revision: 0,
+        },
+      },
+    );
+  });
+
+  it("creates a pinned production graph without submitting its target", async () => {
+    const response = {
+      canvas: { nodes: [], edges: [], revision: 9 },
+      target: "production-target",
+      node_ids: ["render-a", "video-a", "production-target"],
+      submitted: false as const,
+    };
+    vi.mocked(apiCall).mockResolvedValueOnce(response);
+
+    await expect(createFreezoneProductionGraph("project-a", "canvas-a", {
+      base_revision: 8,
+      request_id: "request-1",
+      episode: 3,
+      revision_id: "director-revision-4",
+    })).resolves.toEqual(response);
+
+    expect(apiCall).toHaveBeenCalledWith(
+      "projects/project-a/freezone/orchestration/canvases/canvas-a/production-graph",
+      {
+        method: "POST",
+        json: {
+          base_revision: 8,
+          request_id: "request-1",
+          episode: 3,
+          revision_id: "director-revision-4",
         },
       },
     );

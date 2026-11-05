@@ -1,19 +1,53 @@
-# 恢复与证据
+# Recovery and batch continuity
 
-首先 `canvas status RUN_ID`。不要在不知道旧任务状态时创建新画布或运行。
+Before resuming, read both the execution record and the current saved inputs:
 
-| 状态 | 操作 |
+```bash
+nuomi --project PROJECT canvas progress get CANVAS EPISODE_ID
+nuomi --project PROJECT canvas get CANVAS
+nuomi --project PROJECT canvas status RUN_ID
+```
+
+Do not create a duplicate node, run, or H3 attempt while the state of its earlier request is unknown. Reuse successful outputs and update only affected downstream stages.
+
+## Canvas orchestration runs
+
+| Run state | Recovery |
 | --- | --- |
-| pending/running | `wait`；网页或 CLI 退出不会取消运行 |
-| failed | 核对最后尝试错误；修复原因后 `retry RUN_ID --failed --request-id RETRY_ID` |
-| blocked，节点 verifying | 产物已生成但尚未落图；核对输入冲突，用 `resume` 只恢复验证/回写 |
-| submission_unknown | 禁止盲目重试；核对 provider/task 记录，缺少对账证据就保留阻塞 |
-| cancel_requested | 已停止下游提交；在途任务继续对账，不能当作供应商已取消 |
-| cancelled | 明确继续制作时 `resume`，复用已成功产物；若返回 failed，修复原因后再 `retry --failed` |
-| succeeded | 核对 artifacts 后导出、播放；仍需内容验收 |
+| `pending` or `running` | Poll the same ID with `canvas wait RUN_ID`; leaving the CLI does not cancel server work. |
+| `failed` | Read the failed node and last attempt, correct its cause, then retry only the failed work with `nuomi --project PROJECT canvas retry RUN_ID --failed --request-id RETRY_ID`. |
+| `blocked` | Read the reported blocking reason and resolve the specific validation or write conflict. Resume only if the state says the existing result can be verified or projected without repeating media generation, using `nuomi --project PROJECT canvas resume RUN_ID`. |
+| `submission_unknown` | Do not retry. Reconcile the original task/provider request first; preserve the block if there is no evidence whether it was accepted. |
+| `cancel_requested` | Treat in-flight work as unresolved until the service reports a terminal state. A cancel request is not proof that the provider stopped. |
+| `cancelled` | Continue only when requested. Resume the original run to reuse completed outputs; retry a failed item only after its cause is fixed. |
+| `succeeded` | Re-read the saved canvas and inspect the outputs. Reuse them when their input fingerprint still matches. |
 
-当前运行冻结输入。修改画布输入不能偷偷替换旧运行输入；旧运行中的输入冲突必须显式处理。重复 apply/提交使用原幂等 ID。已完成节点不应重复生成；服务端只有回写失败时不得重新调用媒体生成。
+A wait timeout only ends local polling; it does not cancel the task. Continue polling the same run ID. A revision conflict means the user or another process changed the graph: read the latest revision and compare its inputs before deciding what to do.
 
-证据至少记录 canvas_id、run_id、node_id、operation、尝试/任务 ID、实际 runtime/model、产物 hash 和媒体信息，以及网页可见/播放结果。无模型调用的容器、引用节点记录结构及被下游消费的证据，不制造 task ID。全景和三维还需浏览器真实加载/视角/捕获证据。
+## H3 attempts
 
-全节点验收须固定能力目录版本。每种公开操作和每个 skill ID 有独立结果；依赖缺失、供应商拒绝、未实现均为 blocked/failed。局部自动测试不能写为真机通过；复用旧产物必须与本次输入指纹和真实任务来源相符。
+H3 submission returns an `attempt_id`. Inspect that same attempt instead of submitting another draft:
+
+```bash
+nuomi --project PROJECT request freezone/video-director/attempts/ATTEMPT_ID
+```
+
+- For active stages such as optimizing, uploading, submitting, queued, generating, or downloading, query the same attempt again and retain its identifiers.
+- For `completed`, reuse the returned media if the attempt fingerprint matches the current director draft.
+- For `failed`, inspect `failed_stage` and error details; fix the cause, then retry that exact failed attempt through the project-scoped CLI route. Do not create a new attempt just to clear an error:
+
+  ```bash
+  nuomi --project PROJECT request \
+    freezone/video-director/attempts/ATTEMPT_ID/retry --method POST
+  ```
+- For `submission_unknown`, do not retry or resubmit. Reconcile the task with the provider first; if acceptance cannot be determined, leave it blocked.
+
+If the draft, profile, references, frames, durations, technique, or `case_reference` changes, run `director preview` and `director prepare` again. The prepared fingerprint is tied to the exact draft; never attach an old prepared object to a changed draft.
+
+## Review checkpoints and batches
+
+Use one progress record per episode. `review` pauses after screenplay, assets, and storyboard; storyboard requires both the table and grid outputs. Show the exact saved result before approval. `approve` must use the current stage `approval_hash` from `progress get` or `progress complete`; a stale hash is a conflict. If the user switches to auto, configure `--mode auto`, then continue; this records an automatic resolution, not a user approval. `stop_after` still pauses after its named stage until it is cleared.
+
+For a batch, keep each episode's run IDs, request IDs, document hashes, stage outputs, and review hashes separate. A failure in one episode does not invalidate another episode's completed assets or outputs. Reconcile every unknown state before continuing the batch. Reuse confirmed assets and successful stage outputs; regenerate only the failed or input-stale dependency chain. When source material or a reviewed output changes, update that episode's affected progress stage so its downstream stages are no longer treated as current.
+
+Record the canvas ID, episode ID, run or attempt ID, node and operation, current input fingerprint, output paths and hashes, and remaining review items. Mark a stage complete only after its required output files exist. A successful API response, task status, or file export is not a substitute for checking scene order, dialogue, sound, and playback.

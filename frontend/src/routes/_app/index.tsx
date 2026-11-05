@@ -79,7 +79,9 @@ import { useAppStore } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
 import type { DashboardView } from "@/stores/app-store";
 import type { ProjectStatus, ProjectSummary } from "@/types/project";
-import { PROJECT_SECTION_ROUTES } from "@/components/layout/project-navigation-routes";
+import {
+  projectEntryRoute,
+} from "@/components/layout/project-navigation-routes";
 import {
   normalizeLastEpisodeLocation,
   useEpisodeWorkbenchStore,
@@ -1191,8 +1193,7 @@ function ProjectDashboard() {
   // 进项目恢复上次停留的区块（虾画 / 虾集子页，默认虾画）；上次在虾镜且
   // 有剧集深链则直达该集。
   const resolveProjectEntry = useCallback((project: string): string => {
-    const section =
-      useProjectNavStore.getState().lastSectionByProject[project] ?? "freezone";
+    const section = useProjectNavStore.getState().lastSectionByProject[project];
     if (section === "episodes") {
       const remembered =
         useEpisodeWorkbenchStore.getState().lastEpisodeLocationByProject[project];
@@ -1201,7 +1202,7 @@ function ProjectDashboard() {
         if (normalized) return normalized;
       }
     }
-    return PROJECT_SECTION_ROUTES[section] ?? PROJECT_SECTION_ROUTES.freezone;
+    return projectEntryRoute(section);
   }, []);
 
   const openProject = (project: string) =>

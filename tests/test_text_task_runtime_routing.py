@@ -170,6 +170,49 @@ def test_codex_reasoning_effort_is_present_in_real_backend_argv(tmp_path):
     ]
 
 
+def test_restricted_codex_route_disables_execution_tools(tmp_path):
+    route = AgentTaskRouteSnapshot(
+        task_role="creation_agent_decision",
+        source="task",
+        runtime="codex",
+        model="gpt-6-luna",
+    )
+    runtime = CodexStructuredRuntime(route, disable_execution_tools=True)
+
+    argv = runtime._backend.build_argv(
+        cwd=str(tmp_path),
+        output_path=str(tmp_path / "out.txt"),
+        schema_path=None,
+    )
+
+    assert "--sandbox" in argv and argv[argv.index("--sandbox") + 1] == "read-only"
+    assert "--ignore-user-config" in argv
+    assert "--disable" in argv
+    disabled = {argv[index + 1] for index, value in enumerate(argv[:-1])
+                if value == "--disable"}
+    assert {
+        "shell_tool", "unified_exec", "unified_exec_tty",
+        "browser_use", "browser_use_external", "browser_use_full_cdp_access",
+        "computer_use", "multi_agent", "multi_agent_v2", "image_generation",
+        "view_image", "apps", "plugins", "remote_plugin", "auth_elicitation",
+        "tool_call_mcp_elicitation", "web_search_request", "standalone_web_search",
+    } <= disabled
+
+
+async def test_restricted_codex_route_does_not_retry_invalid_structured_output():
+    backend = RoutedCodexCliStructuredBackend(model="gpt-6-luna")
+    backend._run_once = AsyncMock(return_value='{"invalid":true}')
+    route = AgentTaskRouteSnapshot(
+        task_role="creation_agent_decision", source="task", runtime="codex", model="gpt-6-luna",
+    )
+    runtime = CodexStructuredRuntime(route, backend=backend, strict_single_request=True)
+
+    with pytest.raises(Exception):
+        await runtime.run_structured(prompt="prompt", output_type=Answer, system_prompt="system")
+
+    assert backend._run_once.await_count == 1
+
+
 def test_routed_codex_backend_inherits_shared_run_once() -> None:
     assert "_run_once" not in RoutedCodexCliStructuredBackend.__dict__
 

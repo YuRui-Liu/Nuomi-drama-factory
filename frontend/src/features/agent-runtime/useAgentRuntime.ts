@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { SetStateAction } from 'react';
 import { useRouter, useRouterState } from '@tanstack/react-router';
 import * as api from '@/api/agentRuns';
+import { listCollaborationTasks } from '@/api/collaboration';
 import {
   listAgentAdoptions,
   listPersonalAgents,
@@ -10,10 +11,11 @@ import {
 } from '@/api/reusableAgents';
 import { useAuthStore } from '@/stores/auth-store';
 import { useCanvasStore } from '@/stores/canvasStore';
-import { captureFreezoneCanvasRuntime } from '@/features/freezone/canvasSyncRuntime';
+import { captureFreezoneCanvasRuntime, reportFreezoneCanvasConflict } from '@/features/freezone/canvasSyncRuntime';
 import { getFreezoneCanvas, type FreezoneCanvasPayload } from '@/api/canvas';
 import { refreshAgentCanvasChanges } from '@/features/canvas/infrastructure/orchestrationGateway';
 import {
+  associateDiscussionCanvasBaseline,
   createRunOperation,
   readDelegationCanvasBaseline,
   readRunIntent,
@@ -41,12 +43,49 @@ export function canStopAgentRun(run: api.AgentRun): boolean {
   return run.state === 'blocked' &&
     (!!run.error?.node_run_id || lastRound?.phase === 'decision_saved');
 }
-const isCanvasOperationOutput = (output: api.AgentRun['outputs'][number]) =>
-  output.operation === 'node.patch'
-    ? typeof output.node_id === 'string' && Array.isArray(output.changes)
-    : output.operation === 'node.run' && output.status === 'succeeded' &&
+const isCanvasOperationOutput = (output: api.AgentRun['outputs'][number]) => {
+  if (output.operation === 'node.patch')
+    return typeof output.node_id === 'string' && Array.isArray(output.changes);
+  if (output.operation === 'node.run')
+    return output.status === 'succeeded' &&
       output.projection?.status === 'verified_projected' &&
       typeof output.projection.node_id === 'string';
+  return output.operation === 'asset.design.create' &&
+    output.state === 'applied' &&
+    typeof output.image_node_id === 'string' &&
+    typeof output.text_node_id === 'string' &&
+    typeof output.canvas_revision === 'number';
+};
+type AgentAssetInputRef = {
+  kind: 'asset';
+  asset_ref: { base_asset_id: string; variant_id?: string | null; revision: number };
+  slot_id: string;
+  role: string;
+};
+function fixedAssetInputRef(node: { data?: Record<string, unknown> } | undefined): AgentAssetInputRef | null {
+  const ref = node?.data?.assetRef;
+  const media = node?.data?.assetMediaSelection;
+  if (!ref || typeof ref !== 'object' || Array.isArray(ref) ||
+      !media || typeof media !== 'object' || Array.isArray(media)) return null;
+  const value = ref as Record<string, unknown>;
+  const selectedMedia = media as Record<string, unknown>;
+  if (typeof value.base_asset_id !== 'string' || !value.base_asset_id.trim() ||
+      typeof value.revision !== 'number' || !Number.isInteger(value.revision) || value.revision < 1 ||
+      typeof selectedMedia.slot_id !== 'string' || !selectedMedia.slot_id.trim() ||
+      typeof selectedMedia.role !== 'string' || !selectedMedia.role.trim()) return null;
+  if (value.variant_id !== undefined && value.variant_id !== null &&
+      (typeof value.variant_id !== 'string' || !value.variant_id.trim())) return null;
+  return {
+    kind: 'asset',
+    asset_ref: {
+      base_asset_id: value.base_asset_id,
+      ...(value.variant_id === undefined ? {} : { variant_id: value.variant_id as string | null }),
+      revision: value.revision,
+    },
+    slot_id: selectedMedia.slot_id,
+    role: selectedMedia.role,
+  };
+}
 const selectedNodes = (): RuntimeNode[] =>
   useCanvasStore
     .getState()
@@ -184,6 +223,7 @@ export function useAgentRuntime(
   const [working, setWorking] = useState(false);
   const [main, setMain] = useState<api.MainAgent | null>(null);
   const [runtime, setRuntime] = useState<api.RuntimeStatus | null>(null);
+  const [statusKnown, setStatusKnown] = useState(false);
   const [adoptions, setAdoptions] = useState<AgentAdoption[]>([]);
   const [personal, setPersonal] = useState<PersonalAgent[]>([]);
   const [builtins, setBuiltins] = useState<api.BuiltinAgent[]>([]);
@@ -262,11 +302,15 @@ export function useAgentRuntime(
         api.listBuiltinAgents(owner.project),
         api.listDelegations(owner),
         api.getNodeCapabilities(owner.project),
+        listCollaborationTasks(owner.project, {
+          canvas_id: owner.canvas,
+          conversation_id: owner.conversation,
+        }),
       ]);
-      const [m, r, a, p, b, delegations, capabilities] = results;
+      const [m, r, a, p, b, delegations, capabilities, collaborationTasks] = results;
       const failedSources = results.flatMap((result, index) =>
         result.status === 'rejected'
-          ? [['项目主创', '运行配置', '项目成员', '个人 Agent', '内置岗位', '任务记录', '节点操作目录'][index]]
+          ? [['项目主创', '运行配置', '项目成员', '个人 Agent', '内置岗位', '任务记录', '节点操作目录', '协作任务关联'][index]]
           : [],
       );
       const values = <T,>(result: PromiseSettledResult<T>, fallback: T): T =>
@@ -278,6 +322,7 @@ export function useAgentRuntime(
       const builtinAgents = values(b, [] as api.BuiltinAgent[]);
       const projectDelegations = values(delegations, [] as api.Delegation[]);
       const nodeCatalog = values(capabilities, null as unknown as api.OrchestrationCapabilities | null);
+      const projectTasks = values(collaborationTasks, [] as Awaited<ReturnType<typeof listCollaborationTasks>>);
       const runResults = await Promise.all(projectDelegations.map(async (d) => {
         try {
           return {
@@ -319,12 +364,33 @@ export function useAgentRuntime(
         }
         return root.id ?? root.delegation_id ?? '';
       };
+      for (const task of projectTasks) {
+        if (!task.delegation_id || task.canvas_id !== owner.canvas ||
+            task.conversation_id !== owner.conversation) continue;
+        const taskDelegation = byId.get(task.delegation_id);
+        const rootId = taskDelegation ? rootOf(taskDelegation) : task.delegation_id;
+        const baseline = associateDiscussionCanvasBaseline(owner, {
+          sourceRequestId: task.source_request_id,
+          taskId: task.id,
+          canvasId: task.canvas_id,
+          conversationId: task.conversation_id,
+          delegationId: task.delegation_id,
+          rootDelegationId: rootId,
+          runId: task.run_id,
+        });
+        if (baseline) nodeOperationBaselines.current.set(rootId, baseline);
+      }
       for (const { delegation, runs } of items) {
-        const rootId = rootOf(delegation);
+        const delegationRootId = rootOf(delegation);
         for (const run of runs) {
           for (const [index, output] of run.outputs.entries()) {
             if (!isCanvasOperationOutput(output)) continue;
-            const operationKey = `${run.id}:${index}:${JSON.stringify(output.changes ?? output.after ?? output.artifacts ?? {})}`;
+            const rootId = output.delegation_origin?.root_delegation_id ?? delegationRootId;
+            const operationKey = `${run.id}:${index}:${JSON.stringify(output.changes ?? output.after ?? output.artifacts ?? {
+              operation_id: output.operation_id ?? output.graph_operation_id,
+              canvas_revision: output.canvas_revision,
+              node_id: output.node_id ?? output.image_node_id ?? output.text_node_id,
+            })}`;
             if (refreshedNodeOperations.current.has(operationKey) ||
                 refreshingNodeOperations.current.has(operationKey)) continue;
             if (!current() || ticket !== sequence.current) return;
@@ -344,7 +410,7 @@ export function useAgentRuntime(
                 owner.canvas,
                 baseline,
                 current,
-                output.after_revision ?? output.revision,
+                output.after_revision ?? output.canvas_revision ?? output.revision,
               );
               if (refreshResult.status === 'applied') {
                 nodeOperationBaselines.current.set(rootId, refreshResult.baseline);
@@ -356,9 +422,11 @@ export function useAgentRuntime(
                 );
               } else if (refreshResult.status === 'conflict') {
                 refreshedNodeOperations.current.add(operationKey);
-                if (current()) setCanvasSyncNotice(
-                  `Agent 已更新画布节点，但与本地并发修改冲突；本地编辑已保留，未同步冲突字段：${refreshResult.paths.slice(0, 4).join('、')}`,
-                );
+                if (current()) {
+                  const message = `Agent 已更新画布节点，但与本地并发修改冲突；本地编辑已保留，未同步冲突字段：${refreshResult.paths.slice(0, 4).join('、')}`;
+                  reportFreezoneCanvasConflict(owner.project, owner.canvas, message);
+                  setCanvasSyncNotice(message);
+                }
               } else if (refreshResult.status === 'pending') {
                 // Keep polling until the canvas service exposes the receipt's revision.
               } else {
@@ -392,9 +460,12 @@ export function useAgentRuntime(
       setDirectoryNotice(failedSources.length
         ? `部分信息暂时无法读取（${[...new Set(failedSources)].join('、')}）；已保留其他可用信息。`
         : '');
+      setStatusKnown(m.status === 'fulfilled' && r.status === 'fulfilled');
     } catch (e) {
-      if (current() && ticket === sequence.current)
+      if (current() && ticket === sequence.current) {
+        setStatusKnown(false);
         setError(e instanceof Error ? e.message : '无法读取运行状态');
+      }
     }
   }
   useEffect(() => {
@@ -457,6 +528,12 @@ export function useAgentRuntime(
       }
       setIntent(readRunIntent(owner));
       if (result.status === 'busy') setError('请先恢复或处理原请求');
+      else if (result.status === 'failed') {
+        const failure = result.intent?.error?.trim();
+        setError(failure
+          ? `操作未完成：${failure}。恢复记录已保留，系统没有自动重发原请求。`
+          : '操作未完成，恢复记录已保留；请刷新并核对运行状态。');
+      }
       await refresh();
       return guard() && result.status === 'applied';
     } catch (e) {
@@ -614,6 +691,7 @@ export function useAgentRuntime(
     const guard = () => current() && !!captured?.isCurrent();
     const selection = structuredClone([...new Map(nodes.map((node) => [node.id, node])).values()]);
     const inputIds = selection.map((node) => node.id);
+    const liveCanvasNodes = new Map(useCanvasStore.getState().nodes.map((node) => [node.id, node]));
     const frozenInputs = inputEvidence(inputIds);
     const verifyInputs = () => {
       const missing = missingSelection(
@@ -662,11 +740,16 @@ export function useAgentRuntime(
         adoption_id: selectedAgent.adoption_id,
         revision: selectedAgent.revision,
       },
-      input_refs: selection.map((n) => ({
-        kind: 'canvas_node',
-        canvas_id: owner.canvas,
-        node_id: n.id,
-      })),
+      input_refs: selection.flatMap((selectedNode) => {
+        const refs: Record<string, unknown>[] = [{
+          kind: 'canvas_node',
+          canvas_id: owner.canvas,
+          node_id: selectedNode.id,
+        }];
+        const assetRef = fixedAssetInputRef(liveCanvasNodes.get(selectedNode.id));
+        if (assetRef) refs.push(assetRef);
+        return refs;
+      }),
       goal: text.trim(),
       allowed_operations: Object.keys(operationCapabilities).filter((op) =>
         selectedAgent.effective.capabilities.includes(
@@ -771,7 +854,11 @@ export function useAgentRuntime(
   const liveRuns = history
     .flatMap((h) => h.runs)
     .filter(canStopAgentRun);
+  const canvasScope = current();
   return {
+    owner,
+    statusKnown,
+    canvasScope,
     error,
     working,
     main,

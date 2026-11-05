@@ -1,6 +1,7 @@
 """Fixed task contracts only: no provider, token minting or tool execution."""
 from copy import deepcopy
 from contextlib import ExitStack
+import hashlib
 import json
 from types import SimpleNamespace
 from uuid import uuid4
@@ -19,8 +20,18 @@ from .personal_library import ProjectLibrary
 
 OPERATIONS = {'context.read': 'context.read', 'proposal.create': 'proposal.create',
               'ontology.definition.draft': 'ontology.draft', 'media.propose': 'media.propose',
+              'asset.design.create': 'media.propose',
+              # Script drafts and fixed-version review receipts are limited,
+              # reversible preparation under the existing proposal capability.
+              'script.document.draft': 'proposal.create',
+              'script.document.review': 'proposal.create',
               'node.patch': 'node.patch', 'node.run': 'node.run'}
 MAX_NODE_RUNS = 24
+FORMAL_SCRIPT_DELEGABLE_OPERATIONS = ['script.document.draft', 'script.document.review']
+EMPTY_CANVAS_PREPARATION_OPERATIONS = frozenset({
+    'context.read', 'proposal.create', 'ontology.definition.draft', 'media.propose',
+    'asset.design.create', 'script.document.draft', 'script.document.review',
+})
 _SCHEMA = (
     '''CREATE TABLE IF NOT EXISTS project_main_agent_versions (
         project_id TEXT NOT NULL, revision INTEGER NOT NULL, content TEXT NOT NULL,
@@ -39,13 +50,19 @@ class Delegations(ProjectDomain):
     domain = 'delegations'
     schema = _SCHEMA
 
-    def __init__(self, ctx, *, username, authority='agent', parent_id=None):
+    def __init__(self, ctx, *, username, authority='agent', parent_id=None,
+                 trusted_preparation_kind=None):
         super().__init__(ctx, authority=authority)
         self.username = text(username, 200)
         # A future broker supplies this trusted identity, never a JSON authority flag.
         if parent_id is not None:
             text(parent_id, 128)
         self.parent_id = parent_id
+        if trusted_preparation_kind is not None:
+            require(trusted_preparation_kind == 'formal_episode_script'
+                    and authority == 'user' and parent_id is None,
+                    '正式剧本准备身份只能由可信用户根委托提供', 'scope_violation')
+        self.trusted_preparation_kind = trusted_preparation_kind
 
     def _agent(self, conn, identifier, revision=None):
         text(identifier, 128)
@@ -133,6 +150,239 @@ class Delegations(ProjectDomain):
                 'allowed_node_operations': sorted(pairs, key=lambda item: (item['node_id'], item['operation'])),
                 'max_node_runs': max_node_runs}
 
+    def _script_document_transition_evidence(self, conn, item, parent_id, parent_contract):
+        """Verify a child script input is a delivered draft from this run root."""
+        ref = item['ref']
+        origin = item['snapshot'].get('source_origin')
+        require(ref.get('kind') == 'script_document' and isinstance(origin, dict)
+                and origin.get('kind') == 'agent_script_draft'
+                and ref.get('canvas_id') == parent_contract['canvas_id'],
+                '新增正式剧本输入缺少受信运行来源', 'scope_violation')
+        source_id = text(origin.get('delegation_id'), 128)
+        source = self._get(conn, source_id)
+        source_contract = source['contract']
+        agent = source_contract.get('agent', {})
+        expected_root = parent_contract.get('root_delegation_id') or parent_id
+        source_root = source_contract.get('root_delegation_id') or source_id
+        require(self._active(conn, source)
+                and (source_contract.get('project_id'), source_contract.get('owner_id'),
+                     source_contract.get('owner_username'), source_contract.get('canvas_id'),
+                     source_contract.get('conversation_id')) ==
+                    (self.ctx.project_id, self.ctx.requester_user_id, self.username,
+                     parent_contract['canvas_id'], parent_contract['conversation_id'])
+                and source_root == expected_root
+                and 'script.document.draft' in source_contract.get('allowed_operations', [])
+                and agent.get('adoption_id') == origin.get('member_id')
+                and agent.get('revision') == origin.get('member_revision'),
+                '正式剧本来源不属于当前父授权链或身份快照', 'scope_violation')
+        run_row = conn.execute('''SELECT content FROM agent_runs WHERE project_id=? AND owner_id=?
+            AND username=? AND canvas_id=? AND conversation_id=? AND delegation_id=?''',
+            (self.ctx.project_id, self.ctx.requester_user_id, self.username,
+             parent_contract['canvas_id'], parent_contract['conversation_id'], source_id)).fetchone()
+        require(run_row is not None, '正式剧本来源没有持久Agent运行', 'scope_violation')
+        run = json.loads(run_row['content'])
+        require(run.get('state') == 'delivered'
+                and run.get('root_delegation_id', source_id) == expected_root,
+                '正式剧本来源运行尚未交付或不属于当前父任务', 'dependency_unavailable')
+        matched_request_id = None
+        for round_index, step in enumerate(run.get('rounds', [])):
+            for action_index, action in enumerate(step.get('decision', {}).get('actions', [])):
+                if (step.get('delegation_id') == source_id
+                        and action.get('operation') == 'script.document.draft'
+                        and action_index in step.get('actions_done', [])):
+                    request_id = f"run:{run['id']}:{round_index}:action:{action_index}"
+                    receipt_row = conn.execute('''SELECT r.result FROM creative_domain_receipts r
+                        JOIN operations o ON o.request_id=r.request_id WHERE r.request_id=?
+                          AND r.domain='agent_tools' AND r.project_id=? AND o.actor_id=?''',
+                        (request_id, self.ctx.project_id, self.ctx.requester_user_id)).fetchone()
+                    if receipt_row is None:
+                        continue
+                    receipt = json.loads(receipt_row['result'])
+                    output = receipt.get('output')
+                    document_ref = output.get('document_ref', {}) if isinstance(output, dict) else {}
+                    projection = output.get('projection') if isinstance(output, dict) else None
+                    if (isinstance(output, dict) and receipt.get('delegation_id') == source_id
+                            and output.get('operation') == 'script.document.draft'
+                            and output.get('state') == 'draft'
+                            and document_ref.get('document_id') == ref.get('document_id')
+                            and document_ref.get('revision_id') == ref.get('revision_id')
+                            and output.get('source_origin') == origin
+                            and isinstance(projection, dict) and projection.get('status') == 'applied'):
+                        matched_request_id = request_id
+                        break
+            if matched_request_id:
+                break
+        require(matched_request_id is not None, '正式剧本没有来源运行的已完成动作回执', 'scope_violation')
+        receipt = conn.execute('''SELECT d.content,o.request_id,r.result FROM delegation_outputs d
+            JOIN operations o ON o.id=d.operation_id JOIN creative_domain_receipts r ON r.request_id=o.request_id
+            WHERE d.project_id=? AND d.owner_id=? AND d.canvas_id=? AND d.conversation_id=?
+              AND d.delegation_id=? AND o.request_id=? AND o.actor_id=? AND r.domain='agent_tools'
+              AND r.project_id=?''',
+            (self.ctx.project_id, self.ctx.requester_user_id, parent_contract['canvas_id'],
+             parent_contract['conversation_id'], source_id, matched_request_id,
+             self.ctx.requester_user_id, self.ctx.project_id)).fetchone()
+        require(receipt is not None, '正式剧本没有AgentTools输出记录', 'scope_violation')
+        output = json.loads(receipt['content'])
+        result = json.loads(receipt['result'])
+        require(output.get('id') == result.get('output', {}).get('id')
+                and output == result.get('output'),
+                '正式剧本输出和持久回执不匹配', 'scope_violation')
+        projection = output.get('projection')
+        projection_node_id = projection.get('node_id') if isinstance(projection, dict) else None
+        require(isinstance(projection_node_id, str) and projection.get('status') == 'applied',
+                '正式剧本投影回执缺少固定节点', 'scope_violation')
+        from novelvideo.freezone.canvas_store import read_canvas
+        canvas = read_canvas(self.ctx.state_dir, parent_contract['canvas_id'])
+        node = next((item for item in (canvas or {}).get('nodes', [])
+                     if item.get('id') == projection_node_id), None)
+        binding = (node or {}).get('data', {}).get('formalScriptRef', {})
+        require(binding.get('document_id') == ref.get('document_id')
+                and binding.get('revision_id') == ref.get('revision_id'),
+                '正式剧本固定节点绑定已变化', 'stale_input')
+        return {'kind': 'agent_script_draft', 'run_id': run['id'], 'delegation_id': source_id,
+                'output_id': output['id'], 'operation_id': output.get('operation_id'),
+                'projection_node_id': projection_node_id}
+
+    def _own_script_projection_evidence(self, conn, parent, parent_contract):
+        """Verify only this active root run's exact, read-only script projection."""
+        parent_id = parent['id']
+        if (parent.get('parent_id') is not None or parent_contract.get('parent_id') is not None
+                or parent_contract.get('root_delegation_id') != parent_id
+                or 'script.document.draft' not in parent_contract.get('allowed_operations', [])):
+            return {}
+        required_tables = {'agent_runs', 'creative_domain_receipts', 'operations',
+                           'delegation_outputs', 'agent_script_draft_projections', 'projection_outbox'}
+        if not conn or not all(table(conn, name) for name in required_tables):
+            return {}
+        run_row = conn.execute('''SELECT content FROM agent_runs WHERE project_id=? AND owner_id=?
+            AND username=? AND canvas_id=? AND conversation_id=? AND delegation_id=?''',
+            (self.ctx.project_id, self.ctx.requester_user_id, self.username,
+             parent_contract['canvas_id'], parent_contract['conversation_id'], parent_id)).fetchone()
+        if run_row is None:
+            return {}
+        try:
+            run = json.loads(run_row['content'])
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        root_id = parent_contract.get('root_delegation_id') or parent_id
+        if (run.get('delegation_id') != parent_id or run.get('root_delegation_id', parent_id) != root_id
+                or run.get('state') not in {'applying', 'waiting_children'}):
+            return {}
+
+        from novelvideo.freezone.canvas_store import read_canvas
+        canvas = read_canvas(self.ctx.state_dir, parent_contract['canvas_id'])
+        current_nodes = {node.get('id'): node for node in (canvas or {}).get('nodes', [])}
+        agent = parent_contract.get('agent', {})
+        evidence = {}
+        for round_index, step in enumerate(run.get('rounds', [])):
+            if step.get('delegation_id') != parent_id:
+                continue
+            actions = step.get('decision', {}).get('actions', [])
+            completed = set(step.get('actions_done', []))
+            for action_index, action in enumerate(actions):
+                if (action_index not in completed
+                        or action.get('operation') != 'script.document.draft'):
+                    continue
+                request_id = f"run:{run['id']}:{round_index}:action:{action_index}"
+                persisted = conn.execute('''SELECT d.content AS output,d.operation_id AS action_operation_id,
+                        r.result AS receipt,o.state AS action_state,o.actor_id AS action_actor
+                    FROM delegation_outputs d JOIN operations o ON o.id=d.operation_id
+                    JOIN creative_domain_receipts r ON r.request_id=o.request_id
+                    WHERE o.request_id=? AND r.domain='agent_tools' AND r.project_id=?
+                      AND o.actor_id=? AND d.project_id=? AND d.owner_id=? AND d.delegation_id=?
+                      AND d.canvas_id=? AND d.conversation_id=?''',
+                    (request_id, self.ctx.project_id, self.ctx.requester_user_id,
+                     self.ctx.project_id, self.ctx.requester_user_id, parent_id,
+                     parent_contract['canvas_id'], parent_contract['conversation_id'])).fetchone()
+                if persisted is None or persisted['action_state'] != 'applied':
+                    continue
+                try:
+                    output = json.loads(persisted['output'])
+                    receipt = json.loads(persisted['receipt'])
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                origin = output.get('source_origin')
+                document_ref = output.get('document_ref')
+                projection = output.get('projection')
+                if (receipt.get('delegation_id') != parent_id or receipt.get('output') != output
+                        or output.get('operation_id') != persisted['action_operation_id']
+                        or output.get('operation') != 'script.document.draft'
+                        or output.get('state') != 'draft'
+                        or not isinstance(origin, dict)
+                        or origin.get('kind') != 'agent_script_draft'
+                        or origin.get('project_id') != self.ctx.project_id
+                        or origin.get('canvas_id') != parent_contract['canvas_id']
+                        or origin.get('delegation_id') != parent_id
+                        or origin.get('member_id') != agent.get('adoption_id')
+                        or origin.get('member_revision') != agent.get('revision')
+                        or not isinstance(document_ref, dict)
+                        or document_ref.get('kind') != 'episode_script'
+                        or not isinstance(document_ref.get('document_id'), str)
+                        or not isinstance(document_ref.get('revision_id'), str)
+                        or not isinstance(projection, dict)
+                        or projection.get('status') != 'applied'
+                        or projection.get('canvas_id') != parent_contract['canvas_id']
+                        or not isinstance(projection.get('node_id'), str)
+                        or not isinstance(projection.get('operation_id'), str)):
+                    continue
+
+                mapping = conn.execute('''SELECT node_id,story_fragment_id,operation_id
+                    FROM agent_script_draft_projections WHERE project_id=? AND canvas_id=?
+                      AND document_id=? AND revision_id=?''',
+                    (self.ctx.project_id, parent_contract['canvas_id'],
+                     document_ref['document_id'], document_ref['revision_id'])).fetchone()
+                if (mapping is None or mapping['node_id'] != projection['node_id']
+                        or mapping['operation_id'] != projection['operation_id']):
+                    continue
+                projected = conn.execute('''SELECT o.state,o.actor_id,p.canvas_id,p.patch,p.applied_revision
+                    FROM operations o JOIN projection_outbox p ON p.operation_id=o.id
+                    WHERE o.id=?''', (projection['operation_id'],)).fetchone()
+                if (projected is None or projected['state'] != 'applied'
+                        or projected['actor_id'] != self.ctx.requester_user_id
+                        or projected['canvas_id'] != parent_contract['canvas_id']
+                        or projected['applied_revision'] is None):
+                    continue
+                try:
+                    patch = json.loads(projected['patch'])
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                operations = patch.get('operations') if isinstance(patch, dict) else None
+                if (not isinstance(operations, list) or len(operations) != 1
+                        or operations[0].get('op') != 'add_node'):
+                    continue
+                projected_node = operations[0].get('node')
+                node_id = projection['node_id']
+                node = current_nodes.get(node_id)
+                if not isinstance(projected_node, dict) or node != projected_node:
+                    continue
+                data = node.get('data', {})
+                binding = data.get('formalScriptRef', {})
+                semantic = data.get('semanticRef', {})
+                snapshot = data.get('sourceSnapshot', {})
+                expected_hash = hashlib.sha256(output.get('markdown', '').encode('utf-8')).hexdigest()
+                if (node.get('type') != 'textAnnotationNode'
+                        or data.get('referenceOnly') is not True
+                        or data.get('content') != output.get('markdown')
+                        or binding.get('kind') != 'episode_script'
+                        or binding.get('project_id') != self.ctx.project_id
+                        or binding.get('canvas_id') != parent_contract['canvas_id']
+                        or binding.get('document_id') != document_ref['document_id']
+                        or binding.get('revision_id') != document_ref['revision_id']
+                        or binding.get('episode_number') != document_ref.get('episode_number')
+                        or semantic.get('object_id') != mapping['story_fragment_id']
+                        or snapshot != {'kind': 'agent_script_draft', 'content_hash': expected_hash}):
+                    continue
+                evidence[node_id] = {'kind': 'agent_script_draft_projection',
+                    'delegation_id': parent_id, 'run_id': run['id'], 'request_id': request_id,
+                    'output_id': output['id'], 'operation_id': persisted['action_operation_id'],
+                    'projection_operation_id': projection['operation_id'],
+                    'projection_node_id': node_id, 'document_id': document_ref['document_id'],
+                    'revision_id': document_ref['revision_id']}
+        return evidence
+
+    def _run_output_input(self, conn, ref, *, parent_id):
+        require(False, '运行输出引用只能由可信运行宿主解析', 'scope_violation')
+
     def _get(self, conn, identifier):
         text(identifier, 128)
         row = conn.execute('SELECT * FROM agent_delegations WHERE id=? AND project_id=?',
@@ -152,6 +402,31 @@ class Delegations(ProjectDomain):
                 return False
             row = self._get(conn, row['parent_id']) if row['parent_id'] else None
         return True
+
+    def _child_operation_ceiling(self, conn, parent, parent_contract):
+        """Resolve formal screenplay delegation-only grants without propagating them."""
+        allowed = set(parent_contract.get('allowed_operations', []))
+        if parent_contract.get('preparation_kind') == 'formal_episode_script':
+            require(parent.get('parent_id') is None
+                    and parent_contract.get('parent_id') is None
+                    and parent_contract.get('root_delegation_id') == parent['id']
+                    and parent_contract.get('allowed_operations') == ['context.read']
+                    and parent_contract.get('delegable_operations') == FORMAL_SCRIPT_DELEGABLE_OPERATIONS,
+                    '正式剧本根委托的固定权限合同无效', 'scope_violation')
+            return allowed | set(FORMAL_SCRIPT_DELEGABLE_OPERATIONS)
+        if parent.get('parent_id'):
+            root = self._get(conn, parent['parent_id'])
+            root_contract = root['contract']
+            if root_contract.get('preparation_kind') == 'formal_episode_script':
+                require(root.get('parent_id') is None
+                        and root_contract.get('root_delegation_id') == root['id']
+                        and root_contract.get('allowed_operations') == ['context.read']
+                        and root_contract.get('delegable_operations') == FORMAL_SCRIPT_DELEGABLE_OPERATIONS,
+                        '正式剧本根委托的固定权限合同无效', 'scope_violation')
+                # Writer/reviewer grants are single-hop. A specialist cannot
+                # delegate its role-specific operation to a grandchild.
+                return allowed - set(FORMAL_SCRIPT_DELEGABLE_OPERATIONS)
+        return allowed
 
     def _accepted_node_transitions(self, conn, contract):
         """Return only durable node changes accepted under this authorization root."""
@@ -243,8 +518,13 @@ class Delegations(ProjectDomain):
 
     def _preview(self, conn, body):
         exact(body, {'canvas_id', 'conversation_id', 'scope', 'agent', 'input_refs', 'goal',
-                     'allowed_operations', 'acceptance'}, {'parent_id', 'execution_authorization'})
+                     'allowed_operations', 'acceptance'},
+              {'parent_id', 'execution_authorization', 'task_brief'})
+        task_brief = text(body['task_brief'], 12000) if 'task_brief' in body else None
         parent_id = text(body['parent_id'], 128) if 'parent_id' in body else None
+        if self.trusted_preparation_kind == 'formal_episode_script':
+            require(self.authority == 'user' and self.parent_id is None and parent_id is None,
+                    '正式剧本准备身份只能用于可信根委托', 'scope_violation')
         if self.authority != 'user':
             require(self.parent_id is not None and parent_id == self.parent_id,
                     'Agent 只能在可信父委托中缩小范围', 'scope_violation')
@@ -266,6 +546,10 @@ class Delegations(ProjectDomain):
         allowed = body['allowed_operations']
         require(isinstance(allowed, list) and all(isinstance(x, str) for x in allowed)
                 and len(allowed) == len(set(allowed)) and set(allowed) <= OPERATIONS.keys(), '未知操作权限', 'capability_denied')
+        if self.trusted_preparation_kind == 'formal_episode_script':
+            require(allowed == ['context.read'],
+                    '正式剧本主创只允许读取固定上下文，写作和审阅必须委派给专业成员',
+                    'capability_denied')
         require(all(OPERATIONS[x] in agent['effective']['capabilities'] for x in allowed),
                 '操作超出所选 Agent 的可信能力', 'capability_denied')
         text(body['goal'], 12000)
@@ -275,7 +559,9 @@ class Delegations(ProjectDomain):
             text(criterion, 2000)
         fixed_inputs = agent_context.inputs(self.ctx, conn, body['input_refs'],
                                             username=self.username,
-                                            current_canvas_id=body['canvas_id'])
+                                            current_canvas_id=body['canvas_id'],
+                                            run_output_resolver=lambda connection, ref: self._run_output_input(
+                                                connection, ref, parent_id=parent_id))
         # Read access is frozen only for explicitly selected scope nodes and
         # explicit same-canvas node inputs. Never discover and grant graph
         # ancestors from the live canvas after the preview was accepted.
@@ -291,17 +577,60 @@ class Delegations(ProjectDomain):
         root_max_node_runs = 0
         node_run_budget_chain = []
         parent_transition_evidence = []
+        parent_self_projection_evidence = {}
         if parent_id:
             parent = self._get(conn, parent_id)
             require(self._active(conn, parent), '父委托已停止后续操作', 'parent_delegation_inactive')
             original = parent['contract']
+            frozen_task_brief = original.get('task_brief')
+            require(task_brief == frozen_task_brief,
+                    '子委托不能替换或省略冻结的原始用户设定', 'scope_violation')
             require(fence == original['session_fence'], '父委托会话已清理，不能扩大到新会话代次', 'stale_input')
             require(original['canvas_id'] == body['canvas_id'] and original['conversation_id'] == body['conversation_id'],
                     '子委托不能改变会话或写入画布', 'scope_violation')
-            require(set(expanded['node_ids']) <= set(original['expanded_scope']['node_ids'])
-                    and set(allowed) <= set(original['allowed_operations']), '子委托不能扩大范围或操作权限', 'scope_violation')
+            old_inputs = {digest(item['ref']): item for item in original['inputs']}
+            script_input_evidence = {}
+            for item in fixed_inputs:
+                if (item['ref'].get('kind') == 'script_document'
+                        and digest(item['ref']) not in old_inputs):
+                    script_input_evidence[digest(item['ref'])] = self._script_document_transition_evidence(
+                        conn, item, parent_id, original)
+            frozen_node_ids = set(original['expanded_scope']['node_ids'])
+            added_nodes = set(expanded['node_ids']) - frozen_node_ids
+            if body['scope']['kind'] == 'canvas' and parent.get('parent_id') is None:
+                parent_self_projection_evidence = self._own_script_projection_evidence(
+                    conn, parent, original)
+            script_projection_ids = {
+                evidence['projection_node_id'] for evidence in script_input_evidence.values()
+                if isinstance(evidence.get('projection_node_id'), str)
+            }
+            permitted_added_nodes = ((script_projection_ids | set(parent_self_projection_evidence))
+                if body['scope']['kind'] == 'canvas' else set())
+            require(added_nodes <= permitted_added_nodes
+                    and set(allowed) <= self._child_operation_ceiling(conn, parent, original),
+                    '子委托不能扩大范围或操作权限', 'scope_violation')
+            # A canvas-scope reviewer may carry the exact projected node for a
+            # fixed script_document input. Keep that node out of the dynamic
+            # canvas read set; the document itself remains available only via
+            # its version-pinned input snapshot.
+            if added_nodes:
+                read_node_ids.difference_update(added_nodes)
+                expanded['node_ids'] = [identifier for identifier in expanded['node_ids']
+                                        if identifier not in added_nodes]
+                expanded['nodes'] = [node for node in expanded['nodes']
+                                     if node['node_id'] not in added_nodes]
+                expanded['membership'] = [item for item in expanded['membership']
+                                          if item['node_id'] not in added_nodes]
+                parent_transition_evidence.extend(deepcopy(parent_self_projection_evidence[node_id])
+                    for node_id in sorted(added_nodes & set(parent_self_projection_evidence)))
             require(body['scope']['kind'] != 'canvas' or original['expanded_scope']['scope']['kind'] == 'canvas',
                     '子委托不能将局部目标扩大为整张画布准备空间', 'scope_violation')
+            if body['scope']['kind'] == 'canvas' and not expanded['node_ids']:
+                require(original['expanded_scope']['scope']['kind'] == 'canvas'
+                        and not original['expanded_scope']['node_ids'],
+                        '只有空画布父委托可以委派空画布准备工作', 'scope_violation')
+                require(set(allowed) <= EMPTY_CANVAS_PREPARATION_OPERATIONS,
+                        '空画布委派只允许可逆准备能力', 'capability_denied')
             old_nodes = {n['node_id']: n for n in original['expanded_scope']['nodes']}
             accepted = self._accepted_node_transitions(conn, original)
             for node in expanded['nodes']:
@@ -320,9 +649,18 @@ class Delegations(ProjectDomain):
                     require(node == frozen, '父委托输入已变化', 'stale_input', node_id=node_id)
             old_membership = original['expanded_scope']['membership']
             require(all(m in old_membership for m in expanded['membership']), '父委托成员归属已变化', 'stale_input')
-            old_inputs = {digest(item['ref']): item for item in original['inputs']}
             for item in fixed_inputs:
+                if item['ref'].get('kind') == 'run_output':
+                    provenance = item['snapshot'].get('provenance')
+                    require(isinstance(provenance, dict), '运行输出缺少冻结回执来源', 'scope_violation')
+                    parent_transition_evidence.append(deepcopy(provenance))
+                    continue
                 frozen_input = old_inputs.get(digest(item['ref']))
+                if frozen_input is None and item['ref'].get('kind') == 'script_document':
+                    evidence = script_input_evidence.get(digest(item['ref']))
+                    require(evidence is not None, '正式剧本来源缺少固定运行回执', 'scope_violation')
+                    parent_transition_evidence.append(evidence)
+                    continue
                 require(frozen_input is not None, '子委托不能增加或替换固定输入', 'scope_violation')
                 ref = item['ref']
                 input_node_id = (ref.get('node_id') if ref.get('kind') == 'canvas_node'
@@ -378,6 +716,11 @@ class Delegations(ProjectDomain):
                     'authority': {'grant': 'user' if self.authority == 'user' else 'parent_delegation',
                                   'facts': 'confirmed_sources_only', 'text_is_permission': False},
                     'execution_enabled': execution_authorization is not None}
+        if self.trusted_preparation_kind == 'formal_episode_script':
+            contract['preparation_kind'] = self.trusted_preparation_kind
+            contract['delegable_operations'] = list(FORMAL_SCRIPT_DELEGABLE_OPERATIONS)
+        if task_brief is not None:
+            contract['task_brief'] = task_brief
         proof_content = deepcopy(contract)
         proof_content['expanded_scope'].pop('observed_canvas_revision')
         return {'proof': digest(proof_content), 'contract': contract}

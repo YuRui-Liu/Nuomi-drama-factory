@@ -95,6 +95,7 @@ export interface VideoReferenceSelection {
 
 export interface VideoReferencePreview {
   revision: number;
+  director_revision_id: string | null;
   max_images: number;
   candidates: VideoReferenceCandidate[];
   selected: VideoReferenceSelection[];
@@ -793,9 +794,14 @@ function invalidateNarrativeGroupVideoReferenceQueries(
 export function useUploadNarrativeGroupVideoReference(project: string, episode: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ groupId, file }: { groupId: string; file: File }) => {
+    mutationFn: ({ groupId, file, expectedDirectorRevisionId }: {
+      groupId: string;
+      file: File;
+      expectedDirectorRevisionId: string | null;
+    }) => {
       const formData = new FormData();
       formData.append("file", file, file.name);
+      formData.append("expected_director_revision_id", expectedDirectorRevisionId ?? "__none__");
       return api.post(narrativeGroupVideoReferenceUploadPath(project, episode, groupId), {
         body: formData,
       }).json<ApiResponse<VideoReferenceCandidate>>();
@@ -810,13 +816,15 @@ export function useUploadNarrativeGroupVideoReference(project: string, episode: 
 export function useUpdateNarrativeGroupVideoReferences(project: string, episode: number) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ groupId, expectedRevision, references }: {
+    mutationFn: ({ groupId, expectedRevision, expectedDirectorRevisionId, references }: {
       groupId: string;
       expectedRevision: number;
+      expectedDirectorRevisionId: string | null;
       references: VideoReferenceSelection[];
     }) => api.put(narrativeGroupVideoReferencesPath(project, episode, groupId), {
       json: {
         expected_revision: expectedRevision,
+        expected_director_revision_id: expectedDirectorRevisionId,
         references,
       },
     }).json<ApiResponse<VideoReferencePreview>>(),

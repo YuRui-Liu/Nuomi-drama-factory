@@ -8,6 +8,8 @@ import { IdeationNode } from './IdeationNode';
 import { ScreenplayNode } from './ScreenplayNode';
 import { DirectorWorkspaceNode } from './DirectorWorkspaceNode';
 import { NarrativeGroupStoryboardNode } from './NarrativeGroupStoryboardNode';
+import { NarrativeGroupVideoNode } from './NarrativeGroupVideoNode';
+import { EpisodeComposeNode } from './EpisodeComposeNode';
 import { CharacterVoiceNode } from './CharacterVoiceNode';
 import { MusicDeskNode } from './MusicDeskNode';
 import { BeatContextNode } from './BeatContextNode';
@@ -34,6 +36,8 @@ export const nodeTypes: NodeTypes = {
   screenplayNode: ScreenplayNode,
   directorWorkspaceNode: DirectorWorkspaceNode,
   narrativeGroupStoryboardNode: NarrativeGroupStoryboardNode,
+  narrativeGroupVideoNode: NarrativeGroupVideoNode,
+  episodeComposeNode: EpisodeComposeNode,
   characterVoiceNode: CharacterVoiceNode,
   musicDeskNode: MusicDeskNode,
   audioNode: AudioNode,
@@ -68,6 +72,8 @@ export {
   ImageGenNode,
   ImageNode,
   NarrativeGroupStoryboardNode,
+  NarrativeGroupVideoNode,
+  EpisodeComposeNode,
   Pano360ViewerNode,
   ScreenplayNode,
   ScriptNode,

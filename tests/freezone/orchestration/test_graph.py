@@ -78,6 +78,36 @@ def test_media_operation_keeps_its_dependency_closure():
     assert execution_order(nodes, edges, "video", operation="generate") == ["image", "video"]
 
 
+@pytest.mark.parametrize("source_type", ["imageGenNode", "uploadNode"])
+def test_screenplay_accepts_image_references_without_running_them_as_plan_inputs(source_type):
+    from novelvideo.freezone.orchestration.capabilities import catalog_by_type
+    from novelvideo.freezone.orchestration.graph import execution_order, validate_graph
+
+    nodes = [node("idea", "ideationNode", operation="generate"),
+             node("image", source_type,
+                  operation="generate" if source_type == "imageGenNode" else "upload"),
+             node("screenplay", "screenplayNode", operation="plan")]
+    edges = [edge("idea", "screenplay"), edge("image", "screenplay")]
+    report = validate_graph(nodes, edges)
+    screenplay_inputs = {port["media_type"] for port in catalog_by_type()["screenplayNode"]["inputs"]}
+
+    assert report["valid"]
+    assert {"text", "json", "image"} <= screenplay_inputs
+    assert execution_order(nodes, edges, "screenplay", operation="plan") == ["idea", "screenplay"]
+
+
+def test_screenplay_image_input_does_not_accept_video_edges():
+    from novelvideo.freezone.orchestration.graph import validate_graph
+
+    report = validate_graph(
+        [node("video", "videoNode"), node("screenplay", "screenplayNode")],
+        [edge("video", "screenplay")],
+    )
+
+    assert not report["valid"]
+    assert "incompatible_port" in {item["code"] for item in report["errors"]}
+
+
 def test_director_and_dubbing_operations_use_their_bound_inputs():
     from novelvideo.freezone.orchestration.graph import execution_order
 

@@ -910,6 +910,8 @@ export interface FreezoneImageModelInfo {
   apiModel: string;
   /** Display label in the model chip. */
   label: string;
+  /** Model-specific output resolutions, when the provider catalog supplies them. */
+  resolutionOptions?: string[];
 }
 
 // Provider inference for raw model strings the backend may return without
@@ -982,7 +984,14 @@ function modelEntryFromObject(entry: Record<string, unknown>): FreezoneImageMode
     inferProvider(apiModel);
   const id = pickString(entry, "id") ?? `${providerId}/${apiModel}`;
   const label = pickString(entry, "label", "displayName", "display_name") ?? apiModel;
-  return { id, providerId, apiModel, label };
+  const resolutionOptions = pickStringArray(entry, "resolutionOptions", "resolution_options");
+  return {
+    id,
+    providerId,
+    apiModel,
+    label,
+    ...(resolutionOptions.length > 0 ? { resolutionOptions } : {}),
+  };
 }
 
 function modelEntryFromString(raw: string): FreezoneImageModelInfo {

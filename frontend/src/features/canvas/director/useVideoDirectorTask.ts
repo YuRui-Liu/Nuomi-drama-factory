@@ -3,26 +3,95 @@ import { createDirectorAttempt, getDirectorAttempt, getDirectorCapabilities, get
   resumeDirectorAttempt, retryDirectorAttempt, type DirectorCapabilities, type TechniqueCard } from '@/api/videoDirector';
 import { CANVAS_NODE_TYPES, type DirectorAttempt, type VideoDirectorNodeData } from '../domain/canvasNodes';
 import { readUrl } from '@/lib/url-params';
-import { useCanvasStore } from '@/stores/canvasStore';
+import { useCanvasStore, type CanvasEdge, type CanvasNode } from '@/stores/canvasStore';
 import { clearDirectorJournal, readDirectorJournal, writeDirectorJournal,
   type DirectorSubmissionJournal } from './directorSubmissionJournal';
 import { resolveDirectorBindings } from '../domain/videoDirectorBindings';
 import { projectDirectorDraft, resolveDirectorInputMode } from '../domain/videoDirectorInputs';
 import { validateDirectorDraft } from './directorValidation';
+import { isLightweightStoryboardNode, isLightweightStoryboardStale } from '@/features/canvas/production/lightweightVideoPipeline';
 import { draftToWire, prepareDirectorStoryboard, type StoryboardPreparationOptions } from '@/api/videoDirector';
 import { getFreezoneCanvas } from '@/api/canvas';
 import { flushFreezoneCanvasRuntime, applyRemoteFreezoneCanvas } from '@/features/freezone/canvasSyncRuntime';
+import { mergeCanvasOperation } from '@/features/freezone/canvasThreeWayMerge';
+import { resolveFreezoneCanvasId } from '@/features/freezone/freezoneCanvasScope';
 
 const terminal = new Set(['completed', 'failed', 'submission_unknown']);
+const preparationQueues = new Map<string, Promise<void>>();
+
+function serializePreparation<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  const previous = preparationQueues.get(key) ?? Promise.resolve();
+  const result = previous.catch(() => undefined).then(operation);
+  const tail = result.then(() => undefined, () => undefined);
+  preparationQueues.set(key, tail);
+  void tail.then(() => { if (preparationQueues.get(key) === tail) preparationQueues.delete(key); });
+  return result;
+}
 
 function currentData(nodeId: string): VideoDirectorNodeData | null {
   const node = useCanvasStore.getState().nodes.find((item) => item.id === nodeId);
   return node?.type === CANVAS_NODE_TYPES.videoDirector ? node.data as VideoDirectorNodeData : null;
 }
 
+function preparationInputSignature(nodes: CanvasNode[], edges: CanvasEdge[], nodeId: string,
+  expectedSourceNodeId: string | null): string {
+  const targetNode = nodes.find((node) => node.id === nodeId);
+  const target = targetNode?.data as Record<string, unknown> | undefined;
+  const sourceNodeId = expectedSourceNodeId ??
+    ((target?.autoStoryboard as { sourceNodeId?: string } | undefined)?.sourceNodeId ?? null);
+  const sourceNode = sourceNodeId ? nodes.find((node) => node.id === sourceNodeId) : undefined;
+  const sourceData = sourceNode?.data as Record<string, unknown> | undefined;
+  const incoming = edges.filter((edge) => edge.target === nodeId).map((edge) => {
+    const imageNode = nodes.find((node) => node.id === edge.source);
+    const imageData = imageNode?.data as Record<string, unknown> | undefined;
+    return {
+      id: edge.id, source: edge.source, target: edge.target, sourceHandle: edge.sourceHandle,
+      targetHandle: edge.targetHandle, type: edge.type, data: edge.data,
+      imageSource: imageNode ? {
+        id: imageNode.id, type: imageNode.type,
+        imageUrl: imageData?.imageUrl ?? null,
+        previewImageUrl: imageData?.previewImageUrl ?? null,
+        referenceImageUrl: imageData?.referenceImageUrl ?? null,
+        assetRef: imageData?.assetRef ?? null,
+        assetMediaSelection: imageData?.assetMediaSelection ?? null,
+      } : null,
+    };
+  });
+  return JSON.stringify({
+    source: sourceNode ? {
+      id: sourceNode.id, type: sourceNode.type,
+      imageUrl: sourceData?.imageUrl ?? null,
+      previewImageUrl: sourceData?.previewImageUrl ?? null,
+      frames: sourceData?.frames ?? null,
+      cellRects: sourceData?.cellRects ?? null,
+      gridRows: sourceData?.gridRows ?? null,
+      gridCols: sourceData?.gridCols ?? null,
+      requestAspectRatio: sourceData?.requestAspectRatio ?? null,
+      aspectRatio: sourceData?.aspectRatio ?? null,
+      cellAspectRatio: sourceData?.cellAspectRatio ?? null,
+      lightweightCellAspectRatio: sourceData?.lightweightCellAspectRatio ?? null,
+      ratioControlMode: sourceData?.ratioControlMode ?? null,
+      lightweightSourceSignature: sourceData?.lightweightSourceSignature ?? null,
+    } : null,
+    target: targetNode ? {
+      id: targetNode.id, type: targetNode.type,
+      autoStoryboard: target?.autoStoryboard ?? null,
+      activeInputMode: target?.activeInputMode ?? null,
+      inputModeIntent: target?.inputModeIntent ?? null,
+      draft: target?.draft ?? null,
+      storyboardPreparation: target?.storyboardPreparation ?? null,
+      lightweightShotIds: target?.lightweightShotIds ?? null,
+      lightweightSourceNodeId: target?.lightweightSourceNodeId ?? null,
+      lightweightSourceSignature: target?.lightweightSourceSignature ?? null,
+      lightweightGroupKey: target?.lightweightGroupKey ?? null,
+    } : null,
+    incoming,
+  });
+}
+
 function sameLocation(project: string, canvasId: string): boolean {
   const location = readUrl();
-  return location.project === project && (location.canvas ?? 'default') === canvasId;
+  return location.project === project && resolveFreezoneCanvasId(project) === canvasId;
 }
 
 function pendingJournal(projectId: string, canvasId: string, nodeId: string,
@@ -39,8 +108,12 @@ function canResumeAttempt(attempt: DirectorAttempt, project: string, canvasId: s
 }
 
 export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData) {
-  const { project, canvas } = readUrl();
-  const canvasId = canvas ?? 'default';
+  const { project } = readUrl();
+  // Managed CreationWorkspace routes select their canvas with `workspace`,
+  // while legacy Freezone routes use `canvas`. Resolve through the active
+  // canvas runtime first, with both URL forms as the fallback, so preparation
+  // flushes the exact canvas that FreezoneShell registered.
+  const canvasId = project ? resolveFreezoneCanvasId(project) : 'default';
   const [capabilities, setCapabilities] = useState<DirectorCapabilities | null>(null);
   const [techniques, setTechniques] = useState<TechniqueCard[] | null>(null);
   const [techniqueError, setTechniqueError] = useState(false);
@@ -51,6 +124,7 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
   const bindingFieldErrors = useRef<Record<string, string>>({});
   const submitting = useRef(false);
   const preparing = useRef(false);
+  const preparationQueued = useRef(false);
   const [isPreparing, setIsPreparing] = useState(false);
   const [preparationConflict, setPreparationConflict] = useState(false);
   const mounted = useRef(true);
@@ -166,29 +240,53 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
     }
   }, [project, canvasId, nodeId, applies, advanceToken, updateNodeData]);
 
-  const prepare = useCallback(async (options: StoryboardPreparationOptions = {}) => {
+  const prepare = useCallback((options: StoryboardPreparationOptions = {}) => {
+    if (preparationQueued.current) return Promise.resolve(false);
+    preparationQueued.current = true;
+    return serializePreparation(`${project ?? ''}:${canvasId}`, async () => {
     if (!project || preparing.current || submitting.current || !mounted.current || !sameLocation(project, canvasId)) return false;
     const original = currentData(nodeId);
     if (!original || original.pendingSubmission) return false;
+    const store = useCanvasStore.getState();
+    const sourceBoard = store.nodes.find((node) => node.type === CANVAS_NODE_TYPES.storyboardGen &&
+      (node.id === original.autoStoryboard?.sourceNodeId || store.edges.some((edge) => edge.source === node.id && edge.target === nodeId)));
+    if (sourceBoard && isLightweightStoryboardNode(sourceBoard) && isLightweightStoryboardStale(sourceBoard, store.nodes)) {
+      setError('剧本表或宫格图已更新。请先在宫格节点更新并连接当前版本，再准备视频。');
+      return false;
+    }
+    const expectedSourceNodeId = sourceBoard?.id ?? original.autoStoryboard?.sourceNodeId ?? null;
+    const inputSignature = () => {
+      const state = useCanvasStore.getState();
+      return preparationInputSignature(state.nodes, state.edges, nodeId, expectedSourceNodeId);
+    };
+    const initialInputs = inputSignature();
     preparing.current = true;
     setIsPreparing(true);
     setError('');
     setPreparationConflict(false);
     const valid = () => mounted.current && sameLocation(project, canvasId) && currentData(nodeId) !== null;
-    const graph = () => JSON.stringify({ nodes: useCanvasStore.getState().nodes, edges: useCanvasStore.getState().edges });
-    const before = graph();
     try {
       if (await flushFreezoneCanvasRuntime(project, canvasId) !== true) throw new Error('画布保存失败，请先保存后重试');
       if (!valid()) return false;
+      if (inputSignature() !== initialInputs) throw new Error('镜头、宫格图、导演台草稿或绑定已变化，未覆盖本地编辑；请保存后重新准备分镜');
       const saved = await getFreezoneCanvas(project, canvasId);
       if (!valid()) return false;
-      if (graph() !== before) throw new Error('画布已变化，请重新准备分镜');
+      if (inputSignature() !== initialInputs ||
+        preparationInputSignature(saved.nodes as CanvasNode[], saved.edges as CanvasEdge[], nodeId, expectedSourceNodeId) !== initialInputs) {
+        throw new Error('镜头、宫格图、导演台草稿或绑定已变化，未覆盖本地编辑；请保存后重新准备分镜');
+      }
       if (saved.revision == null) throw new Error('无法获取画布版本，请重新加载');
       const result = await prepareDirectorStoryboard(project, { ...options, canvas_id: canvasId, node_id: nodeId,
         base_revision: saved.revision, request_id: crypto.randomUUID() });
       if (!valid()) return false;
-      if (graph() !== before) throw new Error('画布已变化，未覆盖本地编辑；请保存后重新准备');
-      if (!applyRemoteFreezoneCanvas(project, canvasId, result.canvas)) throw new Error('画布已关闭，请重新打开后重试');
+      if (inputSignature() !== initialInputs) throw new Error('镜头、宫格图、导演台草稿或绑定已变化，未覆盖本地编辑；请保存后重新准备分镜');
+      const local = useCanvasStore.getState();
+      const merged = mergeCanvasOperation(saved, { ...saved, nodes: local.nodes, edges: local.edges }, result.canvas, true);
+      if (merged.conflicts.length) throw new Error('画布中有本地修改与准备结果冲突，未覆盖本地编辑；请保存后重新准备分镜');
+      const preparedNodes = merged.canvas.nodes as CanvasNode[];
+      const preparedEdges = merged.canvas.edges as CanvasEdge[];
+      if (!applyRemoteFreezoneCanvas(project, canvasId, result.canvas,
+        () => ({ nodes: preparedNodes, edges: preparedEdges }))) throw new Error('画布已关闭，请重新打开后重试');
       return true;
     } catch (cause) {
       if (valid()) {
@@ -208,6 +306,7 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
       }
       return false;
     } finally { preparing.current = false; if (mounted.current) setIsPreparing(false); }
+    }).finally(() => { preparationQueued.current = false; });
   }, [project, canvasId, nodeId]);
 
   const freezeAndSubmit = useCallback(async (persistPreparedBindings = false) => {
@@ -285,10 +384,18 @@ export function useVideoDirectorTask(nodeId: string, data: VideoDirectorNodeData
     if (!current || current.pendingSubmission) return;
     const active = attempts.find((item) => item.id === current.activeAttemptId);
     if (!capabilities || current.activeAttemptId && (!active || !['completed', 'failed'].includes(active.stage))) return;
+    const sourceBoard = state.nodes.find((node) => node.type === CANVAS_NODE_TYPES.storyboardGen &&
+      (node.id === current.autoStoryboard?.sourceNodeId || state.edges.some((edge) => edge.source === node.id && edge.target === nodeId)));
+    const lightweightShotIds = sourceBoard && isLightweightStoryboardNode(sourceBoard) &&
+      current.lightweightSourceNodeId === sourceBoard.data.lightweightSourceNodeId &&
+      current.lightweightGroupKey === sourceBoard.data.lightweightGroupKey &&
+      Array.isArray(current.lightweightShotIds) && current.lightweightShotIds.length > 0
+      ? [...current.lightweightShotIds] : undefined;
     const linked = !!current.autoStoryboard || !!current.storyboardPreparation || state.edges.some((edge) =>
       edge.target === nodeId && state.nodes.some((node) => node.id === edge.source && node.type === CANVAS_NODE_TYPES.storyboardGen));
     if (linked) {
-      void prepare().then((ok) => { if (ok && mounted.current && sameLocation(project, canvasId)) void freezeAndSubmit(true); });
+      void prepare(lightweightShotIds ? { shot_ids: lightweightShotIds } : {})
+        .then((ok) => { if (ok && mounted.current && sameLocation(project, canvasId)) void freezeAndSubmit(true); });
     } else void freezeAndSubmit();
   }, [project, canvasId, nodeId, prepare, freezeAndSubmit, attempts, capabilities]);
 

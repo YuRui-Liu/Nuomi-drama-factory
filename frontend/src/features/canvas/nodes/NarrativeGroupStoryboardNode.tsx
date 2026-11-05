@@ -3,9 +3,12 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { NodeProps } from '@xyflow/react';
 import { apiCall } from '@/api/client';
 import { Button } from '@/components/ui/button';
+import { GroupReferenceDialog } from '@/components/episode/narrative-workbench/group-reference-dialog';
+import { useNarrativeGroupReferences } from '@/lib/queries/narrative-groups';
 import { readUrl } from '@/lib/url-params';
 import { resolveMediaUrl } from '@/lib/media-url';
 import { useCanvasStore } from '@/stores/canvasStore';
+import { canEditEpisodeNode, useWorkspaceScope } from '@/features/freezone/WorkspaceScope';
 import { connectNarrativeGroupGrid } from '../production/grid/connectNarrativeGroupGrid';
 import { validateGridBinding, type GroupGridBinding } from '../production/grid/gridBinding';
 import type { ProductionContentNodeData } from '../domain/canvasNodes';
@@ -14,6 +17,7 @@ import { DirectorGroupStructureEditor } from '../production/DirectorGroupStructu
 import { DirectorShotViews, type DirectorPreviewGroup } from '../production/DirectorShotViews';
 import { directorWorkspaceApi } from '../production/directorWorkspaceApi';
 import { ProductionNodeShell } from '../production/ProductionNodeShell';
+import { ProductionGraphNodeCard } from './ProductionGraphNodeCard';
 
 type RecordValue = Record<string, unknown>;
 type StoryboardView = 'board' | 'table' | 'animatic';
@@ -32,7 +36,89 @@ function groupPurposeOf(group: RecordValue): string {
   return String(group.objective ?? group.narrative_purpose ?? group.purpose ?? '未填写叙事目的');
 }
 
-export const NarrativeGroupStoryboardNode = memo(function NarrativeGroupStoryboardNode({ id, data }: NodeProps) {
+function NarrativeGroupStoryboardExecutionNode({ id, data }: NodeProps) {
+  const d = data as ProductionContentNodeData;
+  const project = readUrl().project ?? '';
+  const rawEpisode = d.episodeNumber;
+  const hasValidEpisode = typeof rawEpisode === 'number' && Number.isInteger(rawEpisode) && rawEpisode > 0;
+  const episodeLabel = hasValidEpisode ? `E${String(rawEpisode).padStart(2, '0')}` : '未绑定集数';
+  const groupId = typeof d.groupId === 'string' ? d.groupId : '';
+  const revisionId = typeof d.directorRevisionId === 'string' ? d.directorRevisionId : '';
+  const operation = d.operation === 'retry_render' ? 'retry_render' : 'render';
+  const scope = useWorkspaceScope();
+  const updateNodeData = useCanvasStore(state => state.updateNodeData);
+  const [referencesOpen, setReferencesOpen] = useState(false);
+  const operationLabel = operation === 'retry_render' ? '重试分镜渲染' : '制作图分镜渲染';
+  const validationError = !project || !hasValidEpisode || !groupId || !revisionId
+    ? '此制作节点缺少项目、集数、叙事组或固定导演版本。请从已采用导演方案重新创建制作图。'
+    : undefined;
+  const title = typeof d.displayName === 'string' && d.displayName.trim()
+    ? d.displayName.trim()
+    : `${episodeLabel} · ${groupId || '叙事组'} · ${operationLabel}`;
+  const imageUrl = typeof d.imageUrl === 'string' && d.imageUrl.trim()
+    ? resolveMediaUrl(d.imageUrl.trim())
+    : null;
+  const suppliedOrchestration = d.orchestration && typeof d.orchestration === 'object' && !Array.isArray(d.orchestration)
+    ? d.orchestration
+    : {};
+  const orchestration = {
+    ...suppliedOrchestration,
+    status: typeof suppliedOrchestration.status === 'string' ? suppliedOrchestration.status : 'pending',
+  };
+  const canEditReferences = canEditEpisodeNode(scope, rawEpisode) && scope?.projectId === project;
+  const revisionQuery = useQuery({
+    queryKey: ['director-plan', project, rawEpisode, revisionId],
+    queryFn: () => apiCall<RecordValue>(`projects/${encodeURIComponent(project)}/episodes/${rawEpisode}/director-plans/${encodeURIComponent(revisionId)}`),
+    enabled: Boolean(project && hasValidEpisode && revisionId && canEditReferences),
+    retry: false,
+  });
+  const revision = revisionQuery.data;
+  const revisionContainsGroup = Array.isArray(revision?.groups)
+    && (revision.groups as RecordValue[]).some(item => groupIdOf(item) === groupId);
+  const revisionIsActive = Boolean(revision && String(revision.revision_id ?? '') === revisionId
+    && revision.status === 'active' && revisionContainsGroup);
+  const referencesQuery = useNarrativeGroupReferences(project, hasValidEpisode ? rawEpisode as number : 0, groupId, 'render', revisionIsActive);
+  const referencesPreview = referencesQuery.data?.ok ? referencesQuery.data.data : null;
+  const busy = ['running', 'submission_unknown'].includes(String(orchestration.status));
+
+  return <ProductionGraphNodeCard
+    title={title}
+    summary={`${episodeLabel} · 叙事组 ${groupId || '未绑定'} · ${operationLabel}`}
+    validationError={validationError}
+    orchestration={orchestration}
+    result={<>
+      {imageUrl
+        ? <img className="max-h-72 w-full rounded-lg border object-contain" src={imageUrl} alt={`${episodeLabel} · ${groupId || '叙事组'} · 分镜图`} />
+        : <p className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">执行完成后，此固定版本的分镜图会显示在这里。</p>}
+      {revision && !revisionIsActive ? <p role="status" className="mt-3 text-xs text-amber-700">{String(revision.revision_id ?? '') === revisionId && revision.status === 'active' ? `固定版本中找不到叙事组 ${groupId}` : '此导演版本已过期或尚未采用'}，引用配置为只读。</p> : null}
+      {revisionQuery.error ? <p role="alert" className="mt-3 text-xs text-destructive">无法确认固定导演版本状态：{String(revisionQuery.error)}</p> : null}
+      <div className="mt-3 space-y-2">
+        <Button type="button" className="nodrag" variant="outline" disabled={Boolean(validationError) || !revisionIsActive || !canEditReferences || busy} onClick={() => setReferencesOpen(true)}>配置分镜引用</Button>
+        <p className="text-xs text-muted-foreground">仅保存当前组的已绑定引用选择；实际出图仍由此节点的画布运行面板提交。</p>
+      </div>
+      <GroupReferenceDialog
+        open={referencesOpen}
+        mode="configure"
+        project={project}
+        episode={hasValidEpisode ? rawEpisode as number : 0}
+        groupId={groupId}
+        preview={referencesPreview}
+        loading={referencesQuery.isLoading || revisionQuery.isLoading}
+        error={referencesQuery.error instanceof Error ? referencesQuery.error : referencesQuery.data?.ok === false ? new Error(referencesQuery.data.error) : null}
+        onRetry={() => referencesQuery.refetch()}
+        initialSelectedBindingIds={Array.isArray(d.selectedBindingIds) ? d.selectedBindingIds.filter((item): item is string => typeof item === 'string') : undefined}
+        savedReferenceRevision={typeof d.referenceRevision === 'string' ? d.referenceRevision : undefined}
+        onSubmit={selection => {
+          updateNodeData(id, { selectedBindingIds: selection.selectedBindingIds, referenceRevision: selection.referenceRevision });
+          setReferencesOpen(false);
+        }}
+        onOpenChange={setReferencesOpen}
+      />
+    </>}
+  />;
+}
+
+const NarrativeGroupStoryboardEditorNode = memo(function NarrativeGroupStoryboardEditorNode({ id, data }: NodeProps) {
   const d = data as ProductionContentNodeData;
   const project = readUrl().project ?? '';
   const rawEpisodeNumber = d.episodeNumber;
@@ -188,4 +274,12 @@ export const NarrativeGroupStoryboardNode = memo(function NarrativeGroupStoryboa
       </>}
     </div>
   </ProductionNodeShell>;
+});
+
+export const NarrativeGroupStoryboardNode = memo(function NarrativeGroupStoryboardNode(props: NodeProps) {
+  const data = props.data as ProductionContentNodeData;
+  if (data.operation === 'render' || data.operation === 'retry_render') {
+    return <NarrativeGroupStoryboardExecutionNode {...props} />;
+  }
+  return <NarrativeGroupStoryboardEditorNode {...props} />;
 });

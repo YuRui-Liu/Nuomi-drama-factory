@@ -36,6 +36,9 @@ export interface GroupReferenceDialogProps {
   uploadingReference?: boolean;
   onUploadReference?: (file: File) => Promise<NarrativeReferenceUpload | null>;
   onResetUploadError?: () => void;
+  mode?: "generate" | "configure";
+  initialSelectedBindingIds?: string[];
+  savedReferenceRevision?: string;
 }
 
 type ReferenceSelectionState = {
@@ -76,7 +79,7 @@ export function GroupReferenceDialog({
     await refreshPlannedReferences(project, episode, preview.source_plan_revision_id!);
     await onRetry?.();
   } : undefined,
-  onResolvePlanning = () => undefined,
+  onResolvePlanning,
   stage = "render",
   defaultProvider = "grsai-main",
   defaultModel = stage === "sketch" ? "nano-banana-2" : "gpt-image-2",
@@ -85,6 +88,9 @@ export function GroupReferenceDialog({
   uploadingReference = false,
   onUploadReference,
   onResetUploadError,
+  mode = "generate",
+  initialSelectedBindingIds,
+  savedReferenceRevision,
 }: GroupReferenceDialogProps) {
   const [references, setReferences] = useState<ReferenceSelectionState>({ selectedBindingIds: readyDefaults(preview), temporaryUploads: [] });
   const [useStyle, setUseStyle] = useState(true);
@@ -114,7 +120,16 @@ export function GroupReferenceDialog({
         setReferences((current) => ({ ...current, selectedBindingIds: normalizePlannedReferenceSelection(preview.bindings, current.selectedBindingIds, preview.max_images, current.temporaryUploads.length).selectedIds }));
         repairRefresh.current = null;
       } else {
-        setReferences({ selectedBindingIds: readyDefaults(preview), temporaryUploads: [] });
+        const savedSelectionIsCurrent = mode === "configure"
+          && !!preview
+          && savedReferenceRevision === preview.reference_revision
+          && Array.isArray(initialSelectedBindingIds);
+        setReferences({
+          selectedBindingIds: savedSelectionIsCurrent
+            ? normalizePlannedReferenceSelection(preview.bindings, initialSelectedBindingIds ?? [], preview.max_images).selectedIds
+            : readyDefaults(preview),
+          temporaryUploads: [],
+        });
       }
       setUploadError(null);
       setRefreshError(null);
@@ -138,7 +153,7 @@ export function GroupReferenceDialog({
         generation: uploadContext.current.generation + 1,
       };
     }
-  }, [open, preview, defaultProvider, defaultModel, defaultImageSize]);
+  }, [open, preview, defaultProvider, defaultModel, defaultImageSize, mode, initialSelectedBindingIds, savedReferenceRevision]);
 
   const maxImages = preview?.max_images ?? 0;
   const normalizedSelection = normalizePlannedReferenceSelection(
@@ -174,14 +189,19 @@ export function GroupReferenceDialog({
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent className="max-h-[88vh] overflow-y-auto border-white/20 bg-zinc-950 text-white sm:max-w-4xl">
       <DialogHeader>
-        <DialogTitle>生成前引用确认</DialogTitle>
-        <DialogDescription className="text-zinc-200">引用关系来自规划结果；这里仅选择本次使用的已绑定资产或临时图片。</DialogDescription>
+        <DialogTitle>{mode === "configure" ? "组分镜引用配置" : "生成前引用确认"}</DialogTitle>
+        <DialogDescription className="text-zinc-200">{mode === "configure"
+          ? "引用关系来自此固定导演版本；保存只更新当前画布节点配置，不会提交分镜生成。"
+          : "引用关系来自规划结果；这里仅选择本次使用的已绑定资产或临时图片。"}</DialogDescription>
       </DialogHeader>
 
       {loading ? <div role="status" className="flex items-center justify-center gap-2 py-12 text-zinc-200"><Loader2 className="size-4 animate-spin" />正在加载引用预览</div> : null}
-      {errorMessage ? <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-300 bg-red-950/70 p-3 text-red-100"><span>{errorMessage}</span><span className="flex gap-2">{onRetry ? <Button variant="outline" size="sm" onClick={onRetry}>重试</Button> : null}<Button variant="outline" size="sm" onClick={onResolvePlanning}>返回规划</Button></span></div> : null}
+      {errorMessage ? <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-300 bg-red-950/70 p-3 text-red-100"><span>{errorMessage}</span><span className="flex gap-2">{onRetry ? <Button variant="outline" size="sm" onClick={onRetry}>重试</Button> : null}{onResolvePlanning ? <Button variant="outline" size="sm" onClick={onResolvePlanning}>返回规划</Button> : null}</span></div> : null}
 
       {!loading && preview ? <div className="space-y-4">
+        {mode === "configure" && savedReferenceRevision && savedReferenceRevision !== preview.reference_revision
+          ? <p role="status" className="rounded-lg border border-amber-300 bg-amber-950/70 p-3 text-sm text-amber-100">已保存的引用版本已变化。请检查当前选择并保存后，再运行分镜节点。</p>
+          : null}
         {onRefreshBindings ? <div>
           <Button type="button" variant="outline" disabled={refreshing || submitting || uploading} onClick={async () => {
             setRefreshing(true);
@@ -197,30 +217,30 @@ export function GroupReferenceDialog({
           aria-label="引用预览警告"
           className="rounded-lg border border-amber-300 bg-amber-950/80 p-4 text-amber-50"
         >
-          <div className="flex items-center gap-2 font-semibold"><AlertTriangle className="size-4" aria-hidden="true" />引用预览提示；必需引用须补齐后生成</div>
+          <div className="flex items-center gap-2 font-semibold"><AlertTriangle className="size-4" aria-hidden="true" />{mode === "configure" ? "引用预览提示；必需引用就绪后才能保存并运行" : "引用预览提示；必需引用须补齐后生成"}</div>
           <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">{(preview.warnings ?? []).map((warning, index) => <li key={`${index}:${warning}`}>{warning}</li>)}</ul>
         </div> : null}
-        <section className="grid gap-3 rounded-xl border border-lime-300/40 bg-lime-300/10 p-4 sm:grid-cols-2">
+        {mode === "generate" ? <section className="grid gap-3 rounded-xl border border-lime-300/40 bg-lime-300/10 p-4 sm:grid-cols-2">
           <label className="space-y-1 text-xs"><span className="font-medium">真实渠道 ID</span><Input value={providerId} onChange={(event) => setProviderId(event.target.value)} /></label>
           <label className="space-y-1 text-xs"><span className="font-medium">本次真实模型</span><select aria-label="本次真实模型" className="h-9 w-full rounded-md border border-white/30 bg-zinc-950 px-3" value={model} onChange={(event) => { setModel(event.target.value); setImageSize(coerceNarrativeImageSize(event.target.value, imageSize)); }}>{(stage === "sketch" ? ["nano-banana-2", "nano-banana-2-4k-cl", "gpt-image-2"] : ["gpt-image-2", "gpt-image-2-vip"]).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
           {stage === "render" ? <label className="space-y-1 text-xs"><span className="font-medium">本次输出分辨率</span><select aria-label="本次输出分辨率" className="h-9 w-full rounded-md border border-white/30 bg-zinc-950 px-3" value={imageSize ?? defaultNarrativeImageSize(model)} onChange={(event) => setImageSize(event.target.value as NarrativeImageSize)}>{supportedNarrativeImageSizes(model).map((size) => <option key={size} value={size}>{size}</option>)}</select></label> : null}
           <label className="flex items-center gap-2 text-xs sm:col-span-2"><Checkbox checked={saveAsProjectDefault} onCheckedChange={(checked) => setSaveAsProjectDefault(checked === true)} />保存为本项目{stage === "sketch" ? "草图" : "实图"}默认模型</label>
           <p className="text-xs sm:col-span-2">计费单位与本次金额暂未知，请核对所选渠道的计价规则；失败与重试也可能产生费用。</p>
-        </section>
-        {stage === "render" && !sketchReady ? <label className="flex gap-2 rounded-lg border border-amber-300 bg-amber-950/70 p-3 text-xs text-amber-100"><Checkbox aria-label="允许无草图约束生成" checked={allowUnconstrained} onCheckedChange={(checked) => setAllowUnconstrained(checked === true)} /><span><strong>无草图约束生成</strong><br />实图构图可能漂移；默认允许提交，取消勾选可阻止本次生成。</span></label> : null}
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-white/20 bg-black/25 p-4">
+        </section> : null}
+        {mode === "generate" && stage === "render" && !sketchReady ? <label className="flex gap-2 rounded-lg border border-amber-300 bg-amber-950/70 p-3 text-xs text-amber-100"><Checkbox aria-label="允许无草图约束生成" checked={allowUnconstrained} onCheckedChange={(checked) => setAllowUnconstrained(checked === true)} /><span><strong>无草图约束生成</strong><br />实图构图可能漂移；默认允许提交，取消勾选可阻止本次生成。</span></label> : null}
+        {mode === "generate" ? <div className="flex items-center justify-between gap-3 rounded-xl border border-white/20 bg-black/25 p-4">
           <span><span className="block font-semibold">项目风格</span><span className="text-xs text-zinc-200">作为独立风格约束，不计入参考图数量。</span></span>
           <Checkbox aria-label="使用项目风格" checked={useStyle} onCheckedChange={(checked) => setUseStyle(checked === true)} />
-        </div>
-        <PlannedReferencePicker bindings={preview.bindings} selectedIds={references.selectedBindingIds} maxImages={maxImages} temporaryCount={references.temporaryUploads.length} onChange={(selectedBindingIds) => setReferences((current) => ({ ...current, selectedBindingIds }))} onResolvePlanning={onResolvePlanning}
+        </div> : null}
+        <PlannedReferencePicker bindings={preview.bindings} selectedIds={references.selectedBindingIds} maxImages={maxImages} temporaryCount={references.temporaryUploads.length} onChange={(selectedBindingIds) => setReferences((current) => ({ ...current, selectedBindingIds }))} onResolvePlanning={mode === "configure" ? undefined : (onResolvePlanning ?? (() => undefined))}
           onRepairCharacter={project && episode && preview.source_plan_revision_id ? (binding, mode) => setRepairTarget({ owner: contextKey, mode, context: { project, episode, groupId, revision: preview.source_plan_revision_id!, bindingId: binding.binding_id, referenceRevision: preview.reference_revision } }) : undefined} />
-        <TemporaryReferencePicker uploads={references.temporaryUploads} uploading={uploading} disabled={imageCount >= maxImages} error={uploadError} onUpload={uploadTemporary} onRemove={(uploadId) => setReferences((current) => ({ ...current, temporaryUploads: current.temporaryUploads.filter((item) => item.uploadId !== uploadId) }))} />
+        {mode === "generate" ? <TemporaryReferencePicker uploads={references.temporaryUploads} uploading={uploading} disabled={imageCount >= maxImages} error={uploadError} onUpload={uploadTemporary} onRemove={(uploadId) => setReferences((current) => ({ ...current, temporaryUploads: current.temporaryUploads.filter((item) => item.uploadId !== uploadId) }))} /> : null}
       </div> : null}
 
       <DialogFooter className="px-0 pb-0">
         <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
-        <Button disabled={refreshing || loading || !!errorMessage || !preview || submitting || uploading || normalizedSelection.hasRequiredUnavailable || normalizedSelection.requiredOverflow || normalizedSelection.bindingConflict || imageCount > maxImages || !providerId.trim() || !model.trim() || (stage === "render" && !sketchReady && !allowUnconstrained)} onClick={() => preview && !normalizedSelection.hasRequiredUnavailable && onSubmit({ selectedBindingIds: normalizedSelection.selectedIds, uploadIds: references.temporaryUploads.map((item) => item.uploadId), referenceRevision: preview.reference_revision, useStyle, providerId, model, imageSize, allowUnconstrained, saveAsProjectDefault })}>
-          {submitting ? <Loader2 className="size-4 animate-spin" /> : null}使用 {imageCount} 张参考图生成
+        <Button disabled={refreshing || loading || !!errorMessage || !preview || submitting || uploading || normalizedSelection.hasRequiredUnavailable || normalizedSelection.requiredOverflow || normalizedSelection.bindingConflict || imageCount > maxImages || (mode === "generate" && (!providerId.trim() || !model.trim() || (stage === "render" && !sketchReady && !allowUnconstrained)))} onClick={() => preview && !normalizedSelection.hasRequiredUnavailable && onSubmit({ selectedBindingIds: normalizedSelection.selectedIds, uploadIds: mode === "configure" ? [] : references.temporaryUploads.map((item) => item.uploadId), referenceRevision: preview.reference_revision, useStyle, providerId, model, imageSize, allowUnconstrained, saveAsProjectDefault })}>
+          {submitting ? <Loader2 className="size-4 animate-spin" /> : null}{mode === "configure" ? `保存 ${imageCount} 张引用到节点` : `使用 ${imageCount} 张参考图生成`}
         </Button>
       </DialogFooter>
       {repairTarget && repairTarget.owner === contextKey && open ? <CharacterReferenceRepairDialog key={JSON.stringify(repairTarget.context)} context={repairTarget.context} initialMode={repairTarget.mode} onClose={() => setRepairTarget(null)} onReloadSource={async () => {

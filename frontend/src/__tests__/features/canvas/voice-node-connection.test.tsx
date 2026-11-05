@@ -4,6 +4,7 @@ import { useCanvasStore } from '@/stores/canvasStore';
 import {
   connectVoiceNodeToAudio,
   findSelectedAdoptedVoiceVersion,
+  useVoiceVersionInAudio,
   type VoiceVersionRecord,
 } from '@/features/canvas/production/voice/voiceNodeBinding';
 
@@ -69,33 +70,73 @@ it('creates and connects a fixed voice audio node without starting synthesis', (
   expect(audioNode?.data.audioUrl).toBeNull();
 });
 
-it('reuses the same fixed binding but keeps old version outputs intact', () => {
+it('binds an adopted version and opens its audio node with one use action', () => {
   useCanvasStore.getState().setCanvasData([
     { id: 'voice-node-1', type: CANVAS_NODE_TYPES.characterVoice, position: { x: 10, y: 20 }, data: {
-      characterId: 'character-1', voiceVersionId: 'version-1',
+      characterId: 'character-1', characterName: '林岚',
     } } as never,
   ], []);
 
-  const firstId = connectVoiceNodeToAudio({
+  const audioNodeId = useVoiceVersionInAudio({
+    projectId: 'project-1',
+    sourceNodeId: 'voice-node-1',
+    characterName: '林岚',
+    version: adopted,
+  });
+
+  const state = useCanvasStore.getState();
+  expect(state.nodes.find(node => node.id === 'voice-node-1')?.data).toMatchObject({
+    referenceOnly: true,
+    characterId: 'character-1',
+    identityId: 'identity-1',
+    slot: 'default',
+    voiceVersionId: 'version-1',
+    voiceReference: {
+      character_id: 'character-1',
+      identity_id: 'identity-1',
+      slot: 'default',
+      version_id: 'version-1',
+      audio_sha256: 'hash-1',
+    },
+  });
+  expect(state.nodes.find(node => node.id === audioNodeId)?.data).toMatchObject({
+    audioUrl: null,
+    voiceRef: { scope: 'character_voice_version', versionId: 'version-1' },
+  });
+  expect(state.selectedNodeId).toBe(audioNodeId);
+  expect(state.edges).toEqual(expect.arrayContaining([
+    expect.objectContaining({ source: 'voice-node-1', target: audioNodeId }),
+  ]));
+});
+
+it('reuses the same version and preserves old audio results when another is selected', () => {
+  useCanvasStore.getState().setCanvasData([
+    { id: 'voice-node-1', type: CANVAS_NODE_TYPES.characterVoice, position: { x: 10, y: 20 }, data: {
+      characterId: 'character-1', characterName: '林岚',
+    } } as never,
+  ], []);
+
+  const firstId = useVoiceVersionInAudio({
     projectId: 'project-1', sourceNodeId: 'voice-node-1', characterName: '林岚', version: adopted,
   });
   if (!firstId) throw new Error('Expected the adopted voice to create an audio node');
   useCanvasStore.getState().updateNodeData(firstId, { audioUrl: '/takes/old.wav' });
-  useCanvasStore.getState().updateNodeData('voice-node-1', { voiceVersionId: 'version-2' });
 
-  const secondId = connectVoiceNodeToAudio({
+  const secondVersion = { ...adopted, version_id: 'version-2', audio_sha256: 'hash-2' };
+  const secondId = useVoiceVersionInAudio({
     projectId: 'project-1', sourceNodeId: 'voice-node-1', characterName: '林岚',
-    version: { ...adopted, version_id: 'version-2', audio_sha256: 'hash-2' },
+    version: secondVersion,
   });
-  const reusedSecondId = connectVoiceNodeToAudio({
+  const reusedSecondId = useVoiceVersionInAudio({
     projectId: 'project-1', sourceNodeId: 'voice-node-1', characterName: '林岚',
-    version: { ...adopted, version_id: 'version-2', audio_sha256: 'hash-2' },
+    version: secondVersion,
   });
 
   const state = useCanvasStore.getState();
   expect(secondId).not.toBe(firstId);
   expect(reusedSecondId).toBe(secondId);
   expect(state.nodes.filter(node => node.type === CANVAS_NODE_TYPES.audio)).toHaveLength(2);
+  expect(state.nodes.find(node => node.id === 'voice-node-1')?.data.voiceVersionId).toBe('version-2');
   expect(state.nodes.find(node => node.id === firstId)?.data).toMatchObject({
     audioUrl: '/takes/old.wav',
     voiceRef: { versionId: 'version-1' },

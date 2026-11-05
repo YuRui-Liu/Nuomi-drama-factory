@@ -25,8 +25,6 @@ def create_canvas_app(*, perform, body, segment, emit):
     app.add_typer(progress, name="progress")
     app.add_typer(experience, name="experience")
     app.add_typer(director, name="director")
-    from novelvideo.creation.asset_design.cli import assets_app
-    app.add_typer(assets_app, name="assets")
     prefix = "freezone/orchestration"
 
     def call(ctx, method, path, payload=None, *, params=None, project_route=True):
@@ -34,6 +32,9 @@ def create_canvas_app(*, perform, body, segment, emit):
         result = perform(ctx.obj, method, relative, payload, params=params)
         emit(result)
         return result
+
+    from novelvideo.creation.asset_design.cli import create_assets_app
+    app.add_typer(create_assets_app(call=call, segment=segment), name="assets")
 
     def read_json_object(path: Path, description: str) -> dict:
         try:

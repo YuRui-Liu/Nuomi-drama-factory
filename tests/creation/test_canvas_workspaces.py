@@ -16,6 +16,21 @@ def test_registry_read_and_creation(workspace):
     assert snapshot(path) == before
 
 
+def test_registry_episode_number_comes_from_canonical_episode_payload(workspace):
+    client, _, _ = workspace
+    first = client.post('/projects/p/creation/episodes', json={'request_id': 'e1', 'title': '第一集'}).json()['data']
+    second = client.post('/projects/p/creation/episodes', json={'request_id': 'e2', 'title': '第二集'}).json()['data']
+    free = create(client, 'free')
+    concept = create(client, 'concept', 'concept')
+
+    rows = {item['canvas_id']: item for item in client.get('/projects/p/creation/canvases').json()['data']}
+
+    assert rows[first['canvas_id']]['episode_number'] == first['number'] == 1
+    assert rows[second['canvas_id']]['episode_number'] == second['number'] == 2
+    assert rows[free['canvas_id']]['episode_number'] is None
+    assert rows[concept['canvas_id']]['episode_number'] is None
+
+
 def test_mismatched_legacy_mapping_not_backfilled(workspace):
     from novelvideo.creation.store import ObjectStore
     client, path, _ = workspace

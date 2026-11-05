@@ -75,6 +75,23 @@ def test_preparation_id_is_immutable_and_exact_retry_returns_saved_receipt(tmp_p
         store.save_preparation(preparation.model_copy(update={"request_fingerprint": "a" * 64}))
 
 
+def test_task_request_lookup_returns_exact_durable_submission_receipt(tmp_path) -> None:
+    from novelvideo.audio.dubbing_store import DubbingStore
+
+    store = DubbingStore(tmp_path / "data.db", tmp_path)
+    preparation = _preparation("prep-request", "dialogue-1")
+    store.save_preparation(preparation)
+    task, created = store.create_task(
+        episode=1, group_id="group-1", preparation_id="prep-request",
+        request_id="request-1", payload_hash="f" * 64,
+        dialogue_ids=("dialogue-1",),
+    )
+
+    assert created
+    assert store.get_task_by_request(1, "group-1", "request-1") == task
+    assert store.get_task_by_request(1, "group-1", "missing") is None
+
+
 def test_legacy_dialogue_import_keeps_old_takes_and_never_reuses_ids_after_source_revision(tmp_path) -> None:
     from novelvideo.audio.dubbing_contracts import DubbingTake
     from novelvideo.audio.dubbing_store import DubbingStore

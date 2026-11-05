@@ -189,6 +189,66 @@ def test_episode_asset_planning_defaults_to_codex(monkeypatch, tmp_path):
     assert snapshot.fallback == "stop"
 
 
+def test_creation_agent_decision_inherits_effective_script_creation_route(monkeypatch, tmp_path):
+    global_config = AgentTaskRoutingConfig(routes={
+        "script_creation": AgentTaskRouteOverride(
+            runtime="codex", model="gpt-6-luna", reasoning_effort="medium",
+        ),
+    })
+    project_config = AgentTaskRoutingConfig(routes={
+        "script_creation": AgentTaskRouteOverride(
+            model="gpt-6-sol", reasoning_effort="high",
+        ),
+    })
+    monkeypatch.setattr(
+        "novelvideo.text_task_runtime.settings.load_global_routes",
+        lambda **kwargs: global_config,
+    )
+    monkeypatch.setattr(
+        "novelvideo.text_task_runtime.settings.load_project_routes",
+        lambda ctx: project_config,
+    )
+
+    snapshot = resolve_configured_agent_task_route(
+        ctx=type("Ctx", (), {"state_dir": tmp_path})(),
+        task_role="creation_agent_decision",
+    )
+
+    assert snapshot.task_role == "creation_agent_decision"
+    assert snapshot.runtime == "codex"
+    assert snapshot.model == "gpt-6-sol"
+    assert snapshot.reasoning_effort == "high"
+    assert snapshot.source == "project"
+
+
+def test_creation_agent_decision_explicit_route_overrides_script_creation(monkeypatch, tmp_path):
+    global_config = AgentTaskRoutingConfig(routes={
+        "script_creation": AgentTaskRouteOverride(
+            runtime="codex", model="gpt-6-luna", reasoning_effort="medium",
+        ),
+        "creation_agent_decision": AgentTaskRouteOverride(
+            runtime="model_api", model="custom-compatible-model",
+        ),
+    })
+    monkeypatch.setattr(
+        "novelvideo.text_task_runtime.settings.load_global_routes",
+        lambda **kwargs: global_config,
+    )
+    monkeypatch.setattr(
+        "novelvideo.text_task_runtime.settings.load_project_routes",
+        lambda ctx: AgentTaskRoutingConfig(),
+    )
+
+    snapshot = resolve_configured_agent_task_route(
+        ctx=type("Ctx", (), {"state_dir": tmp_path})(),
+        task_role="creation_agent_decision",
+    )
+
+    assert snapshot.runtime == "model_api"
+    assert snapshot.model == "custom-compatible-model"
+    assert snapshot.source == "global"
+
+
 def test_runtime_presets_round_trip_and_reject_unsafe_model():
     from novelvideo.text_task_runtime.models import (
         AgentTaskRoutingConfig,

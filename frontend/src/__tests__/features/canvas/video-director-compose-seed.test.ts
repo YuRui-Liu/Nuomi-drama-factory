@@ -8,6 +8,21 @@ import { useCanvasStore } from '@/stores/canvasStore';
 
 describe('director video compose seed', () => {
   beforeEach(() => useCanvasStore.getState().setCanvasData([], []));
+  it('seeds imported audio into the existing compose timeline without a voice node', () => {
+    const id = useCanvasStore.getState().addNode(CANVAS_NODE_TYPES.audio, { x: 0, y: 0 }, {
+      audioUrl: '/imports/dialogue.wav',
+      sourceFileName: 'dialogue.wav',
+      durationMs: 3400,
+    });
+
+    const audio = buildInitialTimeline([id]).tracks.find(track => track.kind === 'audio')!.clips[0];
+    const nodes = useCanvasStore.getState().nodes;
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].type).toBe(CANVAS_NODE_TYPES.audio);
+    expect(nodes[0].data.voiceRef).toBeUndefined();
+    expect(audio).toMatchObject({ nodeId: id, kind: 'audio', sourceUrl: '/imports/dialogue.wav', trimEndMs: 3400 });
+  });
+
   it('keeps adopted dialogue provenance and original audio duration', () => {
     const store = useCanvasStore.getState();
     const id = store.addNode(CANVAS_NODE_TYPES.audio, { x: 0, y: 0 }, {

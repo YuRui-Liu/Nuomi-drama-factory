@@ -35,7 +35,7 @@ vi.mock('@/api/creativeTemplates', () => ({
   listTemplateSources: vi.fn(),
 }));
 const owner = { user: 'u', project: 'p', canvas: 'c' },
-  runtime = { flush: vi.fn(async () => true), isCurrent: () => true };
+  runtime = { workspaceScope: null, flush: vi.fn(async () => true), serverBaseline: () => null, isCurrent: () => true };
 const configuration = {
   name: '线索模板',
   description: '模板说明',

@@ -25,6 +25,7 @@ import {
   type ImageSize,
   type StoryboardRatioControlMode,
   type StoryboardGenNodeData,
+  type StoryboardPreparation,
 } from '@/features/canvas/domain/canvasNodes';
 import { EXPORT_RESULT_DISPLAY_NAME, resolveNodeDisplayName } from '@/features/canvas/domain/nodeDisplay';
 import { useCanvasStore } from '@/stores/canvasStore';
@@ -67,6 +68,8 @@ import { useFreezoneImageModels } from '@/features/canvas/hooks/useFreezoneImage
 import { startCanvasRun, previewCanvasNode, type CanvasRequestPreview } from '@/features/canvas/infrastructure/orchestrationGateway';
 import { StaticPanelEditor } from './StaticPanelEditor';
 import { StoryboardFramePairs, type StoryboardFramePair } from './StoryboardFramePairs';
+import { buildLightweightStoryboardPrompt, ensureLightweightVideoPipeline, hasLightweightStaticStoryboardDescription, isLightweightStoryboardNode, isLightweightStoryboardSourceStale, isLightweightStoryboardStale, lightweightStaticImageDescription, lightweightStoryboardInputSignature } from '@/features/canvas/production/lightweightVideoPipeline';
+import { isStoryboardPreparationStale } from '@/features/canvas/domain/videoDirectorBindings';
 import { readUrl } from '@/lib/url-params';
 import { resolveModelPriceDisplay } from '@/features/canvas/pricing';
 import { ModelParamsControls } from '@/features/canvas/ui/ModelParamsControls';
@@ -610,6 +613,40 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
   const narrative = nodeData.storyboardMode === 'narrative' || Boolean(nodeData.group_id);
   const graphNodes = useCanvasStore(state => state.nodes);
   const graphEdges = useCanvasStore(state => state.edges);
+  const currentCanvasNode = graphNodes.find((node) => node.id === id);
+  const lightweight = Boolean(currentCanvasNode && isLightweightStoryboardNode(currentCanvasNode));
+  const directedSequence = narrative || lightweight;
+  const lightweightSourceStale = lightweight && (!currentCanvasNode || isLightweightStoryboardSourceStale(currentCanvasNode, graphNodes));
+  const lightweightStale = lightweight && (!currentCanvasNode || isLightweightStoryboardStale(currentCanvasNode, graphNodes));
+  const lightweightDirectors = useMemo(() => {
+    if (!lightweight) return [];
+    const matched = graphNodes.filter((node) => node.type === CANVAS_NODE_TYPES.videoDirector &&
+      node.data.lightweightBatchActive !== false &&
+      node.data.lightweightSourceNodeId === nodeData.lightweightSourceNodeId &&
+      node.data.lightweightGroupKey === nodeData.lightweightGroupKey);
+    return matched.length ? matched : graphNodes.filter((node) => node.type === CANVAS_NODE_TYPES.videoDirector &&
+      graphEdges.some((edge) => edge.source === id && edge.target === node.id));
+  }, [graphNodes, graphEdges, id, lightweight, nodeData.lightweightGroupKey, nodeData.lightweightSourceNodeId]);
+  const lightweightPreparedCells = useMemo(() => {
+    const byShotId = new Map<string, StoryboardPreparation['cells'][number]>();
+    if (!lightweight || lightweightStale || !currentCanvasNode || !nodeData.imageUrl) return byShotId;
+    for (const director of lightweightDirectors) {
+      const preparation = director.data.storyboardPreparation as StoryboardPreparation | undefined;
+      const selectedShotIds = Array.isArray(director.data.lightweightShotIds)
+        ? director.data.lightweightShotIds as string[] : undefined;
+      if (!preparation || isStoryboardPreparationStale(preparation, { ...nodeData, id,
+        selectedShotIds })) continue;
+      if (selectedShotIds) {
+        for (const cell of preparation.selectedCells ?? []) byShotId.set(cell.shotId, cell);
+      } else {
+        preparation.cells.forEach((cell, index) => {
+          const shotId = nodeData.frames[index]?.id;
+          if (shotId) byShotId.set(shotId, cell);
+        });
+      }
+    }
+    return byShotId;
+  }, [currentCanvasNode, id, lightweight, lightweightDirectors, lightweightStale, nodeData]);
   const connectedDesigns = useMemo(() => {
     const ids = new Set(graphEdges.filter(e => e.target === id).map(e => e.source));
     const bindings = (nodeData.referenceBindings ?? []) as Array<{ node_id: string; entity_id: string; name: string; role: string }>;
@@ -621,6 +658,7 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
     });
   }, [graphNodes, graphEdges, id, nodeData.referenceBindings]);
   const [submitting, setSubmitting] = useState(false);
+  const handledLightweightGenerationRequestsRef = useRef(new Set<string>());
   const [requestPreview, setRequestPreview] = useState<CanvasRequestPreview | null>(null);
   useEffect(() => { setRequestPreview(null); }, [nodeData.frames, nodeData.referenceBindings, nodeData.model,
     nodeData.aspectRatio, nodeData.size, nodeData.staticStylePrompt]);
@@ -683,15 +721,16 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
     return found ?? AUTO_ASPECT_RATIO_OPTION;
   }, [aspectRatioOptions, nodeData.requestAspectRatio]);
 
-  const ratioControlMode: StoryboardRatioControlMode = narrative ? 'overall' : showStoryboardGenAdvancedRatioControls
+  const ratioControlMode: StoryboardRatioControlMode = lightweight ? 'cell' : narrative ? 'overall' : showStoryboardGenAdvancedRatioControls
     ? (nodeData.ratioControlMode === 'overall' ? 'overall' : 'cell')
     : 'cell';
   const controlAspectRatioValue = useMemo(() => {
     if (selectedAspectRatio.value === AUTO_REQUEST_ASPECT_RATIO) {
+      if (lightweight) return nodeData.aspectRatio === '16:9' ? '16:9' : '9:16';
       return nodeData.aspectRatio || DEFAULT_ASPECT_RATIO;
     }
     return selectedAspectRatio.value || DEFAULT_ASPECT_RATIO;
-  }, [nodeData.aspectRatio, selectedAspectRatio.value]);
+  }, [lightweight, nodeData.aspectRatio, selectedAspectRatio.value]);
   const resolvedAspectRatios = useMemo(
     () => resolveStoryboardAspectRatios(
       ratioControlMode,
@@ -908,12 +947,18 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
       updateNodeData(id, { size: selectedResolution.value as ImageSize });
     }
 
-    if (nodeData.requestAspectRatio !== selectedAspectRatio.value) {
+    const savedAspectRatioIsUnsupported = Boolean(nodeData.requestAspectRatio)
+      && !aspectRatioOptions.some((item) => item.value === nodeData.requestAspectRatio);
+    if (
+      nodeData.requestAspectRatio !== selectedAspectRatio.value
+      && !savedAspectRatioIsUnsupported
+    ) {
       updateNodeData(id, { requestAspectRatio: selectedAspectRatio.value });
     }
   }, [
     id,
     nodeData,
+    aspectRatioOptions,
     selectedModel.id,
     selectedResolution.value,
     selectedAspectRatio.value,
@@ -952,7 +997,7 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
 
   // Auto-generate frames when grid changes
   useEffect(() => {
-    if (narrative) return; // A layout change cannot add or delete directed shots.
+    if (directedSequence) return; // A layout change cannot add or delete directed shots.
     const currentFrames = nodeData.frames;
     const targetCount = totalFrames;
 
@@ -974,7 +1019,7 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
     }
 
     updateNodeData(id, { frames: newFrames });
-  }, [id, narrative, nodeData.frames, totalFrames, updateNodeData]);
+  }, [id, directedSequence, nodeData.frames, totalFrames, updateNodeData]);
 
   // Build prompt from frames
   const buildPrompt = useCallback((): string => {
@@ -983,6 +1028,15 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
     }
 
     const { gridRows, gridCols, frames } = nodeData;
+    if (lightweight) {
+      return `每格画面比例为 ${controlAspectRatioValue}，所有人物与关键动作完整保留在各格内部，格间不留粗边框。每格只画一个单独的定格瞬间，严禁格内再分屏、上下拼图或插入特写小窗；描述包含先后动作时只表现起始瞬间。\n` + buildLightweightStoryboardPrompt({
+        gridRows, gridCols,
+        frames: frames.map((frame) => ({ description: frameDescriptionDraftsRef.current[frame.id] ?? frame.description })),
+        keepStyleConsistent: storyboardGenKeepStyleConsistent,
+        disableTextInImage: storyboardGenDisableTextInImage,
+        autoInferEmptyFrame: storyboardGenAutoInferEmptyFrame,
+      });
+    }
     const parts: string[] = [];
 
     const promptDirectives: string[] = [
@@ -1015,12 +1069,14 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
     storyboardGenAutoInferEmptyFrame,
     storyboardGenDisableTextInImage,
     storyboardGenKeepStyleConsistent,
+    lightweight,
+    controlAspectRatioValue,
   ]);
 
   const resolveEffectiveRequestAspectRatio = useCallback(async (): Promise<string> => {
     const safeRows = Math.max(1, nodeData.gridRows);
     const safeCols = Math.max(1, nodeData.gridCols);
-    if (selectedAspectRatio.value !== AUTO_REQUEST_ASPECT_RATIO) {
+    if (lightweight || selectedAspectRatio.value !== AUTO_REQUEST_ASPECT_RATIO) {
       return mappedOverallRequestAspectRatio;
     }
 
@@ -1045,6 +1101,7 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
       supportedAspectRatioValues
     );
   }, [
+    lightweight,
     incomingImages,
     mappedOverallRequestAspectRatio,
     nodeData.gridCols,
@@ -1054,8 +1111,14 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
     supportedAspectRatioValues,
   ]);
 
-  const handleGenerate = useCallback(async (previewGridOnly = false) => {
+  const handleGenerate = useCallback(async (previewGridOnly = false, claimedLightweightRequest = false) => {
     if (!nodeData || !modelAvailable || submitting) {
+      if (claimedLightweightRequest) updateNodeData(id, { lightweightGenerationRequestActive: false });
+      return;
+    }
+    if (lightweight && lightweightSourceStale) {
+      if (claimedLightweightRequest) updateNodeData(id, { lightweightGenerationRequestActive: false });
+      setError('分镜表已经变化，请先从分镜表同步镜头内容，避免镜头与宫格格位错配。');
       return;
     }
     if (narrative) {
@@ -1074,7 +1137,60 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
 
     const safeRows = Math.max(1, nodeData.gridRows);
     const safeCols = Math.max(1, nodeData.gridCols);
-    const resolvedRequestAspectRatio = await resolveEffectiveRequestAspectRatio();
+    const prompt = previewGridOnly ? '' : buildPrompt();
+    const submittedFrames = nodeData.frames.map((frame) => ({
+      ...frame,
+      description: frameDescriptionDraftsRef.current[frame.id] ?? frame.description,
+    }));
+    const hasStaticShotDescription = hasLightweightStaticStoryboardDescription(nodeData.frames.map((frame) => ({
+      description: frameDescriptionDraftsRef.current[frame.id] ?? frame.description,
+    })));
+    if (!previewGridOnly && (!prompt || (lightweight && !hasStaticShotDescription))) {
+      const errorMessage = lightweight ? '请填写至少一个镜头的静态画面描述' : '请填写至少一个宫格候选描述';
+      if (claimedLightweightRequest) updateNodeData(id, { lightweightGenerationRequestActive: false });
+      setError(errorMessage);
+      void showErrorDialog(errorMessage, '错误');
+      return;
+    }
+
+    const generationDurationMs = selectedModel.expectedDurationMs ?? 60000;
+    const generationStartedAt = Date.now();
+    if (lightweight && !previewGridOnly) {
+      const liveNode = useCanvasStore.getState().nodes.find((node) => node.id === id);
+      const liveData = liveNode?.data as Record<string, unknown> | undefined;
+      const requestWasClaimed = claimedLightweightRequest && liveData?.lightweightGenerationRequestActive === true;
+      if (!requestWasClaimed && (liveData?.lightweightGenerationRequestActive === true || liveData?.isGenerating === true)) {
+        return;
+      }
+      if (requestWasClaimed && liveData?.isGenerating === true) return;
+      // Claim synchronously before the first awaited preflight so another click
+      // or ScriptNode request cannot enqueue a duplicate paid image job.
+      updateNodeData(id, {
+        lightweightGenerationRequestActive: false,
+        isGenerating: true,
+        generationStartedAt,
+        generationDurationMs,
+        generationJobId: null,
+        generationError: null,
+        generationErrorDetails: null,
+        generationErrorRequestId: null,
+        needsUpdate: true,
+      });
+    }
+
+    let resolvedRequestAspectRatio: string;
+    try {
+      resolvedRequestAspectRatio = await resolveEffectiveRequestAspectRatio();
+    } catch (preflightError) {
+      if (lightweight && !previewGridOnly) {
+        const message = preflightError instanceof Error ? preflightError.message : String(preflightError);
+        updateNodeData(id, { isGenerating: false, generationStartedAt: null,
+          lightweightGenerationRequestActive: false, generationError: message, needsUpdate: true });
+        setError(message);
+        return;
+      }
+      throw preflightError;
+    }
 
     if (previewGridOnly) {
       const gridImageDataUrl = generateGridImageDataUrl(
@@ -1114,45 +1230,61 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
       return;
     }
 
-    const prompt = buildPrompt();
-    if (!prompt) {
-      const errorMessage = '请填写至少一个宫格候选描述';
-      setError(errorMessage);
-      void showErrorDialog(errorMessage, '错误');
-      return;
+    let runtimeDiagnostics: Awaited<ReturnType<typeof getRuntimeDiagnostics>>;
+    try {
+      runtimeDiagnostics = await getRuntimeDiagnostics();
+    } catch (preflightError) {
+      if (lightweight) {
+        const message = preflightError instanceof Error ? preflightError.message : String(preflightError);
+        updateNodeData(id, { isGenerating: false, generationStartedAt: null,
+          lightweightGenerationRequestActive: false, generationError: message, needsUpdate: true });
+        setError(message);
+        return;
+      }
+      throw preflightError;
     }
 
-    const generationDurationMs = selectedModel.expectedDurationMs ?? 60000;
-    const generationStartedAt = Date.now();
-    const runtimeDiagnostics = await getRuntimeDiagnostics();
-
-    // Create new image node with generating state immediately
-    // Use auto-positioning to avoid collisions with existing nodes
-    const newNodePosition = findNodePosition(
-      id,
-      EXPORT_RESULT_NODE_DEFAULT_WIDTH,
-      EXPORT_RESULT_NODE_LAYOUT_HEIGHT
-    );
-    const newNodeId = addNode(
-      CANVAS_NODE_TYPES.exportImage,
-      newNodePosition,
-      {
+    let newNodeId = id;
+    if (lightweight) {
+      // The compact production grid owns its image result so its internal shot
+      // previews and downstream storyboard adapter stay attached to one node.
+      updateNodeData(id, {
         isGenerating: true,
         generationStartedAt,
         generationDurationMs,
-        displayName: EXPORT_RESULT_DISPLAY_NAME.storyboardGenOutput,
-        resultKind: 'storyboardGenOutput',
-        prompt: '',
-        model: selectedModel.id,
-        size: selectedResolution.value as ImageSize,
-        requestAspectRatio: mappedOverallRequestAspectRatio,
-      }
-    );
+        generationJobId: null,
+        generationError: null,
+        generationErrorDetails: null,
+        generationErrorRequestId: null,
+        needsUpdate: true,
+        lightweightGenerationRequestActive: false,
+      });
+    } else {
+      const newNodePosition = findNodePosition(
+        id,
+        EXPORT_RESULT_NODE_DEFAULT_WIDTH,
+        EXPORT_RESULT_NODE_LAYOUT_HEIGHT
+      );
+      newNodeId = addNode(
+        CANVAS_NODE_TYPES.exportImage,
+        newNodePosition,
+        {
+          isGenerating: true,
+          generationStartedAt,
+          generationDurationMs,
+          displayName: EXPORT_RESULT_DISPLAY_NAME.storyboardGenOutput,
+          resultKind: 'storyboardGenOutput',
+          prompt: '',
+          model: selectedModel.id,
+          size: selectedResolution.value as ImageSize,
+          requestAspectRatio: mappedOverallRequestAspectRatio,
+        }
+      );
 
-    // Connect the storyboard node to the new image node
-    addEdge(id, newNodeId);
+      addEdge(id, newNodeId);
+    }
 
-    setSelectedNode(null);
+    setSelectedNode(lightweight ? id : null);
     setError(null);
 
     // Build the grid + re-submittable payload up front (synchronously) so it can
@@ -1174,12 +1306,9 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
       `storyboard-grid-${id}-${Date.now()}.png`
     );
     const allReferenceImages = [...incomingImages, gridImageUrl];
-    const metadataFrameNotes = nodeData.frames
+    const metadataFrameNotes = submittedFrames
       .slice(0, safeRows * safeCols)
-      .map((frame) => {
-        const description = frameDescriptionDraftsRef.current[frame.id] ?? frame.description;
-        return sanitizeStoryboardText(description, ignoreAtTagWhenCopyingAndGenerating);
-      });
+      .map((frame) => sanitizeStoryboardText(frame.description, ignoreAtTagWhenCopyingAndGenerating));
     const regenerationPayload = {
       prompt,
       model: requestResolution.requestModel,
@@ -1193,6 +1322,15 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
       gridRows: safeRows,
       gridCols: safeCols,
       frameNotes: metadataFrameNotes,
+      ...(lightweight ? {
+        // Persist the catalog-selected id that actually resolved this request.
+        // On first render a queued node can still carry the registry default
+        // (for example openrouter/default) while the picker has already fallen
+        // back to the loaded model; use one canonical value for the snapshot.
+        lightweightInputSignature: lightweightStoryboardInputSignature(
+          { ...nodeData, model: selectedModel.id }, incomingImages, submittedFrames
+        ),
+      } : {}),
     };
 
     try {
@@ -1221,6 +1359,7 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
         generationDebugContext,
         generationRequestPayload: regenerationPayload,
         generationStoryboardMetadata: storyboardMetadata,
+        ...(lightweight ? { needsUpdate: true, lightweightGenerationRequestActive: false } : {}),
       });
     } catch (generationError) {
       const resolvedError = resolveErrorContent(generationError, '生成失败');
@@ -1271,11 +1410,14 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
         generationErrorDetails: diagnostics.details,
         generationErrorRequestId: diagnostics.requestId,
         generationDebugContext,
+        ...(lightweight ? { needsUpdate: true, lightweightGenerationRequestActive: false } : {}),
       });
     }
   }, [
     nodeData,
     narrative,
+    lightweight,
+    lightweightSourceStale,
     requestPreview,
     modelAvailable,
     submitting,
@@ -1300,6 +1442,18 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
     t,
     ignoreAtTagWhenCopyingAndGenerating,
   ]);
+
+  useEffect(() => {
+    if (!lightweight || !nodeData || !modelAvailable || submitting || nodeData.model !== selectedModel.id) return;
+    const request = nodeData.lightweightGenerateRequest;
+    const requestId = typeof request === 'string' ? request
+      : request && typeof request === 'object' && typeof (request as { requestId?: unknown }).requestId === 'string'
+        ? (request as { requestId: string }).requestId : '';
+    if (!requestId || handledLightweightGenerationRequestsRef.current.has(requestId)) return;
+    handledLightweightGenerationRequestsRef.current.add(requestId);
+    updateNodeData(id, { lightweightGenerateRequest: null, lightweightGenerationRequestActive: true });
+    void handleGenerate(false, true);
+  }, [handleGenerate, id, lightweight, modelAvailable, nodeData, selectedModel.id, submitting, updateNodeData]);
 
   const handleRowChange = useCallback(
     (delta: number) => {
@@ -1529,7 +1683,7 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
         className="mx-auto mb-3 flex h-7 shrink-0 items-center justify-between gap-2"
         style={{ width: `${frameLayout.paramsRowWidth}px` }}
       >
-        {narrative ? <span className="text-xs text-text-muted">排版 {nodeData.gridRows} × {nodeData.gridCols} · 镜头数量由导演方案决定</span> : <div className="flex min-w-0 items-center gap-5">
+        {directedSequence ? <span className="text-xs text-text-muted">排版 {nodeData.gridRows} × {nodeData.gridCols} · {nodeData.frames.length} 个顺序镜头</span> : <div className="flex min-w-0 items-center gap-5">
           <GridStepperControl
             label={t('node.storyboardGen.rowsShort')}
             value={nodeData.gridRows}
@@ -1576,7 +1730,7 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
             </div>
           )}
           <div className={GRID_SUMMARY_CLASS}>
-            {narrative ? `${totalFrames} 格连续分镜` : t('node.storyboardGen.frameCount', { count: totalFrames })}
+            {directedSequence ? `${nodeData.frames.length} 格连续分镜` : t('node.storyboardGen.frameCount', { count: totalFrames })}
           </div>
         </div>
       </div>
@@ -1589,6 +1743,54 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
           <span>{t('node.storyboardGen.cellAspectRatio')}: {resolvedAspectRatios.cellAspectRatioLabel}</span>
           <span className="mx-1.5 text-white/22">|</span>
           <span>{t('node.storyboardGen.overallAspectRatio')}: {resolvedAspectRatios.overallAspectRatioLabel}</span>
+        </div>
+      )}
+
+      {lightweight && (
+        <div className="nodrag nowheel mb-2.5 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
+          {lightweightStale && <p role="status" className="rounded border border-amber-400/30 bg-amber-400/5 p-2 text-xs text-amber-200">
+            {lightweightSourceStale
+              ? '分镜表已变化。请先从分镜表同步镜头内容，避免镜头描述与宫格格位错配。'
+              : '镜头内容已同步，但当前宫格图是旧版本。请重新生成宫格后再准备视频。'}
+          </p>}
+          {nodeData.imageUrl && <CanvasNodeImage src={resolveImageDisplayUrl(nodeData.imageUrl)} alt={`${nodeData.displayName ?? '分镜组'}宫格图`}
+            className="max-h-40 w-full rounded-lg object-contain" />}
+          {nodeData.imageUrl && !lightweightStale && <div className="grid min-h-0 grid-cols-2 gap-2 overflow-y-auto" style={{ gridTemplateColumns: `repeat(${Math.max(1, Math.min(nodeData.gridCols, 3))}, minmax(0, 1fr))` }}>
+            {nodeData.frames.map((frame, index) => {
+              const row = Math.floor(index / Math.max(1, nodeData.gridCols));
+              const column = index % Math.max(1, nodeData.gridCols);
+              const cropUrl = lightweightPreparedCells.get(frame.id)?.imageUrl;
+              return <div key={frame.id} className="min-w-0 overflow-hidden rounded border border-white/15 bg-black/20">
+                <div className="relative overflow-hidden" style={{ aspectRatio: frameLayout.cellAspectRatio }}>
+                  {cropUrl
+                    ? <CanvasNodeImage src={resolveImageDisplayUrl(cropUrl)} alt={`镜头 ${index + 1} 拆分预览`}
+                      className="h-full w-full object-contain" />
+                    : nodeData.imageUrl && <CanvasNodeImage src={resolveImageDisplayUrl(nodeData.imageUrl)} alt={`镜头 ${index + 1} 宫格预览`}
+                      className="absolute max-w-none" style={{ width: `${nodeData.gridCols * 100}%`, height: `${nodeData.gridRows * 100}%`, left: `${-column * 100}%`, top: `${-row * 100}%` }} />}
+                  <span className="absolute left-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] text-white">镜头 {index + 1}</span>
+                </div>
+                <p className="line-clamp-2 px-2 py-1 text-[10px] leading-4 text-text-muted">
+                  {lightweightStaticImageDescription(frameDescriptionDrafts[frame.id] ?? frame.description) || '待填写静态画面'}
+                </p>
+              </div>;
+            })}
+          </div>}
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] text-text-muted">当前显示宫格裁切预览；准备分镜后会显示适配器生成的单格结果。</span>
+            <UiButton type="button" size="sm" variant="muted"
+              disabled={!nodeData.imageUrl || lightweightStale || submitting}
+              onClick={() => {
+                try {
+                  const result = ensureLightweightVideoPipeline(id);
+                  if (!result) setError('请先生成当前版本的宫格图，再连接 MiniMax。');
+                  else setError(null);
+                } catch (cause) {
+                  setError(cause instanceof Error ? cause.message : String(cause));
+                }
+              }}>
+              {lightweightStale ? '先更新宫格图' : '连接 MiniMax 并准备分镜'}
+            </UiButton>
+          </div>
         </div>
       )}
 
@@ -1659,7 +1861,7 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
         </div>
       )}
       {/* Candidate frames remain independent from the narrative group prompt. */}
-      {!narrative && <div className="mb-2.5 flex min-h-0 flex-1 items-center justify-center">
+      {!directedSequence && <div className="mb-2.5 flex min-h-0 flex-1 items-center justify-center">
         <div
           className="grid"
           style={{
@@ -1762,6 +1964,8 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
       )}
 
       {error && <div className="mb-1.5 shrink-0 text-[10px] text-red-400 break-words [overflow-wrap:anywhere]">{error}</div>}
+      {lightweight && typeof nodeData.generationError === 'string' && nodeData.generationError.trim() &&
+        <div role="alert" className="mb-1.5 shrink-0 text-[10px] text-red-300 break-words [overflow-wrap:anywhere]">{nodeData.generationError}</div>}
 
       {/* AI Parameters */}
       <div
@@ -1832,7 +2036,7 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
         </div>
 
         <UiButton
-          disabled={!modelAvailable || submitting || (narrative && !String(nodeData.prompt ?? '').trim())}
+          disabled={!modelAvailable || submitting || (narrative && !String(nodeData.prompt ?? '').trim()) || (lightweight && lightweightSourceStale)}
           onClick={(event: ReactMouseEvent<HTMLButtonElement>) => {
             event.stopPropagation();
             const previewGridOnly =
@@ -1844,7 +2048,8 @@ export const StoryboardGenNode = memo(({ id, data, selected, width, height }: St
           className={`!min-w-0 shrink-0 ${NODE_CONTROL_PRIMARY_BUTTON_CLASS} ${STORYBOARD_GEN_GENERATE_BUTTON_CLASS}`}
         >
           <CreditSparkIcon className={STORYBOARD_GEN_ACTION_ICON_CLASS} />
-          {t('canvas.generate')}
+          {lightweight && typeof nodeData.generationError === 'string' && nodeData.generationError.trim()
+            ? '重试生成宫格' : t('canvas.generate')}
         </UiButton>
       </div>
 

@@ -66,7 +66,7 @@ beforeEach(() => {
   });
 });
 
-it('binds the selected fixed voice version as reference-only to prevent upstream redesign', async () => {
+it('uses one action to bind a fixed voice version and open its audio node', async () => {
   const initialData = { characterId: 'character-1', characterName: '林岚' };
   useCanvasStore.getState().setCanvasData([
     { id: 'voice-1', type: CANVAS_NODE_TYPES.characterVoice, position: { x: 0, y: 0 }, data: initialData } as never,
@@ -84,7 +84,7 @@ it('binds the selected fixed voice version as reference-only to prevent upstream
 
   await waitFor(() => expect(mocks.apiCall).toHaveBeenCalled());
   expect(mocks.apiCall).toHaveBeenCalledWith(expect.stringContaining('/voice-versions'));
-  fireEvent.click(await screen.findByRole('button', { name: '绑定此声音版本' }));
+  fireEvent.click(await screen.findByRole('button', { name: '使用此声音' }));
 
   const node = useCanvasStore.getState().nodes.find(item => item.id === 'voice-1');
   expect(node?.data).toMatchObject({
@@ -100,6 +100,14 @@ it('binds the selected fixed voice version as reference-only to prevent upstream
       audio_sha256: 'sha256-fixed-audio',
     },
   });
+  const audioNode = useCanvasStore.getState().nodes.find(item => item.type === CANVAS_NODE_TYPES.audio);
+  expect(audioNode?.data).toMatchObject({
+    audioUrl: null,
+    voiceRef: { scope: 'character_voice_version', characterId: 'character-1', versionId: 'voice-version-7' },
+  });
+  expect(useCanvasStore.getState().edges).toEqual(expect.arrayContaining([
+    expect.objectContaining({ source: 'voice-1', target: audioNode?.id }),
+  ]));
 });
 
 it('does not show an adopted voice response from the previous project after switching projects', async () => {
@@ -140,15 +148,18 @@ it('does not show an adopted voice response from the previous project after swit
     </QueryClientProvider>,
   );
 
-  const adoptedVersions = screen.getByRole('region', { name: '已采用声音版本' });
-  expect(await within(adoptedVersions).findByText(/版本 project-2-version/)).toBeInTheDocument();
-  expect(within(adoptedVersions).queryByText(/版本 project-1-version/)).not.toBeInTheDocument();
+  const adoptedVersions = screen.getByRole('region', { name: '可用角色声音' });
+  expect(await within(adoptedVersions).findByText('dialogue · 当前声音')).toBeInTheDocument();
+  fireEvent.click(within(adoptedVersions).getByRole('button', { name: '使用此声音' }));
+  const audioNode = useCanvasStore.getState().nodes.find(item => item.type === CANVAS_NODE_TYPES.audio);
+  expect(audioNode?.data.voiceRef).toMatchObject({ versionId: 'project-2-version' });
 
   await act(async () => {
     releasePreviousProject({ character_id: 'character-1', versions: [version('project-1-version', 'character-1')], current: [] });
   });
-  expect(within(adoptedVersions).queryByText(/版本 project-1-version/)).not.toBeInTheDocument();
-  expect(within(adoptedVersions).getByText(/版本 project-2-version/)).toBeInTheDocument();
+  expect(useCanvasStore.getState().nodes.find(item => item.type === CANVAS_NODE_TYPES.audio)?.data.voiceRef)
+    .toMatchObject({ versionId: 'project-2-version' });
+  expect(within(adoptedVersions).queryByText(/project-1-version/)).not.toBeInTheDocument();
 });
 
 it('restores each role voice draft after switching roles and reopening the workspace', async () => {

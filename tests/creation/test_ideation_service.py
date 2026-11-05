@@ -90,6 +90,18 @@ async def test_reads_only_verified_delegation_output_and_returns_origin_source(c
     assert len(value['candidates']) == 3 and value['selection'] is None
 
 
+@pytest.mark.parametrize('change', [{'member_id': 'other-agent'}, {'extra_authority': True}])
+async def test_proposal_source_rejects_forged_member_or_extra_authority(ctx, ready, task, change):
+    import sqlite3
+    ref, output = await create_output(ctx, ready, task)
+    output['source'].update(change)
+    with sqlite3.connect(ctx.state_dir / 'creation' / 'objects.sqlite3') as conn:
+        conn.execute('UPDATE delegation_outputs SET content=? WHERE id=?',
+                     (json.dumps(output), output['id']))
+    with pytest.raises(OperationError, match='对象不是有效的提案候选输出'):
+        await ideation(ctx, ready).get(ref['id'], node_id='a')
+
+
 async def test_edit_creates_immutable_revision_and_keeps_origin(ctx, ready, task):
     ref, _ = await create_output(ctx, ready, task)
     service = ideation(ctx, ready)

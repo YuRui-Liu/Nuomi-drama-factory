@@ -15,6 +15,7 @@ from novelvideo.config import (
 )
 
 from .models import NarrativeGroupPlan, SourceSpan, StyleSnapshot
+from .professional_models import ProfessionalAssignment
 from .revision_feedback import FeedbackHistory
 from novelvideo.screenplay_semantics.models import DramaticBeat, Scene
 from .prompts import build_episode_prompt, build_group_repair_prompt
@@ -50,6 +51,8 @@ class DirectorPlanInput(_FrozenModel):
 
 class DirectorPlanDraft(_FrozenModel):
     groups: tuple[NarrativeGroupPlan, ...] = Field(min_length=1)
+    professional_decision: str | None = Field(default=None, min_length=1, max_length=4000)
+    professional_assignments: tuple[ProfessionalAssignment, ...] = Field(default=(), max_length=36)
 
 
 class GroupRepairInput(_FrozenModel):
@@ -161,9 +164,62 @@ class DirectorPlanner:
             response = await self._agent.run(prompt)
             output = response.output
         try:
-            return DirectorPlanDraft.model_validate(output)
+            draft = DirectorPlanDraft.model_validate(output)
         except Exception as exc:
             raise DirectorPlanContractError("invalid episode plan schema") from exc
+        if input.creative_contract_version == 1 and not str(
+            draft.professional_decision or ""
+        ).strip():
+            raise DirectorPlanContractError(
+                "creative plan must record the director's professional delegation decision"
+            )
+        return draft
+
+    def _professional_runtime(self, input: DirectorPlanInput, run_id: str):
+        if self._runtime is None:
+            return self._agent
+        runtime = self._runtime
+        snapshot = getattr(runtime, "snapshot", None)
+        if (
+            self._author_store is None
+            or snapshot is None
+            or getattr(snapshot, "runtime", None) != "codex"
+            or not (input.author_chain_id or self.author_chain_id)
+        ):
+            return runtime
+        route = {
+            key: getattr(snapshot, key, None)
+            for key in ("runtime", "model", "reasoning_effort", "skill_id", "skill_version")
+        }
+        method = getattr(runtime, "method", None)
+        if method is not None:
+            route["method_snapshot"] = method.model_dump(mode="json")
+        # Each specialist gets an independent persistent Codex session. A timed-out
+        # specialist can then be marked unknown without replaying another role's call.
+        chain_id = input.author_chain_id or self.author_chain_id
+        binding = self._author_store.bind(
+            f"{chain_id}:professional:{run_id}", route=route
+        )
+        return self._author_store.wrap_runtime(runtime, binding)
+
+    async def run_professional_assignment(
+        self, input: DirectorPlanInput, groups: tuple[NarrativeGroupPlan, ...],
+        assignment: ProfessionalAssignment, run_id: str,
+    ):
+        from .professional_collaboration import (
+            execute_professional_assignment,
+            fixed_professional_profile,
+        )
+
+        profile = fixed_professional_profile(assignment.role_id)
+        runtime = self._professional_runtime(input, run_id)
+        return await execute_professional_assignment(
+            input=input,
+            groups=groups,
+            assignment=assignment,
+            profile=profile,
+            runtime=runtime,
+        )
 
     async def repair_group(self, input: GroupRepairInput) -> NarrativeGroupPlan:
         if self._runtime is not None:

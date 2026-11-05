@@ -1,5 +1,6 @@
 """Explicit project definition/creative-agreement API; no Agent authority from JSON."""
 import asyncio
+import logging
 from pathlib import Path
 from typing import Literal
 
@@ -14,6 +15,19 @@ from novelvideo.creation.personal_library import PersonalLibrary
 from .creation import context_for, errors
 
 router = APIRouter(prefix='/projects/{project}/creation', tags=['creation-library'])
+logger = logging.getLogger(__name__)
+
+
+@router.on_event('startup')
+async def recover_expired_agent_model_calls():
+    """Resolve interrupted model submissions at startup without replaying them."""
+    from novelvideo.config import STATE_DIR
+    from novelvideo.creation.agent_runs import recover_expired_model_submissions
+
+    recovered = await asyncio.to_thread(recover_expired_model_submissions, Path(STATE_DIR))
+    if recovered:
+        logger.warning('Classified %s expired Agent model submissions as unknown; none were resent',
+                       recovered)
 
 
 async def agent_runs_service(project, user, canvas_id, conversation_id, role='viewer'):
@@ -31,12 +45,169 @@ async def agent_runs_service(project, user, canvas_id, conversation_id, role='vi
                      conversation_id=conversation_id, resolve_context=resolve)
 
 
+async def collaboration_tasks_service(project, user, canvas_id, conversation_id, role='viewer'):
+    from copy import deepcopy
+    from novelvideo.creation.collaboration_tasks import CollaborationTasks
+    principal = deepcopy(user)
+    if principal.get('credential_kind') == 'agent_session':
+        raise HTTPException(403, 'Agent 会话不能冒充用户管理协作任务')
+
+    async def resolve(required_role):
+        return await context_for(project, principal, required_role)
+
+    ctx = await resolve(role)
+    return CollaborationTasks(ctx, username=principal['username'], canvas_id=canvas_id,
+                              conversation_id=conversation_id, resolve_context=resolve)
+
+
+async def agent_plan_service(project, user, canvas_id, conversation_id, role='viewer'):
+    from copy import deepcopy
+    from novelvideo.creation.collaboration_tasks import AgentPlanDrafts
+    principal = deepcopy(user)
+    if principal.get('credential_kind') == 'agent_session':
+        raise HTTPException(403, 'Agent 会话不能冒充用户创建或确认计划')
+
+    async def resolve(required_role):
+        return await context_for(project, principal, required_role)
+
+    ctx = await resolve(role)
+    return AgentPlanDrafts(ctx, username=principal['username'], canvas_id=canvas_id,
+                           conversation_id=conversation_id, resolve_context=resolve)
+
+
+async def discussion_collaboration_service(project, user, canvas_id, conversation_id, role='viewer'):
+    from novelvideo.creation.collaboration import Collaboration
+    if role == 'editor' and user.get('credential_kind') == 'agent_session':
+        raise HTTPException(403, 'Agent 运行不能管理会话常驻成员')
+    ctx = await context_for(project, user, role)
+    return Collaboration(ctx, username=user['username'], canvas_id=canvas_id,
+                        conversation_id=conversation_id)
+
+
+@router.get('/discussion-members')
+async def discussion_members(project: str, canvas_id: str, conversation_id: str,
+                             user: dict = Depends(get_api_user)):
+    with errors():
+        service = await discussion_collaboration_service(project, user, canvas_id, conversation_id)
+        return {'ok': True, 'data': await asyncio.to_thread(service.group)}
+
+
+@router.post('/discussion-members')
+async def join_discussion_member(project: str, body: dict, user: dict = Depends(get_api_user)):
+    from novelvideo.creation.ontology import exact
+    with errors():
+        exact(body, {'canvas_id', 'conversation_id', 'adoption_id', 'adoption_revision'})
+        service = await discussion_collaboration_service(project, user, body['canvas_id'],
+                                                        body['conversation_id'], 'editor')
+        member = await asyncio.to_thread(service.join, body['adoption_id'], body['adoption_revision'])
+        return {'ok': True, 'data': {'member': member}}
+
+
+@router.delete('/discussion-members/{adoption_id}')
+async def leave_discussion_member(project: str, adoption_id: str, canvas_id: str,
+                                 conversation_id: str, user: dict = Depends(get_api_user)):
+    with errors():
+        service = await discussion_collaboration_service(project, user, canvas_id, conversation_id, 'editor')
+        member = await asyncio.to_thread(service.leave, adoption_id)
+        return {'ok': True, 'data': {'member': member}}
+
+
 @router.get('/agent-runtime')
 async def agent_runtime(project: str, user: dict = Depends(get_api_user)):
     from novelvideo.creation.agent_model import availability
     with errors():
         ctx = await context_for(project, user, 'viewer')
         return {'ok': True, 'data': await asyncio.to_thread(availability, ctx)}
+
+
+@router.get('/collaboration-tasks')
+async def collaboration_task_history(project: str, canvas_id: str, conversation_id: str,
+                                     user: dict = Depends(get_api_user)):
+    with errors():
+        service = await collaboration_tasks_service(project, user, canvas_id, conversation_id)
+        return {'ok': True, 'data': await service.catalog()}
+
+
+@router.post('/agent-plans/preview')
+async def preview_agent_plan(project: str, body: dict, user: dict = Depends(get_api_user)):
+    from novelvideo.creation.ontology import exact
+    with errors():
+        exact(body, {'request_id', 'canvas_id', 'conversation_id', 'message', 'selection'},
+              {'target_adoption_id'})
+        service = await agent_plan_service(project, user, body['canvas_id'], body['conversation_id'])
+        return {'ok': True, 'data': await service.preview(body)}
+
+
+@router.get('/agent-plans/{identifier}')
+async def get_agent_plan(project: str, identifier: str, canvas_id: str, conversation_id: str,
+                         user: dict = Depends(get_api_user)):
+    with errors():
+        service = await agent_plan_service(project, user, canvas_id, conversation_id)
+        return {'ok': True, 'data': await service.get(identifier)}
+
+
+@router.put('/agent-plans/{identifier}')
+async def edit_agent_plan(project: str, identifier: str, canvas_id: str,
+                          conversation_id: str, body: dict,
+                          user: dict = Depends(get_api_user)):
+    from novelvideo.creation.ontology import exact
+    with errors():
+        exact(body, {'request_id', 'expected_revision', 'tasks'})
+        service = await agent_plan_service(project, user, canvas_id, conversation_id, 'editor')
+        return {'ok': True, 'data': await service.edit(identifier, body)}
+
+
+@router.post('/agent-plans/{identifier}/confirm')
+async def confirm_agent_plan(project: str, identifier: str, canvas_id: str,
+                             conversation_id: str, body: dict,
+                             background: BackgroundTasks,
+                             user: dict = Depends(get_api_user)):
+    from novelvideo.creation.ontology import exact
+    with errors():
+        exact(body, {'request_id', 'expected_revision', 'confirmed', 'permission'})
+        service = await agent_plan_service(project, user, canvas_id, conversation_id, 'editor')
+        return {'ok': True, 'data': await service.confirm(identifier, body, background=background)}
+
+
+@router.get('/collaboration-tasks/{identifier}')
+async def get_collaboration_task(project: str, identifier: str, canvas_id: str,
+                                 conversation_id: str, user: dict = Depends(get_api_user)):
+    with errors():
+        service = await collaboration_tasks_service(project, user, canvas_id, conversation_id)
+        return {'ok': True, 'data': await service.get(identifier)}
+
+
+@router.post('/collaboration-tasks/{identifier}/authorize')
+async def authorize_collaboration_task(project: str, identifier: str, canvas_id: str,
+                                       conversation_id: str, body: dict,
+                                       background: BackgroundTasks,
+                                       user: dict = Depends(get_api_user)):
+    with errors():
+        service = await collaboration_tasks_service(project, user, canvas_id, conversation_id, 'editor')
+        result = await service.authorize(identifier, body, background=background)
+        return {'ok': True, 'data': result}
+
+
+@router.post('/collaboration-tasks/{identifier}/authorize-candidate')
+async def authorize_collaboration_candidate(project: str, identifier: str, canvas_id: str,
+                                             conversation_id: str, body: dict,
+                                             background: BackgroundTasks,
+                                             user: dict = Depends(get_api_user)):
+    with errors():
+        service = await collaboration_tasks_service(project, user, canvas_id, conversation_id, 'editor')
+        result = await service.authorize_candidate(identifier, body, background=background)
+        return {'ok': True, 'data': result}
+
+
+@router.post('/collaboration-tasks/{identifier}/{action}')
+async def control_collaboration_task(project: str, identifier: str, action: Literal['stop', 'resume'],
+                                     canvas_id: str, conversation_id: str, body: dict,
+                                     background: BackgroundTasks,
+                                     user: dict = Depends(get_api_user)):
+    with errors():
+        service = await collaboration_tasks_service(project, user, canvas_id, conversation_id, 'editor')
+        result = await service.control(identifier, action, body, background=background)
+        return {'ok': True, 'data': result}
 
 
 @router.post('/delegations/{identifier}/runs')
@@ -345,6 +516,15 @@ async def builtin_agents(project: str,user: dict=Depends(get_api_user)):
     with errors():
         service=await reusable_service(project,user,'agent')
         return {'ok':True,'data':await asyncio.to_thread(service.builtin_catalog)}
+
+
+@router.get('/reusable/agent/builtins/{identifier}/revisions/{revision}')
+async def builtin_agent_version(project: str,identifier: str,revision: int,user: dict=Depends(get_api_user)):
+    with errors():
+        service=await reusable_service(project,user,'agent')
+        fixed=await asyncio.to_thread(
+            service.adoption_preview, {'id':identifier,'revision':revision}, source='builtin')
+        return {'ok':True,'data':fixed}
 
 
 @router.get('/reusable/{kind}/personal')

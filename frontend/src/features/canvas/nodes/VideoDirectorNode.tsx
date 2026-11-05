@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { lazy, memo, Suspense, useEffect, useState, type DragEvent } from 'react';
+import { lazy, memo, Suspense, useEffect, useRef, useState, type DragEvent } from 'react';
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import { Clapperboard } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -20,6 +20,7 @@ import { directorSubmissionFingerprint, projectDirectorDraft, resolveDirectorInp
 import { readDirectorBinding, resolveDirectorBindings, isStoryboardPreparationStale } from '@/features/canvas/domain/videoDirectorBindings';
 import { updateSegment } from '@/features/canvas/domain/videoDirectorDraft';
 import { directorErrorText } from '@/features/canvas/director/directorValidation';
+import { isLightweightStoryboardStale } from '@/features/canvas/production/lightweightVideoPipeline';
 
 const VideoDirectorPanel = lazy(() => import('@/features/canvas/director/VideoDirectorPanel').then((module) => ({ default: module.VideoDirectorPanel })));
 
@@ -46,15 +47,19 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
   const nodes = useCanvasStore((state) => state.nodes);
   const edges = useCanvasStore((state) => state.edges);
   const sourceBoard = nodes.find((node) => node.type === CANVAS_NODE_TYPES.storyboardGen &&
-    edges.some((edge) => edge.target === id && edge.source === node.id));
-  const sourceStale = !!data.storyboardPreparation && (!sourceBoard ||
-    isStoryboardPreparationStale(data.storyboardPreparation, { ...(sourceBoard.data as StoryboardGenNodeData), id: sourceBoard.id }));
+    (node.id === data.autoStoryboard?.sourceNodeId || edges.some((edge) => edge.target === id && edge.source === node.id)));
+  const lightweightSourceStale = typeof data.lightweightSourceNodeId === 'string' &&
+    (!sourceBoard || isLightweightStoryboardStale(sourceBoard, nodes));
+  const sourceStale = lightweightSourceStale || !!data.storyboardPreparation && (!sourceBoard ||
+    isStoryboardPreparationStale(data.storyboardPreparation, { ...(sourceBoard.data as StoryboardGenNodeData), id: sourceBoard.id,
+      selectedShotIds: data.lightweightShotIds }));
   const segments = data.draft?.segments ?? [];
   const segment = segments.find((item) => item.id === data.visibleSegmentId) ?? segments[0];
   const mode = resolveDirectorInputMode(data);
   const binding = resolveDirectorBindings(data.draft, nodes, edges.filter((edge) => edge.target === id), mode, data.storyboardPreparation);
   const preparationStale = sourceStale || !!data.storyboardPreparation && (data.storyboardPreparation.inputMode !==
     mode || !!binding.errors.references);
+  const autoPrepareStarted = useRef(false);
   const effective = projectDirectorDraft(binding.draft, mode);
   const visible = effective.segments.find((item) => item.id === segment?.id);
   const durationSeconds = segments.reduce((total, segment) => total + segment.durationSeconds, 0);
@@ -102,6 +107,23 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
   </div>;
 
   useEffect(() => updateNodeInternals(id), [id, updateNodeInternals]);
+  useEffect(() => {
+    if (!data.autoPrepareStoryboard) {
+      autoPrepareStarted.current = false;
+      return;
+    }
+    if (!sourceBoard || lightweightSourceStale) return;
+    if (data.storyboardPreparation && !preparationStale) {
+      autoPrepareStarted.current = false;
+      updateNodeData(id, { autoPrepareStoryboard: false });
+      return;
+    }
+    if (autoPrepareStarted.current) return;
+    autoPrepareStarted.current = true;
+    void task.prepare(data.lightweightShotIds ? { shot_ids: data.lightweightShotIds } : {}).then((prepared) => {
+      if (prepared) updateNodeData(id, { autoPrepareStoryboard: false });
+    });
+  }, [data.autoPrepareStoryboard, data.lightweightShotIds, data.storyboardPreparation, id, lightweightSourceStale, preparationStale, sourceBoard, task.prepare, updateNodeData]);
   useEffect(() => {
     if (Object.keys(task.fieldErrors).length) setEditorOpen(true);
   }, [task.fieldErrors]);
@@ -157,7 +179,8 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
         </>}
         {dropError && <p role="alert" className="nodrag px-3 text-xs text-red-300">{dropError}</p>}
         {task.error && <p role="alert" className="nodrag text-xs text-red-300">{task.error}</p>}
-        {preparationStale ? <p className="text-xs text-amber-300">分镜来源已变化，请重新准备</p> : data.storyboardPreparation &&
+        {lightweightSourceStale ? <p role="alert" className="text-xs text-amber-300">剧本表或宫格图已更新。请先在宫格节点更新并连接当前版本，再准备或生成视频。</p>
+          : preparationStale ? <p className="text-xs text-amber-300">分镜来源已变化，请重新准备</p> : data.storyboardPreparation &&
           <p className="text-xs">请求 {data.storyboardPreparation.requestedDurationSeconds.toFixed(2)}s / 实际 {data.storyboardPreparation.actualDurationSeconds.toFixed(2)}s</p>}
         <div className="flex items-center justify-between gap-2 px-3 py-2 text-xs text-text-muted">
           <span>{t('node.videoDirector.node.segments', { count: segments.length })}</span>
@@ -167,7 +190,7 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
             if (onOpenEditor) onOpenEditor(id);
             else setEditorOpen(true);
           }}>{t('node.videoDirector.node.edit')}</button>
-          <button type="button" disabled={task.isPreparing} className="nodrag text-cyan-300" onClick={() => {
+          <button type="button" disabled={task.isPreparing || lightweightSourceStale} className="nodrag text-cyan-300" onClick={() => {
             if (task.capabilities) task.generate();
             else setEditorOpen(true);
           }}>{tr('generate')}</button>
@@ -185,6 +208,7 @@ export const VideoDirectorNode = memo(function VideoDirectorNode({ id, data, sel
       </div>}
       {images.libraryProps && <AssetLibraryModal {...images.libraryProps} />}
       {editorOpen && <Suspense fallback={null}><VideoDirectorPanel nodeId={id} data={data} task={task}
+        blockLightweightProduction={lightweightSourceStale}
         onDraftChange={(draft) => updateNodeData(id, { draft })} onClose={() => setEditorOpen(false)} /></Suspense>}
     </div>
   );

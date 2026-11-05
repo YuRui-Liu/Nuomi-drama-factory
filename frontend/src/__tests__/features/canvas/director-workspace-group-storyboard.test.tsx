@@ -1,15 +1,21 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { NodeProps } from '@xyflow/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { DirectorWorkspaceNode } from '@/features/canvas/nodes/DirectorWorkspaceNode';
 import { NarrativeGroupStoryboardNode } from '@/features/canvas/nodes/NarrativeGroupStoryboardNode';
+import { WorkspaceScopeProvider } from '@/features/freezone/WorkspaceScope';
 
 const mocks = vi.hoisted(() => ({
   apiCall: vi.fn(),
+  getSceneDirectorStageManifest: vi.fn(),
+  uploadFreezoneImage: vi.fn(),
+  saveBlocking: vi.fn(),
   store: {
     nodes: [] as Array<Record<string, unknown>>,
+    edges: [] as Array<Record<string, unknown>>,
     addNode: vi.fn(() => 'created-node'),
+    addEdgeWithData: vi.fn(),
     findNodePosition: vi.fn(() => ({ x: 520, y: 80 })),
     setSelectedNode: vi.fn(),
     requestFocusNode: vi.fn(),
@@ -35,43 +41,150 @@ vi.mock('@/features/canvas/production/useProductionAction', () => ({
 }));
 vi.mock('@/features/canvas/production/directorWorkspaceApi', () => ({ directorWorkspaceApi: {
   get: vi.fn(async () => ({ stages: {}, scene_blocking: {} })),
+  saveBlocking: (...args: unknown[]) => mocks.saveBlocking(...args),
   adopt: (...args: unknown[]) => mocks.adopt(...args),
 } }));
+vi.mock('@/api/viewerManifests', () => ({
+  getSceneDirectorStageManifest: (...args: unknown[]) => mocks.getSceneDirectorStageManifest(...args),
+}));
+vi.mock('@/api/ops', async () => ({
+  ...await vi.importActual('@/api/ops'),
+  uploadFreezoneImage: (...args: unknown[]) => mocks.uploadFreezoneImage(...args),
+}));
+vi.mock('@/features/viewer-kit/three-d/LazyThreeDDirectorDialog', () => ({
+  LazyThreeDDirectorDialog: ({ open, onSaveScene, onCaptureCanvasNode, initialScene }: {
+    open: boolean;
+    onSaveScene?: (snapshot: unknown, sourceId?: string) => void;
+    onCaptureCanvasNode?: (blob: Blob, meta: unknown) => void;
+    initialScene?: unknown;
+  }) => open ? <div role="dialog" aria-label="3D 场景调度">
+    <span>{initialScene ? '已加载 3D 场景快照' : '新建 3D 场景快照'}</span>
+    <button type="button" onClick={() => onSaveScene?.(snapshotFixture, 'world-source')}>保存 3D 场景快照</button>
+    <button type="button" onClick={() => onCaptureCanvasNode?.(new Blob(['capture']), { snapshot: snapshotFixture })}>保存 3D 输出截图</button>
+  </div> : null,
+}));
 
 const revision = {
   revision_id: 'revision-new',
   status: 'active',
-  groups: [{ id: 'group-a', title: '门口对峙', objective: '让双方摊牌', shots: [{ id: 'shot-a', duration_seconds: 3 }] }],
+  groups: [{ id: 'group-a', title: '门口对峙', objective: '让双方摊牌', creative_context: { scene_id: 'scene-a' }, shots: [{ id: 'shot-a', duration_seconds: 3 }] }],
+};
+
+const snapshotFixture = {
+  schemaVersion: 1,
+  savedAt: 1234,
+  actors: [{ id: 'identity-1', label: '林舟', color: '#123456', position: [1, 2, 3], yawDeg: 0, scale: [1, 1, 1] }],
+  props: [],
+  stagings: [],
+  lights: [],
 };
 
 function renderWorkspace() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const props = { id: 'workspace-node', data: { episodeNumber: 1, directorRevisionId: 'revision-new' } } as unknown as NodeProps;
-  const result = render(<QueryClientProvider client={client}><DirectorWorkspaceNode {...props} /></QueryClientProvider>);
+  const result = render(<WorkspaceScopeProvider value={{ projectId: 'project', canvasId: 'episode-1', kind: 'episode', episodeId: 'ep1', episodeNumber: 1, status: 'applied' }}><QueryClientProvider client={client}><DirectorWorkspaceNode {...props} /></QueryClientProvider></WorkspaceScopeProvider>);
   return { ...result, client };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.store.nodes = [];
+  mocks.store.edges = [];
   mocks.adopt.mockResolvedValue(undefined);
   mocks.apiCall.mockImplementation(async (path: string) => path.endsWith('/director-plans') ? [revision] : []);
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-it('creates a new group node when only the same group on another revision exists', async () => {
-  mocks.store.nodes = [{ id: 'old-group-node', type: 'narrativeGroupStoryboardNode', data: { episodeNumber: 1, groupId: 'group-a', directorRevisionId: 'revision-old' } }];
+it('reuses the same group node across director revisions and updates its current binding', async () => {
+  mocks.store.nodes = [{ id: 'stable-group-node', type: 'narrativeGroupStoryboardNode', data: { projectId: 'project', episodeNumber: 1, groupId: 'group-a', directorRevisionId: 'revision-old' } }];
   const result = renderWorkspace();
   fireEvent.click(await screen.findByRole('button', { name: '在画布中打开组分镜' }));
 
-  expect(mocks.store.addNode).toHaveBeenCalledWith('narrativeGroupStoryboardNode', { x: 520, y: 80 }, expect.objectContaining({
+  expect(mocks.store.addNode).not.toHaveBeenCalled();
+  expect(mocks.store.updateNodeData).toHaveBeenCalledWith('stable-group-node', expect.objectContaining({
+    projectId: 'project',
     episodeNumber: 1,
     groupId: 'group-a',
     directorRevisionId: 'revision-new',
   }));
-  expect(mocks.store.setSelectedNode).toHaveBeenCalledWith('created-node');
-  expect(mocks.store.requestFocusNode).toHaveBeenCalledWith('created-node');
-  expect(mocks.store.findNodePosition).toHaveBeenCalledWith('workspace-node', expect.any(Number), expect.any(Number));
+  expect(mocks.store.setSelectedNode).toHaveBeenCalledWith('stable-group-node');
+  expect(mocks.store.requestFocusNode).toHaveBeenCalledWith('stable-group-node');
+  result.unmount();
+  result.client.clear();
+});
+
+it('opens the existing 3D director dialog for the selected shared scene and saves its snapshot into blocking', async () => {
+  mocks.getSceneDirectorStageManifest.mockResolvedValue({
+    viewer_kind: 'three_d_director', mode: 'scene', project: 'project', scene_id: 'scene-a', display_name: 'scene-a',
+    source: { source_type: 'sog', source_kind: 'custom' },
+    palette: { actors: [{ identity_id: 'identity-1', label: '林舟', color: '#123456' }], props: [], anonymous_colors: [], anonymous_prop_colors: [] },
+    allowed_destinations: ['view', 'canvas_screenshot_node'],
+  });
+  const result = renderWorkspace();
+  fireEvent.click(await screen.findByRole('button', { name: '调度审阅' }));
+  fireEvent.change(screen.getByLabelText('场景'), { target: { value: 'scene-a' } });
+  await waitFor(() => expect(screen.getByLabelText('场景')).toHaveValue('scene-a'));
+  fireEvent.click(await screen.findByRole('button', { name: '打开 3D 场景调度' }));
+
+  expect(mocks.getSceneDirectorStageManifest).toHaveBeenCalledWith('project', 'scene-a');
+  const dialog = await screen.findByRole('dialog', { name: '3D 场景调度' });
+  expect(within(dialog).getByText('新建 3D 场景快照')).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole('button', { name: '保存 3D 场景快照' }));
+  await waitFor(() => expect(mocks.saveBlocking).toHaveBeenCalledWith(
+    'project', 1, 'scene-a', null,
+    expect.objectContaining({ stage_snapshot: snapshotFixture }), ['group-a'], 'revision-new',
+  ));
+  expect(mocks.store.addNode).not.toHaveBeenCalled();
+  result.unmount();
+  result.client.clear();
+});
+
+it('uploads a real 3D capture and persists its file ref alongside the snapshot', async () => {
+  mocks.getSceneDirectorStageManifest.mockResolvedValue({
+    viewer_kind: 'three_d_director', mode: 'scene', project: 'project', scene_id: 'scene-a', display_name: 'scene-a',
+    source: { source_type: 'sog', source_kind: 'custom' },
+    palette: { actors: [], props: [], anonymous_colors: [], anonymous_prop_colors: [] },
+    allowed_destinations: ['view', 'canvas_screenshot_node'],
+  });
+  mocks.uploadFreezoneImage.mockResolvedValue({ filename: 'episodes/001/director-scene-scene-a-1234.png', url: '/media/capture.png', size: 10 });
+  mocks.store.nodes = [{ id: 'render-group-a', type: 'narrativeGroupStoryboardNode', data: {
+    projectId: 'project', episodeNumber: 1, groupId: 'group-a', directorRevisionId: 'revision-new', operation: 'render',
+  } }];
+  mocks.apiCall.mockImplementation(async (path: string) => {
+    if (path.endsWith('/director-plans')) return [revision];
+    if (path.endsWith('/render/references/upload')) return { upload_id: `upl_${'a'.repeat(32)}` };
+    if (path.endsWith('/render/references')) return { reference_revision: 'render-references-1', bindings: [] };
+    return [];
+  });
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob(['capture'], { type: 'image/png' }) })));
+  const result = renderWorkspace();
+  fireEvent.click(await screen.findByRole('button', { name: '调度审阅' }));
+  fireEvent.change(screen.getByLabelText('场景'), { target: { value: 'scene-a' } });
+  await waitFor(() => expect(screen.getByLabelText('场景')).toHaveValue('scene-a'));
+  fireEvent.click(await screen.findByRole('button', { name: '打开 3D 场景调度' }));
+  const dialog = await screen.findByRole('dialog', { name: '3D 场景调度' });
+  fireEvent.click(within(dialog).getByRole('button', { name: '保存 3D 输出截图' }));
+  await waitFor(() => expect(mocks.uploadFreezoneImage).toHaveBeenCalledWith(
+    'project', expect.any(Blob), expect.stringMatching(/director-scene-1-scene-a/), { timeoutMs: false },
+  ));
+  await waitFor(() => expect(mocks.saveBlocking).toHaveBeenCalledWith(
+    'project', 1, 'scene-a', null,
+    expect.objectContaining({
+      stage_snapshot: snapshotFixture,
+      stage_capture: expect.objectContaining({
+        filename: 'episodes/001/director-scene-scene-a-1234.png', url: '/media/capture.png', scene_id: 'scene-a', captured_at: expect.any(Number),
+      }),
+    }), ['group-a'], 'revision-new',
+  ));
+  await waitFor(() => expect(mocks.apiCall).toHaveBeenCalledWith(
+    'projects/project/episodes/1/narrative-groups/group-a/render/references/upload',
+    expect.objectContaining({ method: 'post', body: expect.any(FormData) }),
+  ));
+  expect(mocks.store.updateNodeData).toHaveBeenCalledWith('render-group-a', expect.objectContaining({
+    selectedBindingIds: [], selectedUploadIds: [`upl_${'a'.repeat(32)}`],
+    referenceRevision: 'render-references-1', directorStageCaptureUrl: '/media/capture.png',
+  }));
+  expect(mocks.store.addNode).not.toHaveBeenCalled();
   result.unmount();
   result.client.clear();
 });
@@ -145,11 +258,11 @@ it('adopting a candidate invalidates same-project episode plan and media caches 
   const workspaceProps = { id: 'workspace-node', data: { episodeNumber: 1, directorRevisionId: 'revision-candidate' } } as unknown as NodeProps;
   const candidateProps = { id: 'candidate-node', data: { episodeNumber: 1, groupId: 'group-a', directorRevisionId: 'revision-candidate' } } as unknown as NodeProps;
   const oldProps = { id: 'old-node', data: { episodeNumber: 1, groupId: 'group-a', directorRevisionId: 'revision-old' } } as unknown as NodeProps;
-  const result = render(<QueryClientProvider client={client}><>
+  const result = render(<WorkspaceScopeProvider value={{ projectId: 'project', canvasId: 'episode-1', kind: 'episode', episodeId: 'ep1', episodeNumber: 1, status: 'applied' }}><QueryClientProvider client={client}><>
     <DirectorWorkspaceNode {...workspaceProps} />
     <NarrativeGroupStoryboardNode {...candidateProps} />
     <NarrativeGroupStoryboardNode {...oldProps} />
-  </></QueryClientProvider>);
+  </></QueryClientProvider></WorkspaceScopeProvider>);
 
   await screen.findByText(/候选版本 revision-candidate/);
   await screen.findByText(/已采用版本 revision-old/);

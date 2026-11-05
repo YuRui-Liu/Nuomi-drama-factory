@@ -4,6 +4,7 @@ from copy import deepcopy
 from .library_references import digest
 from .ontology import exact, integer, require, text
 from .professional_agents import PROFESSIONAL_AGENTS
+from .professional_roles import role_catalog, role_configuration
 
 
 _LEGACY_BUILTIN_AGENTS=(
@@ -26,6 +27,17 @@ _LEGACY_BUILTIN_AGENTS=(
 )
 BUILTIN_AGENTS=(*_LEGACY_BUILTIN_AGENTS,*PROFESSIONAL_AGENTS)
 
+# The proposal-only role catalog is no longer part of the default picker. Keep
+# its non-colliding revision-1 references resolvable for saved AgentNodes.
+_CURRENT_IDS = {entry['id'] for entry in BUILTIN_AGENTS}
+_LEGACY_ROLE_AGENTS = tuple(
+    {'id':'builtin:' + role['slug'], 'revision':1,
+     'configuration':role_configuration(role['slug'])}
+    for role in role_catalog()
+    if role['slug'] not in {'creative-lead','ideation'}
+    and 'builtin:' + role['slug'] not in _CURRENT_IDS
+)
+
 
 def _fixed(entry):
     from .agent_profiles import AgentProfiles
@@ -47,6 +59,9 @@ def resolve(ref):
     exact(ref,{'id','revision'})
     text(ref['id'],100);integer(ref['revision'],1)
     entry=next((e for e in BUILTIN_AGENTS if e['id']==ref['id'] and e['revision']==ref['revision']),None)
+    if entry is None:
+        entry=next((e for e in _LEGACY_ROLE_AGENTS
+                    if e['id']==ref['id'] and e['revision']==ref['revision']),None)
     require(entry is not None,'内置Agent版本不存在','source_conflict')
     return _fixed(entry)
 

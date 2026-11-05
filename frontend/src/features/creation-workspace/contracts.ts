@@ -32,6 +32,7 @@ export interface CreationCanvas {
   canvas_id: string;
   kind: WorkspaceKind;
   episode_id: string | null;
+  episode_number: number | null;
   title: string;
   status: WorkspaceStatus;
 }

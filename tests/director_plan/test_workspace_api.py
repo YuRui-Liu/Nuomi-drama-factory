@@ -4,6 +4,225 @@ import pytest
 
 
 @pytest.mark.asyncio
+async def test_adopt_director_workspace_uses_shared_activation_sync(director_context, monkeypatch):
+    from novelvideo.api.routes import director_plans, director_workspace as api
+
+    ctx, _script = director_context
+    calls = []
+
+    async def resolve(_project, _user, *, role):
+        assert role == "editor"
+        return ctx
+
+    async def activate_and_sync(received_ctx, episode, revision_id):
+        calls.append((received_ctx, episode, revision_id))
+        return type(
+            "Revision",
+            (),
+            {
+                "revision_id": revision_id,
+                "model_dump": lambda self, **_kwargs: {"revision_id": revision_id},
+            },
+        )()
+
+    monkeypatch.setattr(api, "_resolve", resolve)
+    monkeypatch.setattr(
+        director_plans, "_activate_and_sync_director_plan", activate_and_sync
+    )
+
+    response = await api.adopt_director_workspace(
+        "project",
+        1,
+        api.DirectorWorkspaceAdoptRequest(revision_id="revision-1"),
+        user={},
+    )
+
+    assert calls == [(ctx, 1, "revision-1")]
+    assert response["data"]["revision_id"] == "revision-1"
+
+
+@pytest.mark.asyncio
+async def test_shared_director_activation_sync_checks_projection_before_refresh(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+    from novelvideo.api.routes import director_plans
+
+    revision = SimpleNamespace(
+        revision_id="revision-2",
+        groups=(SimpleNamespace(id="group-1"),),
+        project_style_snapshot_id="style-2",
+    )
+    calls = []
+
+    class Store:
+        def load_active_for_sync(self, _episode, _revision_id):
+            calls.append("load_active")
+            return None
+
+        def activate(self, episode, revision_id):
+            assert (episode, revision_id) == (2, "revision-2")
+            calls.append("activate")
+            return revision
+
+    ctx = SimpleNamespace(output_dir=tmp_path)
+    monkeypatch.setattr(director_plans, "_build_director_plan_store", lambda _ctx: Store())
+    from novelvideo.narrative_groups import service as group_service
+    monkeypatch.setattr(
+        group_service,
+        "load_materialized_groups",
+        lambda _output_dir, _episode: [
+            SimpleNamespace(id="group-1", style_snapshot_id="style-2")
+        ],
+    )
+
+    async def refresh(_ctx, episode, revision_id):
+        calls.append(("refresh", episode, revision_id))
+        return 1
+
+    monkeypatch.setattr(director_plans, "_refresh_plan_references", refresh)
+
+    assert (
+        await director_plans._activate_and_sync_director_plan(ctx, 2, "revision-2")
+        is revision
+    )
+    assert calls == ["load_active", "activate", ("refresh", 2, "revision-2")]
+
+    calls.clear()
+    monkeypatch.setattr(
+        group_service,
+        "load_materialized_groups",
+        lambda _output_dir, _episode: [
+            SimpleNamespace(id="group-1", style_snapshot_id="stale-style")
+        ],
+    )
+    with pytest.raises(HTTPException) as error:
+        await director_plans._activate_and_sync_director_plan(ctx, 2, "revision-2")
+    assert error.value.status_code == 409
+    assert error.value.detail["code"] == "DIRECTOR_PLAN_ACTIVATED_PROJECTION_REQUIRED"
+    assert calls == ["load_active", "activate"]
+
+
+@pytest.mark.asyncio
+async def test_shared_activation_accepts_materialized_narrative_group_model(
+    tmp_path, monkeypatch
+):
+    """The canonical NarrativeGroup stores style in its snapshot, not style_snapshot_id."""
+    from types import SimpleNamespace
+
+    from novelvideo.api.routes import director_plans
+    from novelvideo.narrative_groups.models import GridLayout, NarrativeGroup
+
+    revision = SimpleNamespace(
+        revision_id="revision-actual-model",
+        groups=(SimpleNamespace(id="group-1"),),
+        project_style_snapshot_id="style-actual",
+    )
+
+    class Store:
+        def load_active_for_sync(self, _episode, _revision_id):
+            return revision
+
+    materialized = NarrativeGroup(
+        id="group-1",
+        ordinal=1,
+        beat_ids=(),
+        layout=GridLayout(rows=1, columns=1, capacity=1),
+        cell_to_beat=(),
+        director_revision_id="revision-actual-model",
+        effective_style_snapshot={"snapshot_id": "style-actual"},
+    )
+    monkeypatch.setattr(director_plans, "_build_director_plan_store", lambda _ctx: Store())
+    from novelvideo.narrative_groups import service as group_service
+    monkeypatch.setattr(group_service, "load_materialized_groups", lambda *_: [materialized])
+
+    refreshed = []
+
+    async def refresh(_ctx, episode, revision_id):
+        refreshed.append((episode, revision_id))
+
+    monkeypatch.setattr(director_plans, "_refresh_plan_references", refresh)
+    ctx = SimpleNamespace(output_dir=tmp_path)
+
+    assert await director_plans._activate_and_sync_director_plan(
+        ctx, 1, "revision-actual-model"
+    ) is revision
+    assert refreshed == [(1, "revision-actual-model")]
+
+
+@pytest.mark.asyncio
+async def test_activation_retry_resumes_sync_for_same_active_revision(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+    from novelvideo.api.routes import director_plans
+    from novelvideo.narrative_groups import service as group_service
+
+    revision = SimpleNamespace(
+        revision_id="revision-3",
+        status="active",
+        groups=(SimpleNamespace(id="group-1"),),
+        project_style_snapshot_id="style-3",
+    )
+    calls = []
+
+    class Store:
+        active = None
+
+        def load_active_for_sync(self, episode, revision_id):
+            calls.append(("load_active", episode, revision_id))
+            if self.active is not None and self.active.revision_id == revision_id:
+                return self.active
+            return None
+
+        def activate(self, episode, revision_id):
+            assert (episode, revision_id) == (2, "revision-3")
+            if self.active is not None:
+                raise ValueError("only review_required or superseded revisions can be activated")
+            calls.append("activate")
+            self.active = revision
+            return revision
+
+    store = Store()
+    ctx = SimpleNamespace(output_dir=tmp_path)
+    monkeypatch.setattr(director_plans, "_build_director_plan_store", lambda _ctx: store)
+    monkeypatch.setattr(
+        group_service,
+        "load_materialized_groups",
+        lambda _output_dir, _episode: [
+            SimpleNamespace(id="group-1", style_snapshot_id="style-3")
+        ],
+    )
+
+    refresh_count = 0
+
+    async def refresh(_ctx, episode, revision_id):
+        nonlocal refresh_count
+        refresh_count += 1
+        calls.append(("refresh", episode, revision_id))
+        if refresh_count == 1:
+            raise ValueError("transient reference catalog failure")
+        return 1
+
+    monkeypatch.setattr(director_plans, "_refresh_plan_references", refresh)
+
+    with pytest.raises(HTTPException) as first_error:
+        await director_plans._activate_and_sync_director_plan(ctx, 2, "revision-3")
+    assert first_error.value.detail["code"] == "DIRECTOR_PLAN_ACTIVATED_REFERENCE_REFRESH_REQUIRED"
+
+    assert await director_plans._activate_and_sync_director_plan(ctx, 2, "revision-3") is revision
+    assert calls == [
+        ("load_active", 2, "revision-3"),
+        "activate",
+        ("refresh", 2, "revision-3"),
+        ("load_active", 2, "revision-3"),
+        ("refresh", 2, "revision-3"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_get_director_workspace_returns_adopted_script_stages_and_scene_blocking(
     director_context, monkeypatch
 ):
@@ -36,6 +255,12 @@ async def test_get_director_workspace_returns_adopted_script_stages_and_scene_bl
     assert data["script"] == {
         "document_id": script.id,
         "revision_id": script.current_revision_id,
+        "adopted_revision_id": script.current_revision_id,
+        "source_sync": {
+            "status": "requires_explicit_handoff",
+            "source_revision": None,
+            "matches_episode_source": False,
+        },
     }
     assert {key: value["status"] for key, value in data["stages"].items()} == {
         "handoff": "waiting",
@@ -48,6 +273,99 @@ async def test_get_director_workspace_returns_adopted_script_stages_and_scene_bl
     assert data["revision"] is None
     assert data["groups"] == []
     assert data["scene_blocking"]["scene-a"]["current"]["blocking"]["label"] == "仓库"
+
+
+@pytest.mark.asyncio
+async def test_director_workspace_returns_real_handoff_receipt_reference(director_context, monkeypatch):
+    import hashlib
+
+    from novelvideo.api.routes import director_workspace as api
+
+    ctx, script = director_context
+    sqlite, _documents, handoff = await api._load_handoff_services(ctx)
+    try:
+        prepared = await handoff.prepare(
+            document_id=script.id,
+            revision_id=script.current_revision_id,
+            reference_revisions={},
+            selected_entity_ids=[],
+            update_scope={"mode": "none"},
+            fact_acknowledgement={"mode": "unchecked", "reason": "用户已确认"},
+            client_mutation_id="workspace-receipt-prepare",
+        )
+        await handoff.confirm(
+            prepared["id"],
+            expected_source_project_revision=prepared["expected_source_project_revision"],
+            client_mutation_id="workspace-receipt-confirm",
+        )
+    finally:
+        await sqlite.close()
+
+    async def resolve(_project, _user, *, role):
+        assert role == "viewer"
+        return ctx
+
+    monkeypatch.setattr(api, "_resolve", resolve)
+    data = (await api.get_director_workspace("project", 1, user={}))["data"]
+
+    artifact = data["script"]["artifact"]
+    assert artifact["path"] == (
+        f"episodes/001/handoff-receipts/{script.current_revision_id}.md"
+    )
+    assert artifact["sha256"] == hashlib.sha256(
+        script.revision.markdown.encode("utf-8")
+    ).hexdigest()
+    assert artifact["source_revision"] == data["stages"]["handoff"]["source_revision"]
+    assert artifact["matches_episode_source"] is True
+    assert (ctx.output_dir / artifact["path"]).read_text(encoding="utf-8") == script.revision.markdown
+
+
+@pytest.mark.asyncio
+async def test_workspace_marks_new_script_revision_unmatched_until_source_sync(
+    director_context, monkeypatch
+):
+    from novelvideo.api.routes import director_workspace as api
+
+    ctx, script = director_context
+    sqlite, documents, handoff = await api._load_handoff_services(ctx)
+    try:
+        prepared = await handoff.prepare(
+            document_id=script.id,
+            revision_id=script.current_revision_id,
+            reference_revisions={},
+            selected_entity_ids=[],
+            update_scope={"mode": "none"},
+            fact_acknowledgement={"mode": "unchecked", "reason": "用户已确认"},
+            client_mutation_id="workspace-pending-prepare",
+        )
+        confirmed = await handoff.confirm(
+            prepared["id"],
+            expected_source_project_revision=prepared["expected_source_project_revision"],
+            client_mutation_id="workspace-pending-confirm",
+        )
+        revised = await documents.save(
+            script.id,
+            base_revision_id=script.current_revision_id,
+            markdown="1-1 仓库 夜\n甲：这是新的正式剧本版本。",
+            client_mutation_id="workspace-pending-save",
+        )
+    finally:
+        await sqlite.close()
+
+    async def resolve(_project, _user, *, role):
+        assert role == "viewer"
+        return ctx
+
+    monkeypatch.setattr(api, "_resolve", resolve)
+    data = (await api.get_director_workspace("project", 1, user={}))["data"]
+
+    assert data["script"]["revision_id"] == revised.current_revision_id
+    assert data["script"]["source_sync"] == {
+        "status": "pending_sync",
+        "source_revision": confirmed["source_revision"],
+        "matches_episode_source": False,
+    }
+    assert "artifact" not in data["script"]
 
 
 def test_workspace_maps_legacy_group_scene_from_source_span_ownership():
@@ -960,16 +1278,22 @@ async def test_director_enqueue_pins_semantic_revision_in_scope_and_payload(monk
 
     from novelvideo.api.routes import director_workspace as api
 
-    ctx = SimpleNamespace(project_id="project-1")
+    ctx = SimpleNamespace(project_id="project-1", state_dir="state", output_dir="output")
     semantic = SimpleNamespace(source_revision=7, revision_id="semantic-a")
     calls = {}
+
+    class Manager:
+        def get_task_for_project(self, *_args, **_kwargs):
+            return None
 
     class Backend:
         async def enqueue_project_task(self, _ctx, **kwargs):
             calls.update(kwargs)
             return SimpleNamespace(task_state=SimpleNamespace(task_id="task-a"))
 
+    monkeypatch.setattr(api, "get_task_manager", lambda: Manager())
     monkeypatch.setattr(api, "get_task_backend", lambda: Backend())
+    monkeypatch.setattr(api, "admit_registered_episode_stage", lambda *_args, **_kwargs: None)
 
     task = await api._enqueue_director_plan(ctx, 1, semantic)
 
@@ -979,59 +1303,32 @@ async def test_director_enqueue_pins_semantic_revision_in_scope_and_payload(monk
 
 
 @pytest.mark.asyncio
-async def test_concurrent_production_enqueue_requests_do_not_block_heartbeat(
+async def test_retired_production_requests_do_not_block_heartbeat_or_enqueue(
     director_context, monkeypatch
 ):
     import asyncio
-    from types import SimpleNamespace
+    import threading
 
     from fastapi import HTTPException
     from novelvideo.api.routes import director_workspace as api
 
     ctx, _script = director_context
-    active = SimpleNamespace(
-        revision_id="active-director-revision",
-        status="active",
-        groups=(SimpleNamespace(id="group-1"),),
-    )
-    tasks = []
-    first_enqueue_started = asyncio.Event()
-    release_first_enqueue = asyncio.Event()
-    backend_calls = 0
+    lookup_started = threading.Event()
+    release_lookup = threading.Event()
+    enqueue_calls = 0
     ticks = 0
-
-    class PlanStore:
-        def __init__(self, _root):
-            pass
-
-        def load_active(self, _episode):
-            return active
 
     class Manager:
         def get_task_for_project(self, *_args, **_kwargs):
+            lookup_started.set()
+            assert release_lookup.wait(timeout=10)
             return None
 
-        def list_tasks_for_project(self, _ctx):
-            return list(tasks)
-
     class Backend:
-        async def enqueue_project_task(self, _ctx, *, task_type, episode, scope, **_kwargs):
-            nonlocal backend_calls
-            backend_calls += 1
-            task = SimpleNamespace(
-                task_id=f"task-{backend_calls}",
-                task_type=task_type,
-                episode=episode,
-                status="queued",
-                scope=scope,
-                queue_kind="world",
-                metadata={"backend": "inline"},
-            )
-            tasks.append(task)
-            if backend_calls == 1:
-                first_enqueue_started.set()
-                await release_first_enqueue.wait()
-            return SimpleNamespace(task_state=task, backend="inline", queue="world")
+        async def enqueue_project_task(self, *_args, **_kwargs):
+            nonlocal enqueue_calls
+            enqueue_calls += 1
+            pytest.fail("retired production endpoint must not enqueue")
 
     async def resolve(_project, _user, *, role):
         assert role == "editor"
@@ -1039,11 +1336,10 @@ async def test_concurrent_production_enqueue_requests_do_not_block_heartbeat(
 
     async def heartbeat():
         nonlocal ticks
-        while not release_first_enqueue.is_set():
+        while not release_lookup.is_set():
             ticks += 1
             await asyncio.sleep(0.005)
 
-    monkeypatch.setattr(api, "DirectorPlanStore", PlanStore)
     monkeypatch.setattr(api, "_resolve", resolve)
     monkeypatch.setattr(api, "get_task_manager", lambda: Manager())
     monkeypatch.setattr(api, "get_task_backend", lambda: Backend())
@@ -1053,7 +1349,7 @@ async def test_concurrent_production_enqueue_requests_do_not_block_heartbeat(
             "project",
             1,
             api.DirectorWorkspaceProductionRequest(
-                revision_id=active.revision_id,
+                revision_id="retired-revision",
                 group_ids=["group-1"],
                 client_mutation_id=client_mutation_id,
             ),
@@ -1061,20 +1357,22 @@ async def test_concurrent_production_enqueue_requests_do_not_block_heartbeat(
         )
 
     first = asyncio.create_task(request("mutation-1"))
-    await asyncio.wait_for(first_enqueue_started.wait(), timeout=10)
+    await asyncio.wait_for(asyncio.to_thread(lookup_started.wait, 10), timeout=10)
     second = asyncio.create_task(request("mutation-2"))
     heartbeat_task = asyncio.create_task(heartbeat())
     try:
         await asyncio.sleep(0.05)
         assert ticks >= 3
-        release_first_enqueue.set()
-        response = await asyncio.wait_for(first, timeout=10)
-        assert response["data"]["task_id"] == "task-1"
-        with pytest.raises(HTTPException) as error:
-            await asyncio.wait_for(second, timeout=10)
-        assert error.value.status_code == 409
-        assert error.value.detail["code"] == "DIRECTOR_WORKSPACE_PRODUCTION_ALREADY_RUNNING"
+        release_lookup.set()
+        results = await asyncio.wait_for(
+            asyncio.gather(first, second, return_exceptions=True), timeout=10
+        )
+        for result in results:
+            assert isinstance(result, HTTPException)
+            assert result.status_code == 410
+            assert result.detail["code"] == "DIRECTOR_WORKSPACE_PRODUCTION_RETIRED"
+        assert enqueue_calls == 0
     finally:
-        release_first_enqueue.set()
+        release_lookup.set()
         if not heartbeat_task.done():
             heartbeat_task.cancel()

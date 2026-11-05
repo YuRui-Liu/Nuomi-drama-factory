@@ -5,11 +5,32 @@ import pytest
 
 
 def test_dialogue_source_recompose_only_runs_episode_composer(tmp_path, monkeypatch):
-    from novelvideo.narrative_groups.service import advance_revision, group_beats, save_groups
+    from novelvideo.narrative_groups.service import (
+        advance_revision, group_beats, record_stage_result, save_groups,
+    )
+    from novelvideo.media_capabilities.video.h3_timeline import (
+        DialogueSource, H3DirectorOutputManifest, H3DirectorSegment,
+        build_h3_timeline_data, save_h3_director_manifest,
+    )
     from novelvideo.task_backend.runners import narrative_group_video_compose as subject
 
     save_groups(tmp_path, 1, group_beats([{"id": "beat-1", "beat_number": 1}]))
     advance_revision(tmp_path, 1, "ng-01", "video")
+    video_path = tmp_path / "videos" / "group.mp4"
+    manifest_path = tmp_path / "videos" / "group.manifest.json"
+    video_path.parent.mkdir(parents=True)
+    video_path.write_bytes(b"video")
+    save_h3_director_manifest(manifest_path, H3DirectorOutputManifest(
+        physical_video=str(video_path),
+        entries=build_h3_timeline_data((H3DirectorSegment(
+            segment_id="beat-1", beat_number=1, prompt="p", duration_seconds=1,
+            first_frame="frame.png", dialogue_source=DialogueSource.H3_NATIVE,
+        ),)).entries,
+    ))
+    record_stage_result(
+        tmp_path, 1, "ng-01", "video", expected_revision=1, status="completed",
+        video_asset=str(video_path), manifest_asset=str(manifest_path),
+    )
     calls = []
 
     async def beats(_ctx, _episode):
@@ -22,6 +43,7 @@ def test_dialogue_source_recompose_only_runs_episode_composer(tmp_path, monkeypa
         return {"video_path": "final.mp4"}
 
     monkeypatch.setattr(subject, "_load_canonical_beats", beats)
+    monkeypatch.setattr("novelvideo.task_backend.runners.video._video_has_audio_stream", lambda _path: True)
     monkeypatch.setattr("novelvideo.task_backend.runners.video.run_compose_episode", compose)
     ctx = SimpleNamespace(output_dir=str(tmp_path))
 

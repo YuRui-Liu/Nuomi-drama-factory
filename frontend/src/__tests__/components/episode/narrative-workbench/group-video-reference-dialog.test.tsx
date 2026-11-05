@@ -19,7 +19,7 @@ const candidates = [
   { reference_id: "room", source_kind: "scene_master" as const, label: "Room", subject_description: "The room", thumbnail_url: "/room.png" },
   { reference_id: "prop", source_kind: "prop_reference" as const, label: "Sword", subject_description: "The sword", thumbnail_url: "/prop.png" },
 ];
-const preview = { revision: 4, max_images: 5, candidates, selected: [], warnings: [] };
+const preview = { revision: 4, director_revision_id: null, max_images: 5, candidates, selected: [], warnings: [] };
 
 describe("GroupVideoReferenceDialog", () => {
   beforeAll(async () => {
@@ -41,7 +41,7 @@ describe("GroupVideoReferenceDialog", () => {
     const user = userEvent.setup();
     m.save.mockResolvedValue({ ok: true, data: { ...preview, revision: 5, selected: [] } });
     const onSaved = vi.fn();
-    render(<GroupVideoReferenceDialog open onOpenChange={vi.fn()} project="p" episode={1} groupId="g" preview={{ ...preview, selected: [
+    render(<GroupVideoReferenceDialog open onOpenChange={vi.fn()} project="p" episode={1} groupId="g" expectedDirectorRevisionId="director-r1" preview={{ ...preview, director_revision_id: "director-r1", selected: [
       { reference_id: "room", subject_description: "Saved room" },
       { reference_id: "hero", subject_description: "Saved hero" },
     ] }} minImages={1} maxImages={5} onSaved={onSaved} />);
@@ -50,11 +50,32 @@ describe("GroupVideoReferenceDialog", () => {
     await user.type(screen.getAllByRole("textbox")[0], "Updated room");
     await user.click(screen.getByRole("button", { name: "下移 Room" }));
     await user.click(screen.getByRole("button", { name: "保存参考图" }));
-    expect(m.save).toHaveBeenCalledWith({ groupId: "g", expectedRevision: 4, references: [
+    expect(m.save).toHaveBeenCalledWith({ groupId: "g", expectedRevision: 4, expectedDirectorRevisionId: "director-r1", references: [
       { reference_id: "hero", subject_description: "Saved hero" },
       { reference_id: "room", subject_description: "Updated room" },
     ] });
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ revision: 5 })));
+  });
+
+  it("blocks saving if the preview moves to a different director revision while open", async () => {
+    const firstRevision = { ...preview, director_revision_id: "director-r1" } as any;
+    const { rerender } = render(<GroupVideoReferenceDialog open onOpenChange={vi.fn()} project="p" episode={1} groupId="g" preview={firstRevision} minImages={1} maxImages={5} />);
+    rerender(<GroupVideoReferenceDialog open onOpenChange={vi.fn()} project="p" episode={1} groupId="g" preview={{ ...firstRevision, director_revision_id: "director-r2" }} minImages={1} maxImages={5} />);
+    expect(screen.getByRole("button", { name: "保存参考图" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("已被其他操作更新");
+    expect(m.save).not.toHaveBeenCalled();
+  });
+
+  it("sends the fixed canvas revision with temporary uploads", async () => {
+    const uploaded = { reference_id: "new", source_kind: "temporary_upload" as const, label: "New", subject_description: "Uploaded subject", thumbnail_url: "/new.png" };
+    m.upload.mockResolvedValue({ ok: true, data: uploaded });
+    render(<GroupVideoReferenceDialog open onOpenChange={vi.fn()} project="p" episode={1} groupId="g" expectedDirectorRevisionId="director-r1" preview={{ ...preview, director_revision_id: "director-r1" }} minImages={1} maxImages={5} />);
+    fireEvent.change(screen.getByLabelText("上传临时参考图"), { target: { files: [new File(["image"], "new.png", { type: "image/png" })] } });
+    await waitFor(() => expect(m.upload).toHaveBeenCalledWith({
+      groupId: "g",
+      file: expect.any(File),
+      expectedDirectorRevisionId: "director-r1",
+    }));
   });
 
   it("drags the first selection downward and preserves the textarea DOM identity and focus", () => {
@@ -103,7 +124,7 @@ describe("GroupVideoReferenceDialog", () => {
     const onRefresh = vi.fn().mockResolvedValue({ ...preview, candidates: [...candidates, uploaded] });
     render(<GroupVideoReferenceDialog open onOpenChange={vi.fn()} project="p" episode={1} groupId="g" preview={{ ...preview, candidates: [candidates[0]], selected: [{ reference_id: "hero", subject_description: "Custom hero" }] }} minImages={1} maxImages={5} onRefresh={onRefresh} />);
     fireEvent.change(screen.getByLabelText("上传临时参考图"), { target: { files: [new File(["image"], "new.png", { type: "image/png" })] } });
-    await waitFor(() => expect(m.upload).toHaveBeenCalledWith({ groupId: "g", file: expect.any(File) }));
+    await waitFor(() => expect(m.upload).toHaveBeenCalledWith({ groupId: "g", file: expect.any(File), expectedDirectorRevisionId: null }));
     await waitFor(() => expect(onRefresh).toHaveBeenCalled());
     expect(await screen.findByDisplayValue("Uploaded subject")).toBeInTheDocument();
     expect(screen.getByDisplayValue("Custom hero")).toBeInTheDocument();

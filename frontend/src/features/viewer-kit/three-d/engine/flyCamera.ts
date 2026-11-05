@@ -45,6 +45,7 @@ export interface FlyCameraController {
   // 保存/恢复：azim/elev/distance + focalPoint，序列化进 scene snapshot。
   getCameraState: () => FlyCameraState;
   setCameraState: (state: unknown) => void;
+  isInputEnabled: () => boolean;
   setInputEnabled: (enabled: boolean) => void;
   tick: () => void;
   destroy: () => void;
@@ -421,6 +422,9 @@ export function createFlyCameraController(options: FlyCameraControllerOptions): 
       distance = pc.math.clamp(normalized.distance, SUPER_SPLAT_CONTROLS.minZoom, SUPER_SPLAT_CONTROLS.maxZoom);
       focalPoint.set(normalized.focalPoint[0], normalized.focalPoint[1], normalized.focalPoint[2]);
       sync();
+    },
+    isInputEnabled() {
+      return inputEnabled;
     },
     setInputEnabled(enabled: boolean) {
       inputEnabled = enabled;

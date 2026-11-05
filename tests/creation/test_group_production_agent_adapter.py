@@ -14,7 +14,7 @@ def _node(**changes):
 
 
 @pytest.mark.asyncio
-async def test_group_production_uses_formal_bounded_video_entry(monkeypatch):
+async def test_legacy_production_cannot_submit_new_batch(monkeypatch):
     from novelvideo.api.routes import director_workspace as api
     calls = []
 
@@ -24,14 +24,12 @@ async def test_group_production_uses_formal_bounded_video_entry(monkeypatch):
         return {'data': {'task_id': 'task', 'scope': scope}}
 
     monkeypatch.setattr(api, 'start_director_workspace_production', submit)
-    result = await production.submit({'project_id': 'p', 'actor': {'id': 'user'}},
-                                     {'id': 'attempt'}, _node(), 'produce')
-    assert calls[0][1] == 1
-    assert calls[0][2].revision_id == 'revision-a'
-    assert calls[0][2].group_ids == ['g2', 'g1']
-    assert calls[0][2].retry_failed is False
-    assert result['group_ids'] == ['g1', 'g2']
-    assert result['workflow_kind'] == 'group_production'
+    for operation in ('produce', 'retry_production', 'render_groups', 'retry_render_groups'):
+        assert ('directorWorkspaceNode', operation) not in production.OPERATIONS
+        with pytest.raises(OrchestrationError, match='production graph'):
+            await production.submit({'project_id': 'p', 'actor': {'id': 'user'}},
+                                    {'id': 'attempt'}, _node(), operation)
+    assert calls == []
 
 
 @pytest.mark.parametrize('changes', [

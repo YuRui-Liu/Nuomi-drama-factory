@@ -47,6 +47,33 @@ export function alignDirectorDuration(seconds: number, capabilities: DirectorCap
   return { frames, seconds: frames / fps };
 }
 
+const DEFAULT_MAX_SUBMISSION_SECONDS = 15;
+
+function maxDirectorSubmissionFrames(capabilities: DirectorCapabilities): number {
+  const productLimitFrames = DEFAULT_MAX_SUBMISSION_SECONDS * (capabilities.fps > 0 ? capabilities.fps : 24);
+  const limits = capabilities as DirectorCapabilities & {
+    max_submission_frames?: number;
+    maxSubmissionFrames?: number;
+    max_submission_duration_seconds?: number;
+    maxSubmissionDurationSeconds?: number;
+  };
+  const frameLimit = limits.max_submission_frames ?? limits.maxSubmissionFrames;
+  if (typeof frameLimit === 'number' && Number.isFinite(frameLimit) && frameLimit > 0) {
+    return Math.min(Math.floor(frameLimit), productLimitFrames);
+  }
+
+  const durationLimit = limits.max_submission_duration_seconds ?? limits.maxSubmissionDurationSeconds
+    ?? DEFAULT_MAX_SUBMISSION_SECONDS;
+  if (!Number.isFinite(durationLimit) || durationLimit <= 0 || capabilities.fps <= 0) {
+    return productLimitFrames;
+  }
+  return Math.min(Math.floor(durationLimit * capabilities.fps + 1e-9), productLimitFrames);
+}
+
+function formatAlignedSeconds(frames: number, fps: number): string {
+  return (frames / fps).toFixed(6);
+}
+
 export type TechniqueIssue = 'techniqueRetired' | 'techniqueModeUnsupported' | 'techniqueDurationShort' |
   'techniqueDurationLong' | 'techniqueLastFrameRequired' | 'techniqueLastFrameForbidden';
 
@@ -96,5 +123,17 @@ export function validateDirectorDraft(draft: DirectorDraft, capabilities: Direct
       errors[`${prefix}.first_frame`] = `${mode} 模式当前不可用`;
     }
   });
+
+  const hasValidDurations = draft.segments.length > 0 && draft.segments.every((segment) =>
+    Number.isFinite(segment.durationSeconds) && segment.durationSeconds > 0);
+  if (hasValidDurations && capabilities.fps > 0 && capabilities.frameStep > 0) {
+    const totalFrames = draft.segments.reduce((total, segment) =>
+      total + alignDirectorDuration(segment.durationSeconds, capabilities).frames, 0);
+    const maxFrames = maxDirectorSubmissionFrames(capabilities);
+    if (totalFrames > maxFrames) {
+      const excessFrames = totalFrames - maxFrames;
+      errors.segments = `H3 对齐后累计 ${formatAlignedSeconds(totalFrames, capabilities.fps)} 秒（${totalFrames} 帧），超过 ${formatAlignedSeconds(maxFrames, capabilities.fps)} 秒上限 ${formatAlignedSeconds(excessFrames, capabilities.fps)} 秒（${excessFrames} 帧）`;
+    }
+  }
   return errors;
 }

@@ -37,6 +37,7 @@ _TASK_TYPE_LABELS = {
     "script_creation_generation": "剧本创作",
     "script_creation_prop_extraction": "创作道具提取",
     "script_creation_asset_extraction": "创作资产提取",
+    "script_creation_episode_asset_supplement": "单集资产补充",
     "script_creation_rewrite": "剧本改稿",
     "build_characters": "构建角色",
     "build_scenes": "构建场景",

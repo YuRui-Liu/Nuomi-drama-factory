@@ -2194,6 +2194,15 @@ def test_camera_prompt_contains_camera_body_lens_focal_and_aperture() -> None:
     assert "Arri Signature Prime" in prompt
     assert "35mm" in prompt
     assert "f/4" in prompt
+    assert "selected camera values take priority over conflicting camera wording" in prompt
+    assert "Do not introduce a different focal length, aperture, or depth of field" in prompt
+
+    assembled = freezone_routes._merge_prompt_with_style_and_camera(
+        "居民楼门厅空间要清晰，提示稿里旧写了50mm f/1.4。", None, camera,
+    )
+    assert "提示稿里旧写了50mm f/1.4" in assembled
+    assert assembled.index("Camera setup:") > assembled.index("提示稿里旧写了50mm f/1.4")
+    assert "These selected camera values take priority" in assembled
 
 
 def test_image_style_templates_builtin_count_is_30() -> None:
@@ -2491,6 +2500,78 @@ async def test_freezone_celery_image_jobs_preserve_canvas_node_context(
     assert calls[0]["payload"]["node_id"] == "node_gen"
     assert calls[1]["payload"]["canvas_id"] == "canvas_a"
     assert calls[1]["payload"]["node_id"] == "node_edit"
+
+
+@pytest.mark.asyncio
+async def test_managed_episode_asset_image_edit_is_gated_before_enqueue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from novelvideo.freezone.orchestration.models import OrchestrationError
+
+    project_dir, _output_dir = _patch_freezone_project(monkeypatch, tmp_path)
+    ctx = _project_ctx(tmp_path)
+    source = project_dir / "freezone" / "_uploads" / "base.png"
+    _write_image(source)
+    canvas_id = "managed_episode"
+    _write_canvas_with_node(tmp_path, canvas_id, {
+        "id": "asset_edit",
+        "type": "imageNode",
+        "data": {"episodeNumber": 1, "artifactKind": "asset"},
+    })
+    monkeypatch.setattr(
+        freezone_routes,
+        "resolve_canvas_scope",
+        lambda *_args, **_kwargs: {
+            "canvas_id": canvas_id,
+            "kind": "episode",
+            "episode_id": "001",
+            "episode_number": 1,
+            "status": "applied",
+        },
+    )
+
+    def block_assets(_state_root, _output_root, _scope, stage, **_kwargs):
+        assert stage == "assets"
+        raise OrchestrationError(
+            "production_stage_blocked", "screenplay required",
+            stage="assets", required_stage="screenplay", status="pending",
+            reason="not_ready",
+        )
+
+    async def should_not_enqueue(*_args, **_kwargs):
+        raise AssertionError("managed asset edit must be admitted before provider enqueue")
+
+    monkeypatch.setattr(freezone_routes, "admit_managed_stage", block_assets)
+    monkeypatch.setattr(
+        freezone_routes,
+        "get_task_backend",
+        lambda: SimpleNamespace(enqueue_project_task=should_not_enqueue),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await freezone_routes._start_or_enqueue_freezone_edit_job(
+            ctx=ctx,
+            username="admin",
+            project="demo",
+            project_dir=project_dir,
+            output_dir=str(project_dir),
+            prompt="redesign asset",
+            base_url=f"/static/admin/demo/{source.relative_to(project_dir).as_posix()}",
+            extra_reference_urls=[],
+            aspect_ratio="1:1",
+            image_size="2K",
+            camera=None,
+            style=None,
+            provider="newapi",
+            model="newapi_gpt_image2",
+            quality=None,
+            canvas_id=canvas_id,
+            node_id="asset_edit",
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["required_stage"] == "screenplay"
 
 
 @pytest.mark.asyncio
@@ -6181,6 +6262,50 @@ async def test_template_edit_storyboard_25_grid_preserves_source_aspect_ratio(
     assert result["ok"] is True
     assert captured["aspect_ratio"] == "9:16"
     assert "Each cell must preserve the source image aspect ratio" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_freezone_eleven_music_managed_episode_is_gated_before_enqueue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from novelvideo.api.schemas import FreezoneAudioMusicRequest
+
+    _patch_freezone_project(monkeypatch, tmp_path)
+    admission_calls: list[tuple[object, int | None, str]] = []
+
+    def block_audio(ctx, episode_number, stage):
+        admission_calls.append((ctx, episode_number, stage))
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "production_stage_blocked",
+                "stage": "audio",
+                "required_stage": "screenplay",
+                "status": "pending",
+                "reason": "not_ready",
+            },
+        )
+
+    async def unexpected_enqueue(**_kwargs):
+        pytest.fail("managed episode music must be gated before provider submission")
+
+    monkeypatch.setattr(
+        freezone_routes, "_admit_registered_episode_stage_for_api", block_audio
+    )
+    monkeypatch.setattr(
+        freezone_routes, "_enqueue_freezone_background_job", unexpected_enqueue
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await freezone_routes.freezone_audio_eleven_music(
+            project="58",
+            body=FreezoneAudioMusicRequest(input="instrumental score", target_episode=1),
+            user={"username": "admin"},
+        )
+
+    assert exc.value.status_code == 409
+    assert admission_calls == [(_project_ctx(tmp_path), 1, "audio")]
 
 
 # ---------------------------------------------------------------------------

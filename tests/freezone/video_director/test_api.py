@@ -18,6 +18,7 @@ from novelvideo.freezone.video_director.models import (
 from novelvideo.freezone.video_director.service import DirectorService
 from novelvideo.freezone.video_director.techniques import CATALOG_VERSION, list_techniques
 from novelvideo.media_capabilities.video.h3_wire import compile_h3_wire
+from novelvideo.media_capabilities.video.h3_prompt_profile import H3_PROMPT_PROFILE_VERSION
 
 
 @pytest.mark.asyncio
@@ -113,6 +114,8 @@ async def test_api_scopes_reads_and_writes_and_deduplicates_enqueue(tmp_path: Pa
         response = await client.get("/api/v1/projects/p1/freezone/video-director/capabilities")
         assert response.json()["data"]["configured_reference_limit"] == 10
         assert response.json()["data"]["effective_reference_limit"] == 8
+        assert response.json()["data"]["max_submission_duration_seconds"] == 15
+        assert response.json()["data"]["max_submission_frames"] == 360
         assert response.json()["data"]["frame_step"] == 17
         listed = await client.get("/api/v1/projects/p1/freezone/video-director/attempts?canvas_id=c&node_id=n")
         assert len(listed.json()["data"]["attempts"]) == 1
@@ -126,10 +129,25 @@ async def test_api_scopes_reads_and_writes_and_deduplicates_enqueue(tmp_path: Pa
 
 @pytest.mark.asyncio
 async def test_api_resume_requeues_dead_runner_and_queries_existing_paid_task(tmp_path, monkeypatch):
+    from novelvideo.creation.production_progress import ProductionProgress
+    from novelvideo.freezone.orchestration.projection import create_canvas, patch_graph
+
     output = tmp_path / "output"
     output.mkdir()
+    state_dir = tmp_path / "state"
     ctx = SimpleNamespace(project_id="p", owner_username="alice", project_name="show",
-                          output_dir=output, runtime_dir=tmp_path / "runtime")
+                          output_dir=output, state_dir=state_dir,
+                          runtime_dir=tmp_path / "runtime")
+    create_canvas(state_dir, "c", project_id="p", name="managed", actor_id="alice")
+    patch_graph(state_dir, "c", base_revision=1, request_id="managed-video", operations=[{
+        "op": "add_node", "node": {"id": "n", "type": "videoDirectorNode",
+            "data": {"operation": "generate", "episodeNumber": 3}},
+    }])
+    monkeypatch.setattr(route, "resolve_canvas_scope", lambda *_: {
+        "canvas_id": "c", "kind": "episode", "episode_id": "episode-3",
+        "episode_number": 3, "status": "applied",
+    })
+    ProductionProgress(state_dir, output_root=output).configure("003", mode="review")
     source = output / "frame.png"
     image = BytesIO()
     Image.new("RGB", (2, 2), "red").save(image, format="PNG")
@@ -195,6 +213,78 @@ async def test_api_resume_requeues_dead_runner_and_queries_existing_paid_task(tm
     assert response.json()["data"]["attempt_id"] == attempt["id"]
     assert response.json()["data"]["task_id"] == "new-task"
     assert provider.queries == 1 and provider.submissions == 0 and backend.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_managed_h3_new_and_retry_submissions_wait_for_storyboard_review(tmp_path, monkeypatch):
+    from novelvideo.creation.production_progress import ProductionProgress
+    from novelvideo.freezone.orchestration.projection import create_canvas, patch_graph
+
+    output = tmp_path / "output"
+    output.mkdir()
+    state_dir = tmp_path / "state"
+    ctx = SimpleNamespace(project_id="p", owner_username="alice", project_name="show",
+                          output_dir=output, state_dir=state_dir,
+                          runtime_dir=tmp_path / "runtime")
+    create_canvas(state_dir, "c", project_id="p", name="managed", actor_id="alice")
+    patch_graph(state_dir, "c", base_revision=1, request_id="managed-video", operations=[{
+        "op": "add_node", "node": {"id": "n", "type": "videoDirectorNode",
+            "data": {"operation": "generate", "episodeNumber": 3}},
+    }])
+    monkeypatch.setattr(route, "resolve_canvas_scope", lambda *_: {
+        "canvas_id": "c", "kind": "episode", "episode_id": "episode-3",
+        "episode_number": 3, "status": "applied",
+    })
+    progress = ProductionProgress(state_dir, output_root=output)
+    progress.configure("003", mode="review")
+    for stage, outputs in (
+        ("screenplay", {"script": "episodes/003/script.md"}),
+        ("assets", {"reuse_checklist": "episodes/003/assets/reuse-checklist.md"}),
+        ("storyboard", {"table": "episodes/003/storyboard/table.md",
+                         "grid": "episodes/003/storyboard/grid.png"}),
+    ):
+        for reference in outputs.values():
+            path = output / reference
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(stage.encode())
+        completed = progress.complete("003", stage, f"hash-{stage}", outputs)
+        if stage != "storyboard":
+            progress.approve("003", stage, completed["stages"][stage]["approval_hash"])
+
+    service = DirectorService(ctx, provider=SimpleNamespace(), runtime=[])
+    draft = DirectorDraft(revision=1, aspect_ratio="9:16", resolution="720p", segments=(
+        DirectorSegment(id="s", prompt="Walk", duration_seconds=5,
+                        first_frame=DirectorImage(image_id="i", url="frame.png")),))
+    failed, _ = service.store.create("p", "c", "n", "failed-parent", draft)
+    service.store.update(failed["id"], stage="failed", failed_stage="optimizing")
+
+    async def resolve(project, user, *, required_role):
+        assert required_role == "editor"
+        return ctx, "alice", "show", output, str(output)
+
+    monkeypatch.setattr(route, "_resolve_freezone_project", resolve)
+    monkeypatch.setattr(route, "DirectorService", lambda ctx, reference_limit: service)
+    monkeypatch.setattr(route, "get_media_capability_store", lambda: SimpleNamespace(
+        get_runninghub_workflows=lambda: SimpleNamespace(video_minimax_h3_ref_max_images=5)))
+    app = FastAPI()
+    app.include_router(route.router, prefix="/api/v1")
+    app.dependency_overrides[get_api_user] = lambda: {"username": "alice"}
+    create_body = {"canvas_id": "c", "node_id": "n", "request_id": "new",
+                   "draft": {"revision": 1, "aspect_ratio": "9:16", "resolution": "720p",
+                             "segments": [{"id": "s", "prompt": "Walk", "duration_seconds": 5,
+                                           "first_frame": {"image_id": "i", "url": "frame.png"}}]}}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        create_response = await client.post(
+            "/api/v1/projects/p/freezone/video-director/attempts", json=create_body)
+        retry_response = await client.post(
+            f"/api/v1/projects/p/freezone/video-director/attempts/{failed['id']}/retry")
+
+    assert create_response.status_code == 409
+    assert create_response.json()["detail"]["code"] == "production_stage_blocked"
+    assert create_response.json()["detail"]["required_stage"] == "storyboard"
+    assert retry_response.status_code == 409
+    assert retry_response.json()["detail"]["code"] == "production_stage_blocked"
+    assert len(service.list("c", "n")) == 1
 
 
 @pytest.mark.asyncio
@@ -313,3 +403,84 @@ async def test_api_concurrent_resume_of_dead_optimizer_reuses_one_attempt_and_su
     assert {response.json()["data"]["attempt_id"] for response in responses} == {attempt["id"]}
     assert {response.json()["data"]["task_id"] for response in responses} == {"new-task"}
     assert backend.calls == 1 and provider.submissions == 1
+
+
+@pytest.mark.asyncio
+async def test_api_preview_returns_fingerprint_and_prepared_attempt_uses_shared_contract(tmp_path, monkeypatch):
+    output = tmp_path / "output"
+    output.mkdir()
+    image = BytesIO()
+    Image.new("RGB", (2, 2), "red").save(image, format="PNG")
+    (output / "frame.png").write_bytes(image.getvalue())
+    ctx = SimpleNamespace(project_id="p", owner_username="alice", project_name="show",
+                          output_dir=output, state_dir=tmp_path / "state",
+                          runtime_dir=tmp_path / "runtime")
+    service = DirectorService(ctx, provider=SimpleNamespace(), runtime=[])
+    enqueued = []
+
+    async def resolve_service(project, user, *, role):
+        assert project == "p" and role == "editor"
+        return ctx, service
+
+    class Backend:
+        async def enqueue_project_task(self, *args, **kwargs):
+            enqueued.append((args, kwargs))
+            return SimpleNamespace(task_state=SimpleNamespace(task_id="queue-prepared"))
+
+    monkeypatch.setattr(route, "_service", resolve_service)
+    monkeypatch.setattr(route, "get_task_backend", lambda: Backend())
+    monkeypatch.setattr(route, "get_task_manager", lambda: SimpleNamespace(
+        expire_task_leases=lambda _ctx: 0, get_task_for_project=lambda *args, **kwargs: None))
+    app = FastAPI()
+    app.include_router(route.router, prefix="/api/v1")
+    app.dependency_overrides[get_api_user] = lambda: {"username": "alice"}
+    draft = DirectorDraft(revision=1, aspect_ratio="9:16", resolution="720p", segments=(
+        DirectorSegment(id="scene", prompt="Walking", duration_seconds=5,
+                        first_frame=DirectorImage(image_id="frame", url="frame.png")),
+    ))
+    base = {"draft": draft.model_dump(mode="json")}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post("/api/v1/projects/p/freezone/video-director/preview", json=base)
+        fingerprint = first.json()["data"]["draft_fingerprint"]
+        segment = first.json()["data"]["segments"][0]
+        wire = {
+            "mode": "i2va", "duration_seconds": segment["duration_seconds"],
+            "final_shot_number": 1,
+            "integrated_multimodal_description": "[Shot 1] A continuous walk.",
+            "overall_soundscape": "Footsteps", "non_diegetic_music": "N/A",
+        }
+        prepared = {
+            "revision": 1, "route": "h3", "profile_id": "minimax-h3-director",
+            "profile_version": H3_PROMPT_PROFILE_VERSION,
+            "optimized_at": datetime.now(timezone.utc).isoformat(),
+            "draft_fingerprint": fingerprint,
+            "segments": [{
+                "segment_id": "scene", "mode": "i2va",
+                "requested_duration_seconds": 5,
+                "duration_seconds": segment["duration_seconds"], "frames": segment["frames"],
+                "wire": wire, "prompt": compile_h3_wire(CanvasBaseWire.model_validate(wire)),
+            }],
+        }
+        second = await client.post("/api/v1/projects/p/freezone/video-director/preview",
+                                   json={**base, "prepared": prepared})
+        invalid = await client.post("/api/v1/projects/p/freezone/video-director/attempts", json={
+            "canvas_id": "c", "node_id": "n", "request_id": "bad-prepared", **base,
+            "prepared": {**prepared, "profile_version": H3_PROMPT_PROFILE_VERSION - 1},
+        })
+        enqueued_after_invalid = len(enqueued)
+        attempt = await client.post("/api/v1/projects/p/freezone/video-director/attempts", json={
+            "canvas_id": "c", "node_id": "n", "request_id": "prepared", **base,
+            "prepared": prepared,
+        })
+
+    assert first.status_code == 200
+    assert first.json()["data"]["profile_version"] == H3_PROMPT_PROFILE_VERSION
+    assert second.status_code == 200
+    preview = second.json()["data"]["preview"]
+    assert preview["route"] == "h3"
+    assert "preview-image:frame" in preview["timeline_data"]
+    assert invalid.status_code == 422
+    assert enqueued_after_invalid == 0
+    assert attempt.status_code == 202
+    assert attempt.json()["data"]["attempt"]["optimized"]["draft_fingerprint"] == fingerprint
+    assert len(enqueued) == 1

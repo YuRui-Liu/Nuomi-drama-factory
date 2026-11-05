@@ -4,6 +4,7 @@ from novelvideo.director_plan.models import (
     DirectorPlanRevision, DirectorShotIntent, NarrativeGroupPlan, ShotPlan, ValidationReport,
 )
 from novelvideo.director_plan.store import DirectorPlanStore
+from novelvideo.storyboard_prompt import StaticPanel
 from novelvideo.narrative_groups.image_prompt import panel_description
 from novelvideo.narrative_groups.service import generation_beats_for_group
 
@@ -13,10 +14,16 @@ def test_director_intents_survive_store_projection_and_image_override(tmp_path):
         narrative_purpose=f"purpose-{i}", audience_attention=f"attention-{i}",
         emotional_effect=f"emotion-{i}", continuity_strategy=f"continuity-{i}",
     ) for i in range(2)]
+    selected_panel = StaticPanel(
+        id="panel-s0", shot_id="s0", anchor="selected",
+        state="笔尖悬停在纸面上", framing="手部近景", subjects=[],
+        setting="广播间", lighting="冷色侧光", visible_text=[],
+    )
     shots = tuple(ShotPlan(
         id=f"s{i}", source_span_ids=(f"line-{i}",), subject="岑砚", action="停笔",
         visible_start_state="笔尖悬停", visible_end_state="收笔", duration_seconds=3,
         intent=intents[i] if i < 2 else None,
+        static_panel=selected_panel if i == 0 else None,
     ) for i in range(3))
     group = NarrativeGroupPlan(
         id="g1", ordinal=1, source_span_ids=tuple(f"line-{i}" for i in range(3)),
@@ -35,6 +42,8 @@ def test_director_intents_survive_store_projection_and_image_override(tmp_path):
     beats = generation_beats_for_group(tmp_path, 1, "g1", [], image_prompt_overrides={"s0": "手部近景"})
     assert [b["id"] for b in beats] == ["s0", "s1", "s2"]
     assert [b["director_intent"] for b in beats] == [i.model_dump() for i in intents] + [None]
+    assert beats[0]["static_panel"] == selected_panel.model_dump(mode="json")
+    assert "static_panel" not in beats[1]
     assert beats[0]["image_prompt_override"] == "手部近景"
     assert all(b["dialogue_lines"] == [] for b in beats)
 

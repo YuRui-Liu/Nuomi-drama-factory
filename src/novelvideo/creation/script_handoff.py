@@ -149,6 +149,8 @@ class ScriptHandoffCanvas:
             canvas_id = uuid4().hex
             operation_id = uuid4().hex
             node_id = uuid4().hex
+            screenplay_node_id = uuid4().hex
+            director_node_id = uuid4().hex
             stamp = datetime.now(timezone.utc).isoformat()
             episode_payload = {
                 "title": title,
@@ -164,38 +166,75 @@ class ScriptHandoffCanvas:
                 canvas_id=canvas_id,
                 episode_id=episode_id,
             )
-            node = {
-                "id": node_id,
-                "type": "textAnnotationNode",
-                "position": {"x": 0, "y": 0},
-                "data": {
-                    "content": markdown,
-                    "displayName": title,
-                    "referenceOnly": True,
-                    "semanticRef": {
-                        "object_id": story_fragment["id"],
-                        "kind": "story_fragment",
-                        "revision": story_fragment["revision"],
-                    },
-                    # This points to the immutable handoff snapshot. The node's
-                    # editable content is not itself treated as source evidence.
-                    "sourceSnapshot": {
-                        **source_ref,
-                        "snapshot_hash": snapshot_hash,
+            nodes = [
+                {
+                    "id": node_id,
+                    "type": "textAnnotationNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "content": markdown,
+                        "displayName": title,
+                        "referenceOnly": True,
+                        "formalScriptRef": {
+                            "kind": "episode_script", "project_id": self.project_id,
+                            "document_id": handoff["document_id"],
+                            "revision_id": handoff["revision_id"],
+                            "episode_number": episode_number,
+                            "title": title,
+                        },
+                        "semanticRef": {
+                            "object_id": story_fragment["id"],
+                            "kind": "story_fragment",
+                            "revision": story_fragment["revision"],
+                        },
+                        # This points to the immutable handoff snapshot. The node's
+                        # editable content is not itself treated as source evidence.
+                        "sourceSnapshot": {
+                            **source_ref,
+                            "snapshot_hash": snapshot_hash,
+                        },
                     },
                 },
-            }
+                {
+                    "id": screenplay_node_id,
+                    "type": "screenplayNode",
+                    "position": {"x": 640, "y": 0},
+                    "width": 560,
+                    "height": 620,
+                    "data": {
+                        "displayName": f"E{episode_number:02d} · 正式剧本",
+                        "episodeNumber": episode_number,
+                        "documentId": handoff["document_id"],
+                        "documentRevisionId": handoff["revision_id"],
+                        "sourceHandoffId": handoff_id,
+                    },
+                },
+                {
+                    "id": director_node_id,
+                    "type": "directorWorkspaceNode",
+                    "position": {"x": 1280, "y": 0},
+                    "width": 600,
+                    "height": 560,
+                    "data": {
+                        "displayName": f"E{episode_number:02d} · 导演工作空间",
+                        "episodeNumber": episode_number,
+                        "sourceDocumentId": handoff["document_id"],
+                        "sourceDocumentRevisionId": handoff["revision_id"],
+                        "sourceHandoffId": handoff_id,
+                    },
+                },
+            ]
             scope = {
                 "project_id": self.project_id,
                 "episode_id": episode_id,
                 "canvas_id": canvas_id,
-                "node_ids": [node_id],
+                "node_ids": [node_id, screenplay_node_id, director_node_id],
             }
             canvas = default_canvas_payload(project_id=self.project_id, actor_id=actor)
             canvas.update(
                 canvas_id=canvas_id,
                 name=title,
-                nodes=[node],
+                nodes=nodes,
                 metadata={
                     "episode_id": episode_id,
                     "title": title,
@@ -228,7 +267,11 @@ class ScriptHandoffCanvas:
             operation_result = OperationResult(
                 operation_id=operation_id,
                 status="running",
-                object_refs=[episode_ref, fragment_ref],
+                object_refs=[episode_ref, fragment_ref,
+                             {"kind": "screenplay_node", "node_id": screenplay_node_id,
+                              "document_id": handoff["document_id"], "revision_id": handoff["revision_id"]},
+                             {"kind": "director_workspace_node", "node_id": director_node_id,
+                              "episode_number": episode_number}],
             )
             conn.execute(
                 "INSERT INTO objects (id,kind,current_revision) VALUES (?, 'episode', 1)",

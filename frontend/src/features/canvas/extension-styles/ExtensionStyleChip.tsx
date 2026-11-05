@@ -20,6 +20,14 @@ export function ExtensionStyleChip({ value, onChange, onOpenChange,ownerNodeId }
   const {scope,managed,fixed:fixedStyle}=useFixedNodeStyle(ownerNodeId);
   const [open, setOpen] = useState(false);
   const style = typeof value === "string" ? getExtensionStyle(value) : undefined;
+  const fixedStyleVersion = fixedStyleVersionLabel(fixedStyle?.version);
+  const fixedStyleLabel = fixedStyle?.state === 'disabled'
+    ? '固定风格已禁用'
+    : fixedStyle?.title
+    ? `固定风格：${fixedStyle.title}${fixedStyleVersion ? ` · ${fixedStyleVersion}` : ''}`
+    : fixedStyle?.id
+    ? '固定风格：已配置'
+    : '风格配置（含自定义）';
   const onOpenChangeRef = useRef(onOpenChange);
 
   useEffect(() => {
@@ -41,7 +49,35 @@ export function ExtensionStyleChip({ value, onChange, onOpenChange,ownerNodeId }
 
   return (
     <>
-      {ownerNodeId&&!scope?<span>画布同步中…</span>:managed&&scope ? <><Button type="button" variant="outline" size="sm" onClick={()=>handleOpenChange(true)}>风格库</Button><span title={fixedStyle?.title?`当前风格：${fixedStyle.title} · v${fixedStyle.version}`:'风格配置（含自定义）'}><DirectionReferenceEntry project={scope.project} canvasId={scope.canvasId} nodeIds={ownerNodeId?[ownerNodeId]:[]} kind="style" label={fixedStyle?.title?`当前风格：${fixedStyle.title} · ${fixedStyleVersionLabel(fixedStyle.version)}`:'风格配置（含自定义）'}/></span></> : scope&&managed===null ? <span>风格加载中…</span> : style ? (
+      {ownerNodeId&&!scope?<span>画布同步中…</span>:managed&&scope ? <>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-label={style ? `打开提示词库，当前扩展风格：${style.name}` : '打开提示词库'}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          onClick={()=>handleOpenChange(true)}
+        >
+          <Library aria-hidden />
+          提示词库
+        </Button>
+        <span
+          className="max-w-[180px] truncate text-xs text-muted-foreground"
+          title={style ? `生成请求会追加扩展风格提示片段：${style.name}` : typeof value === 'string' ? `无法识别的扩展风格 ID：${value}` : '未设置扩展提示词风格'}
+        >
+          {style ? `${fixedStyle?.title ? '附加提示词风格' : '当前风格'}：${style.name}` : typeof value === 'string' ? '风格无法识别' : fixedStyle?.title ? null : '未选择风格'}
+        </span>
+        <span title={fixedStyleLabel}>
+          <DirectionReferenceEntry
+            project={scope.project}
+            canvasId={scope.canvasId}
+            nodeIds={ownerNodeId?[ownerNodeId]:[]}
+            kind="style"
+            label={fixedStyleLabel}
+          />
+        </span>
+      </> : scope&&managed===null ? <span>风格加载中…</span> : style ? (
         <div className="inline-flex items-center rounded-md border border-border bg-muted/50 text-xs text-foreground">
           <button
             type="button"
@@ -88,9 +124,9 @@ export function ExtensionStyleChip({ value, onChange, onOpenChange,ownerNodeId }
 
       <ExtensionStyleDrawer
         open={open}
-        value={managed?fixedStyle?.id??null:style?.id??null}
+        value={style?.id??null}
         onChange={next=>{if(managed===false||!ownerNodeId)onChange(next);}}
-        renderApplication={managed&&scope?id=><DirectionReferenceEntry project={scope.project} canvasId={scope.canvasId} nodeIds={ownerNodeId?[ownerNodeId]:[]} kind="style" selectedId={id} label="配置固定风格"/>:undefined}
+        renderApplication={managed&&scope?()=><p role="note" className="text-xs leading-5 text-muted-foreground">管理画布中只读：此扩展风格仅在生成请求中追加提示片段。固定风格是独立的创作方向设置，不会由此扩展风格自动写入。</p>:undefined}
         onOpenChange={handleOpenChange}
       />
     </>

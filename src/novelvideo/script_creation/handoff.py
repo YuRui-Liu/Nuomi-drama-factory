@@ -32,6 +32,37 @@ def _semantic_extraction_failure(result):
     return "; ".join(details) or f"{result.get('failed_scenes', 0)} scene extraction(s) failed"
 
 
+def write_handoff_receipt(project_root, handoff):
+    """Materialize the exact confirmed screenplay snapshot as a read-only project artifact."""
+    snapshot = handoff.get("snapshot") if isinstance(handoff, dict) else None
+    episode = handoff.get("episode_number") if isinstance(handoff, dict) else None
+    revision_id = handoff.get("revision_id") if isinstance(handoff, dict) else None
+    markdown = snapshot.get("markdown") if isinstance(snapshot, dict) else None
+    source_revision = handoff.get("source_revision") if isinstance(handoff, dict) else None
+    source_hash = handoff.get("source_hash") if isinstance(handoff, dict) else None
+    if (type(episode) is not int or episode < 1
+            or not isinstance(revision_id, str)
+            or re.fullmatch(r"[0-9a-f]{32}", revision_id) is None
+            or not isinstance(markdown, str) or not markdown.strip()
+            or type(source_revision) is not int or source_revision < 1
+            or not isinstance(source_hash, str)
+            or content_sha256(markdown) != source_hash):
+        raise DocumentValidation("confirmed handoff receipt is incomplete or inconsistent")
+
+    from novelvideo.creation.production_documents import ProductionDocuments
+
+    path = f"episodes/{episode:03d}/handoff-receipts/{revision_id}.md"
+    written = ProductionDocuments(project_root).write_immutable(path, markdown)
+    return {
+        "path": written["path"],
+        "sha256": written["hash"],
+        "source_revision": source_revision,
+        "handoff_id": handoff.get("id"),
+        "document_id": handoff.get("document_id"),
+        "revision_id": revision_id,
+    }
+
+
 class HandoffService:
     """The database row and outbox are the business identity, not the task slot."""
 
@@ -128,6 +159,17 @@ class HandoffService:
                     (self.project_id, episode_number),
                 )).fetchall()
             return [self._decode(row) for row in rows]
+
+    async def latest_confirmed_binding(self, document_id, episode_number):
+        """Return the newest confirmed source write for this exact script binding."""
+        async with self.documents._db() as db:
+            row = await (await db.execute(
+                "SELECT data FROM script_handoffs WHERE project_id=? AND episode_number=? "
+                "AND document_id=? AND confirm_mutation_id IS NOT NULL "
+                "ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                (self.project_id, episode_number, document_id),
+            )).fetchone()
+            return self._decode(row) if row else None
 
     @staticmethod
     async def _source(db, episode):
@@ -303,7 +345,7 @@ class HandoffService:
 
     async def prepare(self, *, document_id, revision_id, reference_revisions,
                       selected_entity_ids, update_scope, fact_acknowledgement,
-                      client_mutation_id):
+                      client_mutation_id, expected_previous_source=None):
         if not client_mutation_id:
             raise DocumentValidation("mutation id required")
         if not isinstance(reference_revisions, dict) or not isinstance(selected_entity_ids, list):
@@ -328,6 +370,13 @@ class HandoffService:
                        reference_revisions=reference_revisions,
                        selected_entity_ids=selected_entity_ids, update_scope=update_scope,
                        fact_acknowledgement=fact_acknowledgement)
+        if expected_previous_source is not None:
+            if (not isinstance(expected_previous_source, dict)
+                    or set(expected_previous_source) != {"revision", "hash"}
+                    or type(expected_previous_source.get("revision")) is not int
+                    or not isinstance(expected_previous_source.get("hash"), str)):
+                raise DocumentValidation("expected previous source must include its revision and hash")
+            request["expected_previous_source"] = expected_previous_source
         request_hash = _digest(request)
         async with self.documents._db() as db:
             await db.execute("BEGIN IMMEDIATE")
@@ -390,6 +439,13 @@ class HandoffService:
                     frozen.append(item)
                 fact_ack = await self._fact_ack(db, document_id, refs, fact_acknowledgement)
                 prior_source = await self._source(db, doc.episode_number)
+                actual_previous_source = (
+                    {"revision": prior_source["source_revision"], "hash": prior_source["content_hash"]}
+                    if prior_source else None
+                )
+                if (expected_previous_source is not None
+                        and actual_previous_source != expected_previous_source):
+                    raise DocumentConflict("episode source changed")
                 old_text = prior_source["raw_content"] if prior_source else ""
                 # Only reuse old scene identities from the confirmed handoff that
                 # actually wrote the currently adopted project source.

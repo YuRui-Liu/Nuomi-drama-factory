@@ -6,6 +6,7 @@ import { defaultSettings, encodeBriefSettings } from '@/features/script-creation
 import { CANVAS_NODE_TYPES } from '@/features/canvas/domain/canvasNodes';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { registerFreezoneCanvasRuntime } from '@/features/freezone/canvasSyncRuntime';
+import { useTaskCenterStore } from '@/task-center/store';
 
 const api = vi.hoisted(() => ({
   listDocuments: vi.fn(), getDocument: vi.fn(), createDocument: vi.fn(), saveDocument: vi.fn(), revisions: vi.fn(),
@@ -129,6 +130,28 @@ it('shows queued and running jobs as Chinese progress while no candidates exist'
   expect(await screen.findByRole('heading', { name: '正在生成立意方向' })).toBeVisible();
   expect(screen.queryByText('还没有立意方向')).not.toBeInTheDocument();
   expect(screen.queryByText('running')).not.toBeInTheDocument();
+});
+
+it('releases a stuck ideation spinner and allows retry when its linked task failed', async () => {
+  api.ideation.mockResolvedValue(run({ status: 'running', task_id: 'task-ideation-1', candidates: [] }));
+  api.listDocuments.mockResolvedValue([brief('brief-1', 'brief-r1')]);
+  useTaskCenterStore.setState({ tasks: new Map([['task-key-1', {
+    task_key: 'task-key-1', task_id: 'task-ideation-1', task_type: 'creative_workflow',
+    username: 'tester', project: 'project-1', project_id: 'project-1', episode: 0,
+    beat_num: null, scope: 'ideation:ideation-1', status: 'failed', progress: 0.3,
+    current_task: '', result: null, error: '模型调用失败', logs: [], created_at: '',
+    updated_at: '', completed_at: '',
+  }]]) });
+  mount({ briefId: 'brief-1', workflowId: 'ideation-1' });
+  await openWorkspace();
+  fireEvent.click(screen.getByRole('tab', { name: /立意方向/ }));
+
+  expect(await screen.findByRole('heading', { name: '立意方向生成失败' })).toBeVisible();
+  expect(screen.getByRole('button', { name: '重新生成立意方向' })).toBeEnabled();
+  expect(screen.queryByRole('heading', { name: '正在生成立意方向' })).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: '重新生成立意方向' }));
+  await waitFor(() => expect(api.createIdeation).toHaveBeenCalledTimes(1));
 });
 
 it('stops generation when saving the latest brief fails and keeps the draft visible', async () => {

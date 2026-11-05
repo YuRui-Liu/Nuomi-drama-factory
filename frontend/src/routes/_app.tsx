@@ -157,12 +157,17 @@ function AppLayout() {
   }, [username, navigate, validateSession]);
 
   useEffect(() => {
-    if (routeProject && !projectSummaries.isLoading && canonicalProject === null) {
+    if (
+      routeProject &&
+      projectSummaries.isSuccess &&
+      !projectSummaries.isFetching &&
+      canonicalProject === null
+    ) {
       navigate({ to: "/", replace: true });
     }
-  }, [canonicalProject, navigate, projectSummaries.isLoading, routeProject]);
+  }, [canonicalProject, navigate, projectSummaries.isFetching, projectSummaries.isSuccess, routeProject]);
 
-  if (routeProject && projectSummaries.isLoading) {
+  if (routeProject && (projectSummaries.isLoading || (!canonicalProject && projectSummaries.isFetching))) {
     return (
       <div className="flex h-dvh items-center justify-center">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
@@ -174,6 +179,26 @@ function AppLayout() {
     return (
       <div className="flex h-dvh items-center justify-center">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+      </div>
+    );
+  }
+
+  if (routeProject && projectSummaries.isError && canonicalProject === null) {
+    return (
+      <div className="flex h-dvh items-center justify-center bg-background px-6 text-foreground">
+        <div role="alert" className="max-w-md rounded-xl border border-border bg-card p-6 text-center">
+          <h1 className="mb-2 text-base font-semibold">暂时无法确认项目状态</h1>
+          <p className="mb-5 text-sm text-muted-foreground">
+            项目列表暂时不可用。当前页面地址和画布上下文已保留，请恢复连接后重试。
+          </p>
+          <button
+            type="button"
+            onClick={() => void projectSummaries.refetch()}
+            className="rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground"
+          >
+            重试
+          </button>
+        </div>
       </div>
     );
   }

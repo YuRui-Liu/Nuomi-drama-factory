@@ -156,10 +156,16 @@ def _unclamped_global_task_route(
     overrides must clamp only after the full precedence chain is resolved.
     """
 
+    role_override = config.routes.get(task_role)
+    if task_role == "creation_agent_decision" and role_override is None:
+        # The creation lead is a separate logical role, but follows the user's
+        # established script-creation route until they explicitly configure it.
+        # This preserves model/runtime choices already saved for text creation.
+        return _unclamped_global_task_route("script_creation", config)
+
     route = default_agent_task_route(task_role)
-    override = config.routes.get(task_role)
-    if override is not None:
-        route = _apply_override(route, override)
+    if role_override is not None:
+        route = _apply_override(route, role_override)
     return route
 
 
@@ -225,7 +231,10 @@ def resolve_configured_agent_task_route(
     # Keep the global route unclamped here: project/task overrides are layered
     # on top first, and only the fully resolved snapshot is clamped below.
     global_route = _unclamped_global_task_route(task_role, global_config)
-    project_override = load_project_routes(ctx).routes.get(task_role)
+    project_routes = load_project_routes(ctx).routes
+    project_override = project_routes.get(task_role)
+    if task_role == "creation_agent_decision" and project_override is None:
+        project_override = project_routes.get("script_creation")
     parsed_task_override = (
         AgentTaskRouteOverride.model_validate(task_override)
         if task_override is not None

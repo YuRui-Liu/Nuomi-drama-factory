@@ -22,6 +22,7 @@ from novelvideo.task_backend.client import enqueue_project_task
 from novelvideo.task_identity import project_task_state_key
 from novelvideo.task_state import get_task_manager
 from novelvideo.script_creation.store import DocumentConflict, DocumentNotFound, DocumentStore, DocumentValidation
+from novelvideo.script_creation.models import OutlineItem
 
 router = APIRouter()
 PREFIX = "/projects/{project}/script-creation"
@@ -94,6 +95,61 @@ class ImportBody(Strict):
     episode_number: int = Field(ge=1)
 
 
+class OutlineItemBody(Strict):
+    id: str = Field(min_length=1, max_length=128)
+    parent_id: str | None = None
+    ordinal: int = Field(ge=1, le=100)
+    title: str = Field(min_length=1, max_length=2000)
+    kind: Literal["series_arc", "story_arc", "episode"]
+    episode_start: int | None = Field(default=None, ge=1, le=100)
+    episode_end: int | None = Field(default=None, ge=1, le=100)
+    source_document_id: str | None = None
+    source_revision_id: str | None = None
+    source_locator: str | None = None
+
+
+class CreateOutlineBody(Strict):
+    title: str = Field(min_length=1, max_length=2000)
+    client_mutation_id: str = Field(min_length=1)
+    items: list[OutlineItemBody] = Field(min_length=1, max_length=500)
+
+
+class SaveOutlineBody(Strict):
+    base_revision_id: str = Field(min_length=1)
+    client_mutation_id: str = Field(min_length=1)
+    items: list[OutlineItemBody] = Field(min_length=1, max_length=500)
+
+
+class ContinuityCandidateBody(Strict):
+    base_revision_id: str = Field(min_length=1)
+    patch: str = Field(min_length=1, max_length=20000)
+    source_document_id: str = Field(min_length=1)
+    source_revision_id: str = Field(min_length=1)
+    source_locator: str = Field(min_length=1, max_length=1000,
+                               description="Stable block locator in the source revision: block:<block_id>")
+    episode_start: int = Field(ge=1, le=100)
+    episode_end: int = Field(ge=1, le=100)
+    client_mutation_id: str = Field(min_length=1)
+
+
+class AdoptContinuityBody(Strict):
+    client_mutation_id: str = Field(min_length=1)
+
+
+class ContinuityFactBody(Strict):
+    subject_id: str = Field(min_length=1, max_length=256)
+    predicate: str = Field(min_length=1, max_length=256)
+    object_id: str = Field(min_length=1, max_length=256)
+    state: Literal["confirmed", "planned", "occurred", "retracted", "unknown"]
+    episode_start: int = Field(ge=1, le=100)
+    episode_end: int = Field(ge=1, le=100)
+    source_document_id: str = Field(min_length=1)
+    source_revision_id: str = Field(min_length=1)
+    source_locator: str = Field(min_length=1, max_length=1000,
+                               description="Stable block locator in the source revision: block:<block_id>")
+    client_mutation_id: str = Field(min_length=1)
+
+
 def _blocks(items):
     return [item.model_dump() for item in items] if items is not None else None
 
@@ -145,9 +201,12 @@ async def get_document(project: str, document_id: str, user: dict = Depends(get_
 
 @router.put(PREFIX + "/documents/{document_id}")
 async def save_document(project: str, document_id: str, body: SaveBody, user: dict = Depends(get_api_user)):
-    store, _ = await _store(project, user, "editor")
+    store, resolved = await _store(project, user, "editor")
     try:
-        return _ok(await store.save(document_id, **body.model_dump(exclude={"blocks"}), blocks=_blocks(body.blocks)))
+        document = await store.save(
+            document_id, **body.model_dump(exclude={"blocks"}), blocks=_blocks(body.blocks),
+        )
+        return await _script_revision_response(project, user, resolved, document)
     except (DocumentNotFound, DocumentConflict, DocumentValidation, ValueError) as exc:
         raise _error(exc) from exc
 
@@ -163,9 +222,10 @@ async def list_revisions(project: str, document_id: str, user: dict = Depends(ge
 
 @router.post(PREFIX + "/documents/{document_id}/restore")
 async def restore_document(project: str, document_id: str, body: RestoreBody, user: dict = Depends(get_api_user)):
-    store, _ = await _store(project, user, "editor")
+    store, resolved = await _store(project, user, "editor")
     try:
-        return _ok(await store.restore(document_id, **body.model_dump()))
+        document = await store.restore(document_id, **body.model_dump())
+        return await _script_revision_response(project, user, resolved, document)
     except (DocumentNotFound, DocumentConflict, DocumentValidation, ValueError) as exc:
         raise _error(exc) from exc
 
@@ -180,6 +240,106 @@ async def import_document(project: str, body: ImportBody, user: dict = Depends(g
         raise _error(exc) from exc
     finally:
         await sqlite.close()
+
+
+@router.post(PREFIX + "/outlines")
+async def create_outline(project: str, body: CreateOutlineBody, user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, "editor")
+    try:
+        items = [OutlineItem(**item.model_dump()) for item in body.items]
+        return _ok(await store.create_outline(title=body.title, items=items,
+                                               client_mutation_id=body.client_mutation_id))
+    except (DocumentConflict, DocumentValidation, ValueError) as exc:
+        raise _error(exc) from exc
+
+
+@router.put(PREFIX + "/documents/{document_id}/outline")
+async def save_outline(project: str, document_id: str, body: SaveOutlineBody,
+                       user: dict = Depends(require_scope("tasks:submit"))):
+    store, _ = await _store(project, user, "editor")
+    try:
+        items = [OutlineItem(**item.model_dump()) for item in body.items]
+        return _ok(await store.save_outline(document_id, base_revision_id=body.base_revision_id,
+            items=items, client_mutation_id=body.client_mutation_id))
+    except (DocumentNotFound, DocumentConflict, DocumentValidation, ValueError) as exc:
+        raise _error(exc) from exc
+
+
+@router.get(PREFIX + "/documents/{document_id}/outline")
+async def get_outline(project: str, document_id: str, user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, "viewer")
+    try:
+        document = await store.get(document_id)
+        if document.kind != "outline":
+            raise DocumentValidation("document is not an outline")
+        return _ok(document)
+    except (DocumentNotFound, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+@router.get(PREFIX + "/documents/{document_id}/continuity-facts")
+async def list_continuity_facts(project: str, document_id: str,
+                                user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, "viewer")
+    try:
+        return _ok(await store.list_continuity_facts(document_id))
+    except (DocumentNotFound, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + "/documents/{document_id}/continuity-facts")
+async def create_continuity_fact(project: str, document_id: str, body: ContinuityFactBody,
+                                 user: dict = Depends(require_scope("tasks:submit"))):
+    store, _ = await _store(project, user, "editor")
+    try:
+        return _ok(await store.create_continuity_fact(document_id, **body.model_dump()))
+    except (DocumentNotFound, DocumentConflict, DocumentValidation, ValueError) as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + "/continuity-facts/{fact_id}/adopt")
+async def adopt_continuity_fact(project: str, fact_id: str, body: AdoptContinuityBody,
+                                user: dict = Depends(require_scope("tasks:submit"))):
+    store, _ = await _store(project, user, "editor")
+    try:
+        return _ok(await store.adopt_continuity_fact(fact_id,
+                                                      client_mutation_id=body.client_mutation_id))
+    except (DocumentNotFound, DocumentConflict, DocumentValidation, ValueError) as exc:
+        raise _error(exc) from exc
+
+
+@router.get(PREFIX + "/continuity-context")
+async def get_continuity_context(project: str, episode_number: int,
+                                 user: dict = Depends(get_api_user)):
+    store, _ = await _store(project, user, "viewer")
+    try:
+        facts = await store.continuity_context(episode=episode_number)
+        return {"ok": True, "data": {"episode_number": episode_number,
+                                      "facts": [asdict(fact) for fact in facts]}}
+    except (DocumentValidation, ValueError) as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + "/documents/{document_id}/continuity-candidates")
+async def create_continuity_candidate(project: str, document_id: str, body: ContinuityCandidateBody,
+                                      user: dict = Depends(require_scope("tasks:submit"))):
+    store, _ = await _store(project, user, "editor")
+    try:
+        return {"ok": True, "data": await store.create_continuity_candidate(
+            document_id, **body.model_dump())}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation, ValueError) as exc:
+        raise _error(exc) from exc
+
+
+@router.post(PREFIX + "/continuity-candidates/{candidate_id}/adopt")
+async def adopt_continuity_candidate(project: str, candidate_id: str, body: AdoptContinuityBody,
+                                     user: dict = Depends(require_scope("tasks:submit"))):
+    store, _ = await _store(project, user, "editor")
+    try:
+        return _ok(await store.adopt_continuity_candidate(candidate_id,
+                                                           client_mutation_id=body.client_mutation_id))
+    except (DocumentNotFound, DocumentConflict, DocumentValidation, ValueError) as exc:
+        raise _error(exc) from exc
 
 
 class GenerationBody(Strict):
@@ -449,10 +609,14 @@ async def review_generation_candidate(project: str, candidate_id: str,
 @router.post(PREFIX + '/proposals/accept')
 async def accept_proposals(project: str, body: AcceptProposalsBody,
                            user: dict = Depends(get_api_user)):
-    store, _ = await _store(project, user, 'editor')
+    store, resolved = await _store(project, user, 'editor')
     try:
-        return _ok(await ProposalService(store).accept(body.proposal_ids,
-            base_revision_id=body.base_revision_id, client_mutation_id=body.client_mutation_id))
+        document = await ProposalService(store).accept(
+            body.proposal_ids,
+            base_revision_id=body.base_revision_id,
+            client_mutation_id=body.client_mutation_id,
+        )
+        return await _script_revision_response(project, user, resolved, document)
     except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
         raise _error(exc) from exc
 
@@ -639,6 +803,10 @@ class AssetExtractionBody(PropExtractionBody):
     asset_type: Literal['character', 'scene', 'prop']
 
 
+class EpisodeAssetSupplementBody(PropExtractionBody):
+    """Start an episode-local supplement for one frozen screenplay revision."""
+
+
 async def _prop_extractions(project, user, role, *, generic=False):
     from novelvideo.script_creation.prop_extraction import PropExtractionService
     from novelvideo.script_creation.asset_extraction import AssetExtractionService
@@ -648,6 +816,67 @@ async def _prop_extractions(project, user, role, *, generic=False):
     service = AssetExtractionService(store) if generic else PropExtractionService(store)
     await service.initialize()
     return service, resolved
+
+
+async def _episode_asset_supplements(project, user, role):
+    from novelvideo.script_creation.episode_asset_supplement import EpisodeAssetSupplementService
+    store, resolved = await _store(project, user, role)
+    sqlite = await make_sqlite_store_for_context(resolved.ctx)
+    await sqlite.close()
+    service = EpisodeAssetSupplementService(store)
+    await service.initialize()
+    return service, resolved
+
+
+@router.post(PREFIX + '/episode-asset-supplements', status_code=status.HTTP_202_ACCEPTED)
+async def create_episode_asset_supplement(project: str, body: EpisodeAssetSupplementBody,
+                                          user: dict = Depends(require_scope('tasks:submit'))):
+    service, resolved = await _episode_asset_supplements(project, user, 'editor')
+    try:
+        run = await service.start(**body.model_dump())
+        if run['status'] == 'pending' and not run['task_id']:
+            try:
+                queued = await enqueue_project_task(
+                    resolved.ctx,
+                    task_type='script_creation_episode_asset_supplement',
+                    queue_kind='default', episode=0,
+                    scope=f"episode-asset-supplement:{run['id']}",
+                    payload={'project_id': str(resolved.ctx.project_id), 'run_id': run['id']},
+                )
+                run = await service.bind_task(run['id'], queued.task_state.task_id)
+            except Exception:
+                await service.fail_submission(run['id'])
+                raise
+        return {'ok': True, 'data': {**run, 'queued_task_id': run['task_id']}}
+    except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
+        raise _error(exc) from exc
+
+
+@router.get(PREFIX + '/episode-asset-supplements')
+async def list_episode_asset_supplements(project: str, document_id: str | None = None,
+                                         user: dict = Depends(get_api_user)):
+    service, _ = await _episode_asset_supplements(project, user, 'viewer')
+    return {'ok': True, 'data': await service.list(document_id)}
+
+
+@router.get(PREFIX + '/episode-asset-supplements/{run_id}')
+async def get_episode_asset_supplement(project: str, run_id: str,
+                                        user: dict = Depends(get_api_user)):
+    service, _ = await _episode_asset_supplements(project, user, 'viewer')
+    try:
+        return {'ok': True, 'data': await service.get(run_id)}
+    except DocumentNotFound as exc:
+        raise _error(exc) from exc
+
+
+@router.delete(PREFIX + '/episode-asset-supplements/{run_id}')
+async def delete_episode_asset_supplement(project: str, run_id: str,
+                                           user: dict = Depends(get_api_user)):
+    service, _ = await _episode_asset_supplements(project, user, 'editor')
+    try:
+        return {'ok': True, 'data': await service.delete(run_id)}
+    except (DocumentNotFound, DocumentConflict) as exc:
+        raise _error(exc) from exc
 
 
 @router.post(PREFIX + '/prop-extractions', status_code=status.HTTP_202_ACCEPTED)
@@ -805,6 +1034,7 @@ class HandoffPrepareBody(Strict):
     update_scope: HandoffScopeBody
     fact_acknowledgement: HandoffFactAcknowledgementBody
     client_mutation_id: str = Field(min_length=1, max_length=128)
+    expected_previous_source: dict[str, int | str] | None = None
 
 
 class HandoffConfirmBody(Strict):
@@ -836,6 +1066,240 @@ async def _handoff_service(project, user, role, *, resolved=None):
     return service, resolved, sqlite
 
 
+async def _require_agent_script_review(service, document_id, revision_id, *, project_id):
+    """Require the independent Agent review only for the new Agent-draft lineage."""
+    document = await service.documents.get(document_id)
+    origin = document.source_origin or {}
+    if origin.get("kind") != "agent_script_draft":
+        return None
+    import sqlite3
+    from novelvideo.creation.agent_script_documents import AgentScriptDocuments
+    try:
+        return await AgentScriptDocuments(service.documents).require_handoff_review(
+            document_id, revision_id, project_id=project_id,
+        )
+    except sqlite3.OperationalError as exc:
+        if "no such table: agent_script_reviews" not in str(exc).lower():
+            raise
+        raise DocumentValidation(
+            "a current independent script review must pass before handoff"
+        ) from exc
+
+
+async def _sync_current_script_revision(project, user, resolved, document):
+    """Advance an already-bound episode source through the existing handoff CAS."""
+    if document.kind != "episode_script" or not document.episode_number:
+        return None
+    if resolved.ctx is None:
+        return {"status": "requires_explicit_handoff", "code": "project_context_required"}
+
+    service, resolved, sqlite = await _handoff_service(
+        project, user, "editor", resolved=resolved,
+    )
+    try:
+        prior = await service.latest_confirmed_binding(document.id, document.episode_number)
+        if prior is None:
+            return {
+                "status": "requires_explicit_handoff",
+                "code": "episode_not_bound",
+            }
+        sources = await service.sources.list_sources()
+        source = next(
+            (item for item in sources if item.episode_number == document.episode_number),
+            None,
+        )
+        if (source is None
+                or source.source_revision != prior.get("source_revision")
+                or source.content_hash != prior.get("source_hash")):
+            return {
+                "status": "conflict",
+                "code": "episode_source_changed",
+                "message": "Episode Source changed after the last confirmed screenplay handoff; the saved screenplay revision is kept.",
+                "source_revision": source.source_revision if source else None,
+            }
+
+        if document.current_revision_id == prior.get("revision_id"):
+            return {
+                "status": "synced",
+                "handoff_id": prior["id"],
+                "source_revision": source.source_revision,
+                "artifact": _write_handoff_artifact(resolved, prior),
+                "_skip_progress_invalidation": True,
+            }
+
+        try:
+            await _require_agent_script_review(
+                service, document.id, document.current_revision_id,
+                project_id=resolved.ctx.project_id,
+            )
+            snapshot = prior.get("snapshot") or {}
+            prepared = await service.prepare(
+                document_id=document.id,
+                revision_id=document.current_revision_id,
+                reference_revisions=snapshot.get("reference_revisions") or {},
+                selected_entity_ids=[
+                    entity["entity_id"] for entity in snapshot.get("entities", [])
+                ],
+                update_scope=snapshot.get("update_scope") or {"mode": "none"},
+                fact_acknowledgement=(
+                    snapshot.get("fact_acknowledgement_request")
+                    or {"mode": "unchecked", "reason": "Accepted screenplay revision"}
+                ),
+                expected_previous_source={
+                    "revision": prior["source_revision"],
+                    "hash": prior["source_hash"],
+                },
+                client_mutation_id=(
+                    f"screenplay-sync-{document.id}-{document.current_revision_id}"
+                ),
+            )
+            confirmed = await service.confirm(
+                prepared["id"],
+                expected_source_project_revision=prepared["expected_source_project_revision"],
+                client_mutation_id=(
+                    f"screenplay-confirm-{document.id}-{document.current_revision_id}"
+                ),
+            )
+        except DocumentConflict as exc:
+            message = str(exc)
+            return {
+                "status": "conflict",
+                "code": "episode_source_changed" if "episode source changed" in message.lower()
+                else "handoff_conflict",
+                "message": message,
+            }
+        except DocumentValidation as exc:
+            return {
+                "status": "review_required",
+                "code": "handoff_review_required",
+                "message": str(exc),
+            }
+        except DocumentNotFound as exc:
+            return {
+                "status": "review_required",
+                "code": "handoff_reference_missing",
+                "message": str(exc),
+            }
+
+        dispatch_error = None
+        if confirmed.get("status") == "source_written":
+            try:
+                confirmed = await service.dispatch(prepared["id"], resolved.ctx)
+            except Exception as exc:
+                dispatch_error = str(exc)
+        artifact = _write_handoff_artifact(resolved, confirmed)
+        result = {
+            "status": "synced",
+            "handoff_id": confirmed["id"],
+            "source_revision": confirmed.get("source_revision"),
+            "artifact": artifact,
+        }
+        if dispatch_error:
+            result["dispatch_error"] = dispatch_error
+        return result
+    finally:
+        await sqlite.close()
+
+
+async def _script_revision_response(project, user, resolved, document):
+    """Return the saved revision with source-sync and progress freshness results."""
+    try:
+        source_sync = await _sync_current_script_revision(project, user, resolved, document)
+    except Exception:
+        # The screenplay revision is already committed; do not imply that it
+        # rolled back when a downstream synchronization dependency fails.
+        source_sync = {
+            "status": "error",
+            "code": "source_sync_error",
+            "message": "The screenplay revision was saved, but Episode Source synchronization failed.",
+        }
+    skip_progress_invalidation = False
+    if isinstance(source_sync, dict):
+        skip_progress_invalidation = bool(
+            source_sync.pop("_skip_progress_invalidation", False)
+        )
+    if isinstance(source_sync, dict) and source_sync.get("status") == "synced":
+        try:
+            current_store = DocumentStore(Path(resolved.state_dir) / "data.db")
+            await current_store.initialize()
+            document = await current_store.get(document.id)
+        except Exception:
+            source_sync = {
+                "status": "error",
+                "code": "document_refresh_error",
+                "message": "Episode Source synchronized, but the current screenplay record could not be refreshed.",
+            }
+    try:
+        progress_invalidation = (
+            _invalidate_bound_script_progress(
+                resolved, document.id, document.episode_number,
+            )
+            if document.kind == "episode_script" and document.episode_number
+            and not skip_progress_invalidation
+            else None
+        )
+    except Exception:
+        progress_invalidation = {
+            "status": "error",
+            "code": "progress_invalidation_error",
+        }
+    payload = asdict(document)
+    if source_sync is not None:
+        payload["source_sync"] = source_sync
+    if progress_invalidation is not None:
+        payload["progress_invalidation"] = progress_invalidation
+    return {"ok": True, "data": payload}
+
+
+def _write_handoff_artifact(resolved, handoff):
+    from novelvideo.creation.production_documents import DocumentConflict as ArtifactConflict
+    from novelvideo.creation.production_documents import DocumentError
+    from novelvideo.script_creation.handoff import write_handoff_receipt
+    from novelvideo.script_creation.store import DocumentConflict as ScriptConflict
+    from novelvideo.script_creation.store import DocumentValidation as ScriptValidation
+
+    project_dir = getattr(resolved, "project_dir", None) or resolved.ctx.output_dir
+    try:
+        return {"status": "ready", **write_handoff_receipt(project_dir, handoff)}
+    except (ArtifactConflict, ScriptConflict) as exc:
+        return {"status": "conflict", "path": None, "message": str(exc)}
+    except (DocumentError, ScriptValidation) as exc:
+        return {"status": "unavailable", "path": None, "message": str(exc)}
+
+
+def _invalidate_bound_script_progress(resolved, document_id, episode_number):
+    """Invalidate approvals only when a managed episode canvas binds this document."""
+    from novelvideo.creation.production_progress import ProductionProgress
+    from novelvideo.creation.workspace import list_episodes
+    from novelvideo.freezone.canvas_store import read_canvas
+
+    state_dir = Path(resolved.state_dir)
+    if not (state_dir / "creation" / "objects.sqlite3").is_file():
+        return None
+    for episode in list_episodes(state_dir):
+        if episode.get("number") != episode_number or episode.get("status") != "applied":
+            continue
+        canvas = read_canvas(state_dir, episode["canvas_id"])
+        bound = any(
+            node.get("type") == "screenplayNode"
+            and isinstance(node.get("data"), dict)
+            and node["data"].get("documentId") == document_id
+            and node["data"].get("episodeNumber") == episode_number
+            for node in canvas.get("nodes", [])
+        )
+        if not bound:
+            continue
+        progress = ProductionProgress(
+            state_dir,
+            output_root=getattr(resolved, "project_dir", None) or resolved.ctx.output_dir,
+        )
+        updated = progress.invalidate(
+            f"{episode_number:03d}", "screenplay", reason="script_document_updated",
+        )
+        return {"status": "invalidated" if updated is not None else "no_receipt"}
+    return None
+
+
 @router.get(PREFIX + "/handoffs")
 async def list_handoffs(project: str, episode_number: int | None = None,
                         user: dict = Depends(get_api_user)):
@@ -860,8 +1324,11 @@ async def get_handoff(project: str, handoff_id: str, user: dict = Depends(get_ap
 @router.post(PREFIX + "/handoffs/prepare")
 async def prepare_handoff(project: str, body: HandoffPrepareBody,
                           user: dict = Depends(get_api_user)):
-    service, _, sqlite = await _handoff_service(project, user, "editor")
+    service, resolved, sqlite = await _handoff_service(project, user, "editor")
     try:
+        await _require_agent_script_review(
+            service, body.document_id, body.revision_id, project_id=resolved.ctx.project_id,
+        )
         return {"ok": True, "data": await service.prepare(**body.model_dump())}
     except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
         raise _error(exc) from exc
@@ -874,9 +1341,21 @@ async def confirm_handoff(project: str, handoff_id: str, body: HandoffConfirmBod
                           user: dict = Depends(require_scope("tasks:submit"))):
     service, resolved, sqlite = await _handoff_service(project, user, "editor")
     try:
+        handoff = await service.get(handoff_id)
+        if handoff.get("status") == "prepared":
+            await _require_agent_script_review(
+                service, handoff["document_id"], handoff["revision_id"],
+                project_id=resolved.ctx.project_id,
+            )
         item = await service.confirm(handoff_id, **body.model_dump())
         if item["status"] == "source_written":
             item = await service.dispatch(handoff_id, resolved.ctx)
+        item["artifact"] = _write_handoff_artifact(resolved, item)
+        progress_invalidation = _invalidate_bound_script_progress(
+            resolved, item["document_id"], item["episode_number"],
+        )
+        if progress_invalidation is not None:
+            item["progress_invalidation"] = progress_invalidation
         return {"ok": True, "data": item}
     except (DocumentNotFound, DocumentConflict, DocumentValidation) as exc:
         raise _error(exc) from exc
@@ -931,6 +1410,10 @@ async def handoff_to_canvas(project: str, handoff_id: str, body: HandoffCanvasBo
             # immutable handoff always returns its original episode and canvas.
             mapping = ScriptHandoffCanvas.lookup_existing(resolved.state_dir, handoff_id)
             if mapping is None:
+                await _require_agent_script_review(
+                    service, guarded["item"]["document_id"], guarded["item"]["revision_id"],
+                    project_id=resolved.ctx.project_id,
+                )
                 if not guarded["source_is_current"]:
                     raise OperationError(
                         "handoff_source_changed",

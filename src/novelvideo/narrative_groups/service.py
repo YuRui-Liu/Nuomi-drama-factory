@@ -275,6 +275,7 @@ def _group_from_dict(data: Mapping[str, Any]) -> NarrativeGroup:
         state["storyboard_sources"] = tuple(state.get("storyboard_sources") or ())
         state["cleanup_reports"] = tuple(state.get("cleanup_reports") or ())
         state["revision_history"] = tuple(state.get("revision_history") or ())
+        state["submission_records"] = tuple(state.get("submission_records") or ())
         stages[name] = GroupStageState(**state)
     default_stages = {
         "sketch": GroupStageState(),
@@ -428,6 +429,99 @@ def _same_projection_structure(
         and previous.layout == projected.layout
         and previous.cell_to_beat == projected.cell_to_beat
     )
+
+
+def _is_style_only_director_refresh(previous: Any, active: Any) -> bool:
+    """Recognize an adopted style child without hiding a structural edit."""
+    if (previous is None
+            or previous.source_script_hash != active.source_script_hash
+            or previous.semantic_revision_id != active.semantic_revision_id
+            or previous.scene_blocking_references != active.scene_blocking_references
+            or len(previous.groups) != len(active.groups)):
+        return False
+    prior_groups = []
+    active_groups = []
+    for group in previous.groups:
+        prior = group.model_dump(mode="json")
+        prior.pop("style_snapshot_id", None)
+        prior_groups.append(prior)
+    for group in active.groups:
+        current = group.model_dump(mode="json")
+        current.pop("style_snapshot_id", None)
+        active_groups.append(current)
+    style_changed = (
+        previous.project_style_snapshot_id != active.project_style_snapshot_id
+        or previous.project_style_snapshot != active.project_style_snapshot
+        or any(a.style_snapshot_id != b.style_snapshot_id
+               for a, b in zip(previous.groups, active.groups))
+    )
+    return style_changed and prior_groups == active_groups
+
+
+def _append_stale_reason(state: GroupStageState, reason: str) -> GroupStageState:
+    reasons = list(filter(None, state.stale_reason.split(";")))
+    if reason not in reasons:
+        reasons.append(reason)
+    return replace(state, needs_regeneration=True, stale_reason=";".join(reasons))
+
+
+def _merge_style_projection_records(projected: tuple[dict, ...], prior: tuple[dict, ...],
+                                    *, identity_fields: tuple[str, ...]) -> tuple[dict, ...]:
+    """Refresh dependency fields while retaining receipts for old media."""
+    by_identity = {
+        tuple(tuple(item.get(field) or ()) if field in identity_fields else item.get(field)
+              for field in identity_fields): item
+        for item in prior
+    }
+    merged = []
+    for item in projected:
+        identity = tuple(
+            tuple(item.get(field) or ()) if field in identity_fields else item.get(field)
+            for field in identity_fields
+        )
+        old = by_identity.get(identity, {})
+        merged.append({**old, **item})
+    return tuple(merged)
+
+
+def _style_refresh_stage_states(
+    previous: NarrativeGroup,
+    projected_stages: Mapping[StageName, GroupStageState],
+    *,
+    style_snapshot_id: str,
+    style_snapshot_hash: str,
+    generation_batches: tuple[dict[str, Any], ...],
+    video_segments: tuple[dict[str, Any], ...],
+) -> dict[StageName, GroupStageState]:
+    stages = dict(previous.stages)
+    projection_values = {
+        "style_snapshot_id": style_snapshot_id,
+        "style_snapshot_hash": style_snapshot_hash,
+        "effective_style_snapshot_id": style_snapshot_id,
+        "effective_style_snapshot_hash": style_snapshot_hash,
+    }
+    for name in ("sketch", "render", "video"):
+        state = stages.get(name, GroupStageState())
+        parameters = dict(state.provider_parameters)
+        prior_id = str(parameters.get("output_style_snapshot_id")
+                       or parameters.get("style_snapshot_id")
+                       or previous.effective_style_snapshot.get("snapshot_id") or "")
+        if prior_id:
+            parameters["output_style_snapshot_id"] = prior_id
+        parameters.update(projection_values)
+        if name == "render":
+            parameters["generation_batches"] = [dict(item) for item in generation_batches]
+        elif name == "video":
+            parameters["video_segments"] = [dict(item) for item in video_segments]
+        state = replace(state, provider_parameters=parameters)
+        has_output = bool(
+            state.grid_asset or state.video_asset or state.manifest_asset
+            or state.status in {"completed", "partial_failure"}
+        )
+        if has_output:
+            state = _append_stale_reason(state, "style_snapshot_changed")
+        stages[name] = state
+    return stages
 
 
 def _materialize_active_groups(
@@ -645,17 +739,48 @@ def _materialize_active_groups(
                     ),
                 )
             elif previous is not None:
-                if group.creative_contract_version == 1:
-                    from novelvideo.director_plan.creative_invalidation import invalidate_creative_stages
-
-                    try:
-                        old_revision = DirectorPlanStore(project_path).load(episode, previous.director_revision_id)
-                    except (OSError, ValueError, KeyError):
-                        old_revision = None
-                    base = replace(base, stages=invalidate_creative_stages(
-                        old_revision, active, group.id, previous.stages))
+                try:
+                    old_revision = DirectorPlanStore(project_path).load(
+                        episode, previous.director_revision_id
+                    )
+                except (OSError, ValueError, KeyError):
+                    old_revision = None
+                if _is_style_only_director_refresh(old_revision, active):
+                    merged_batches = _merge_style_projection_records(
+                        tuple(base.generation_batches), previous.generation_batches,
+                        identity_fields=("shot_ids",),
+                    )
+                    prior_segments_by_shots = {
+                        tuple(item.get("shot_ids") or ()): item
+                        for item in previous.video_segments
+                    }
+                    merged_segments = tuple({
+                        **prior_segments_by_shots.get(tuple(item.get("shot_ids") or ()), {}),
+                        **item,
+                    } for item in base.video_segments)
+                    refreshed_stages = _style_refresh_stage_states(
+                        previous, base.stages,
+                        style_snapshot_id=snapshot_id,
+                        style_snapshot_hash=style_snapshot_hash,
+                        generation_batches=merged_batches,
+                        video_segments=merged_segments,
+                    )
+                    base = replace(
+                        base,
+                        video_plan=previous.video_plan,
+                        generation_batches=merged_batches,
+                        video_segments=merged_segments,
+                        stages=refreshed_stages,
+                        errors=previous.errors,
+                    )
                 else:
-                    base = replace(base, stages=_empty_stages())
+                    if group.creative_contract_version == 1:
+                        from novelvideo.director_plan.creative_invalidation import invalidate_creative_stages
+
+                        base = replace(base, stages=invalidate_creative_stages(
+                            old_revision, active, group.id, previous.stages))
+                    else:
+                        base = replace(base, stages=_empty_stages())
             else:
                 base = replace(base, stages=_empty_stages())
             if capability_error:
@@ -877,6 +1002,8 @@ def generation_beats_for_group(
             "creative_contract_version": active.creative_contract_version,
             "director_revision_id": active.revision_id,
             "creative": shot.creative.model_dump(mode="json") if shot.creative else None,
+            **({"static_panel": shot.static_panel.model_dump(mode="json")}
+               if shot.static_panel is not None else {}),
             "project_style_snapshot_id": active.project_style_snapshot_id,
             "style_snapshot_id": group.style_snapshot_id or active.project_style_snapshot_id,
             "style_snapshot_hash": active.project_style_snapshot.style_hash if active.project_style_snapshot else active.project_style_snapshot_id,
@@ -1033,6 +1160,7 @@ async def update_video_reference_settings(
     expected_revision: int,
     selections: Any,
     max_images: int,
+    expected_director_revision_id: str | None = None,
 ) -> NarrativeGroup:
     """Validate and atomically persist ordered logical video references."""
     from .video_references import (
@@ -1047,6 +1175,7 @@ async def update_video_reference_settings(
         episode_number,
         group_id,
         expected_revision,
+        expected_director_revision_id,
     )
     preview = await resolve_group_video_reference_preview(
         store=store,
@@ -1085,6 +1214,7 @@ async def update_video_reference_settings(
         episode_number,
         group_id,
         expected_revision,
+        expected_director_revision_id,
         _video_reference_group_fingerprint(initial_group),
         references,
     )
@@ -1136,13 +1266,76 @@ def _load_video_reference_update_group(
     episode_number: int,
     group_id: str,
     expected_revision: int,
+    expected_director_revision_id: str | None,
 ) -> NarrativeGroup:
-    groups = load_materialized_groups(project_dir, episode_number)
-    group = next((item for item in groups if item.id == group_id), None)
-    if group is None:
-        raise KeyError(group_id)
-    _assert_video_reference_update_allowed(group, expected_revision)
-    return group
+    with _video_reference_group_revision_guard(
+        project_dir,
+        episode_number,
+        group_id,
+        expected_director_revision_id,
+    ) as (_groups, group):
+        _assert_video_reference_update_allowed(group, expected_revision)
+        return group
+
+
+def load_video_reference_group_for_revision(
+    project_dir: str | Path,
+    episode_number: int,
+    group_id: str,
+    *,
+    expected_director_revision_id: str | None,
+) -> NarrativeGroup:
+    """Read a group only when its active director revision matches the caller's fence.
+
+    This is used by both the canvas dialog and non-canvas upload route. A missing
+    active revision is represented explicitly by ``None``; an active plan never
+    silently falls back to the legacy path.
+    """
+    with _video_reference_group_revision_guard(
+        project_dir,
+        episode_number,
+        group_id,
+        expected_director_revision_id,
+    ) as (_groups, group):
+        return group
+
+
+@contextmanager
+def _video_reference_group_revision_guard(
+    project_dir: str | Path,
+    episode_number: int,
+    group_id: str,
+    expected_director_revision_id: str | None,
+):
+    """Fence one reference action against the active plan and materialized group.
+
+    Keep the sidecar lock first, matching existing narrative-group mutations,
+    then hold the director-plan activation lock through projection/read/write.
+    """
+    expected_revision_id = (
+        expected_director_revision_id.strip()
+        if isinstance(expected_director_revision_id, str)
+        else None
+    ) or None
+    with _sidecar_guard(project_dir, episode_number):
+        plan_store = DirectorPlanStore(project_dir)
+        with plan_store.lock_active_revision(episode_number) as active:
+            active_revision_id = str(active.revision_id) if active is not None else None
+            if expected_revision_id != active_revision_id:
+                raise RuntimeError("director plan revision is stale")
+            if active is None:
+                groups = load_groups(project_dir, episode_number)
+            else:
+                groups = _materialize_active_groups(
+                    Path(project_dir), episode_number, active
+                )
+            group = next((item for item in groups if item.id == group_id), None)
+            if group is None:
+                raise KeyError(group_id)
+            group_revision_id = str(group.director_revision_id or "") or None
+            if group_revision_id != active_revision_id:
+                raise RuntimeError("group director revision is stale")
+            yield groups, group
 
 
 def _commit_video_reference_settings(
@@ -1150,14 +1343,16 @@ def _commit_video_reference_settings(
     episode_number: int,
     group_id: str,
     expected_revision: int,
+    expected_director_revision_id: str | None,
     expected_group_fingerprint: tuple[Any, ...],
     references: tuple[VideoReferenceItem, ...],
 ) -> NarrativeGroup:
-    with _sidecar_guard(project_dir, episode_number):
-        groups = load_materialized_groups(project_dir, episode_number)
-        group = next((item for item in groups if item.id == group_id), None)
-        if group is None:
-            raise KeyError(group_id)
+    with _video_reference_group_revision_guard(
+        project_dir,
+        episode_number,
+        group_id,
+        expected_director_revision_id,
+    ) as (groups, group):
         _assert_video_reference_update_allowed(group, expected_revision)
         if _video_reference_group_fingerprint(group) != expected_group_fingerprint:
             raise RuntimeError(
@@ -1293,16 +1488,34 @@ def advance_revision(
     regenerate_completed: bool = False,
     expected_revision: int | None = None,
     expected_director_revision_id: str | None = None,
-) -> tuple[NarrativeGroup, int]:
+    submission_id: str | None = None,
+    submission_fingerprint: str | None = None,
+    submission_task_type: str = "",
+    submission_scope: str = "",
+    return_reused: bool = False,
+) -> tuple[NarrativeGroup, int] | tuple[NarrativeGroup, int, bool]:
     with _sidecar_guard(project_dir, episode):
         groups = load_materialized_groups(project_dir, episode)
         original = next((group for group in groups if group.id == group_id), None)
         if original is None:
             raise KeyError(group_id)
+        if submission_id is not None:
+            if not submission_fingerprint:
+                raise ValueError("submission_fingerprint is required with submission_id")
+            current = original.stages.get(stage, GroupStageState())
+            prior = next((item for item in current.submission_records
+                          if item.get("request_id") == submission_id), None)
+            if prior is not None:
+                if prior.get("request_fingerprint") != submission_fingerprint:
+                    raise RuntimeError("narrative group submission idempotency conflict")
+                result = (original, int(prior["revision"]), True)
+                return result if return_reused else result[:2]
         if (expected_director_revision_id is not None
                 and original.director_revision_id != expected_director_revision_id):
             raise RuntimeError("narrative group director revision is stale")
         current = original.stages.get(stage, GroupStageState())
+        if submission_id is not None and current.status in {"queued", "running"}:
+            raise RuntimeError(f"narrative group {stage} stage already has an active submission")
         if current.provider_parameters.get("cell_repair", {}).get("status") in {"queued", "running"}:
             raise RuntimeError("本组分镜修复正在进行中")
         if expected_revision is not None and current.revision != int(expected_revision):
@@ -1326,6 +1539,15 @@ def advance_revision(
             new_generation = regenerate or current.revision == 0
             preserves_selection = stage == "render" and bool(current.selected_storyboard_id)
             stages = dict(group.stages)
+            submission_records = current.submission_records
+            if submission_id is not None:
+                submission_records = (*submission_records, {
+                    "request_id": submission_id,
+                    "request_fingerprint": submission_fingerprint,
+                    "revision": revision,
+                    "task_type": submission_task_type,
+                    "scope": submission_scope or f"group_{group_id}_{stage}_r{revision}",
+                })
             history = current.revision_history
             if regenerate and current.revision:
                 history = (*history, _stage_snapshot(current))
@@ -1343,6 +1565,7 @@ def advance_revision(
                 actual_mode="" if regenerate else current.actual_mode,
                 created_at="" if regenerate else current.created_at,
                 revision_history=history,
+                submission_records=submission_records,
                 video_asset="" if regenerate and stage == "video" else current.video_asset,
                 manifest_asset="" if regenerate and stage == "video" else current.manifest_asset,
                 original_audio_path="" if regenerate and stage == "video" else current.original_audio_path,
@@ -1371,7 +1594,8 @@ def advance_revision(
         if found is None:
             raise KeyError(group_id)
         save_groups(project_dir, episode, updated)
-        return found, found.stages[stage].revision
+        result = (found, found.stages[stage].revision, False)
+        return result if return_reused else result[:2]
 
 
 @dataclass(frozen=True)
@@ -1382,6 +1606,7 @@ class VideoRevisionReservation:
     revision: int
     previous_stage: GroupStageState
     storyboard_selection_id: str = ""
+    reused: bool = False
 
 
 def reserve_video_revision(
@@ -1394,6 +1619,11 @@ def reserve_video_revision(
     expected_settings_revision: int | None = None,
     expected_reference_revision: int | None = None,
     expected_storyboard_id: str | None = None,
+    dialogue_source: str | None = None,
+    submission_id: str | None = None,
+    submission_fingerprint: str | None = None,
+    submission_task_type: str = "narrative_group_video",
+    submission_scope: str = "",
 ) -> tuple[NarrativeGroup, VideoRevisionReservation]:
     """Atomically reserve the next video revision while retaining rollback data.
 
@@ -1410,6 +1640,26 @@ def reserve_video_revision(
             if group.id != group_id:
                 updated.append(group)
                 continue
+            current = group.stages.get("video", GroupStageState())
+            if submission_id is not None:
+                if not submission_fingerprint:
+                    raise ValueError("submission_fingerprint is required with submission_id")
+                prior = next((item for item in current.submission_records
+                              if item.get("request_id") == submission_id), None)
+                if prior is not None:
+                    if prior.get("request_fingerprint") != submission_fingerprint:
+                        raise RuntimeError("narrative group submission idempotency conflict")
+                    found = group
+                    reservation = VideoRevisionReservation(
+                        group_id=group_id, revision=int(prior["revision"]),
+                        previous_stage=current,
+                        storyboard_selection_id=group.stages["render"].selected_storyboard_id,
+                        reused=True,
+                    )
+                    updated.append(group)
+                    continue
+            if submission_id is not None and current.status in {"queued", "running"}:
+                raise RuntimeError("narrative group video stage already has an active submission")
             if expected_storyboard_id is not None and group.stages["render"].selected_storyboard_id != expected_storyboard_id:
                 raise RuntimeError("storyboard selection changed")
             if (
@@ -1429,16 +1679,25 @@ def reserve_video_revision(
                 != int(expected_reference_revision)
             ):
                 raise RuntimeError("narrative group video reference revision is stale")
-            current = group.stages.get("video", GroupStageState())
             if current.revision != int(expected_revision):
                 raise RuntimeError("narrative group video revision is stale")
             revision = current.revision + 1
             history = (*current.revision_history, _stage_snapshot(current)) if current.revision else current.revision_history
             stages = dict(group.stages)
+            submission_records = current.submission_records
+            if submission_id is not None:
+                submission_records = (*submission_records, {
+                    "request_id": submission_id,
+                    "request_fingerprint": submission_fingerprint,
+                    "revision": revision,
+                    "task_type": submission_task_type,
+                    "scope": submission_scope or f"group_{group_id}_video_r{revision}",
+                })
             stages["video"] = replace(
                 current,
                 status="queued",
                 revision=revision,
+                dialogue_source=str(dialogue_source or ""),
                 grid_asset="",
                 cell_assets=(),
                 error="",
@@ -1449,6 +1708,7 @@ def reserve_video_revision(
                 actual_mode="",
                 created_at="",
                 revision_history=history,
+                submission_records=submission_records,
                 video_asset="",
                 manifest_asset="",
                 original_audio_path="",
@@ -1465,6 +1725,76 @@ def reserve_video_revision(
             raise KeyError(group_id)
         save_groups(project_dir, episode, updated)
         return found, reservation
+
+
+def find_stage_submission(
+    project_dir: str | Path,
+    episode: int,
+    group_id: str,
+    stage: StageName,
+    request_id: str,
+    *,
+    request_fingerprint: str | None = None,
+) -> dict[str, Any] | None:
+    """Read a durable enqueue reservation without treating absence as permission to resubmit."""
+    for group in load_materialized_groups(project_dir, episode):
+        if group.id != group_id:
+            continue
+        for item in group.stages.get(stage, GroupStageState()).submission_records:
+            if item.get("request_id") == request_id:
+                if (request_fingerprint is not None
+                        and item.get("request_fingerprint") != request_fingerprint):
+                    raise RuntimeError("narrative group submission idempotency conflict")
+                return dict(item)
+        return None
+    raise KeyError(group_id)
+
+
+def record_stage_submission_task(
+    project_dir: str | Path,
+    episode: int,
+    group_id: str,
+    stage: StageName,
+    submission_id: str,
+    task_id: str,
+    *,
+    receipt: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Bind a reserved request to exactly one task receipt after enqueue."""
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        raise ValueError("task_id is required for a submitted narrative group request")
+    if receipt is not None and not isinstance(receipt, dict):
+        raise TypeError("submission receipt must be a dictionary")
+    with _sidecar_guard(project_dir, episode):
+        groups = load_materialized_groups(project_dir, episode)
+        group = next((item for item in groups if item.id == group_id), None)
+        if group is None:
+            raise KeyError(group_id)
+        state = group.stages.get(stage, GroupStageState())
+        records = list(state.submission_records)
+        index = next((i for i, item in enumerate(records)
+                      if item.get("request_id") == submission_id), None)
+        if index is None:
+            raise KeyError(submission_id)
+        current = dict(records[index])
+        prior_task_id = str(current.get("task_id") or "").strip()
+        if prior_task_id and prior_task_id != normalized_task_id:
+            raise RuntimeError("narrative group submission task receipt changed")
+        if receipt is not None:
+            prior_receipt = current.get("receipt")
+            if prior_receipt is not None and prior_receipt != receipt:
+                raise RuntimeError("narrative group submission receipt changed")
+            current["receipt"] = dict(receipt)
+        current["task_id"] = normalized_task_id
+        records[index] = current
+        updated_group = replace(
+            group, stages={**group.stages, stage: replace(state, submission_records=tuple(records))},
+        )
+        save_groups(project_dir, episode, [
+            updated_group if item.id == group_id else item for item in groups
+        ])
+        return current
 
 
 def restore_video_reservation(
@@ -1544,6 +1874,7 @@ def record_stage_result(
     cleanup_reports: Iterable[Mapping[str, Any]] | None = None,
     video_asset: str | None = None,
     manifest_asset: str | None = None,
+    dialogue_source: str | None = None,
     original_audio_path: str | None = None,
     dialogue_stem_path: str | None = None,
     ambience_stem_path: str | None = None,
@@ -1590,6 +1921,10 @@ def record_stage_result(
                 ),
                 video_asset=current.video_asset if video_asset is None else str(video_asset),
                 manifest_asset=current.manifest_asset if manifest_asset is None else str(manifest_asset),
+                dialogue_source=(
+                    current.dialogue_source if dialogue_source is None
+                    else str(dialogue_source)
+                ),
                 original_audio_path=(
                     current.original_audio_path if original_audio_path is None else str(original_audio_path)
                 ),
@@ -1860,6 +2195,7 @@ def _stage_snapshot(state: GroupStageState) -> dict[str, Any]:
         "source_storyboard_id": state.source_storyboard_id,
         "video_asset": state.video_asset,
         "manifest_asset": state.manifest_asset,
+        "dialogue_source": state.dialogue_source,
         "original_audio_path": state.original_audio_path,
         "dialogue_stem_path": state.dialogue_stem_path,
         "ambience_stem_path": state.ambience_stem_path,
@@ -1877,6 +2213,7 @@ def _stage_snapshot(state: GroupStageState) -> dict[str, Any]:
         "source_sketch_revision": state.source_sketch_revision,
         "constraint_mode": state.constraint_mode,
         "created_at": state.created_at,
+        "submission_records": list(state.submission_records),
     }
 
 
@@ -1927,6 +2264,25 @@ def rollback_stage_revision(
             if source is None:
                 raise KeyError(f"revision {revision}")
             history = (*current.revision_history, _stage_snapshot(current))
+            submission_records = []
+            submission_positions = {}
+            for raw_record in (
+                *(source.get("submission_records") or ()),
+                *current.submission_records,
+            ):
+                record = dict(raw_record)
+                request_id = str(record.get("request_id") or "")
+                if not request_id:
+                    submission_records.append(record)
+                    continue
+                position = submission_positions.get(request_id)
+                if position is None:
+                    submission_positions[request_id] = len(submission_records)
+                    submission_records.append(record)
+                else:
+                    # Current receipts carry the authoritative task binding;
+                    # keep it when merging an older visual revision snapshot.
+                    submission_records[position] = record
             restored = GroupStageState(
                 status=source["status"],
                 revision=current.revision + 1,
@@ -1940,6 +2296,7 @@ def rollback_stage_revision(
                 stale_reason=str(source.get("stale_reason") or ""),
                 video_asset=source.get("video_asset", ""),
                 manifest_asset=source.get("manifest_asset", ""),
+                dialogue_source=source.get("dialogue_source", ""),
                 original_audio_path=source.get("original_audio_path", ""),
                 dialogue_stem_path=source.get("dialogue_stem_path", ""),
                 ambience_stem_path=source.get("ambience_stem_path", ""),
@@ -1956,6 +2313,7 @@ def rollback_stage_revision(
                 constraint_mode=source.get("constraint_mode", ""),
                 created_at=datetime.now(timezone.utc).isoformat(),
                 revision_history=history,
+                submission_records=tuple(submission_records),
             )
             stages = dict(group.stages)
             stages[stage] = restored
@@ -1987,6 +2345,7 @@ def stage_payload(project_dir: str | Path, episode: int, group_id: str, stage: S
                 "cell_assets": list(state.cell_assets),
                 "video_asset": state.video_asset,
                 "manifest_asset": state.manifest_asset,
+                "dialogue_source": state.dialogue_source,
                 "original_audio_path": state.original_audio_path,
                 "dialogue_stem_path": state.dialogue_stem_path,
                 "ambience_stem_path": state.ambience_stem_path,
@@ -2133,7 +2492,22 @@ def update_video_manifest_dialogue_source(
         updated = H3DirectorOutputManifest(
             **manifest.model_dump(exclude={"entries"}), entries=tuple(entries)
         )
+        policies = {entry.dialogue_source.value for entry in updated.entries}
+        current_policy = next(iter(policies)) if len(policies) == 1 else "mixed"
+        updated = updated.model_copy(update={
+            "dialogue_source": (
+                DialogueSource(current_policy) if current_policy != "mixed" else None
+            ),
+        })
         save_h3_director_manifest(manifest_path, updated)
+        groups = load_materialized_groups(project_dir, episode)
+        save_groups(project_dir, episode, [
+            replace(item, stages={**item.stages, "video": replace(
+                item.stages.get("video", GroupStageState()),
+                dialogue_source=current_policy,
+            )}) if item.id == group_id else item
+            for item in groups
+        ])
         return updated
 
 

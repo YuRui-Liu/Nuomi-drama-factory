@@ -4,10 +4,18 @@ import { useAiAvatarUrl } from "@/features/superchat/ai-avatar";
 import { resolveExternalCanvasConflict } from './canvasSyncRuntime';
 import { SelectionDelegationToolbar } from '@/features/creation-workspace/SelectionDelegationToolbar';
 import { requestAgentSelection } from '@/features/agent-runtime/selectionDelegation';
+import { useReactFlow } from '@xyflow/react';
+import { keepNodeVisible } from '@/features/creation-workspace/workspaceLayout';
+import { WorkspaceAgentPanel } from '@/features/creation-workspace/WorkspacePanels';
+import { DirectionReferenceEntry } from '@/features/direction-references/DirectionReferenceEntry';
+import { AgentConfigurationEntry } from '@/features/agent-configuration/AgentConfigurationEntry';
+import { TemplateLibraryEntry } from '@/features/template-library/TemplateLibraryEntry';
+import { CreativeSettingsEntry } from '@/features/creative-settings/CreativeSettingsEntry';
 import { SharedAssetSaveDialog, isSharedAssetTarget } from './commit/SharedAssetSaveDialog';
 import { readSharedPublication, clearFinishedPublication, type PublicationScope } from './commit/sharedAssetPublication';
 import { useAuthStore } from '@/stores/auth-store';
 import type { CreationAsset } from '@/features/creation-workspace/contracts';
+import { LightweightCanvasProvider, WorkspaceScopeProvider, type WorkspaceScope } from './WorkspaceScope';
 import { readPendingCanvasOperation, readCanvasOperationBackup } from './externalCanvasOperation';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -115,11 +123,12 @@ export interface WorkspaceCanvasState {
 interface FreezoneShellProps {
   project: SupertaleProjectSummary;
   canvasId: string;
+  canvasTitle?: string;
   managedWorkspace?: boolean;
+  workspaceScope?: WorkspaceScope | null;
   onWorkspaceState?: (state: WorkspaceCanvasState) => void;
 }
 
-const FREEZONE_CHAT_WIDTH = "clamp(500px, 34vw, 540px)";
 const PROJECTION_STATUS_REFRESH_MS = 30_000;
 
 function renderCommitSuccessMessage(target: PushTarget, result: PushResult): string {
@@ -389,7 +398,41 @@ export function useWorkspaceSelection(project: string, canvasId: string, hydrate
   }, [project, canvasId, hydrated, enabled]);
 }
 
-export function FreezoneShell({ project, canvasId, managedWorkspace = false, onWorkspaceState }: FreezoneShellProps) {
+export function FreezoneShell({ project, canvasId, canvasTitle, managedWorkspace = false, workspaceScope, onWorkspaceState }: FreezoneShellProps) {
+  const [addNodeRequest, setAddNodeRequest] = useState(0);
+  const canvasContainer = useRef<HTMLElement>(null);
+  const flow = useReactFlow();
+  const desktopWorkspace = useMediaQuery('(min-width: 1024px)') && managedWorkspace;
+  const lastFocus = useRef<string | null>(null);
+  useEffect(() => {
+    if (!desktopWorkspace) return;
+    const remember = () => {
+      const state = useCanvasStore.getState();
+      const selected = state.selectedNodeId ?? state.nodes.find(node => node.selected)?.id;
+      if (selected) lastFocus.current = selected;
+    };
+    remember();
+    return useCanvasStore.subscribe(remember);
+  }, [desktopWorkspace, canvasId]);
+  useEffect(() => {
+    const container = canvasContainer.current;
+    if (!desktopWorkspace || !container || typeof ResizeObserver === 'undefined') return;
+    let previousWidth = container.clientWidth;
+    const observer = new ResizeObserver(() => {
+      const width = container.clientWidth;
+      if (width === previousWidth) return;
+      previousWidth = width;
+      const node = lastFocus.current ? flow.getInternalNode(lastFocus.current) : undefined;
+      if (!node) return;
+      const viewport = flow.getViewport();
+      const left = node.internals.positionAbsolute.x * viewport.zoom + viewport.x;
+      const right = left + (node.measured.width ?? node.width ?? DEFAULT_NODE_WIDTH) * viewport.zoom;
+      const next = keepNodeVisible(viewport, left, right, width);
+      if (next !== viewport) void flow.setViewport(next);
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [desktopWorkspace, flow, canvasId]);
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const projectId = project.id;
@@ -424,15 +467,26 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
   const [assetPanelCollapsed, setAssetPanelCollapsed] = useState(true);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  // Preserve existing canvas content and node types by default. Users can opt
+  // into the curated production-only view with the toolbar toggle.
+  const [showCompatibilityNodes, setShowCompatibilityNodes] = useState(true);
+  const lightweightMode = !showCompatibilityNodes;
   const [chatReference, setChatReference] = useState<import('@/features/superchat/canvas-references').ReferenceItem>();
   useEffect(() => {
     const reference = (event: Event) => {
+      if (lightweightMode) return;
       setChatReference((event as CustomEvent).detail);
       setChatOpen(true);
     };
     window.addEventListener('nuomi:chat-reference', reference);
     return () => window.removeEventListener('nuomi:chat-reference', reference);
-  }, []);
+  }, [lightweightMode]);
+  useEffect(() => {
+    if (lightweightMode) {
+      setChatOpen(false);
+      setChatReference(undefined);
+    }
+  }, [lightweightMode]);
   // Re-entrancy guard for in-flight projection sync/remove lives in the refs;
   // there is no UI bound to a syncing/removing value, so no state is kept.
   const syncingProjectionRef = useRef<string | null>(null);
@@ -466,7 +520,9 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
       queryClient.invalidateQueries({ queryKey: queryKeys.scene(projectId, target.scene_id) });
     }
   }, [projectId, queryClient]);
-  const sync = useCanvasSync(projectId, canvasId);
+  const activeWorkspaceScope = workspaceScope?.projectId === projectId && workspaceScope.canvasId === canvasId
+    ? workspaceScope : null;
+  const sync = useCanvasSync(projectId, canvasId, activeWorkspaceScope);
   useWorkspaceSelection(projectId, canvasId, sync.hydratedCanvasId === canvasId, managedWorkspace);
   useEffect(()=>{
     setSharedSave(null);
@@ -876,14 +932,33 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
   return (
     <div className="relative w-full h-full flex flex-col overflow-hidden">
       <div className="relative flex flex-1 min-h-0">
-        <main className="relative h-full min-w-0 flex-1">
-          {showBlockingLoading ? (
+        <main ref={canvasContainer} className="relative flex h-full min-w-0 flex-1 flex-col">
+          {managedWorkspace && <header aria-label="当前画布工具栏" className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] bg-bg-dark px-5">
+            <h1 className="min-w-0 truncate text-sm font-semibold text-text">{canvasTitle || '创作画布'}</h1>
+            <div className="flex shrink-0 items-center gap-2">
+              <details className="relative">
+                <summary aria-label="画布设置" className="cursor-pointer list-none rounded-lg px-2 py-1.5 text-sm text-text-muted hover:bg-white/5">···</summary>
+                <div className="absolute right-0 top-full z-50 mt-2 flex w-52 flex-col gap-2 rounded-xl border border-white/10 bg-surface p-3 shadow-xl"><DirectionReferenceEntry project={projectId} canvasId={canvasId} selectedNodes />{!lightweightMode && <AgentConfigurationEntry project={projectId} canvasId={canvasId}/>}<CreativeSettingsEntry project={projectId} canvasId={canvasId}/><TemplateLibraryEntry project={projectId} canvasId={canvasId}/></div>
+              </details>
+              <button type="button" aria-pressed={showCompatibilityNodes} onClick={() => setShowCompatibilityNodes(value => !value)} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-text">
+                {showCompatibilityNodes ? '仅显示创作内容' : '显示全部节点'}
+              </button>
+              <button type="button" onClick={() => setAddNodeRequest(value => value + 1)} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-text">＋ 添加节点</button>
+              {!lightweightMode && <button type="button" aria-expanded={chatOpen} onClick={() => setChatOpen(value => !value)} className="rounded-lg bg-[#d7ed7a] px-3 py-2 text-xs font-medium text-[#15180e]">{chatOpen ? '收起 Agent' : '✦ Agent'}</button>}
+            </div>
+          </header>}
+          <div className="relative min-h-0 flex-1">
+          {!managedWorkspace && <div className="absolute left-4 top-4 z-30"><button type="button" aria-pressed={showCompatibilityNodes} onClick={() => setShowCompatibilityNodes(value => !value)} className="rounded-lg border border-white/10 bg-[#101217]/85 px-3 py-2 text-xs text-white/80 shadow-lg backdrop-blur">
+            {showCompatibilityNodes ? '仅显示创作内容' : '显示全部节点'}
+          </button></div>}
+          <WorkspaceScopeProvider value={activeWorkspaceScope}><LightweightCanvasProvider value={{ enabled: lightweightMode, projectId, canvasId }}>{showBlockingLoading ? (
             <CanvasLoadingScreen />
           ) : (
             <Canvas
+              lightweightMode={lightweightMode}
               onBlankPaneClick={handleBlankPaneClick}
               controlsPlacement="bottom-right"
-              selectionActions={managedWorkspace ? <SelectionDelegationToolbar
+              selectionActions={managedWorkspace && !lightweightMode ? <SelectionDelegationToolbar
                 project={projectId}
                 canvasId={canvasId}
                 sidePanelOpen={chatOpen}
@@ -893,8 +968,10 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
                   setChatOpen(true);
                 }}
               /> : undefined}
+              workspaceTools={managedWorkspace}
+              addNodeRequest={addNodeRequest}
             />
-          )}
+          )}</LightweightCanvasProvider></WorkspaceScopeProvider>
           {showLoadingOverlay && <CanvasLoadingOverlay />}
           {sync.status === "error" && (
             <CanvasErrorOverlay error={sync.error} onRetry={sync.retry} />
@@ -955,9 +1032,11 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
               setToast(message);
             }}
           />
+          </div>
         </main>
         <FreezoneChatDock
             managedWorkspace={managedWorkspace}
+            enabled={!lightweightMode}
             canvasId={canvasId}
             reference={chatReference}
             open={chatOpen}
@@ -1050,6 +1129,7 @@ export function FreezoneShell({ project, canvasId, managedWorkspace = false, onW
 
 function FreezoneChatDock({
   managedWorkspace,
+  enabled = true,
   canvasId,
   reference,
   open,
@@ -1059,6 +1139,7 @@ function FreezoneChatDock({
   toggleLabel,
 }: {
   managedWorkspace?: boolean;
+  enabled?: boolean;
   canvasId: string;
   reference?: import('@/features/superchat/canvas-references').ReferenceItem;
   open: boolean;
@@ -1086,8 +1167,14 @@ function FreezoneChatDock({
     // Keep sockets and their independent turns alive while the dock is closed.
   }, [isDesktop, open]);
 
+  useEffect(() => {
+    if (!enabled) setPanelVisible(false);
+  }, [enabled]);
+
   // Mount on the opening render so selection actions can measure the dock
   // during layout, before its entrance animation starts.
+  if (!enabled && !shouldRenderPanel) return null;
+
   if (!shouldRenderPanel && !open) {
     return (
       <FreezoneChatToggleButton
@@ -1100,33 +1187,20 @@ function FreezoneChatDock({
 
   return (
     <>
-      {!open && (
+      {enabled && !open && (
         <FreezoneChatToggleButton
           label={toggleLabel}
           expanded={false}
           onClick={() => onOpenChange(true)}
         />
       )}
-      <aside
-        data-canvas-chat-dock
-        className={cn(
-          "absolute bottom-4 right-4 top-4 z-40 flex origin-right flex-col overflow-hidden rounded-[14px] border border-white/[0.12] bg-zinc-950/95 shadow-none backdrop-blur-2xl transition-[opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
-          panelVisible ? "translate-x-0 scale-100 opacity-100" : "invisible pointer-events-none translate-x-10 scale-[0.985] opacity-0",
-        )}
-        style={{
-          width: isDesktop ? FREEZONE_CHAT_WIDTH : 'calc(100vw - 32px)',
-          maxWidth: isDesktop ? "calc(100vw - 360px)" : '560px',
-        }}
-        aria-label={title}
-        aria-hidden={!open}
-        title={description}
-      >
+      <WorkspaceAgentPanel desktop={isDesktop} managed={!!managedWorkspace} open={enabled && open} visible={enabled && panelVisible} title={title} description={description}>
         <Suspense
           fallback={<div role="status" aria-live="polite" className="p-4 text-sm text-muted-foreground">正在加载糯米助手…</div>}
         >
           <LazySuperChatPanel managedWorkspace={managedWorkspace} reference={reference} canvasId={canvasId} variant="freezone" onRequestClose={() => onOpenChange(false)} />
         </Suspense>
-      </aside>
+      </WorkspaceAgentPanel>
     </>
   );
 }

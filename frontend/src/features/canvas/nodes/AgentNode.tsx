@@ -15,6 +15,7 @@ import { useCanvasStore } from "@/stores/canvasStore";
 import { NodeHeader } from "@/features/canvas/ui/NodeHeader";
 import { NodeResizeHandle } from "@/features/canvas/ui/NodeResizeHandle";
 import { genres } from "@/features/script-creation/script-setter-data";
+import { AgentNodeRuntimePanel } from "@/features/ideation/AgentNodeRuntimePanel";
 import {
   captureAgentCanvasSaveSession,
   IdeationSettings,
@@ -147,18 +148,20 @@ export const AgentNode = memo(function AgentNode({
   }, []);
 
   const saveInlineSettings = useCallback(async () => {
-    if (JSON.stringify(draftSettings) === JSON.stringify(confirmedSettings)) return;
+    if (JSON.stringify(draftSettings) === JSON.stringify(confirmedSettings)) return true;
     const session = captureAgentCanvasSaveSession(id, agentRef);
     const attemptedSettings = structuredClone(draftSettings);
     const attempt = beginSaveAttempt();
     try {
       await persistAgentSettings(session, attemptedSettings);
-      if (!isSaveAttemptCurrent(attempt, session)) return;
+      if (!isSaveAttemptCurrent(attempt, session)) return false;
       setConfirmedSettings(attemptedSettings);
       setSaveError("");
+      return true;
     } catch (error) {
-      if (!isSaveAttemptCurrent(attempt, session)) return;
+      if (!isSaveAttemptCurrent(attempt, session)) return false;
       setSaveError(getMessage(error, t("canvas.agentNode.saveFailure")));
+      return false;
     }
   }, [agentRef, beginSaveAttempt, confirmedSettings, draftSettings, id, isSaveAttemptCurrent, t]);
 
@@ -275,6 +278,12 @@ export const AgentNode = memo(function AgentNode({
         </div>
 
         {saveError && <p className="agent-node-error" role="alert">{saveError}</p>}
+        <AgentNodeRuntimePanel
+          nodeId={id}
+          agentRef={agentRef}
+          saveSettings={saveInlineSettings}
+          isIdeation={agentRef.id === "builtin:ideation"}
+        />
         <button
           type="button"
           className="agent-node-settings-button nodrag"

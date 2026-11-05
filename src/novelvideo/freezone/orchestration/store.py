@@ -11,14 +11,53 @@ from uuid import uuid4
 
 from novelvideo.freezone.canvas_store import utc_now_iso
 from .graph import execution_order
-from .models import OrchestrationError, fingerprint, input_fingerprint
+from .models import (OrchestrationError, dependency_edge_fingerprint, fingerprint,
+                     frozen_node_result, input_fingerprint)
 
 TERMINAL = {"succeeded", "failed", "cancelled"}
+_UNSPECIFIED_WORKSPACE_SCOPE = object()
 
 
 def new_attempt(node_id: str, number: int) -> dict:
     return {"id": uuid4().hex, "node_id": node_id, "number": number, "status": "pending",
             "submission": None, "result": None, "artifacts": [], "error": None}
+
+
+def _director_prepare_needs_review_hold(run: dict, node_id: str, attempt: dict) -> bool:
+    """Recognize only the historical prepare failure caused by review gating.
+
+    This adapter outcome was incorrectly persisted as a settled failure even
+    though the handoff submission had already been accepted. Retrying it must
+    resume reconciliation of that receipt rather than create a new mutation.
+    """
+    if attempt.get("error") != "semantics: needs_review":
+        return False
+    if attempt.get("provider_status") != "failed":
+        return False
+    submission = attempt.get("submission")
+    if not isinstance(submission, dict) or (
+        submission.get("production_workflow") is not True
+        or submission.get("workflow_kind") != "director"
+    ):
+        return False
+    node = next((item for item in run.get("snapshot", {}).get("nodes", [])
+                 if item.get("id") == node_id), None)
+    data = node.get("data") if isinstance(node, dict) else None
+    return bool(
+        isinstance(data, dict)
+        and node.get("type") == "directorWorkspaceNode"
+        and data.get("operation") == "prepare"
+        and type(data.get("episodeNumber")) is int
+        and submission.get("episode") == data.get("episodeNumber")
+        and isinstance(data.get("documentId"), str)
+        and data.get("documentId")
+        and submission.get("document_id") == data.get("documentId")
+        and isinstance(data.get("adoptedRevisionId"), str)
+        and data.get("adoptedRevisionId")
+        and submission.get("revision_id") == data.get("adoptedRevisionId")
+        and isinstance(submission.get("handoff_id"), str)
+        and bool(submission.get("handoff_id"))
+    )
 
 
 class RunStore:
@@ -84,11 +123,66 @@ class RunStore:
 
     def create(self, canvas: dict, *, target: str, request_id: str, project_id: str,
                settings: dict, actor: dict, operation: str | None = None,
-               target_only: bool = False, agent_execution: dict | None = None) -> dict:
+               target_only: bool = False, agent_execution: dict | None = None,
+               workspace_scope=_UNSPECIFIED_WORKSPACE_SCOPE,
+               asset_design_execution: dict | None = None) -> dict:
         if not request_id.strip():
             raise OrchestrationError("request_id_required", "A stable request ID is required")
+        frozen_sources = set()
+        if asset_design_execution is not None:
+            target_node = next((node for node in canvas.get("nodes", []) if node.get("id") == target), None)
+            if (not isinstance(asset_design_execution, dict) or target_node is None
+                    or target_node.get("type") != "imageGenNode"
+                    or (operation or (target_node.get("data") or {}).get("operation")) != "generate"):
+                raise OrchestrationError("invalid_frozen_dependency",
+                                         "Frozen asset inputs require an image generation target")
+            references = (target_node.get("data") or {}).get("designBinding", {}).get("references")
+            reference_ids = [item.get("node_id") for item in references or []
+                             if isinstance(item, dict) and item.get("kind") == "canvas_node"]
+            marker_ids = asset_design_execution.get("reference_ids")
+            frozen_inputs = asset_design_execution.get("frozen_inputs")
+            if (not isinstance(references, list) or not reference_ids
+                    or not isinstance(marker_ids, list) or marker_ids != reference_ids
+                    or not isinstance(frozen_inputs, list)
+                    or [item.get("node_id") for item in frozen_inputs if isinstance(item, dict)] != reference_ids):
+                raise OrchestrationError("invalid_frozen_dependency",
+                                         "Frozen asset inputs do not match their design binding")
+            candidate = asset_design_execution.get("candidate")
+            if (not isinstance(candidate, dict) or candidate.get("canvas_id") != canvas.get("canvas_id")
+                    or candidate.get("node_id") != target or candidate.get("operation") != "generate"
+                    or candidate.get("node_type") != "imageGenNode" or candidate.get("max_node_runs") != 1):
+                raise OrchestrationError("invalid_frozen_dependency",
+                                         "Frozen asset inputs lack a matching prepared receipt")
+            direct_edges = {edge.get("source") for edge in canvas.get("edges", [])
+                            if edge.get("target") == target
+                            and not (edge.get("data") or {}).get("contextLink")}
+            sources = {node.get("id"): node for node in canvas.get("nodes", [])}
+            reference_fingerprints = asset_design_execution.get("reference_input_fingerprints")
+            output_fingerprints = asset_design_execution.get("source_output_fingerprints")
+            if (not isinstance(reference_fingerprints, dict) or set(reference_fingerprints) != set(reference_ids)
+                    or not isinstance(output_fingerprints, dict) or set(output_fingerprints) != set(reference_ids)):
+                raise OrchestrationError("invalid_frozen_dependency",
+                                         "Frozen asset input fingerprints are incomplete")
+            for reference_id, frozen in zip(reference_ids, frozen_inputs):
+                source = sources.get(reference_id)
+                result = frozen_node_result(source) if source else {}
+                reference = next(item for item in references if item.get("kind") == "canvas_node"
+                                 and item.get("node_id") == reference_id)
+                if (reference_id not in direct_edges or not isinstance(reference_id, str)
+                        or not isinstance(reference.get("input_fingerprint"), str)
+                        or reference_fingerprints.get(reference_id) != reference.get("input_fingerprint")
+                        or frozen.get("status") != "succeeded" or frozen.get("result") != result
+                        or output_fingerprints.get(reference_id) != fingerprint(result)
+                        or not result.get("imageUrl")):
+                    raise OrchestrationError("invalid_frozen_dependency",
+                                             "Frozen asset source does not match its verified canvas output",
+                                             node_id=reference_id)
+                frozen_sources.add(reference_id)
+            if asset_design_execution.get("dependency_edge_fingerprint") != dependency_edge_fingerprint(canvas, target):
+                raise OrchestrationError("invalid_frozen_dependency",
+                                         "Frozen asset reference edges changed before run creation")
         dependency_order = execution_order(canvas["nodes"], canvas["edges"], target,
-                                           operation=operation)
+                                           operation=operation, frozen_sources=frozen_sources)
         if target_only and not agent_execution:
             raise OrchestrationError("invalid_agent_run", "Target-only execution requires a trusted agent marker")
         order = [target] if target_only else dependency_order
@@ -102,10 +196,14 @@ class RunStore:
                 target_node['data']['referenceOnly'] = False
             elif operation == 'generate' and target_node['type'] in {'imageGenNode', 'imageNode', 'storyboardGenNode'}:
                 target_node['data']['referenceOnly'] = False
-        request_hash = (fingerprint([snapshot, target, settings, operation, actor.get("id")])
-                        if agent_execution is None and not target_only else
-                        fingerprint([snapshot, target, settings, operation, actor.get("id"),
-                                     agent_execution, target_only]))
+        if workspace_scope is not _UNSPECIFIED_WORKSPACE_SCOPE:
+            from novelvideo.creation.canvas_scope import validate_snapshot_workspace_scope
+            validate_snapshot_workspace_scope(snapshot, workspace_scope, node_ids=order)
+        request_identity = [snapshot, target, settings, operation, actor.get("id")]
+        if agent_execution is not None or target_only or asset_design_execution is not None:
+            request_identity.extend([agent_execution, target_only, asset_design_execution])
+        request_hash = fingerprint(request_identity)
+        busy_node_ids = sorted(set(order) | frozen_sources)
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             existing = db.execute("SELECT * FROM runs WHERE canvas_id=? AND request_id=?",
@@ -117,13 +215,15 @@ class RunStore:
             active = db.execute("SELECT id,payload FROM runs WHERE canvas_id=? AND status NOT IN ('succeeded','failed','cancelled')",
                                 (canvas["canvas_id"],)).fetchall()
             for running in active:
-                if set(order).intersection(json.loads(running['payload'])['order']):
+                running_payload = json.loads(running['payload'])
+                if set(busy_node_ids).intersection(running_payload.get('busy_node_ids', running_payload['order'])):
                     raise OrchestrationError("canvas_busy", "These nodes have an active run", run_id=running["id"])
             run = {"schema_version": 1, "id": uuid4().hex, "project_id": project_id,
                    "canvas_id": canvas["canvas_id"], "target": target, "request_id": request_id,
                    "snapshot": snapshot, "settings": deepcopy(settings),
                    "actor": {key: actor[key] for key in ("id", "username") if key in actor},
-                   "order": order, "status": "pending", "cancel_requested": False,
+                   "order": order, "busy_node_ids": busy_node_ids,
+                   "status": "pending", "cancel_requested": False,
                    "attempts": {key: [new_attempt(key, 1)] for key in order},
                    # Projection guards are against the live saved inputs. The
                    # execution snapshot may contain an explicitly selected op
@@ -133,6 +233,8 @@ class RunStore:
                    "retry_requests": [], "created_at": utc_now_iso(), "updated_at": utc_now_iso()}
             if agent_execution:
                 run["agent_execution"] = deepcopy(agent_execution)
+            if asset_design_execution is not None:
+                run["asset_design_execution"] = deepcopy(asset_design_execution)
             db.execute("INSERT INTO runs VALUES(?,?,?,?,?,?)", (run["id"], run["canvas_id"], request_id,
                                                                request_hash, run["status"], json.dumps(run)))
             self._event(db, run, "created")
@@ -376,7 +478,15 @@ class RunStore:
             self._assert_no_other_active(db, run)
             for key, attempts in run["attempts"].items():
                 if attempts[-1]["status"] == "failed":
-                    attempts.append(new_attempt(key, len(attempts) + 1))
+                    latest = attempts[-1]
+                    if _director_prepare_needs_review_hold(run, key, latest):
+                        # Reopen the same accepted prepare receipt. The frozen
+                        # baseline and client mutation ID stay unchanged.
+                        latest.update(status="running", error=None, provider_status=None)
+                    else:
+                        attempt = new_attempt(key, len(attempts) + 1)
+                        attempt['explicit_retry'] = True
+                        attempts.append(attempt)
                 elif attempts[-1]["status"] == "blocked":
                     attempts[-1].update(status="pending", error=None)
             run["retry_requests"].append(request_id)

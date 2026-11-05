@@ -101,6 +101,17 @@ import { awaitTaskCompletion } from '@/api/tasks';
 import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
 import { backendErrorToastMessage } from '@/lib/api-errors';
 import { readUrl } from '@/lib/url-params';
+import { resolveFreezoneCanvasId } from '@/features/freezone/freezoneCanvasScope';
+import { getFreezoneCanvas } from '@/api/canvas';
+import {
+  controlCanvasOrchestrationRun,
+  getCanvasOrchestrationRun,
+  listCanvasOrchestrationRuns,
+  startAssetDesignGeneration,
+  type CanvasOrchestrationRun,
+} from '@/api/collaboration';
+import { captureFreezoneCanvasRuntime } from '@/features/freezone/canvasSyncRuntime';
+import { refreshCanvasRunResults } from '@/features/canvas/infrastructure/orchestrationGateway';
 import {
   ProviderModelPicker,
 } from '@/features/canvas/ui/ProviderModelPicker';
@@ -180,6 +191,7 @@ import { ExtensionStyleChip } from '@/features/canvas/extension-styles/Extension
 import { fixedStyleVersionLabel, useFixedNodeStyle } from '@/features/direction-references/useFixedNodeStyle';
 import { GridExtractionPanel } from '@/features/canvas/production/grid/GridExtractionPanel';
 import type { GroupGridBinding } from '@/features/canvas/production/grid/gridBinding';
+import { resolveImageGenResolutionSelection } from './imageGenResolution';
 
 type ImageGenNodeProps = NodeProps & {
   id: string;
@@ -212,12 +224,68 @@ const ASPECT_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: '2:3', label: '2:3' },
   { value: '4:5', label: '4:5' },
   { value: '5:4', label: '5:4' },
+  { value: '2:1', label: '2:1' },
   { value: '21:9', label: '21:9' },
 ];
 
-const SIZE_OPTIONS: ReadonlyArray<ImageSize> = ['1K', '2K', '4K'];
 const COUNT_OPTIONS: ReadonlyArray<ImageGenCount> = [1, 2, 4];
 const SELECTED_BACKGROUND_CROP_ASPECT_OPTIONS = ['2:3', '16:9'] as const;
+const ASSET_DESIGN_RUN_STORAGE_PREFIX = 'supertale:asset-design-run:v1:';
+
+interface AssetDesignRunState {
+  requestId: string;
+  runId?: string;
+  expectedRevision: number;
+  status: string;
+  error?: string | null;
+  retryRequestId?: string;
+}
+
+function readAssetDesignRun(key: string): AssetDesignRunState | null {
+  try {
+    const raw = localStorage.getItem(`${ASSET_DESIGN_RUN_STORAGE_PREFIX}${encodeURIComponent(key)}`);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<AssetDesignRunState>;
+    return typeof value.requestId === 'string' && typeof value.expectedRevision === 'number' && typeof value.status === 'string'
+      ? value as AssetDesignRunState
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeAssetDesignRun(key: string, value: AssetDesignRunState): boolean {
+  try {
+    localStorage.setItem(`${ASSET_DESIGN_RUN_STORAGE_PREFIX}${encodeURIComponent(key)}`, JSON.stringify(value));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function runErrorMessage(run: CanvasOrchestrationRun, nodeId: string): string | null {
+  const attempts = run.attempts?.[nodeId] ?? [];
+  const attempt = attempts.length ? attempts[attempts.length - 1] : undefined;
+  const error = attempt?.error;
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object') {
+    const value = error as { message?: unknown; code?: unknown };
+    return [value.message, value.code].filter((item): item is string => typeof item === 'string').join(' · ') || null;
+  }
+  return null;
+}
+
+function activeAssetRun(status: string): boolean {
+  return ['pending', 'queued', 'running', 'applying', 'model_inflight'].includes(status);
+}
+
+function assetRunLabel(status: string): string {
+  return ({
+    pending: '已提交，等待运行', queued: '等待出图', running: '正在生成图片',
+    applying: '正在保存图片结果', succeeded: '图片候选已生成', failed: '生成失败',
+    cancelled: '生成已取消', submission_unknown: '提交结果待确认',
+  } as Record<string, string>)[status] ?? status;
+}
 
 const QUALITY_OPTIONS: ReadonlyArray<{ value: ImageQuality; label: string }> = [
   { value: 'low', label: '低画质' },
@@ -309,6 +377,32 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   // Zustand store on every keystroke triggers a global re-render that can
   // clobber the in-flight composition; the buffer absorbs that race.
   const externalPrompt = typeof data.prompt === 'string' ? data.prompt : '';
+  const assetDesignBinding = data.designBinding && typeof data.designBinding === 'object'
+    ? data.designBinding as Record<string, unknown>
+    : null;
+  const assetDesignRef = assetDesignBinding?.design_ref && typeof assetDesignBinding.design_ref === 'object'
+    ? assetDesignBinding.design_ref as Record<string, unknown>
+    : null;
+  const isAssetDesignBound = Boolean(
+    assetDesignRef && typeof assetDesignRef.id === 'string' &&
+    typeof assetDesignBinding?.target_canvas_id === 'string',
+  );
+  const boundProjectId = readUrl().project;
+  const boundCanvasId = boundProjectId ? resolveFreezoneCanvasId(boundProjectId) : null;
+  const assetDesignRunKey = isAssetDesignBound && boundProjectId && boundCanvasId
+    ? JSON.stringify([boundProjectId, boundCanvasId, id, assetDesignRef?.id, assetDesignBinding?.operation_identity ?? null])
+    : '';
+  const [assetDesignRun, setAssetDesignRun] = useState<AssetDesignRunState | null>(null);
+  const [assetDesignActionBusy, setAssetDesignActionBusy] = useState(false);
+  const completedAssetRunIds = useRef(new Set<string>());
+  useEffect(() => {
+    setAssetDesignRun(assetDesignRunKey ? readAssetDesignRun(assetDesignRunKey) : null);
+  }, [assetDesignRunKey]);
+  const saveAssetDesignRunState = useCallback((next: AssetDesignRunState) => {
+    if (!assetDesignRunKey || !writeAssetDesignRun(assetDesignRunKey, next)) return false;
+    setAssetDesignRun(next);
+    return true;
+  }, [assetDesignRunKey]);
   const [promptDraft, setPromptDraft] = useState(externalPrompt);
   const isComposingRef = useRef(false);
   const hasUserEditedPromptRef = useRef(false);
@@ -324,15 +418,15 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     : typeof data.aspectRatio === 'string' && data.aspectRatio
     ? data.aspectRatio
     : '16:9';
-  const size = (data.size ?? '2K') as ImageSize;
   const quality = (data.quality ?? DEFAULT_IMAGE_QUALITY) as ImageQuality;
   const count = (data.count ?? 1) as ImageGenCount;
   const autoCommitOnGenerate = data.autoCommitOnGenerate === true;
   const canAutoCommitOnGenerate =
     autoCommitOnGenerate &&
     isSystemManagedNodeData(data);
-  const effectiveCount = canAutoCommitOnGenerate ? 1 : count;
+  const effectiveCount = canAutoCommitOnGenerate || isAssetDesignBound ? 1 : count;
   const { isGenerating } = useNodeGenerationTaskState(data);
+  const isAssetDesignRunBusy = Boolean(assetDesignRun?.runId && activeAssetRun(assetDesignRun.status));
   const generationError =
     typeof data.generationError === 'string' && data.generationError.length > 0
       ? data.generationError
@@ -341,6 +435,15 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     typeof data.generationErrorDetails === 'string' && data.generationErrorDetails.length > 0
       ? data.generationErrorDetails
       : null;
+  const assetDesignName = typeof assetDesignBinding?.name === 'string' ? assetDesignBinding.name : '未命名设计';
+  const assetDesignKind = assetDesignBinding?.design_kind ?? assetDesignBinding?.kind ?? assetDesignRef?.kind;
+  const assetDesignKindLabel = assetDesignKind === 'scene' ? '场景' : assetDesignKind === 'character' ? '角色' : '资产';
+  const assetDesignPrompt = typeof assetDesignBinding?.prompt === 'string' ? assetDesignBinding.prompt : '';
+  const assetDesignReferences = Array.isArray(assetDesignBinding?.references) ? assetDesignBinding.references : [];
+  const assetDesignCandidates = useMemo(() => {
+    const urls = [data.imageUrl, ...(Array.isArray(data.generationBatch) ? data.generationBatch : [])];
+    return [...new Set(urls.filter((url): url is string => typeof url === 'string' && url.length > 0))];
+  }, [data.generationBatch, data.imageUrl]);
   const generationErrorRequestId =
     typeof data.generationErrorRequestId === 'string' && data.generationErrorRequestId.length > 0
       ? data.generationErrorRequestId
@@ -438,10 +541,16 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
       ?? availableModels[0]
     );
   }, [data.model, availableModels]);
+  const imageResolution = useMemo(
+    () => resolveImageGenResolutionSelection(selectedModel, data.size),
+    [data.size, selectedModel],
+  );
+  const size = imageResolution.value as ImageSize;
+  const sizeSupported = imageResolution.supported;
   const modelId = selectedModel?.id ?? '';
   const isImage2 = isImage2Model(selectedModel?.apiModel);
   const imageSelectionForCost =
-    imageModelsLoading || imageModelsFallback ? null : selectedModel?.apiModel ?? null;
+    imageModelsLoading || imageModelsFallback || !sizeSupported ? null : selectedModel?.apiModel ?? null;
   const imageCreditCost = useGenerationCreditCost('image_selection', imageSelectionForCost, {
     surface: 'canvas',
     params: isImage2 ? { size, quality } : { size },
@@ -855,7 +964,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
       const ref = await submitFreezoneTextTranslate(projectId, {
         text: prompt,
         nodeType: 'image',
-        canvasId: readUrl().canvas ?? 'default',
+        canvasId: resolveFreezoneCanvasId(projectId),
         nodeId: id,
       });
       await awaitTaskCompletion(ref.task_key, projectId);
@@ -883,7 +992,135 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
       upstreamTextJoined.length > 0 &&
       (!shouldInlineUpstreamTextAsPrompt || !hasUserEditedPromptRef.current)
     );
-  const submitDisabled = isNarrativeGroupGrid || isGenerating || !selectedModel || !hasEffectivePrompt;
+  const submitDisabled = isNarrativeGroupGrid || isGenerating || isAssetDesignRunBusy || assetDesignActionBusy || !selectedModel || !sizeSupported || !hasEffectivePrompt;
+
+  const refreshBoundAssetRun = useCallback(async () => {
+    const projectId = boundProjectId;
+    const canvasId = boundCanvasId;
+    const previous = assetDesignRunKey ? readAssetDesignRun(assetDesignRunKey) : null;
+    if (!projectId || !canvasId || !previous) return;
+    let run: CanvasOrchestrationRun | undefined;
+    if (previous.runId) {
+      run = await getCanvasOrchestrationRun(projectId, previous.runId);
+    } else {
+      const runs = await listCanvasOrchestrationRuns(projectId, canvasId);
+      run = runs.find((item) => item.request_id === previous.requestId);
+    }
+    if (!run) {
+      saveAssetDesignRunState({
+        ...previous,
+        status: 'submission_unknown',
+        error: '尚未查到原请求的运行回执。系统不会重复提交出图；请稍后刷新状态。',
+      });
+      return;
+    }
+    saveAssetDesignRunState({ ...previous, runId: run.id, status: run.status, error: runErrorMessage(run, id) });
+    if (run.status === 'succeeded' && !completedAssetRunIds.current.has(run.id)) {
+      completedAssetRunIds.current.add(run.id);
+      const refreshed = await refreshCanvasRunResults(projectId, canvasId);
+      if (refreshed) void refreshHistory();
+    }
+  }, [assetDesignRunKey, boundCanvasId, boundProjectId, id, refreshHistory, saveAssetDesignRunState]);
+
+  const submitBoundAssetDesign = useCallback(async () => {
+    const projectId = readUrl().project;
+    if (!projectId || !isAssetDesignBound || !assetDesignRunKey) throw new Error('资产设计绑定不完整，无法提交正式出图。');
+    const canvasId = resolveFreezoneCanvasId(projectId);
+    if (assetDesignBinding?.target_canvas_id !== canvasId) throw new Error('该资产设计属于其他画布，请切换到原画布后再生成。');
+
+    const previous = readAssetDesignRun(assetDesignRunKey);
+    if (previous && (activeAssetRun(previous.status) || previous.status === 'submission_unknown')) {
+      await refreshBoundAssetRun();
+      return;
+    }
+
+    const runtime = captureFreezoneCanvasRuntime(projectId, canvasId);
+    if (!runtime || !runtime.isCurrent()) throw new Error('目标画布尚未就绪，请切回资产设计所在画布。');
+    const flushed = await runtime.flush();
+    if (flushed !== true || !runtime.isCurrent()) throw new Error('画布尚未保存或已经切换，请先处理同步状态。');
+    const canvas = await getFreezoneCanvas(projectId, canvasId);
+    if (!runtime.isCurrent()) throw new Error('出图准备期间画布已切换，未提交任务。');
+    if (typeof canvas.revision !== 'number' || !Number.isInteger(canvas.revision)) throw new Error('无法读取当前画布版本，请刷新画布后重试。');
+
+    const requestId = crypto.randomUUID();
+    const pending: AssetDesignRunState = {
+      requestId,
+      expectedRevision: canvas.revision,
+      status: 'submission_unknown',
+      error: '正在提交正式出图请求…',
+    };
+    if (!saveAssetDesignRunState(pending)) throw new Error('本地无法保存原请求编号，为避免重复出图，本次没有提交。');
+    const run = await startAssetDesignGeneration(projectId, {
+      canvas_id: canvasId,
+      target: id,
+      request_id: requestId,
+      expected_revision: canvas.revision,
+    });
+    saveAssetDesignRunState({ ...pending, runId: run.id, status: run.status, error: runErrorMessage(run, id) });
+  }, [assetDesignBinding?.target_canvas_id, assetDesignRunKey, id, isAssetDesignBound, refreshBoundAssetRun, saveAssetDesignRunState]);
+
+  const controlBoundAssetRun = useCallback(async (action: 'cancel' | 'resume' | 'retry') => {
+    const projectId = readUrl().project;
+    const canvasId = projectId ? resolveFreezoneCanvasId(projectId) : null;
+    const current = assetDesignRunKey ? readAssetDesignRun(assetDesignRunKey) : null;
+    if (!projectId || !canvasId || !current?.runId) return;
+    const retryRequestId = action === 'retry'
+      ? current.retryRequestId ?? crypto.randomUUID()
+      : undefined;
+    const pending = retryRequestId ? { ...current, retryRequestId } : current;
+    if (retryRequestId && !saveAssetDesignRunState(pending)) throw new Error('无法保存重试编号。');
+    const run = await controlCanvasOrchestrationRun(projectId, current.runId, action, retryRequestId);
+    saveAssetDesignRunState({ ...pending, status: run.status, error: runErrorMessage(run, id), retryRequestId: undefined });
+  }, [assetDesignRunKey, id, saveAssetDesignRunState]);
+
+  const performAssetDesignAction = useCallback(async (action: 'refresh' | 'cancel' | 'resume' | 'retry') => {
+    if (assetDesignActionBusy) return;
+    setAssetDesignActionBusy(true);
+    try {
+      if (action === 'refresh') await refreshBoundAssetRun();
+      else await controlBoundAssetRun(action);
+    } catch (error) {
+      const current = assetDesignRunKey ? readAssetDesignRun(assetDesignRunKey) : null;
+      if (current) saveAssetDesignRunState({ ...current, error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setAssetDesignActionBusy(false);
+    }
+  }, [assetDesignActionBusy, assetDesignRunKey, controlBoundAssetRun, refreshBoundAssetRun, saveAssetDesignRunState]);
+
+  useEffect(() => {
+    const runId = assetDesignRun?.runId;
+    if (!isAssetDesignBound || !boundProjectId || !boundCanvasId || !runId || !activeAssetRun(assetDesignRun.status)) return;
+    let live = true;
+    let polling = false;
+    const poll = async () => {
+      if (polling || !live) return;
+      polling = true;
+      try {
+        const run = await getCanvasOrchestrationRun(boundProjectId, runId);
+        if (!live) return;
+        const latest = readAssetDesignRun(assetDesignRunKey) ?? assetDesignRun;
+        saveAssetDesignRunState({ ...latest, runId, status: run.status, error: runErrorMessage(run, id) });
+        if (run.status === 'succeeded' && !completedAssetRunIds.current.has(runId)) {
+          completedAssetRunIds.current.add(runId);
+          const refreshed = await refreshCanvasRunResults(boundProjectId, boundCanvasId);
+          if (refreshed) void refreshHistory();
+        }
+      } catch (error) {
+        if (live) {
+          const latest = readAssetDesignRun(assetDesignRunKey) ?? assetDesignRun;
+          saveAssetDesignRunState({ ...latest, error: error instanceof Error ? error.message : String(error) });
+        }
+      } finally {
+        polling = false;
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 2500);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, [assetDesignRun?.runId, assetDesignRun?.status, assetDesignRun?.requestId, assetDesignRun?.expectedRevision, assetDesignRunKey, boundCanvasId, boundProjectId, id, isAssetDesignBound, refreshHistory, saveAssetDesignRunState]);
 
   const handleSubmit = useCallback(async () => {
     if (submitDisabled || submittingRef.current) return;
@@ -893,6 +1130,22 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     const projectId = readUrl().project;
     if (!projectId) {
       console.error('[image-gen] no project in URL');
+      return;
+    }
+
+    if (isAssetDesignBound) {
+      try {
+        await submitBoundAssetDesign();
+      } catch (error) {
+        const latest = assetDesignRunKey ? readAssetDesignRun(assetDesignRunKey) : null;
+        if (latest) saveAssetDesignRunState({
+          ...latest,
+          status: latest.status === 'submission_unknown' ? 'submission_unknown' : latest.status,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        submittingRef.current = false;
+      }
       return;
     }
 
@@ -966,7 +1219,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     // 先完成的图立即入册展示，未完成的在画册里渲染占位骨架。
     setAlbumPendingTotal(id, total > 1 ? total : 0);
 
-    const canvasId = readUrl().canvas ?? 'default';
+    const canvasId = resolveFreezoneCanvasId(projectId);
     // 各并发任务完成顺序不定，本地累积已完成的 URL，整组写回（避免读改写竞态）。
     const completedUrls: string[] = [];
     const runOne = async (runIndex: number) => {
@@ -1840,6 +2093,32 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
             )}
           </div>
 
+          {isAssetDesignBound && (
+            <details aria-label="资产设计状态" className="mx-3 mt-2 max-h-32 shrink-0 overflow-y-auto rounded-md border border-primary/20 bg-primary/[0.045] px-2.5 py-1.5 text-[11px]">
+              <summary className="cursor-pointer font-medium text-text">{assetDesignKindLabel}设计 · {assetDesignName} · {assetDesignRun ? assetRunLabel(assetDesignRun.status) : '等待明确生成'}</summary>
+              <div className="mt-2 space-y-1.5 text-text-muted">
+                {assetDesignPrompt && <p className="whitespace-pre-wrap">出图描述：{assetDesignPrompt}</p>}
+                <p>设计来源：{assetDesignBinding?.base_asset_ref ? '固定版本变体' : assetDesignBinding?.source_proposal_ref ? '创作构思' : '手动准备'} · 模型：{selectedModel?.label ?? '未选择'} · 画风：{selectedStyle?.label ?? (styleTemplateId ? '模板不可用' : '未指定')} · 参考：{assetDesignReferences.length} 项</p>
+                {assetDesignCandidates.length > 0 && <div className="flex flex-wrap gap-2" aria-label="资产候选图片">{assetDesignCandidates.map((url, index) => <img key={`${url}:${index}`} src={resolveImageDisplayUrl(url)} alt={`${assetDesignName}候选 ${index + 1}`} className="h-14 w-14 rounded border border-white/10 object-cover" />)}</div>}
+                {assetDesignRun?.error && <p role="alert" className="text-red-300">{assetDesignRun.error}</p>}
+                {generationError && <p role="alert" className="text-red-300">{generationError}</p>}
+                <div className="flex flex-wrap gap-1.5">
+                  <button type="button" disabled={assetDesignActionBusy} onClick={() => void performAssetDesignAction('refresh')} className="rounded border border-white/15 px-2 py-1 disabled:opacity-50">刷新状态</button>
+                  {assetDesignRun?.runId && activeAssetRun(assetDesignRun.status) && <button type="button" disabled={assetDesignActionBusy} onClick={() => void performAssetDesignAction('cancel')} className="rounded border border-white/15 px-2 py-1 disabled:opacity-50">停止出图</button>}
+                  {assetDesignRun?.runId && ['paused', 'submission_unknown'].includes(assetDesignRun.status) && <button type="button" disabled={assetDesignActionBusy} onClick={() => void performAssetDesignAction('resume')} className="rounded border border-white/15 px-2 py-1 disabled:opacity-50">检查并恢复</button>}
+                  {assetDesignRun?.runId && ['failed', 'cancelled'].includes(assetDesignRun.status) && <button type="button" disabled={assetDesignActionBusy} onClick={() => void performAssetDesignAction('retry')} className="rounded border border-white/15 px-2 py-1 disabled:opacity-50">重试出图</button>}
+                </div>
+                {assetDesignRun && <details><summary className="cursor-pointer">运行信息</summary><p className="mt-1 break-all">请求编号：{assetDesignRun.requestId}{assetDesignRun.runId ? ` · 运行编号：${assetDesignRun.runId}` : ''}</p></details>}
+              </div>
+            </details>
+          )}
+
+          {!sizeSupported && (
+            <p role="alert" className="mx-3 mt-2 shrink-0 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5 text-[11px] text-red-200">
+              当前保存的 {size} 不受 {selectedModel?.label ?? '所选模型'} 支持。请手动选择 {imageResolution.options.join('、')} 后再生成。
+            </p>
+          )}
+
           <PromptMentionEditor
             ref={promptEditorRef}
             value={prompt}
@@ -1878,6 +2157,9 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
               <AspectSizeChip
                 aspectRatio={aspectRatio}
                 size={size}
+                sizeOptions={imageResolution.options}
+                sizeSupported={sizeSupported}
+                modelLabel={selectedModel?.label ?? '所选模型'}
                 quality={quality}
                 showQuality={isImage2}
                 onChange={(patch) => updateNodeData(id, {
@@ -1890,7 +2172,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
                 summary={cameraSummary}
                 onChange={(next) => updateNodeData(id, { cameraSelection: next })}
               />
-              {!canAutoCommitOnGenerate && (
+              {!canAutoCommitOnGenerate && !isAssetDesignBound && (
                 <CountSelect
                   value={count}
                   onChange={(nextCount) => updateNodeData(id, { count: nextCount })}
@@ -2097,14 +2379,17 @@ function resolveNearestAspectOption(aspectRatio: string): { value: string; label
 
 interface AspectSizeChipProps {
   aspectRatio: string;
-  size: ImageSize;
+  size: string;
+  sizeOptions: ReadonlyArray<ImageSize>;
+  sizeSupported: boolean;
+  modelLabel: string;
   quality: ImageQuality;
   /** image2 系模型才显示「画质」选择器，并在标签里带上画质。 */
   showQuality: boolean;
   onChange: (patch: Partial<ImageGenNodeData>) => void;
 }
 
-function AspectSizeChip({ aspectRatio, size, quality, showQuality, onChange }: AspectSizeChipProps) {
+function AspectSizeChip({ aspectRatio, size, sizeOptions, sizeSupported, modelLabel, quality, showQuality, onChange }: AspectSizeChipProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const [isOpen, setIsOpen] = useState(false);
@@ -2138,6 +2423,7 @@ function AspectSizeChip({ aspectRatio, size, quality, showQuality, onChange }: A
           event.stopPropagation();
           setIsOpen((prev) => !prev);
         }}
+        title={sizeSupported ? undefined : `${modelLabel} 不支持当前保存的 ${size}`}
         className={NODE_TEXT_CONTROL_TRIGGER_CLASS}
       >
         <span>{aspectLabel}</span>
@@ -2148,7 +2434,8 @@ function AspectSizeChip({ aspectRatio, size, quality, showQuality, onChange }: A
           </>
         )}
         <span className="text-text-muted/80">·</span>
-        <span>{size}</span>
+        <span className={sizeSupported ? undefined : 'text-red-300'}>{size}</span>
+        {!sizeSupported && <AlertTriangle className="h-3 w-3 text-red-300" aria-label="分辨率不受支持" />}
         <ChevronDown className="h-3 w-3 text-text-muted/90" />
       </button>
       {isOpen && (
@@ -2184,7 +2471,17 @@ function AspectSizeChip({ aspectRatio, size, quality, showQuality, onChange }: A
           )}
           <div className={IMAGE_PARAM_LABEL_CLASS}>分辨率</div>
           <div className={IMAGE_PARAM_ROW_CLASS}>
-            {SIZE_OPTIONS.map((option) => {
+            {!sizeSupported && (
+              <button
+                type="button"
+                disabled
+                aria-label={`当前保存的 ${size} 分辨率不受支持`}
+                className={`${IMAGE_PARAM_BUTTON_BASE_CLASS} flex-1 cursor-not-allowed bg-red-500/15 text-red-200`}
+              >
+                {size}（当前不可用）
+              </button>
+            )}
+            {sizeOptions.map((option) => {
               const isActive = size === option;
               return (
                 <button
@@ -2202,6 +2499,11 @@ function AspectSizeChip({ aspectRatio, size, quality, showQuality, onChange }: A
               );
             })}
           </div>
+          {!sizeSupported && (
+            <p role="alert" className="-mt-2 mb-3 text-[11px] leading-4 text-red-200">
+              {modelLabel} 不支持当前保存的 {size}。请选择上方可用分辨率。
+            </p>
+          )}
 
           <div className={IMAGE_PARAM_LABEL_CLASS}>比例</div>
           <div className="grid grid-cols-4 gap-2">

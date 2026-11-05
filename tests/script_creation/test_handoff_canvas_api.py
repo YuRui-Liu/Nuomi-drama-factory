@@ -112,8 +112,8 @@ def test_confirmed_handoff_creates_managed_episode_with_visible_semantic_script(
 
     canvas = read_canvas(state_dir, result["canvas_id"])
     assert canvas["metadata"]["episode_id"] == result["episode_id"]
-    assert len(canvas["nodes"]) == 1
-    node = canvas["nodes"][0]
+    assert len(canvas["nodes"]) == 3
+    node = next(item for item in canvas["nodes"] if item["type"] == "textAnnotationNode")
     assert node["type"] == "textAnnotationNode"
     assert node["data"]["content"] == markdown
     assert node["data"]["displayName"] == "第4集-one"
@@ -129,6 +129,17 @@ def test_confirmed_handoff_creates_managed_episode_with_visible_semantic_script(
     }
     assert node["data"]["sourceSnapshot"]["handoff_id"] == handoff["id"]
     assert node["data"]["sourceSnapshot"]["source_hash"] == handoff["source_hash"]
+    assert node["data"]["formalScriptRef"] == {
+        "kind": "episode_script", "project_id": "p", "document_id": handoff["document_id"],
+        "revision_id": handoff["revision_id"], "episode_number": 4, "title": "第4集-one",
+    }
+    screenplay = next(item for item in canvas["nodes"] if item["type"] == "screenplayNode")
+    director = next(item for item in canvas["nodes"] if item["type"] == "directorWorkspaceNode")
+    assert screenplay["data"]["episodeNumber"] == 4
+    assert screenplay["data"]["documentId"] == handoff["document_id"]
+    assert screenplay["data"]["documentRevisionId"] == handoff["revision_id"]
+    assert director["data"]["episodeNumber"] == 4
+    assert director["data"]["sourceDocumentId"] == handoff["document_id"]
 
 
 def test_handoff_canvas_replay_is_stable_across_editors_and_later_source_changes(canvas_client):
@@ -251,6 +262,97 @@ def test_unconfirmed_handoff_cannot_initialize_or_claim_a_canvas(canvas_client):
     assert not (state_dir / "creation" / "objects.sqlite3").exists()
 
 
+def test_agent_script_handoff_requires_current_independent_review(canvas_client):
+    import asyncio
+
+    from novelvideo.creation.agent_script_documents import AgentScriptDocuments
+    from novelvideo.script_creation.store import DocumentStore
+    from novelvideo.freezone.canvas_store import read_canvas
+
+    http, _, state_dir = canvas_client
+    documents = DocumentStore(state_dir / "data.db")
+    service = AgentScriptDocuments(documents)
+
+    async def seed(review=False):
+        draft = await service.create_draft(
+            request_id="agent-script-draft", project_id="p", canvas_id="concept-canvas",
+            delegation_id="writer-delegation",
+            writer={"adoption_id": "writer", "revision": 1, "name": "主笔"},
+            episode_number=2, title="第二集·雨夜来信", markdown="## 2-1｜站台·夜·外\n女主收到来信。",
+        )
+        if review:
+            await service.record_review(
+                request_id="agent-script-review", project_id="p", canvas_id="concept-canvas",
+                delegation_id="reviewer-delegation",
+                reviewer={"adoption_id": "reviewer", "revision": 2, "name": "剧本编辑"},
+                document_id=draft["document_ref"]["document_id"],
+                revision_id=draft["document_ref"]["revision_id"],
+                report={"conclusion": "passed", "summary": "人物动机与场景因果清楚。", "issues": []},
+            )
+        return draft
+
+    base = "/api/v1/projects/p/script-creation"
+    draft = asyncio.run(seed())
+    ref = draft["document_ref"]
+    handoff_request = {
+        "document_id": ref["document_id"], "revision_id": ref["revision_id"],
+        "reference_revisions": {}, "selected_entity_ids": [], "update_scope": {"mode": "none"},
+        "fact_acknowledgement": {"mode": "unchecked", "reason": "人工确认"},
+        "client_mutation_id": "agent-prepare-unreviewed",
+    }
+    blocked = http.post(base + "/handoffs/prepare", json=handoff_request)
+    assert blocked.status_code == 422
+    assert "review" in blocked.text.lower() or "审阅" in blocked.text
+
+    draft = asyncio.run(seed(review=True))
+    ref = draft["document_ref"]
+    handoff_request = {**handoff_request, "document_id": ref["document_id"],
+                       "revision_id": ref["revision_id"], "client_mutation_id": "agent-prepare-reviewed"}
+    prepared = http.post(base + "/handoffs/prepare", json=handoff_request)
+    assert prepared.status_code == 200, prepared.text
+    handoff = prepared.json()["data"]
+    stale_revision = http.put(base + f"/documents/{ref['document_id']}", json={
+        "base_revision_id": ref["revision_id"], "markdown": "## 2-1｜站台·夜·外\n她决定寄出回信。",
+        "client_mutation_id": "agent-script-edit-after-review",
+    })
+    assert stale_revision.status_code == 200
+    rejected = http.post(base + f"/handoffs/{handoff['id']}/confirm", json={
+        "expected_source_project_revision": handoff["expected_source_project_revision"],
+        "client_mutation_id": "agent-confirm-after-edit",
+    })
+    assert rejected.status_code == 409
+    assert "stale" in rejected.text.lower() or "revision changed" in rejected.text.lower()
+
+    # A fresh independently reviewed version can be handed off, and its exact
+    # episode identity is used by both screenplay and director workspace nodes.
+    updated = stale_revision.json()["data"]
+    async def review_updated():
+        await service.record_review(
+            request_id="agent-script-review-updated", project_id="p", canvas_id="concept-canvas",
+            delegation_id="reviewer-delegation-2",
+            reviewer={"adoption_id": "reviewer-2", "revision": 1, "name": "剧本编辑"},
+            document_id=ref["document_id"], revision_id=updated["current_revision_id"],
+            report={"conclusion": "passed", "summary": "改稿已复核。", "issues": []},
+        )
+    asyncio.run(review_updated())
+    fresh_request = {**handoff_request, "revision_id": updated["current_revision_id"],
+                     "client_mutation_id": "agent-prepare-reviewed-updated"}
+    fresh = http.post(base + "/handoffs/prepare", json=fresh_request)
+    assert fresh.status_code == 200, fresh.text
+    fresh_handoff = fresh.json()["data"]
+    confirmed = http.post(base + f"/handoffs/{fresh_handoff['id']}/confirm", json={
+        "expected_source_project_revision": fresh_handoff["expected_source_project_revision"],
+        "client_mutation_id": "agent-confirm-reviewed-updated",
+    })
+    assert confirmed.status_code == 202, confirmed.text
+    canvas_result = post_canvas(http, fresh_handoff["id"])
+    assert canvas_result.status_code == 200, canvas_result.text
+    canvas = read_canvas(state_dir, canvas_result.json()["data"]["canvas_id"])
+    assert {item["type"] for item in canvas["nodes"]} >= {
+        "textAnnotationNode", "screenplayNode", "directorWorkspaceNode",
+    }
+
+
 def test_projection_interruption_retries_the_same_bridge_without_duplicates(canvas_client, monkeypatch):
     from novelvideo.creation import projection
     from novelvideo.creation.store import ObjectStore
@@ -362,3 +464,429 @@ def test_imported_episode_script_can_be_confirmed_and_bridged(canvas_client):
     assert data["status"] == "applied"
     assert data["number"] == 1
     assert list_episodes(state_dir)[0]["episode_id"] == data["episode_id"]
+
+
+async def _create_bound_proposal(state_dir, handoff, *, suffix):
+    from novelvideo.script_creation.proposals import ProposalService
+    from novelvideo.script_creation.store import DocumentStore
+
+    documents = DocumentStore(state_dir / "data.db")
+    await documents.initialize()
+    document = await documents.get(handoff["document_id"])
+    block = document.revision.blocks[0]
+    before = block.markdown
+    after = before.replace("第 initial 版", f"第 {suffix} 版")
+    assert after != before
+    proposal = await ProposalService(documents).create(
+        document_id=document.id,
+        base_revision_id=document.current_revision_id,
+        block_id=block.id,
+        start=0,
+        end=len(before),
+        before=before,
+        after=after,
+        reason="用户接受剧本修改提案",
+        round_id=f"round-{suffix}",
+        client_mutation_id=f"proposal-{suffix}",
+    )
+    return documents, document, proposal, after
+
+
+async def _accept_bound_proposal(http, handoff, state_dir, *, suffix):
+    documents, document, proposal, after = await _create_bound_proposal(
+        state_dir, handoff, suffix=suffix
+    )
+    response = http.post(
+        "/api/v1/projects/p/script-creation/proposals/accept",
+        json={
+            "proposal_ids": [proposal["id"]],
+            "base_revision_id": document.current_revision_id,
+            "client_mutation_id": f"accept-{suffix}",
+        },
+    )
+    return documents, document, proposal, after, response
+
+
+@pytest.mark.asyncio
+async def test_accepting_bound_script_proposal_updates_same_source_without_new_episode(canvas_client):
+    from novelvideo.creation.workspace import list_episodes
+    from novelvideo.creation.production_progress import ProductionProgress
+    from novelvideo.script_creation.proposals import ProposalService
+
+    http, _, state_dir = canvas_client
+    handoff, _ = create_confirmed_handoff(
+        http,
+        suffix="initial",
+        markdown="## 1-1｜账房 · 夜 · 内\n甲：第 initial 版。",
+    )
+    original_canvas = post_canvas(http, handoff["id"])
+    assert original_canvas.status_code == 200, original_canvas.text
+    original_episode = original_canvas.json()["data"]
+    progress_output = state_dir / "episodes" / "001" / "script.md"
+    progress_output.parent.mkdir(parents=True, exist_ok=True)
+    progress_output.write_text("已审核剧本", encoding="utf-8")
+    progress = ProductionProgress(state_dir, output_root=state_dir)
+    ready = progress.complete(
+        "001", "screenplay", "reviewed-script", {"script": "episodes/001/script.md"}
+    )
+    progress.approve("001", "screenplay", ready["stages"]["screenplay"]["approval_hash"])
+
+    documents, original_document, _proposal, after, response = await _accept_bound_proposal(
+        http, handoff, state_dir, suffix="accepted"
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert result["current_revision_id"] != original_document.current_revision_id
+    assert result["revision"]["markdown"] == after
+    assert result["adopted_revision_id"] == result["current_revision_id"]
+    assert result["source_sync"]["status"] == "synced"
+    assert result["source_sync"]["handoff_id"] != handoff["id"]
+    assert result["progress_invalidation"]["status"] == "invalidated"
+    invalidated = progress.get("001", create=False)["stages"]["screenplay"]
+    assert invalidated["status"] == "pending"
+    assert invalidated["error"] == "script_document_updated"
+    assert invalidated["approved_hash"] is None
+    artifact = result["source_sync"]["artifact"]
+    assert artifact["path"].endswith(f"/{result['current_revision_id']}.md")
+    assert (state_dir / artifact["path"]).read_text(encoding="utf-8") == after
+    current = await documents.get(original_document.id)
+    assert current.current_revision_id == result["current_revision_id"]
+    assert current.adopted_revision_id == result["current_revision_id"]
+    assert [item["status"] for item in await ProposalService(documents).list(
+        original_document.id
+    )] == ["adopted"]
+    episodes = list_episodes(state_dir)
+    assert len(episodes) == 1
+    assert episodes[0]["episode_id"] == original_episode["episode_id"]
+    assert episodes[0]["canvas_id"] == original_episode["canvas_id"]
+    handoffs = http.get(
+        "/api/v1/projects/p/script-creation/handoffs?episode_number=1"
+    ).json()["data"]
+    assert len(handoffs) == 2
+
+
+@pytest.mark.asyncio
+async def test_accepting_unbound_script_proposal_does_not_invalidate_project_progress(canvas_client):
+    from novelvideo.creation.production_progress import ProductionProgress
+
+    http, _, state_dir = canvas_client
+    handoff, _ = create_confirmed_handoff(
+        http,
+        suffix="unbound",
+        markdown="## 1-1｜账房 · 夜 · 内\n甲：第 initial 版。",
+    )
+    progress_output = state_dir / "episodes" / "001" / "script.md"
+    progress_output.parent.mkdir(parents=True, exist_ok=True)
+    progress_output.write_text("项目已有审阅记录", encoding="utf-8")
+    progress = ProductionProgress(state_dir, output_root=state_dir)
+    ready = progress.complete(
+        "001", "screenplay", "reviewed-script", {"script": "episodes/001/script.md"}
+    )
+    progress.approve("001", "screenplay", ready["stages"]["screenplay"]["approval_hash"])
+
+    _documents, _document, _proposal, _after, response = await _accept_bound_proposal(
+        http, handoff, state_dir, suffix="unbound-accepted"
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert result["source_sync"]["status"] == "synced"
+    assert "progress_invalidation" not in result
+    unchanged = progress.get("001", create=False)["stages"]["screenplay"]
+    assert unchanged["status"] == "ready"
+    assert unchanged["review_resolution"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_direct_save_of_bound_script_syncs_source_and_invalidates_progress(canvas_client):
+    from novelvideo.creation.production_progress import ProductionProgress
+    from novelvideo.creation.workspace import list_episodes
+
+    http, _, state_dir = canvas_client
+    handoff, before = create_confirmed_handoff(
+        http,
+        suffix="direct-save",
+        markdown="## 1-1｜账房 · 夜 · 内\n甲：第 direct-save 版。",
+    )
+    canvas_response = post_canvas(http, handoff["id"])
+    assert canvas_response.status_code == 200, canvas_response.text
+    original_episode = canvas_response.json()["data"]
+    progress_output = state_dir / "episodes" / "001" / "script.md"
+    progress_output.parent.mkdir(parents=True, exist_ok=True)
+    progress_output.write_text("已批准的前一版剧本", encoding="utf-8")
+    progress = ProductionProgress(state_dir, output_root=state_dir)
+    ready = progress.complete(
+        "001", "screenplay", "previous-script", {"script": "episodes/001/script.md"}
+    )
+    progress.approve("001", "screenplay", ready["stages"]["screenplay"]["approval_hash"])
+    after = before.replace("第 direct-save 版", "直接保存的新版本")
+
+    response = http.put(
+        f"/api/v1/projects/p/script-creation/documents/{handoff['document_id']}",
+        json={
+            "base_revision_id": handoff["revision_id"],
+            "markdown": after,
+            "client_mutation_id": "direct-save-bound-script",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert result["revision"]["markdown"] == after
+    assert result["adopted_revision_id"] == result["current_revision_id"]
+    assert result["source_sync"]["status"] == "synced"
+    assert result["source_sync"]["artifact"]["status"] == "ready"
+    assert result["progress_invalidation"]["status"] == "invalidated"
+    stage = progress.get("001", create=False)["stages"]["screenplay"]
+    assert stage["status"] == "pending"
+    assert stage["error"] == "script_document_updated"
+    episodes = list_episodes(state_dir)
+    assert len(episodes) == 1
+    assert episodes[0]["episode_id"] == original_episode["episode_id"]
+
+    progress_output.write_text(after, encoding="utf-8")
+    recompleted = progress.complete(
+        "001", "screenplay", "current-script", {"script": "episodes/001/script.md"}
+    )
+    progress.approve(
+        "001", "screenplay", recompleted["stages"]["screenplay"]["approval_hash"]
+    )
+    replay = http.put(
+        f"/api/v1/projects/p/script-creation/documents/{handoff['document_id']}",
+        json={
+            "base_revision_id": handoff["revision_id"],
+            "markdown": after,
+            "client_mutation_id": "direct-save-bound-script",
+        },
+    )
+    assert replay.status_code == 200, replay.text
+    assert "progress_invalidation" not in replay.json()["data"]
+    assert progress.get("001", create=False)["stages"]["screenplay"]["status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_restoring_bound_script_revision_reuses_current_source_sync(canvas_client):
+    from novelvideo.creation.workspace import list_episodes
+
+    http, _, state_dir = canvas_client
+    initial, original_text = create_confirmed_handoff(
+        http,
+        suffix="restore",
+        markdown="## 1-1｜账房 · 夜 · 内\n甲：初始文本。",
+    )
+    canvas_response = post_canvas(http, initial["id"])
+    assert canvas_response.status_code == 200, canvas_response.text
+    original_episode = canvas_response.json()["data"]
+    changed = http.put(
+        f"/api/v1/projects/p/script-creation/documents/{initial['document_id']}",
+        json={
+            "base_revision_id": initial["revision_id"],
+            "markdown": "## 1-1｜账房 · 夜 · 内\n甲：后续改稿。",
+            "client_mutation_id": "restore-bound-save",
+        },
+    )
+    assert changed.status_code == 200, changed.text
+
+    restored = http.post(
+        f"/api/v1/projects/p/script-creation/documents/{initial['document_id']}/restore",
+        json={
+            "revision_id": initial["revision_id"],
+            "base_revision_id": changed.json()["data"]["current_revision_id"],
+            "client_mutation_id": "restore-bound-original",
+        },
+    )
+
+    assert restored.status_code == 200, restored.text
+    result = restored.json()["data"]
+    assert result["revision"]["markdown"] == original_text
+    assert result["source_sync"]["status"] == "synced"
+    assert result["adopted_revision_id"] == result["current_revision_id"]
+    assert len(list_episodes(state_dir)) == 1
+    assert list_episodes(state_dir)[0]["episode_id"] == original_episode["episode_id"]
+
+
+@pytest.mark.asyncio
+async def test_agent_direct_save_waits_for_current_independent_review(canvas_client):
+    from novelvideo.episode_source_store import EpisodeSourceStore
+    from novelvideo.script_creation.handoff import HandoffService
+    from novelvideo.script_creation.store import DocumentStore
+    from novelvideo.sqlite_store import SQLiteStore
+
+    http, _, state_dir = canvas_client
+    sqlite = SQLiteStore("test", str(state_dir), str(state_dir))
+    await sqlite.initialize()
+    documents = DocumentStore(sqlite.db_path)
+    await documents.initialize()
+    script = await documents.create(
+        kind="episode_script",
+        title="Agent 草稿",
+        episode_number=1,
+        markdown="## 1-1｜账房 · 夜 · 内\n甲：已确认绑定的 Agent 草稿。",
+        source_origin={
+            "kind": "agent_script_draft",
+            "project_id": "p",
+            "canvas_id": "concept-canvas",
+            "delegation_id": "writer-task",
+            "member_id": "writer",
+            "member_revision": 1,
+            "source_ref": None,
+        },
+        client_mutation_id="agent-direct-save-document",
+    )
+    service = HandoffService(
+        documents, EpisodeSourceStore(sqlite), project_id="p",
+    )
+    await service.initialize()
+    prepared = await service.prepare(
+        document_id=script.id,
+        revision_id=script.current_revision_id,
+        reference_revisions={},
+        selected_entity_ids=[],
+        update_scope={"mode": "none"},
+        fact_acknowledgement={"mode": "unchecked", "reason": "初始交接确认"},
+        client_mutation_id="agent-direct-save-initial-prepare",
+    )
+    initial = await service.confirm(
+        prepared["id"],
+        expected_source_project_revision=prepared["expected_source_project_revision"],
+        client_mutation_id="agent-direct-save-initial-confirm",
+    )
+    await sqlite.close()
+
+    new_text = "## 1-1｜账房 · 夜 · 内\n甲：Agent 新版本尚未复核。"
+    response = http.put(
+        f"/api/v1/projects/p/script-creation/documents/{script.id}",
+        json={
+            "base_revision_id": script.current_revision_id,
+            "markdown": new_text,
+            "client_mutation_id": "agent-direct-save-unreviewed",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert result["revision"]["markdown"] == new_text
+    assert result["source_sync"]["status"] == "review_required"
+    assert result["source_sync"]["code"] == "handoff_review_required"
+    sqlite_check = SQLiteStore("test", str(state_dir), str(state_dir))
+    await sqlite_check.initialize()
+    try:
+        source = (await EpisodeSourceStore(sqlite_check).list_sources())[0]
+    finally:
+        await sqlite_check.close()
+    assert source.content == initial["snapshot"]["markdown"]
+    assert len(http.get(
+        "/api/v1/projects/p/script-creation/handoffs?episode_number=1"
+    ).json()["data"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_direct_save_conflict_preserves_manual_episode_source(canvas_client):
+    from novelvideo.episode_source_store import EpisodeSourceStore
+    from novelvideo.episode_sources import EpisodeCandidate, content_sha256
+    from novelvideo.sqlite_store import SQLiteStore
+
+    http, _, state_dir = canvas_client
+    handoff, _before = create_confirmed_handoff(
+        http,
+        suffix="direct-save-conflict",
+        markdown="## 1-1｜账房 · 夜 · 内\n甲：已交接版本。",
+    )
+    sqlite = SQLiteStore("test", str(state_dir), str(state_dir))
+    await sqlite.initialize()
+    manual_text = "## 1-1｜账房 · 夜 · 内\n甲：Episode Source 的手工修订。"
+    await EpisodeSourceStore(sqlite).upsert_sources(
+        [EpisodeCandidate(
+            source_filename="manual-episode-source.md",
+            content=manual_text,
+            episode_number=1,
+            number_source="manual",
+            title="手工来源",
+            content_hash=content_sha256(manual_text),
+        )],
+        expected_revision=handoff["source_project_revision"],
+    )
+    await sqlite.close()
+
+    accepted_text = "## 1-1｜账房 · 夜 · 内\n甲：直接保存的正式版本。"
+    response = http.put(
+        f"/api/v1/projects/p/script-creation/documents/{handoff['document_id']}",
+        json={
+            "base_revision_id": handoff["revision_id"],
+            "markdown": accepted_text,
+            "client_mutation_id": "direct-save-manual-conflict",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert result["revision"]["markdown"] == accepted_text
+    assert result["source_sync"]["status"] == "conflict"
+    assert result["source_sync"]["code"] == "episode_source_changed"
+    sqlite_check = SQLiteStore("test", str(state_dir), str(state_dir))
+    await sqlite_check.initialize()
+    try:
+        source = (await EpisodeSourceStore(sqlite_check).list_sources())[0]
+    finally:
+        await sqlite_check.close()
+    assert source.content == manual_text
+    assert len(http.get(
+        "/api/v1/projects/p/script-creation/handoffs?episode_number=1"
+    ).json()["data"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_manual_episode_source_conflict_keeps_accepted_proposal_and_source(canvas_client):
+    from novelvideo.episode_source_store import EpisodeSourceStore
+    from novelvideo.episode_sources import EpisodeCandidate, content_sha256
+    from novelvideo.script_creation.proposals import ProposalService
+    from novelvideo.sqlite_store import SQLiteStore
+
+    http, _, state_dir = canvas_client
+    handoff, _ = create_confirmed_handoff(
+        http,
+        suffix="initial",
+        markdown="## 1-1｜账房 · 夜 · 内\n甲：第 initial 版。",
+    )
+    sqlite = SQLiteStore("test", str(state_dir), str(state_dir))
+    await sqlite.initialize()
+    sources = EpisodeSourceStore(sqlite)
+    manual_text = "## 1-1｜账房 · 夜 · 内\n甲：这是人工修改，必须保留。"
+    await sources.upsert_sources(
+        [EpisodeCandidate(
+            source_filename="manual-edit.md",
+            content=manual_text,
+            episode_number=1,
+            number_source="manual",
+            title="人工版本",
+            content_hash=content_sha256(manual_text),
+        )],
+        expected_revision=handoff["source_project_revision"],
+    )
+    await sqlite.close()
+
+    documents, original_document, _proposal, accepted_text, response = await _accept_bound_proposal(
+        http, handoff, state_dir, suffix="kept"
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]
+    assert result["current_revision_id"] != original_document.current_revision_id
+    assert result["revision"]["markdown"] == accepted_text
+    assert result["source_sync"]["status"] == "conflict"
+    assert result["source_sync"]["code"] == "episode_source_changed"
+    check_sqlite = SQLiteStore("test", str(state_dir), str(state_dir))
+    await check_sqlite.initialize()
+    try:
+        current_source = (await EpisodeSourceStore(check_sqlite).list_sources())[0]
+    finally:
+        await check_sqlite.close()
+    assert current_source.content == manual_text
+    assert [item["status"] for item in await ProposalService(documents).list(
+        original_document.id
+    )] == ["adopted"]
+    handoffs = http.get(
+        "/api/v1/projects/p/script-creation/handoffs?episode_number=1"
+    ).json()["data"]
+    assert len(handoffs) == 1

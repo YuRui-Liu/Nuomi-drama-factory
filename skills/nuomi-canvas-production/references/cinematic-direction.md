@@ -1,71 +1,61 @@
-# 漫剧镜头导演层（H3 前置）
+# Cinematic direction for H3
 
-这份规则解决的不是 H3 格式，而是“拍什么、怎么动、为什么动”。它写在 wire 之前，决定 detailed_description 的事实。
+Use this guide to translate story causality into visible evidence and then into the structured inputs supported by the current H3 route. These are directing choices, not mandatory prompt sections. User facts, saved references, and current runtime capabilities take priority over examples.
 
-来源：MiniMax H3 官方提示词指南与 h3-prompt-skill 的决策补齐、Higgsfield Hell Grind 的 blocking/continuity、本仓库 professional-references。
+## 1. Story cause to visible evidence
 
-## 1. 场景地理锁（每场一份，逐镜原样复用）
+For each continuous segment, identify what changes, why it changes, and what the audience can actually see. A motive such as fear is not itself a visible event; evidence might be a hand stopping over a door latch, a gaze moving to the exit, or a prop changing hands, when those facts are in the screenplay or director's plan.
 
-每个场景先写 GEO，只含地标、左右、机位侧、轴线、光，不含人物与动作：
+Keep the chosen intent and action order tied to the supplied scene. Do not add characters, props, actions, dialogue, or reactions to make a brief feel complete. If the source does not establish an intent or visible cue, preserve it as unknown and leave it for review.
 
-    GEO (locked): 南北向主干道；东侧街角+灰护栏；西侧废车与碎片；北端坍塌高架封路；
-    主光左前上方 5200K；影子落向右后；机位始终在道路东侧，不越轴。
+## 2. Scene context and blocking
 
-所有格子、所有分段都必须带同一段 GEO；没有 GEO 的镜头视为不合格。
+Carry forward available scene references, location details, screen positions, camera side, axis, and direction of travel. Add a spatial map only when the source or director explicitly supplies one and it helps the shot. A map need not be repeated as boilerplate in every segment.
 
-## 2. 镜头任务与首 2 秒
+For a recurring or axis-sensitive scene, maintain one shared GEO map of supplied landmarks, world orientation, actor/prop positions and paths, axis, camera side, and lighting logic. After each cut, restate only the positions, gaze, facing, and screen direction the next shot needs so the new view remains legible. This adapts the Hell Grind project brief's scene-map / post-cut continuity practice; it does not make a complete map mandatory for every scene or segment. Use the 3D snapshot or scene-blocking contract in [storyboard-direction.md](storyboard-direction.md) when the workspace supports it; otherwise keep the map in the local director document.
 
-- 每镜先写一句“这镜要让观众得到什么”（威胁转移 / 关系变化 / 信息揭示）。
-- 前 2 秒放最强视觉信息，不要用“缓缓推进”开场。
-- 每场第一镜用 1 秒宽景交代位置，宽景不是空镜。
+When a scene detail or position is missing, mark it as unknown. Do not substitute a generic street, room, lighting plan, or named character. Do not claim that a camera stays on one side of an axis unless that side and axis were specified. Never infer metric distances from a reference image.
 
-## 3. 分镜密度
+## 3. Action and timing
 
-- ≤8s：1–2 个镜头；≤15s：2–3 个镜头。
-- 推近拉远用运镜，不切镜；切镜只用于视角或信息变化。
+Preserve the supplied action sequence and any explicit timing. A shot duration does not establish when each action happens; do not divide actions into invented timed beats. A strong opening event, establishing wide shot, or pause may help a particular scene, but none is required by default.
 
-## 4. 表演节拍（每 1–2 秒一个微事件）
+Use a continuous action for a continuous clip. If an event cannot fit or read clearly, change the shot design with the user-approved story facts rather than packing in extra events.
 
-不写“愤怒/害怕”，写肌肉、呼吸、视线、重心：
+## 4. Performance
 
-    0.0–1.2s 林渡肩胛下沉，护喉手不动，视线从丧尸眼睛移到它转向的肩线；
-    1.2–2.8s 丧尸左腿承重、右靴拖过沥青，躯干先转、头晚半拍才转；
-    2.8–4.4s 幸存者脚跟蹭地，背包带被攥紧，膝盖内扣；
-    4.4–5.0s 林渡没有伸手，呼吸一次，视线留在两人之间。
+Use declared performance details such as gaze, posture, expression, breath, gesture, or weight shift. If the production has an approved stable behavior profile, combine it with this scene's goal, obstacle, and tactic to choose a visible action and reaction; carry a reaction into the next shot only when it continues the dramatic cause. This adapts the Hell Grind brief's performance method without making its roles or beats a Nuomi schema. Keep each movement connected to the character's motive and the visible evidence in this scene. Do not add generic blinks, breaths, hand motions, or a fixed cadence of micro-events when none was directed.
 
-## 5. 感染者运动语法（治“机械”）
+If no performance has been specified, keep it unknown. Avoid converting an emotional label into a new physical action unless the director or source provides that action.
 
-- 重量：每次迈步先有承重腿，再有拖拽腿；身体重心先偏，再迈。
-- 延迟：躯干转向后，头晚 0.2–0.4 秒才转；视线锁定目标后不立刻伸手。
-- 非同步：多个感染者不同步、不同速、不同朝向；禁止齐步、禁止同时转头。
-- 惯性：停下时身体仍向前冲半拍；伸手时肘先于手。
-- 无血、无烂眼；病态靠肤色、失焦、关节迟滞表达。
+## 5. Camera and framing
 
-## 6. 运镜词表（H3 官方）
+Compile the selected camera motion, framing, angle, camera side, and screen direction from explicit director inputs. If motion is absent, report that it is unspecified; do not silently choose a static shot, push-in, pan, or subject-following move.
 
-Push In / Pull Out / Zoom In / Zoom Out / Pan / Truck / Tilt / Pedestal / Arc Shot / Tracking Shot / Static Shot / Roll / Shake / POV；可挂 with small/large amplitude、at slow/fast speed。中等幅度与常速省略。
+H3 camera terms commonly used by the current guides include Push In, Pull Out, Zoom In, Zoom Out, Pan, Truck, Tilt, Pedestal, Arc Shot, Tracking Shot, Static Shot, Roll, Shake, and POV. Select a term only when the director intends it and the active route supports it. Add direction, speed, or amplitude only when provided or deliberately decided.
 
-## 7. 三层声音
+## 6. Light, dialogue, and sound
 
-- 环境：风、远处金属、碎石；
-- 动作：拖步、布料摩擦、呼吸；
-- 台词逐字进 <d>，说话人 (S1)；观众才听得到的配乐进 non_diegetic_music。
+Carry through the declared lighting and sound cues. An empty or missing sound field does not mean wind, metal impacts, footsteps, breathing, or music should be added. Keep music and effects only when the scene calls for them.
 
-## 8. 连续性锚点
+Preserve dialogue verbatim in the selected audio route. By default, create it as a separate dubbing track using the character's voice profile, or reuse an existing external independent dubbing track when it matches; keep dialogue out of video generation. Mute or replace dialogue embedded in the video to prevent doubled voices, while retaining environmental sound when available and intended. Include dialogue in video audio only when the user explicitly chooses the original-video-dialogue route. A segment with no dialogue needs no dubbing. Dubbing does not require mouth animation or lip-sync. Add visible speaking motion only when requested and supported by the active route.
 
-轴线、屏幕方向（只从机位说）、道具手别、光源方向、服装状态；每段结尾留一个可接下一段的姿态。
+## 7. Compile, review, and repair
 
-## 9. H3 映射
+Follow this sequence:
 
-- GEO、首2秒、节拍、表演、运镜、连续性 → detailed_description；
-- 环境/动作声 → overall_soundscape；配乐 → non_diegetic_music；
-- 台词只进 detailed_description 的 <d>，不在 soundscape 重复。
+1. Read the story cause and the supplied start/end states.
+2. Identify the visible evidence that expresses the cause and change.
+3. Put only those facts into fields the current structured input and H3 compiler actually support. Read [cli.md](cli.md) and [h3-experience.md](h3-experience.md) for the existing preview and preparation path; check runtime capabilities instead of inventing fields or commands.
+4. Review the returned prepared input, then watch the generated segment as a continuous clip. Check whether the visible evidence carries the cause through to the declared ending, and whether timing, identities, props, sound, and camera motion match the actual inputs.
+5. If a segment misses, identify the specific input that caused the miss, edit that local direction, preview again, and rerun the affected segment through the existing workflow. Change one local instruction at a time and retain the revision note. If repeated targeted repairs still miss, simplify or split the shot instead of endlessly resubmitting it. Retain successful unaffected segments and recheck the final sequence.
 
-## 10. 不合格判定
+Do not treat task completion or a successful export as content approval. Do not add a separate review gate: use the existing screenplay, assets, and storyboard review points in the parent skill.
 
-- 没有 GEO；
-- 首 2 秒没有视觉事件；
-- 表演只有形容词没有身体动作；
-- 感染者同步迈步/同时转头；
-- 屏幕方向写成“角色左边”；
-- 台词只写“说了句话”。
+## 8. Avoid fixed defaults
+
+- No mandatory GEO block on every segment.
+- No mandatory wide shot during the first second or strongest event during the first two seconds.
+- No timed micro-event cadence.
+- No default static camera, environmental effects, music, or generic acting motion.
+- Unknown fields remain unknown until a source or director supplies them.

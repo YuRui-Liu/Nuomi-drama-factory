@@ -60,6 +60,8 @@ export interface DirectorWorkspaceProps {
   busy: boolean;
   sourceReview?: ReactNode;
   scheduleReview?: ReactNode;
+  productionPanel?: ReactNode;
+  planningPanel?: ReactNode;
   onBack: () => void;
   onSelectRevision: (revisionId: string) => void;
   onAdopt: () => void;
@@ -71,7 +73,7 @@ export interface DirectorWorkspaceProps {
 export function DirectorWorkspace({
   project, episode, title, revisionId, revisionStatus, revisions, groups, stages, sceneFor,
   sceneBlockings, previewSemantics, previewMedia = [], mediaError, actionError, workspaceError,
-  busy, sourceReview, scheduleReview, onBack, onSelectRevision, onAdopt, onRefresh,
+  busy, sourceReview, scheduleReview, productionPanel, planningPanel, onBack, onSelectRevision, onAdopt, onRefresh,
   onOpenStoryboard, onSavedRevision,
 }: DirectorWorkspaceProps) {
   const [view, setView] = useState<View>('board');
@@ -123,19 +125,21 @@ export function DirectorWorkspace({
           <p className="text-xs text-muted-foreground">{shots.length} 个镜头 · {sceneFor(selectedGroup) ?? '未关联场景'} · {statusLabel} {revisionId}</p></div>
         <Button type="button" className="w-full" variant="outline" disabled={!revisionId || !selectedGroupIdValue} onClick={() => onOpenStoryboard(selectedGroup)}>在画布中打开组分镜</Button>
       </section>
-      <section className="space-y-2" aria-label="选择镜头">
-        <h4 className="text-sm font-medium">组内镜头</h4>
-        {shots.length ? <div className="space-y-1">{shots.map((shot, index) => <Button key={shotIdOf(shot, index)} type="button" className="h-auto w-full justify-start whitespace-normal px-2 py-2 text-left" variant={selectedShot && shotIdOf(selectedShot, selectedShotIndex) === shotIdOf(shot, index) ? 'secondary' : 'ghost'} aria-pressed={Boolean(selectedShot && shotIdOf(selectedShot, selectedShotIndex) === shotIdOf(shot, index))} onClick={() => setSelectedShotId(shotIdOf(shot, index))}>{shotLabel(shot, index)}</Button>)}</div>
-          : <p className="text-sm text-muted-foreground">此叙事组当前没有镜头。</p>}
-      </section>
       {selectedShot && <section className="space-y-2 rounded-lg border p-3">
         <h4 className="font-medium">{shotLabel(selectedShot, selectedShotIndex)}</h4>
         <p className="text-sm">{String(selectedShot.subject ?? selectedShot.description ?? selectedShot.visual_description ?? selectedShot.action ?? '暂无画面摘要')}</p>
         <p className="text-xs text-muted-foreground">{Number(selectedShot.duration_seconds ?? 0) || '未设'} 秒 · 场景 {String(selectedShot.scene_id ?? sceneFor(selectedGroup) ?? '未标注')}</p>
         <DirectorShotEditor key={`${revisionId}:${selectedGroupIdValue}:${shotIdOf(selectedShot, selectedShotIndex)}`} project={project} episode={episode} revisionId={revisionId} shot={selectedShot} group={selectedGroup} shotIndex={selectedShotIndex} media={selectedMedia} onSaved={onSavedRevision} />
       </section>}
+      <details className="rounded-lg border p-3" aria-label="选择镜头">
+        <summary className="cursor-pointer text-sm font-medium">浏览组内镜头 · {shots.length}</summary>
+        {shots.length ? <div className="mt-2 space-y-1">{shots.map((shot, index) => <Button key={shotIdOf(shot, index)} type="button" className="h-auto w-full justify-start whitespace-normal px-2 py-2 text-left" variant={selectedShot && shotIdOf(selectedShot, selectedShotIndex) === shotIdOf(shot, index) ? 'secondary' : 'ghost'} aria-pressed={Boolean(selectedShot && shotIdOf(selectedShot, selectedShotIndex) === shotIdOf(shot, index))} onClick={() => setSelectedShotId(shotIdOf(shot, index))}>{shotLabel(shot, index)}</Button>)}</div>
+          : <p className="mt-2 text-sm text-muted-foreground">此叙事组当前没有镜头。</p>}
+      </details>
       <DirectorGroupStructureEditor project={project} episode={episode} revisionId={revisionId} groups={groups} group={selectedGroup} onSaved={onSavedRevision} />
     </> : <p className="text-sm text-muted-foreground">导演准备完成后显示关联叙事组、镜头详情与编辑入口。</p>}
+
+    {productionPanel}
 
     <section className="space-y-2 border-t pt-3" aria-label="来源与调度审阅">
       <h3 className="text-sm font-medium">来源与调度审阅</h3>
@@ -161,9 +165,10 @@ export function DirectorWorkspace({
     <div className="flex gap-2"><Button type="button" variant="outline" onClick={onRefresh}>刷新任务与版本</Button><Button type="button" disabled={busy || !revisionId} onClick={onAdopt}>采用导演方案</Button></div>
   </div>;
 
-  return <ProductionWorkspaceLayout title={title} status={`${statusLabel}${revisionId ? ` · ${revisionId}` : ''}`} onBack={onBack} navigation={navigation} inspector={inspector} actions={actions}>
+  return <ProductionWorkspaceLayout variant="director" title={title} status={`${statusLabel}${revisionId ? ` · ${revisionId}` : ''}`} onBack={onBack} navigation={navigation} inspector={inspector} actions={actions}>
     <div className="space-y-4">
       {Boolean(actionError || workspaceError) && <p role="alert" className="text-sm text-destructive">{actionError || String(workspaceError)}</p>}
+      {planningPanel}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
         <div><h3 className="font-semibold">{selectedGroupTitle || '导演组分镜审阅'}</h3><p className="text-sm text-muted-foreground">在左侧切换叙事组，选择视图并在右侧检查详情。</p></div>
         <div className="flex flex-wrap gap-2" role="group" aria-label="分镜查看方式">{(Object.keys(viewLabels) as View[]).map(mode => <Button key={mode} type="button" variant={view === mode ? 'default' : 'outline'} aria-pressed={view === mode} onClick={() => setView(mode)}>{viewLabels[mode]}</Button>)}</div>

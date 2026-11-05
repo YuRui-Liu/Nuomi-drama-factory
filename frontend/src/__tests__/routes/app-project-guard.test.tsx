@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement, Fragment, type ComponentProps, type ComponentType, type PropsWithChildren } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const navigateMock = vi.hoisted(() => vi.fn());
 const routeState = vi.hoisted(() => ({ project: "missing-project" as string | undefined }));
 const projectSummariesState = vi.hoisted(() => ({
-  data: [] as Array<{ id: string; name: string }>,
+  data: [] as Array<{ id: string; name: string }> | undefined,
   isLoading: false,
+  isFetching: false,
+  isError: false,
+  isSuccess: true,
+  refetch: vi.fn(),
 }));
 const authState = vi.hoisted(() => ({
   username: "dev-user" as string | null,
@@ -94,6 +98,10 @@ describe("_app project URL guard", () => {
     routeState.project = "missing-project";
     projectSummariesState.data = [];
     projectSummariesState.isLoading = false;
+    projectSummariesState.isFetching = false;
+    projectSummariesState.isError = false;
+    projectSummariesState.isSuccess = true;
+    projectSummariesState.refetch.mockReset();
   });
 
   it("redirects home when loaded summaries do not contain the URL project", async () => {
@@ -114,6 +122,34 @@ describe("_app project URL guard", () => {
 
   it("does not redirect while project summaries are still loading", async () => {
     projectSummariesState.isLoading = true;
+    projectSummariesState.isFetching = true;
+    projectSummariesState.isSuccess = false;
+
+    await renderAppLayout();
+
+    expect(navigateMock).not.toHaveBeenCalledWith({ to: "/", replace: true });
+  });
+
+  it("preserves the project URL and offers retry when summaries fail", async () => {
+    projectSummariesState.data = [];
+    projectSummariesState.isLoading = false;
+    projectSummariesState.isError = true;
+    projectSummariesState.isSuccess = false;
+
+    await renderAppLayout();
+
+    expect(await screen.findByText("暂时无法确认项目状态")).toBeInTheDocument();
+    expect(navigateMock).not.toHaveBeenCalledWith({ to: "/", replace: true });
+    act(() => fireEvent.click(screen.getByRole("button", { name: "重试" })));
+    expect(projectSummariesState.refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for a pending refresh before treating cached summaries as authoritative", async () => {
+    projectSummariesState.data = [];
+    projectSummariesState.isLoading = false;
+    projectSummariesState.isFetching = true;
+    projectSummariesState.isError = false;
+    projectSummariesState.isSuccess = true;
 
     await renderAppLayout();
 

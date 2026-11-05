@@ -9,6 +9,7 @@ import {
 import type { AgentAdoption, AgentConfiguration } from '@/api/reusableAgents';
 import type { BuiltinAgent } from '@/api/agentRuns';
 import type { useAgentRuntime } from './useAgentRuntime';
+import { AgentConfigurationEntry } from '@/features/agent-configuration/AgentConfigurationEntry';
 
 type Runtime = ReturnType<typeof useAgentRuntime>;
 
@@ -165,9 +166,24 @@ function ProjectCrewContent({ runtime: r }: { runtime: Runtime }) {
                   <div className="space-y-2 px-1 pb-2 text-xs">
                     <MemberAspects configuration={adoption?.effective ?? builtin.configuration} />
                     {adoption ? (
-                      <p className="text-muted-foreground">
-                        项目固定版本 v{adoption.revision} · {adoption.source.kind === 'builtin' ? '内置来源' : '个人来源'}
-                      </p>
+                      <div className="space-y-2">
+                        <p className="text-muted-foreground">
+                          项目采用修订 v{adoption.revision} · {adoption.source.kind === 'builtin'
+                            ? `内置来源 v${adoption.source.ref.revision}`
+                            : `个人来源 v${adoption.source.ref.revision}`}
+                        </p>
+                        {adoption.source.kind === 'builtin' &&
+                          builtin.source.ref.revision > adoption.source.ref.revision && (
+                            <AgentConfigurationEntry
+                              project={r.owner.project}
+                              canvasId={r.owner.canvas}
+                              compact
+                              buttonLabel={`比较并升级到内置 v${builtin.source.ref.revision}`}
+                              initialUpgradeAdoptionId={adoption.adoption_id}
+                              onProjectConfigurationChanged={() => void r.refresh()}
+                            />
+                          )}
+                      </div>
                     ) : (
                       <Button
                         size="sm"

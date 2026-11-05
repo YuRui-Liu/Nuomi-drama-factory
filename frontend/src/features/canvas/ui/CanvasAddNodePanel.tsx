@@ -28,6 +28,7 @@ const hiddenSkillIds = new Set(['agent.review_frame', 'workflow.plan_beat_graph'
 const SKILL_PANEL_CLOSE_DELAY_MS = 40;
 
 interface CanvasAddNodePanelProps {
+  lightweightMode?: boolean;
   skillItems: SkillDefinition[];
   onSelectNode: (type: CanvasNodeType, initialData?: Partial<CanvasNodeData>) => void;
   onSelectSkill: (skill: SkillDefinition) => void;
@@ -35,6 +36,7 @@ interface CanvasAddNodePanelProps {
 }
 
 export function CanvasAddNodePanel({
+  lightweightMode = false,
   skillItems,
   onSelectNode,
   onSelectSkill,
@@ -48,6 +50,7 @@ export function CanvasAddNodePanel({
   const skillPanelCloseTimerRef = useRef<number | null>(null);
 
   const skillGroups = useMemo(() => {
+    if (lightweightMode) return [];
     if (!skillItems || skillItems.length === 0) {
       return [];
     }
@@ -64,7 +67,7 @@ export function CanvasAddNodePanel({
     return skillProviderOrder
       .map((provider) => ({ provider, items: byProvider.get(provider) ?? [] }))
       .filter((group) => group.items.length > 0);
-  }, [skillItems]);
+  }, [lightweightMode, skillItems]);
 
   const activeSkillGroup = useMemo(() => {
     if (!activeSkillProvider) {
@@ -148,7 +151,7 @@ export function CanvasAddNodePanel({
       >
         <div className="ui-scrollbar max-h-[min(560px,70vh)] overflow-y-auto px-5 py-5 [scrollbar-gutter:stable]">
           <CanvasMenuSectionHeader label={t('node.menu.sectionAddNode')} className="pb-4" />
-          <CanvasAddNodeGrid onSelectNode={handlePickNode} />
+          <CanvasAddNodeGrid lightweightMode={lightweightMode} onSelectNode={handlePickNode} />
 
           {skillGroups.length > 0 && (
             <>

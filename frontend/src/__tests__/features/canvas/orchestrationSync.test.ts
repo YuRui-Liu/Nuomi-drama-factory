@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocked = vi.hoisted(() => ({
   flush: vi.fn(), apply: vi.fn(), get: vi.fn(),
+  create: vi.fn(),
   capture: vi.fn(), canvas: { nodes: [] as unknown[], edges: [], viewportBookmarks: [] },
   metadata: vi.fn(), shot: vi.fn(),
 }));
@@ -9,12 +10,13 @@ vi.mock('@/features/freezone/canvasSyncRuntime', () => ({
   flushFreezoneCanvasRuntime: mocked.flush, applyRemoteFreezoneCanvas: mocked.apply,
   captureFreezoneCanvasRuntime: mocked.capture,
 }));
-vi.mock('@/api/canvas', () => ({ getFreezoneCanvas: mocked.get }));
+vi.mock('@/api/canvas', () => ({ getFreezoneCanvas: mocked.get, createFreezoneProductionGraph: mocked.create }));
 vi.mock('@/stores/canvasStore', () => ({ useCanvasStore: { getState: () => mocked.canvas } }));
 vi.mock('@/features/freezone/canvasMetadataContext', () => ({ getFreezoneCanvasMetadata: mocked.metadata }));
 vi.mock('@/features/freezone/shotMetadataStore', () => ({ useShotMetadataStore: { getState: () => ({ shot: mocked.shot() }) } }));
 import { refreshCanvasRunResults } from '@/features/canvas/infrastructure/orchestrationGateway';
 import { refreshAgentCanvasChanges } from '@/features/canvas/infrastructure/orchestrationGateway';
+import { createProductionGraph } from '@/features/canvas/infrastructure/orchestrationGateway';
 
 describe('CLI graph refresh', () => {
   beforeEach(() => {
@@ -34,6 +36,52 @@ describe('CLI graph refresh', () => {
     mocked.flush.mockResolvedValue(false);
     await refreshCanvasRunResults('p', 'c');
     expect(mocked.get).not.toHaveBeenCalled();
+    expect(mocked.apply).not.toHaveBeenCalled();
+  });
+
+  it('flushes, materializes, and three-way merges the production graph into the captured canvas', async () => {
+    const baseline = { revision: 4, nodes: [], edges: [] };
+    const remote = {
+      revision: 5,
+      nodes: [{ id: 'production-compose', type: 'episodeComposeNode', data: { directorRevisionId: 'rev-1' } }],
+      edges: [],
+    };
+    const runtime = { flush: vi.fn().mockResolvedValue(true), isCurrent: () => true };
+    mocked.capture.mockReturnValue(runtime);
+    mocked.get.mockResolvedValueOnce(baseline).mockResolvedValueOnce(remote);
+    mocked.create.mockResolvedValue({ canvas: remote, target: 'production-compose', node_ids: ['production-compose'], submitted: false });
+    mocked.canvas = { nodes: [], edges: [], viewportBookmarks: [] };
+    mocked.metadata.mockReturnValue(null);
+    mocked.shot.mockReturnValue({});
+    mocked.apply.mockImplementation((_project, _canvas, saved, merge) => {
+      mocked.canvas.nodes = merge(saved.nodes, saved.edges, mocked.canvas.nodes, []).nodes;
+      return true;
+    });
+
+    const result = await createProductionGraph('p', 'c', 2, 'rev-1', 'request-1');
+
+    expect(result.target).toBe('production-compose');
+    expect(runtime.flush).toHaveBeenCalledOnce();
+    expect(mocked.create).toHaveBeenCalledWith('p', 'c', {
+      base_revision: 4, request_id: 'request-1', episode: 2, revision_id: 'rev-1',
+    });
+    expect(mocked.canvas.nodes).toMatchObject([{ id: 'production-compose' }]);
+  });
+
+  it('does not refresh or apply a created graph after its captured runtime detaches', async () => {
+    const baseline = { revision: 4, nodes: [], edges: [] };
+    let current = true;
+    const runtime = { flush: vi.fn().mockResolvedValue(true), isCurrent: () => current };
+    mocked.capture.mockReturnValue(runtime);
+    mocked.get.mockResolvedValue(baseline);
+    mocked.create.mockImplementation(async () => {
+      current = false;
+      return { canvas: { ...baseline, revision: 5 }, target: 'production-compose', node_ids: ['production-compose'], submitted: false };
+    });
+
+    await expect(createProductionGraph('p', 'c', 2, 'rev-1', 'request-1'))
+      .rejects.toThrow('当前画布已切换');
+    expect(mocked.get).toHaveBeenCalledOnce();
     expect(mocked.apply).not.toHaveBeenCalled();
   });
 

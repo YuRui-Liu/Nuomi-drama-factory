@@ -11,7 +11,7 @@ import shutil
 import stat
 import sys
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -93,6 +93,7 @@ class H3ReferenceInputSnapshot:
     references: tuple[ResolvedVideoReference, ...]
     frames: MappingProxyType
     storyboard_binding: StoryboardBinding | None = None
+    video_keyframe_binding: MappingProxyType | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,6 +499,7 @@ def persist_h3_reference_input_snapshot(
     provider_workflow_id: str,
     win32_adapter: object | None = None,
     storyboard_binding: StoryboardBinding | None = None,
+    video_keyframe_binding: Mapping | None = None,
 ) -> H3PersistedReferenceInputSnapshot:
     """Persist immutable enqueue inputs; only the opaque returned ID enters payloads."""
     if isinstance(reference_revision, bool) or not isinstance(reference_revision, int):
@@ -574,7 +576,11 @@ def persist_h3_reference_input_snapshot(
 
     if storyboard_binding is not None:
         storyboard_binding = StoryboardBinding.model_validate(storyboard_binding)
-        storyboard_binding.validate_frames(frames)
+        storyboard_binding.validate_frames(
+            frames, allow_extra=video_keyframe_binding is not None
+        )
+    if video_keyframe_binding is not None and not isinstance(video_keyframe_binding, Mapping):
+        raise TypeError("video_keyframe_binding must be a mapping")
     snapshot_id = uuid4().hex
     descriptor = json.dumps({
         "version": H3_REFERENCE_INPUT_SNAPSHOT_VERSION,
@@ -585,6 +591,8 @@ def persist_h3_reference_input_snapshot(
         "frames": frame_records,
         **({"storyboard_binding": storyboard_binding.model_dump(mode="json")}
            if storyboard_binding is not None else {}),
+        **({"video_keyframe_binding": dict(video_keyframe_binding)}
+           if video_keyframe_binding is not None else {}),
     }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     digest = hashlib.sha256(descriptor).hexdigest()
     lease = json.dumps(
@@ -714,7 +722,14 @@ def load_h3_reference_input_snapshot(
     binding = None
     if descriptor.get("storyboard_binding") is not None:
         binding = StoryboardBinding.model_validate(descriptor["storyboard_binding"])
-        binding.validate_frames(frames)
+        binding.validate_frames(
+            frames, allow_extra=descriptor.get("video_keyframe_binding") is not None
+        )
+    raw_video_keyframe_binding = descriptor.get("video_keyframe_binding")
+    if raw_video_keyframe_binding is not None and not isinstance(
+        raw_video_keyframe_binding, dict
+    ):
+        raise ValueError("invalid video keyframe binding snapshot")
     return H3ReferenceInputSnapshot(
         digest=actual_digest,
         reference_revision=reference_revision,
@@ -723,6 +738,10 @@ def load_h3_reference_input_snapshot(
         references=tuple(references),
         frames=MappingProxyType(frames),
         storyboard_binding=binding,
+        video_keyframe_binding=(
+            MappingProxyType(dict(raw_video_keyframe_binding))
+            if raw_video_keyframe_binding is not None else None
+        ),
     )
 
 

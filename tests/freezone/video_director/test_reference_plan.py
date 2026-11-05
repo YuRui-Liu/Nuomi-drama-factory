@@ -15,7 +15,8 @@ def test_offscreen_identity_and_frozen_dialogue_compile_without_model_tags():
                                   [{'speaker':'莉娅','quote':'‘停车的地方？’'}], 3)
     assert '<Subject 1>' in wire.detailed_description
     assert '画外，不入镜' in wire.detailed_description
-    assert '莉娅：‘停车的地方？’' in wire.overall_soundscape
+    assert '莉娅（S1）说：<d>[Chinese] 停车的地方？</d>' in wire.detailed_description
+    assert '停车的地方？' not in wire.overall_soundscape
     assert wire.subject_definitions.splitlines() == ['<Subject 1>: 莉娅 <Picture 1>', '<Subject 2>: 诺尔 <Picture 2>']
 
 
@@ -43,4 +44,5 @@ async def test_optimizer_compiles_named_refs_and_preserves_four_segments():
             prompt='<Picture 1>是莉娅：红斗篷；<Picture 2>是诺尔：蓝衣。莉娅画外问：‘停车的地方？’') for i in range(4)))
     result = await optimize(Runtime(), draft, frozen_images={name:StructuredImage(b'x','image/png') for name in ('lia','noel')})
     assert [s.segment_id for s in result.segments] == ['s0','s1','s2','s3']
-    assert all('莉娅：‘停车的地方？’' in s.wire.overall_soundscape for s in result.segments)
+    assert all('莉娅（S1）说：<d>[Chinese] 停车的地方？</d>' in s.wire.detailed_description
+               for s in result.segments)

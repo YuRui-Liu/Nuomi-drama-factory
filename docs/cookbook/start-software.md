@@ -111,6 +111,14 @@ docker compose up -d --build
 
 仓库提供了统一启动脚本，它会在依赖目录不存在时自动安装依赖，并在退出时关闭前后端进程。
 
+日常开发可用热重载入口启动前后端：
+
+```bash
+bash scripts/dev.sh
+```
+
+前端由 Vite HMR 自动刷新，后端 Python 文件变化时由 Uvicorn 自动重启。终端按 `Ctrl+C` 会同时停止服务；再次运行会先重启本仓库监听的前后端。默认地址仍是前端 `127.0.0.1:5173`、API `127.0.0.1:8780`。可用 `NOVELVIDEO_API_PORT` 和 `SUPERTALE_FE_PORT` 覆盖端口，或传 `--check` 查看依赖和端口占用而不启动服务。
+
 ```bash
 cd <repo-root>
 test -f .env || cp .env.example .env

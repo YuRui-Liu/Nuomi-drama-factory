@@ -1,5 +1,9 @@
-import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { Button } from '@/components/ui/button';
+import { LazyThreeDDirectorDialog } from '@/features/viewer-kit/three-d/LazyThreeDDirectorDialog';
+import type { ThreeDDirectorCaptureMeta } from '@/features/viewer-kit/three-d/ThreeDDirectorDialog';
+import type { DirectorStageManifest } from '@/features/viewer-kit/three-d/directorManifest';
+import type { ThreeDSceneSnapshot } from '@/features/viewer-kit/three-d/engine/viewerApp';
 
 export interface PathPoint { x: number; y: number; at_seconds: number }
 interface Positioned { id: string; label: string; x: number; y: number; facing: number }
@@ -13,7 +17,10 @@ export interface SceneBlocking {
   props: SceneProp[];
   camera: SceneCamera | null;
   lights: SceneLight[];
+  stage_snapshot?: ThreeDSceneSnapshot | null;
+  stage_capture?: { filename: string; url: string; captured_at: number; scene_id: string } | null;
 }
+type SavedStageCapture = NonNullable<SceneBlocking['stage_capture']>;
 
 type EntityKind = 'camera' | 'actor' | 'prop' | 'light';
 type DragTarget = { pointerId: number; kind: Exclude<EntityKind, 'camera'> | 'camera'; id?: string; pathIndex?: number };
@@ -21,6 +28,7 @@ const origin = { x: 50, y: 50 };
 
 function normalizeBlocking(value?: SceneBlocking): SceneBlocking {
   return {
+    ...value,
     label: value?.label ?? '',
     actors: (value?.actors ?? []).map(item => ({ ...item, path: item.path ?? [], gaze_target: item.gaze_target ?? '' })),
     props: (value?.props ?? []).map(item => ({ ...item, path: item.path ?? [], held_by: item.held_by ?? '' })),
@@ -50,13 +58,20 @@ function pointAt(path: PathPoint[] | undefined, time: number, fallback: { x: num
   return { x: before.x + (after.x - before.x) * ratio, y: before.y + (after.y - before.y) * ratio };
 }
 
-export function SceneBlockingEditor({ initial, busy, onSave, subjects = [], lightIds = [], propIds = [] }: {
+export function SceneBlockingEditor({ initial, busy, onSave, subjects = [], lightIds = [], propIds = [], sceneId, groupIds = [], onOpenThreeD, onCaptureThreeD, onBindThreeDCapture, captureBoundGroupIds = [], renderTargetGroupIds = [] }: {
   initial?: SceneBlocking;
   busy: boolean;
-  onSave: (blocking: SceneBlocking) => void;
+  onSave: (blocking: SceneBlocking) => void | Promise<void>;
   subjects?: string[];
   lightIds?: string[];
   propIds?: string[];
+  sceneId?: string;
+  groupIds?: string[];
+  onOpenThreeD?: () => Promise<DirectorStageManifest | null>;
+  onCaptureThreeD?: (blob: Blob, meta: ThreeDDirectorCaptureMeta) => Promise<SavedStageCapture>;
+  onBindThreeDCapture?: (capture: SavedStageCapture, groupIds: string[]) => Promise<string[]>;
+  captureBoundGroupIds?: string[];
+  renderTargetGroupIds?: string[];
 }) {
   const [draft, setDraft] = useState(() => normalizeBlocking(initial));
   const [selected, setSelected] = useState('camera');
@@ -65,6 +80,12 @@ export function SceneBlockingEditor({ initial, busy, onSave, subjects = [], ligh
   const drag = useRef<DragTarget | null>(null);
   const [playhead, setPlayhead] = useState(0);
   const [previewDuration, setPreviewDuration] = useState(8);
+  const [threeDOpen, setThreeDOpen] = useState(false);
+  const [threeDManifest, setThreeDManifest] = useState<DirectorStageManifest | null>(null);
+  const [threeDError, setThreeDError] = useState('');
+  const [threeDBusy, setThreeDBusy] = useState(false);
+  const [boundCaptureGroups, setBoundCaptureGroups] = useState(captureBoundGroupIds);
+  useEffect(() => setBoundCaptureGroups(captureBoundGroupIds), [captureBoundGroupIds]);
   const camera = draft.camera;
   const separator = selected.indexOf(':');
   const kindText = separator < 0 ? selected : selected.slice(0, separator);
@@ -176,6 +197,33 @@ export function SceneBlockingEditor({ initial, busy, onSave, subjects = [], ligh
   }
 
   const objectSelect = (value: string) => setSelected(value);
+  async function openThreeD() {
+    if (!onOpenThreeD || threeDBusy) return;
+    setThreeDBusy(true);
+    setThreeDError('');
+    try {
+      const manifest = await onOpenThreeD();
+      if (!manifest) throw new Error('当前场景没有可用的 3D 导演台清单。');
+      setThreeDManifest(manifest);
+      setThreeDOpen(true);
+    } catch (error) {
+      setThreeDError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setThreeDBusy(false);
+    }
+  }
+  async function bindThreeDCapture() {
+    if (!draft.stage_capture || !onBindThreeDCapture || threeDBusy) return;
+    setThreeDBusy(true);
+    setThreeDError('');
+    try {
+      setBoundCaptureGroups(await onBindThreeDCapture(draft.stage_capture, groupIds));
+    } catch (error) {
+      setThreeDError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setThreeDBusy(false);
+    }
+  }
   const selectionOptions = [
     <option key="camera" value="camera">摄影机</option>,
     ...draft.actors.map(item => <option key={`actor:${item.id}`} value={`actor:${item.id}`}>人物 · {item.label}</option>),
@@ -184,8 +232,19 @@ export function SceneBlockingEditor({ initial, busy, onSave, subjects = [], ligh
   ];
 
   return <section className="space-y-3 rounded-xl border p-4">
+    {sceneId && onOpenThreeD && <div className="flex flex-wrap items-center justify-between gap-2">
+      <div><h3 className="text-sm font-medium">2D 平面调度</h3><p className="text-xs text-muted-foreground">平面位置只用于 2D 制作参考。</p></div>
+      <Button type="button" variant="outline" disabled={busy || threeDBusy || groupIds.length === 0} onClick={() => void openThreeD()}>{threeDBusy ? '正在加载 3D 场景…' : '打开 3D 场景调度'}</Button>
+    </div>}
+    {threeDError && <p role="alert" className="text-sm text-destructive">{threeDError}</p>}
+    {draft.stage_capture && <section className="space-y-2 rounded-lg border p-3" aria-label="3D 输出截图分镜绑定">
+      <p className="text-sm">3D 输出截图已保存：{draft.stage_capture.filename}</p>
+      <p className="text-xs text-muted-foreground">已绑定 {boundCaptureGroups.filter(group => groupIds.includes(group)).length}/{groupIds.length} 个关联组分镜渲染节点。</p>
+      {groupIds.some(group => !renderTargetGroupIds.includes(group)) && <p className="text-xs text-muted-foreground">缺少的组渲染节点会在创建整集制作图后出现。</p>}
+      {onBindThreeDCapture && boundCaptureGroups.filter(group => groupIds.includes(group)).length < groupIds.length && <Button type="button" variant="outline" disabled={busy || threeDBusy || !groupIds.length || !groupIds.some(group => renderTargetGroupIds.includes(group))} onClick={() => void bindThreeDCapture()}>{threeDBusy ? '正在绑定 3D 截图…' : '将 3D 截图绑定到组分镜参考'}</Button>}
+    </section>}
     <label className="grid gap-1 text-sm">调度名称<input className="rounded border bg-background p-2" value={draft.label} onChange={event => setDraft(value => ({ ...value, label: event.target.value }))} /></label>
-    <p className="text-xs text-muted-foreground">平面调度与构图视野随对象位置、朝向和时间更新。坐标与路径是制作参考，不代表生成画面的精确物理控制。</p>
+    <p className="text-xs text-muted-foreground">对象位置、朝向与时间路径在 2D 平面中预览；真实 3D 摆位及输出截图会保存到对应场景调度。</p>
     <svg ref={svg} viewBox="0 0 100 100" className="aspect-square w-80 max-w-full touch-none rounded-lg border bg-muted" role="group" aria-label="场景人物、道具、摄影机与光源平面调度示意"
       onPointerDown={event => { if (pathMode && (kind === 'actor' || kind === 'prop')) { appendPathPoint(mapPoint(event)); event.preventDefault(); } }}
       onPointerMove={event => { const target = drag.current; if (!target || target.pointerId !== event.pointerId) return; const point = mapPoint(event); move(target.kind, target.id, point.x, point.y, target.pathIndex); }}
@@ -268,6 +327,40 @@ export function SceneBlockingEditor({ initial, busy, onSave, subjects = [], ligh
       <label className="grid gap-1 text-xs">路径预演位置 {playhead.toFixed(1)} 秒<input type="range" min={0} max={previewDuration || 1} step={0.1} value={playhead} onChange={event => setPlayhead(Number(event.target.value))} /></label>
       <label className="grid gap-1 text-xs">预演时长<input type="number" min={1} max={3600} className="w-24 rounded border bg-background p-2" value={previewDuration} onChange={event => { const value = Number(event.target.value); if (Number.isFinite(value) && value >= 1 && value <= 3600) { setPreviewDuration(value); setPlayhead(previous => Math.min(previous, value)); } }} /></label>
     </div>
-    <Button disabled={busy || !draft.label.trim()} onClick={() => onSave(draft)}>保存调度新版本</Button>
+    <Button disabled={busy || !draft.label.trim()} onClick={() => void onSave(draft)}>保存调度新版本</Button>
+    <LazyThreeDDirectorDialog
+      open={threeDOpen}
+      onOpenChange={setThreeDOpen}
+      manifest={threeDManifest}
+      title={`${sceneId ?? '场景'} · 3D 场景调度`}
+      description="3D 快照与共享场景调度一起保存，可继续编辑和复用。"
+      viewerPurpose="freezone"
+      initialScene={draft.stage_snapshot ?? threeDManifest?.scene ?? null}
+      initialScenesBySourceId={threeDManifest?.scenes_by_source_id}
+      onSaveScene={async snapshot => {
+        const next = { ...draft, stage_snapshot: snapshot };
+        await onSave(next);
+        setDraft(next);
+      }}
+      onCaptureCanvasNode={async (blob, meta) => {
+        if (!onCaptureThreeD || !sceneId) throw new Error('当前场景无法保存 3D 输出截图。');
+        const capture = await onCaptureThreeD(blob, meta);
+        if (!capture) throw new Error('3D 输出截图没有生成有效文件引用。');
+        const next = { ...draft, stage_snapshot: meta.snapshot, stage_capture: capture };
+        await onSave(next);
+        setDraft(next);
+        setBoundCaptureGroups(captureBoundGroupIds);
+        if (onBindThreeDCapture && groupIds.some(group => renderTargetGroupIds.includes(group))) {
+          setThreeDBusy(true);
+          try {
+            setBoundCaptureGroups(await onBindThreeDCapture(capture, groupIds));
+          } catch (error) {
+            setThreeDError(error instanceof Error ? error.message : String(error));
+          } finally {
+            setThreeDBusy(false);
+          }
+        }
+      }}
+    />
   </section>;
 }

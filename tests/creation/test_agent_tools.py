@@ -250,6 +250,126 @@ async def test_definition_cannot_overwrite_or_confirm_and_no_generic_payload(ctx
     assert Ontology(ctx).definition('clue')['source']['kind']=='agent'
 
 
+def _image_asset_scope_contract(tools, *, node_type='imageGenNode', parent_id='group', image_fields=('imageUrl',)):
+    source = {'node_id':'selected-image', 'node_type':node_type, 'parent_id':parent_id,
+        'media_evidence':{'fields':list(image_fields)}}
+    members = [{'id':'selected-image', 'parentId':parent_id, 'type':node_type}]
+    if parent_id:
+        members.append({'id':parent_id, 'parentId':None, 'type':'groupNode'})
+    membership = [{'node_id':'selected-image', 'members':members}]
+    ref = {'kind':'canvas_node', 'canvas_id':tools.canvas_id, 'node_id':'selected-image'}
+    return {'expanded_scope':{'scope':{'kind':'nodes', 'canvas_id':tools.canvas_id,
+                'node_ids':['selected-image']}, 'node_ids':['selected-image'],
+            'nodes':[source], 'membership':membership},
+        'inputs':[{'ref':ref, 'snapshot':source, 'membership':membership}],
+        'acceptance':[{'id':'acceptance-1'}]}
+
+
+def _image_asset_payload(*, references=(0,)):
+    return {'target_node_ids':['selected-image'], 'input_indices':[0],
+        'acceptance_indices':[0], 'reference_indices':list(references),
+        'draft_title':'角色设定', 'draft_text':'沿用已选图片中的角色身份，制作三视图。'}
+
+
+def test_selected_image_uses_only_its_frozen_parent_as_create_only_output_container(ctx,ready,task):
+    tools=broker(ctx,ready,task)
+    contract=_image_asset_scope_contract(tools)
+
+    plan=tools._asset_design_plan(_image_asset_payload(),contract)
+
+    assert plan['selection']['target_node_ids']==['selected-image']
+    assert plan['selected_group_id']=='group'
+    assert plan['references']==[{'kind':'canvas_node','canvas_id':tools.canvas_id,'node_id':'selected-image'}]
+
+
+def test_selected_top_level_image_allows_only_top_level_create_output(ctx,ready,task):
+    tools=broker(ctx,ready,task)
+    contract=_image_asset_scope_contract(tools,parent_id=None)
+
+    plan=tools._asset_design_plan(_image_asset_payload(),contract)
+
+    assert plan['selection']['target_node_ids']==['selected-image']
+    assert plan['selected_group_id'] is None
+
+
+def test_selected_image_requires_frozen_matching_parent_and_fixed_image_reference(ctx,ready,task):
+    tools=broker(ctx,ready,task)
+    wrong_parent=_image_asset_scope_contract(tools)
+    wrong_parent['expanded_scope']['membership'][0]['members'][1]['type']='textAnnotationNode'
+    missing_reference=_image_asset_scope_contract(tools)
+    mismatched_input=_image_asset_scope_contract(tools)
+    mismatched_input['inputs'][0]['snapshot']['parent_id']='other-group'
+
+    with pytest.raises(OperationError):
+        tools._asset_design_plan(_image_asset_payload(),wrong_parent)
+    with pytest.raises(OperationError):
+        tools._asset_design_plan(_image_asset_payload(references=()),missing_reference)
+    with pytest.raises(OperationError):
+        tools._asset_design_plan(_image_asset_payload(),mismatched_input)
+
+
+def test_upload_node_is_eligible_only_when_frozen_as_an_image(ctx,ready,task):
+    tools=broker(ctx,ready,task)
+    image_upload=_image_asset_scope_contract(tools,node_type='uploadNode',image_fields=('imageUrl',))
+    video_upload=_image_asset_scope_contract(tools,node_type='uploadNode',image_fields=('videoUrl',))
+    video_thumbnail=_image_asset_scope_contract(tools,node_type='uploadNode',
+        image_fields=('previewImageUrl','videoUrl'))
+
+    assert tools._asset_design_plan(_image_asset_payload(),image_upload)['selected_group_id']=='group'
+    with pytest.raises(OperationError):
+        tools._asset_design_plan(_image_asset_payload(),video_upload)
+    with pytest.raises(OperationError):
+        tools._asset_design_plan(_image_asset_payload(),video_thumbnail)
+
+
+def test_asset_design_does_not_expand_to_multiple_or_non_image_node_targets(ctx,ready,task):
+    tools=broker(ctx,ready,task)
+    multiple=_image_asset_scope_contract(tools)
+    multiple['expanded_scope']['scope']['node_ids'].append('another-node')
+    multiple['expanded_scope']['node_ids'].append('another-node')
+    multiple['expanded_scope']['nodes'].append({'node_id':'another-node',
+        'node_type':'textAnnotationNode','parent_id':'group'})
+    multi_payload=_image_asset_payload()
+    multi_payload['target_node_ids'].append('another-node')
+    non_image=_image_asset_scope_contract(tools,node_type='videoNode',image_fields=('videoUrl',))
+
+    with pytest.raises(OperationError):
+        tools._asset_design_plan(multi_payload,multiple)
+    with pytest.raises(OperationError):
+        tools._asset_design_plan(_image_asset_payload(),non_image)
+
+
+async def test_selected_image_parent_change_stales_the_frozen_scope(ctx,ready,service,task):
+    from .test_delegations import edit_graph
+
+    cid=ready[0]
+    graph_path=canvas_path(ctx.state_dir,cid)
+    graph=json.loads(graph_path.read_text())
+    graph['nodes']=[
+        {'id':'group','type':'groupNode','data':{'label':'来源组'}},
+        {'id':'other-group','type':'groupNode','data':{'label':'其他组'}},
+        {'id':'selected-image','type':'imageGenNode','parentId':'group',
+            'data':{'prompt':'已生成角色参考','imageUrl':'/static/p/selected-image.png'}},
+    ]
+    graph['revision']+=1
+    graph_path.write_text(json.dumps(graph))
+    task=await create(service,selection(ready,
+        scope={'kind':'nodes','node_ids':['selected-image']},
+        input_refs=[{'kind':'canvas_node','canvas_id':cid,'node_id':'selected-image'}],
+        allowed_operations=['media.propose','asset.design.create']),'selected-image-task')
+    tools=broker(ctx,ready,task)
+    with tools.read() as conn:
+        contract=tools._current(conn,'asset.design.create')
+    frozen=contract['expanded_scope']['membership'][0]['members']
+    assert frozen[1]=={'id':'group','parentId':None,'type':'groupNode'}
+
+    edit_graph(ctx,cid,lambda current: current['nodes'][2].update(parentId='other-group'))
+    with tools.read() as conn, pytest.raises(OperationError) as error:
+        tools._current(conn,'asset.design.create')
+
+    assert error.value.code=='stale_input'
+
+
 async def test_receipts_bound_to_exact_delegation_and_owner(ctx,ready,task,service):
     tools=broker(ctx,ready,task)
     result=await tools.execute(action())

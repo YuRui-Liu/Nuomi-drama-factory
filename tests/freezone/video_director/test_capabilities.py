@@ -10,6 +10,7 @@ from novelvideo.freezone.video_director.capabilities import (
     describe_capabilities,
     resolve_route,
     validate_generation,
+    validate_submission,
 )
 from novelvideo.freezone.video_director.models import (
     DirectorAttempt,
@@ -177,6 +178,23 @@ def test_aligned_timeline_sums_actual_durations_without_rounding_loss():
     assert result.timeline[1].start_frame == 362
 
 
+def test_submission_limit_is_checked_against_aligned_h3_frames():
+    within_limit = validate_submission(draft(segments=(DirectorSegment(
+        id="last-legal-frame-count", prompt="walking", duration_seconds=345 / 24,
+        first_frame=image("first")),)))
+    assert within_limit.total_frames == 345
+    assert within_limit.actual_duration_seconds == pytest.approx(345 / 24)
+
+    with pytest.raises(DirectorCapabilityError) as error:
+        validate_submission(draft(segments=(DirectorSegment(
+            id="aligns-over-limit", prompt="walking", duration_seconds=15,
+            first_frame=image("first")),)))
+    assert error.value.field == "segments[0].duration_seconds"
+    assert error.value.segment_id == "aligns-over-limit"
+    assert "15.083s" in str(error.value)
+    assert "shorten this shot" in str(error.value)
+
+
 def test_finite_duration_that_overflows_frame_conversion_is_field_error():
     segment = DirectorSegment(id="huge", prompt="x", duration_seconds=1e308,
                               first_frame=image("f"))
@@ -198,6 +216,8 @@ def test_unknown_model_and_size_are_field_errors():
 def test_public_capabilities_have_verified_modes_sizes_and_configured_limit():
     info = describe_capabilities(reference_limit=7)
     assert info["reference_limit"] == 7
+    assert info["max_submission_duration_seconds"] == 15
+    assert info["max_submission_frames"] == 360
     assert info["models"][0]["id"] == "minimax-h3"
     assert info["models"][0]["adapter"] == "h3"
     assert info["params"]["resolution"] == ("720p", "1080p")

@@ -39,7 +39,7 @@ describe('fixed direction operations',()=>{
   useCanvasStore.setState({nodes:[{id:'g',type:'groupNode',selected:ids.includes('g' as never),position:{x:0,y:0},data:{}},{id:'a',type:'imageGenNode',selected:ids.includes('a' as never),position:{x:0,y:0},data:{}},{id:'b',type:'imageGenNode',selected:ids.includes('b' as never),position:{x:0,y:0},data:{}}] as never});
   render(<DirectionReferenceEntry project="p" canvasId="c" selectedNodes selectedId="custom"/>);
   const button=await screen.findByRole('button',{name:'风格与手法配置'});await act(async()=>{});fireEvent.click(button);
-  await waitFor(()=>expect(screen.getByLabelText('影响范围')).toHaveValue(level));
+  await waitFor(()=>expect(screen.getByRole('button',{name:level==='group'?'一个分组':'明确节点'})).toHaveAttribute('aria-pressed','true'));
   act(()=>useCanvasStore.setState({nodes:[]}));
   await waitFor(()=>expect(screen.getByRole('button',{name:'应用固定风格'})).not.toBeDisabled());
   fireEvent.click(screen.getByRole('button',{name:'应用固定风格'}));
@@ -54,7 +54,7 @@ describe('fixed direction operations',()=>{
   await screen.findByText('当前选择包含多个分组或分组与节点，请明确选择一个分组或节点集合。');
   expect(screen.getByRole('button',{name:'应用固定风格'})).toBeDisabled();
   expect(api.applyDirectionBindings).not.toHaveBeenCalled();
-  fireEvent.change(screen.getByLabelText('影响范围'),{target:{value:'nodes'}});
+  fireEvent.click(screen.getByRole('button',{name:'明确节点'}));
   fireEvent.click(await screen.findByLabelText('小林'));
   await waitFor(()=>expect(screen.getByRole('button',{name:'应用固定风格'})).not.toBeDisabled());
   fireEvent.click(screen.getByRole('button',{name:'应用固定风格'}));
@@ -99,7 +99,7 @@ describe('fixed direction operations',()=>{
   const templateButton=await screen.findByRole('button',{name:'模板水彩'});
   await act(async()=>{}); // Settle the entry's mount/navigation effect before user input.
   fireEvent.click(templateButton);
-  await waitFor(()=>expect(screen.getByLabelText('固定风格')).toHaveValue('image-template:watercolor'));
+  await waitFor(()=>expect(screen.getByRole('button',{name:/模板水彩/})).toHaveAttribute('aria-pressed','true'));
   expect(change).not.toHaveBeenCalled();expect(api.applyDirectionBindings).not.toHaveBeenCalled();
   await waitFor(()=>expect(screen.getByRole('button',{name:'应用固定风格'})).not.toBeDisabled());
   fireEvent.click(screen.getByRole('button',{name:'应用固定风格'}));
@@ -141,7 +141,7 @@ describe('fixed direction operations',()=>{
   expect(change).not.toHaveBeenCalled();expect(api.applyDirectionBindings).not.toHaveBeenCalled();
  });
  beforeEach(()=>{vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue(null);vi.mocked(currentFreezoneCanvasScope).mockReturnValue(null);useAuthStore.setState({username:'alice'});vi.mocked(getSupertaleProject).mockResolvedValue({creation_mode:'agent_canvas_v1'} as never);navigation.state.location={pathname:'/projects/p',search:{}};});
- beforeEach(()=>{vi.clearAllMocks();localStorage.clear();vi.mocked(api.listDirectionCatalog).mockResolvedValue([entry]);vi.mocked(api.getDirectionBindings).mockImplementation(async(_,scope)=>inspect(scope));vi.mocked(listCreationCanvases).mockResolvedValue([{canvas_id:'c',title:'第一集',status:'applied',kind:'free',episode_id:null}]);vi.mocked(getFreezoneCanvas).mockResolvedValue({nodes:[{id:'a',type:'imageGenNode',data:{displayName:'小林'}},{id:'b',type:'imageGenNode',data:{displayName:'小雨'}},{id:'g',type:'groupNode',data:{label:'开场'}}]} as never);vi.mocked(api.applyDirectionBindings).mockResolvedValue(applied);vi.mocked(api.getDirectionRequest).mockResolvedValue({request_id:'one',status:'unknown'});});
+ beforeEach(()=>{vi.clearAllMocks();localStorage.clear();vi.mocked(api.listDirectionCatalog).mockResolvedValue([entry]);vi.mocked(api.getDirectionBindings).mockImplementation(async(_,scope)=>inspect(scope));vi.mocked(listCreationCanvases).mockResolvedValue([{canvas_id:'c',title:'第一集',status:'applied',kind:'free',episode_id:null,episode_number:null}]);vi.mocked(getFreezoneCanvas).mockResolvedValue({nodes:[{id:'a',type:'imageGenNode',data:{displayName:'小林'}},{id:'b',type:'imageGenNode',data:{displayName:'小雨'}},{id:'g',type:'groupNode',data:{label:'开场'}}]} as never);vi.mocked(api.applyDirectionBindings).mockResolvedValue(applied);vi.mocked(api.getDirectionRequest).mockResolvedValue({request_id:'one',status:'unknown'});});
  it('persists before write and restores the exact request after unknown result',async()=>{
   vi.mocked(api.applyDirectionBindings).mockImplementation(async()=>{expect(readDirectionIntent(owner)?.request).toEqual(body);throw new Error('network');});
   expect((await createDirectionOperation(owner,()=>true).run(body,'自定义水墨')).status).toBe('pending');
@@ -163,17 +163,31 @@ describe('fixed direction operations',()=>{
  });
  it('browses read-only then explicitly applies with the selected catalog proof',async()=>{
   render(<DirectionReferencePanel owner={owner} kind="style" selectedId="custom" isCurrent={()=>true}/>);
-  await screen.findByRole('option',{name:'自定义水墨 · v1'});expect(api.applyDirectionBindings).not.toHaveBeenCalled();
+  await screen.findByRole('button',{name:/自定义水墨/});expect(api.applyDirectionBindings).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button',{name:'应用固定风格'}));
   await waitFor(()=>expect(api.applyDirectionBindings).toHaveBeenCalled());
   expect(vi.mocked(api.applyDirectionBindings).mock.calls[0][1]).toMatchObject({scope:{level:'project'},selection:{id:'custom',proof:'catalog'}});
+ });
+ it('uses direct scope buttons and catalog cards instead of obstructive native dropdowns',async()=>{
+  render(<DirectionReferencePanel owner={owner} kind="style" selectedId="custom" canvasId="c" nodeIds={['a','b']} isCurrent={()=>true}/>);
+  const scopes=await screen.findByRole('group',{name:'作用范围'});
+  expect(within(scopes).getByRole('button',{name:'明确节点'})).toHaveAttribute('aria-pressed','true');
+  expect(screen.queryByLabelText('影响范围')).toBeNull();
+  expect(screen.queryByLabelText('固定风格')).toBeNull();
+  expect(screen.queryByLabelText('目标画布')).toBeNull();
+  expect(screen.getByText('小林、小雨')).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:/自定义水墨/})).toHaveAttribute('aria-pressed','true');
+  fireEvent.click(screen.getByRole('button',{name:'更换节点'}));
+  expect(await screen.findByLabelText('小林')).toBeInTheDocument();
+  fireEvent.click(within(scopes).getByRole('button',{name:'一个画布'}));
+  expect(within(scopes).getByRole('button',{name:'一个画布'})).toHaveAttribute('aria-pressed','true');
  });
  it('starts project settings at project scope while flushing its captured canvas runtime',async()=>{
   const flush=vi.fn().mockResolvedValue(true);
   const workspaceRuntime={flush,isCurrent:()=>true};
   render(<DirectionReferencePanel owner={owner} kind="style" canvasId="c" defaultProjectScope workspaceRuntime={workspaceRuntime} isCurrent={()=>true}/>);
   await waitFor(()=>expect(api.getDirectionBindings).toHaveBeenCalledWith('p',{level:'project'}));
-  expect(screen.getByLabelText('影响范围')).toHaveValue('project');
+  expect(screen.getByRole('button',{name:'整个项目'})).toHaveAttribute('aria-pressed','true');
   expect(flush).toHaveBeenCalled();
  });
  it('disables apply only when every target already has the exact selected fixed version',async()=>{
@@ -221,11 +235,11 @@ describe('fixed direction operations',()=>{
  });
  it.each(['canvas','group','nodes'] as const)('explicitly selects %s without guessing a workspace',async level=>{
   render(<DirectionReferencePanel owner={owner} kind="style" selectedId="custom" isCurrent={()=>true}/>);
-  await screen.findByRole('option',{name:'自定义水墨 · v1'});
-  fireEvent.change(screen.getByLabelText('影响范围'),{target:{value:level}});
+  await screen.findByRole('button',{name:/自定义水墨/});
+  fireEvent.click(screen.getByRole('button',{name:level==='canvas'?'一个画布':level==='group'?'一个分组':'明确节点'}));
   expect(screen.getByRole('button',{name:'应用固定风格'})).toBeDisabled();
-  fireEvent.change(screen.getByLabelText('目标画布'),{target:{value:'c'}});
-  if(level==='group'){await screen.findByRole('option',{name:'开场'});fireEvent.change(screen.getByLabelText('目标分组'),{target:{value:'g'}});}
+  fireEvent.click(await screen.findByRole('button',{name:'第一集'}));
+  if(level==='group')fireEvent.click(await screen.findByRole('button',{name:'开场'}));
   if(level==='nodes')fireEvent.click(await screen.findByLabelText('小林'));
   await waitFor(()=>expect(screen.getByRole('button',{name:'应用固定风格'})).not.toBeDisabled());
   fireEvent.click(screen.getByRole('button',{name:'应用固定风格'}));
@@ -248,7 +262,7 @@ describe('fixed direction operations',()=>{
   await waitFor(()=>expect(screen.getByRole('button',{name:'应用固定风格'})).not.toBeDisabled());
   fireEvent.click(screen.getByRole('button',{name:'应用固定风格'}));
   await screen.findByText('配置未保存，请重新比较');
-  expect(screen.getByLabelText('固定风格')).toHaveValue('custom');
+  expect(screen.getByRole('button',{name:/自定义水墨/})).toHaveAttribute('aria-pressed','true');
   const reads=vi.mocked(api.listDirectionCatalog).mock.calls.length;
   expect(api.applyDirectionBindings).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByRole('button',{name:'重新比较当前配置'}));

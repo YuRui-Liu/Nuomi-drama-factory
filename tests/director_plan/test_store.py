@@ -201,6 +201,15 @@ def test_activate_supersedes_previous_revision_and_updates_pointer(tmp_path: Pat
     assert store.load_active(1) == activated_second
 
 
+def test_load_active_for_sync_only_returns_matching_active_revision(tmp_path: Path) -> None:
+    store = DirectorPlanStore(tmp_path)
+    store.save(make_revision("rev-a"))
+    active = store.activate(1, "rev-a")
+
+    assert store.load_active_for_sync(1, "rev-a") == active
+    assert store.load_active_for_sync(1, "rev-other") is None
+
+
 def test_activate_can_restore_superseded_revision(tmp_path: Path) -> None:
     store = DirectorPlanStore(tmp_path)
     store.save(make_revision("rev-a"))

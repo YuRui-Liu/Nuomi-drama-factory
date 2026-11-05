@@ -259,3 +259,85 @@ it('drops a deferred A acceptance after the real node switches to B', async () =
   expect(data).not.toMatchObject({ voiceDraftsByCharacter: { 'id:character-A': { voiceDescription: 'A 接受后的迟到描述' } } });
   expect(screen.queryByDisplayValue('A 接受后的迟到描述')).not.toBeInTheDocument();
 });
+
+it('uses an approved voice candidate in the canvas audio node with one action', async () => {
+  const version = {
+    version_id: 'version-approved',
+    character_id: 'character-A',
+    identity_id: 'identity-A',
+    slot: 'default',
+    candidate_id: 'candidate-1',
+    audio_sha256: 'sha256-approved',
+    path: '/voices/approved.wav',
+    url: '/voices/approved.wav',
+    current: true,
+  };
+  let candidateAdopted = false;
+  mocks.apiCall.mockImplementation(async () => ({
+    character_id: 'character-A',
+    versions: candidateAdopted ? [version] : [],
+    current: [],
+  }));
+  server.use(
+    http.get('http://localhost:3000/api/v1/projects/demo/characters/integration-A/voice-samples', () => HttpResponse.json({
+      ok: true,
+      data: {
+        character: 'integration-A',
+        slots: [],
+        voice_facts: { vocalization_mode: 'dialogue' },
+        candidates: [{
+          candidate_id: 'candidate-1',
+          slot: 'default',
+          status: 'qc_unavailable',
+          url: '/voices/approved.wav',
+          path: '/voices/approved.wav',
+          sha256: 'sha256-approved',
+          payload: { voice_description: '清晰自然' },
+          report: { status: 'qc_unavailable', reason: '评估器不可用' },
+        }],
+      },
+    })),
+    http.post('http://localhost:3000/api/v1/projects/demo/characters/integration-A/voice-candidates/candidate-1/approve', () => {
+      candidateAdopted = true;
+      return HttpResponse.json({ ok: true, data: {
+        candidate_id: 'candidate-1',
+        voice_version_id: version.version_id,
+        character_id: version.character_id,
+        slot: version.slot,
+        sha256: version.audio_sha256,
+      } });
+    }),
+  );
+
+  renderNode();
+  const useCandidate = await screen.findByRole('button', { name: '使用此声音' });
+  fireEvent.click(useCandidate);
+
+  await waitFor(() => {
+    const state = useCanvasStore.getState();
+    const source = state.nodes.find(node => node.id === 'voice-1');
+    const audio = state.nodes.find(node => node.type === CANVAS_NODE_TYPES.audio);
+    expect(source?.data).toMatchObject({
+      referenceOnly: true,
+      characterId: 'character-A',
+      identityId: 'identity-A',
+      voiceVersionId: 'version-approved',
+      voiceReference: {
+        version_id: 'version-approved',
+        audio_sha256: 'sha256-approved',
+      },
+    });
+    expect(audio?.data).toMatchObject({
+      audioKind: 'speech',
+      voiceRef: {
+        scope: 'character_voice_version',
+        characterId: 'character-A',
+        versionId: 'version-approved',
+      },
+      sourceVoiceNodeId: 'voice-1',
+    });
+    expect(state.edges).toContainEqual(expect.objectContaining({ source: 'voice-1', target: audio?.id }));
+    expect(state.selectedNodeId).toBe(audio?.id);
+  });
+  expect(screen.queryByRole('button', { name: '连接到配音节点' })).not.toBeInTheDocument();
+});

@@ -40,23 +40,40 @@ export const canvasMenuIconMap: Record<MenuIconKey, LucideIcon> = {
 };
 
 export const CANVAS_ADD_NODE_TYPES: readonly CanvasNodeType[] = [
-  CANVAS_NODE_TYPES.ideation,
   CANVAS_NODE_TYPES.screenplay,
-  CANVAS_NODE_TYPES.directorWorkspace,
+  CANVAS_NODE_TYPES.script,
+  CANVAS_NODE_TYPES.storyboardGen,
+  CANVAS_NODE_TYPES.videoDirector,
+  CANVAS_NODE_TYPES.videoCompose,
+];
+
+export const CANVAS_AUXILIARY_NODE_TYPES: readonly CanvasNodeType[] = [
+  CANVAS_NODE_TYPES.ideation,
   CANVAS_NODE_TYPES.characterVoice,
   CANVAS_NODE_TYPES.textAnnotation,
   CANVAS_NODE_TYPES.beatContext,
   CANVAS_NODE_TYPES.imageGen,
   CANVAS_NODE_TYPES.video,
-  CANVAS_NODE_TYPES.videoDirector,
-  CANVAS_NODE_TYPES.videoCompose,
   CANVAS_NODE_TYPES.musicDesk,
   CANVAS_NODE_TYPES.audio,
-  CANVAS_NODE_TYPES.script,
   CANVAS_NODE_TYPES.upload,
   CANVAS_NODE_TYPES.pano360Viewer,
   CANVAS_NODE_TYPES.threeDWorld,
   CANVAS_NODE_TYPES.agent,
+];
+
+const LIGHTWEIGHT_NODE_OPTIONS: readonly { type: CanvasNodeType; label: string; artifactKind: string }[] = [
+  { type: CANVAS_NODE_TYPES.ideation, label: '故事立意', artifactKind: 'idea' },
+  { type: CANVAS_NODE_TYPES.screenplay, label: '剧本', artifactKind: 'screenplay' },
+  { type: CANVAS_NODE_TYPES.upload, label: '资产', artifactKind: 'asset' },
+  { type: CANVAS_NODE_TYPES.imageGen, label: '生成资产', artifactKind: 'asset' },
+  { type: CANVAS_NODE_TYPES.script, label: '分镜表', artifactKind: 'storyboard' },
+  { type: CANVAS_NODE_TYPES.storyboardGen, label: '分镜宫格', artifactKind: 'grid' },
+  { type: CANVAS_NODE_TYPES.video, label: '镜头', artifactKind: 'shot' },
+  { type: CANVAS_NODE_TYPES.videoDirector, label: '导演', artifactKind: 'director' },
+  { type: CANVAS_NODE_TYPES.audio, label: '配音', artifactKind: 'dubbing' },
+  { type: CANVAS_NODE_TYPES.musicDesk, label: '配乐', artifactKind: 'music' },
+  { type: CANVAS_NODE_TYPES.videoCompose, label: '成片', artifactKind: 'composition' },
 ];
 
 const AGENT_ROLE_OPTIONS = [
@@ -107,24 +124,30 @@ interface CanvasAddNodeGridProps {
   ) => void;
   onItemPointerEnter?: () => void;
   transitionDelayForIndex?: (index: number) => string | undefined;
+  lightweightMode?: boolean;
 }
 
 export function CanvasAddNodeGrid({
   onSelectNode,
   onItemPointerEnter,
   transitionDelayForIndex,
+  lightweightMode = false,
 }: CanvasAddNodeGridProps) {
   const { t } = useTranslation();
   const [agentOptionsOpen, setAgentOptionsOpen] = useState(false);
+  const visibleOptions: readonly { type: CanvasNodeType; label?: string; artifactKind?: string }[] = lightweightMode
+    ? LIGHTWEIGHT_NODE_OPTIONS
+    : [...CANVAS_ADD_NODE_TYPES, ...CANVAS_AUXILIARY_NODE_TYPES].map(type => ({ type }));
 
   return (
     <>
       <div className="grid grid-cols-4 justify-items-center gap-x-2 gap-y-5">
-        {CANVAS_ADD_NODE_TYPES.map((type, index) => {
+        {visibleOptions.map((option, index) => {
+          const type = option.type;
           const definition = nodeCatalog.getDefinition(type);
           if (!definition) return null;
           const Icon = canvasMenuIconMap[definition.menuIcon] ?? Image;
-          if (type === CANVAS_NODE_TYPES.agent) {
+          if (type === CANVAS_NODE_TYPES.agent && !lightweightMode) {
             return (
               <button
                 key={type}
@@ -141,31 +164,37 @@ export function CanvasAddNodeGrid({
                   <Icon className="h-4 w-4 text-lime-200" />
                 </div>
                 <span className="max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-[13px] leading-5 text-white/82">
-                  {t(definition.menuLabelKey)}
+                  {option.label ?? t(definition.menuLabelKey)}
                 </span>
               </button>
             );
           }
           return (
             <button
-              key={type}
+              key={option.artifactKind ? `${type}:${option.artifactKind}` : type}
               type="button"
               onMouseEnter={onItemPointerEnter}
               className={`${CANVAS_MENU_ICON_CELL_CLASS} hover:bg-white/[0.075]`}
               style={{ transitionDelay: transitionDelayForIndex?.(index) }}
-              onClick={(event) => onSelectNode(type, undefined, { x: event.clientX, y: event.clientY })}
+              onClick={(event) => onSelectNode(
+                type,
+                option.artifactKind
+                  ? { artifactKind: option.artifactKind, displayName: option.label } as Partial<CanvasNodeData>
+                  : undefined,
+                { x: event.clientX, y: event.clientY },
+              )}
             >
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-cyan-300/[0.12]">
                 <Icon className="h-4 w-4 text-cyan-200" />
               </div>
               <span className="max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-[13px] leading-5 text-white/82">
-                {t(definition.menuLabelKey)}
+                {option.label ?? t(definition.menuLabelKey)}
               </span>
             </button>
           );
         })}
       </div>
-      {agentOptionsOpen && (
+      {!lightweightMode && agentOptionsOpen && (
         <div
           id="canvas-agent-role-options"
           role="group"

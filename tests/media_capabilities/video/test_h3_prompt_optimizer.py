@@ -203,7 +203,7 @@ async def test_optimizer_caches_complete_result_by_segment_input_hash(tmp_path):
     snapshot = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
     assert snapshot["prompt_profile_id"] == "minimax-h3-director"
     assert snapshot["prompt_profile_version"] == H3_PROMPT_PROFILE_VERSION
-    assert snapshot["compiler_version"] == 5
+    assert snapshot["compiler_version"] == 6
 
 
 @pytest.mark.asyncio

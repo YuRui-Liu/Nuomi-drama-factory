@@ -7,10 +7,12 @@ import pytest
 from novelvideo.narrative_groups.service import (
     advance_revision,
     group_beats,
+    find_stage_submission,
     layout_for_group,
     load_groups,
     narrative_group_sidecar_guard,
     record_stage_result,
+    record_stage_submission_task,
     record_video_segment_result,
     rollback_stage_revision,
     stage_history,
@@ -97,6 +99,141 @@ def test_generating_candidate_preserves_selected_assets_and_current_video(tmp_pa
     assert changed.stages["render"].grid_asset == "grid-a.png"
     assert changed.stages["render"].cell_assets == cells
     assert not changed.stages["video"].needs_regeneration
+
+
+def test_image_stage_submission_idempotency_reuses_reserved_revision(tmp_path):
+    group = group_beats([{"id": "1"}])[0]
+    group = replace(group, director_revision_id="revision-a")
+    save_groups(tmp_path, 1, [group])
+
+    reserved, revision, reused = advance_revision(
+        tmp_path, 1, group.id, "render", regenerate=True,
+        expected_director_revision_id="revision-a",
+        submission_id="attempt-a", submission_fingerprint="request-hash-a",
+        return_reused=True,
+    )
+    assert revision == 1 and reused is False
+    record_stage_result(tmp_path, 1, group.id, "render", expected_revision=1,
+                        status="running", expected_director_revision_id="revision-a")
+
+    with pytest.raises(RuntimeError, match="active submission"):
+        advance_revision(
+            tmp_path, 1, group.id, "render", regenerate=True,
+            expected_director_revision_id="revision-a",
+            submission_id="attempt-other", submission_fingerprint="request-hash-other",
+            return_reused=True,
+        )
+
+    replayed, replay_revision, reused = advance_revision(
+        tmp_path, 1, group.id, "render", regenerate=True,
+        expected_director_revision_id="revision-a",
+        submission_id="attempt-a", submission_fingerprint="request-hash-a",
+        return_reused=True,
+    )
+    assert replay_revision == 1 and reused is True
+    assert replayed.stages["render"].status == "running"
+    assert load_groups(tmp_path, 1)[0].stages["render"].revision == 1
+
+    with pytest.raises(RuntimeError, match="idempotency"):
+        advance_revision(
+            tmp_path, 1, group.id, "render", regenerate=True,
+            expected_director_revision_id="revision-a",
+            submission_id="attempt-a", submission_fingerprint="different-hash",
+            return_reused=True,
+        )
+
+
+def test_video_submission_idempotency_reuses_reserved_revision(tmp_path):
+    group = group_beats([{"id": "1"}])[0]
+    save_groups(tmp_path, 1, [group])
+
+    reserved, reservation = reserve_video_revision(
+        tmp_path, 1, group.id, expected_revision=0,
+        expected_plan_revision=1, expected_settings_revision=0,
+        submission_id="attempt-video", submission_fingerprint="video-hash",
+    )
+    assert reservation.revision == 1 and not reservation.reused
+
+    with pytest.raises(RuntimeError, match="active submission"):
+        reserve_video_revision(
+            tmp_path, 1, group.id, expected_revision=0,
+            expected_plan_revision=1, expected_settings_revision=0,
+            submission_id="attempt-other", submission_fingerprint="other-hash",
+        )
+
+    replayed, replay = reserve_video_revision(
+        tmp_path, 1, group.id, expected_revision=0,
+        expected_plan_revision=1, expected_settings_revision=0,
+        submission_id="attempt-video", submission_fingerprint="video-hash",
+    )
+    assert replay.revision == 1 and replay.reused
+    assert replayed.stages["video"].status == "queued"
+    assert load_groups(tmp_path, 1)[0].stages["video"].revision == 1
+
+    with pytest.raises(RuntimeError, match="idempotency"):
+        reserve_video_revision(
+            tmp_path, 1, group.id, expected_revision=0,
+            expected_plan_revision=1, expected_settings_revision=0,
+            submission_id="attempt-video", submission_fingerprint="different-hash",
+        )
+
+
+def test_stage_submission_binds_one_task_receipt(tmp_path):
+    group = replace(group_beats([{"id": "1"}])[0], director_revision_id="revision-a")
+    save_groups(tmp_path, 1, [group])
+    advance_revision(
+        tmp_path, 1, group.id, "render", regenerate=True,
+        expected_director_revision_id="revision-a",
+        submission_id="attempt-a", submission_fingerprint="request-hash-a",
+        submission_task_type="narrative_group_grid",
+    )
+
+    receipt = record_stage_submission_task(
+        tmp_path, 1, group.id, "render", "attempt-a", "task-a",
+    )
+    assert receipt["task_id"] == "task-a"
+    assert find_stage_submission(
+        tmp_path, 1, group.id, "render", "attempt-a",
+        request_fingerprint="request-hash-a",
+    )["task_id"] == "task-a"
+    with pytest.raises(RuntimeError, match="receipt changed"):
+        record_stage_submission_task(
+            tmp_path, 1, group.id, "render", "attempt-a", "different-task",
+        )
+
+
+def test_rollback_preserves_newer_mutation_receipts_and_replay_does_not_reserve_again(tmp_path):
+    group = replace(group_beats([{"id": "1"}])[0], director_revision_id="revision-a")
+    save_groups(tmp_path, 1, [group])
+    advance_revision(tmp_path, 1, group.id, "render", regenerate=True,
+                     expected_director_revision_id="revision-a")
+    record_stage_result(tmp_path, 1, group.id, "render", expected_revision=1,
+                        status="completed", expected_director_revision_id="revision-a",
+                        grid_asset="render-r1.png")
+    advance_revision(
+        tmp_path, 1, group.id, "render", regenerate=True,
+        expected_director_revision_id="revision-a", submission_id="request-b",
+        submission_fingerprint="hash-b", submission_task_type="narrative_group_grid",
+    )
+    record_stage_submission_task(tmp_path, 1, group.id, "render", "request-b", "task-b")
+
+    restored = rollback_stage_revision(tmp_path, 1, group.id, "render", revision=1)
+
+    record = find_stage_submission(
+        tmp_path, 1, group.id, "render", "request-b", request_fingerprint="hash-b",
+    )
+    assert record["task_id"] == "task-b"
+    revision_after_rollback = restored.stages["render"].revision
+    replayed, replay_revision, reused = advance_revision(
+        tmp_path, 1, group.id, "render", regenerate=True,
+        expected_director_revision_id="revision-a", submission_id="request-b",
+        submission_fingerprint="hash-b", submission_task_type="narrative_group_grid",
+        return_reused=True,
+    )
+
+    assert reused is True
+    assert replay_revision == 2
+    assert replayed.stages["render"].revision == revision_after_rollback
 
 
 def test_rollback_rejects_ambiguous_storyboard_revision(tmp_path):

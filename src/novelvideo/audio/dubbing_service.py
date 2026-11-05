@@ -53,10 +53,60 @@ def _preparation_request_fingerprint(
     return hashlib.sha256(_canonical(value)).hexdigest()
 
 
+def configured_runninghub_index_runtime():
+    """Resolve the saved clone binding before any upload or paid submission."""
+    from novelvideo.api.deps import get_media_capability_store, get_media_credential_resolver
+    from novelvideo.media_capabilities.models import MediaCapability
+    from novelvideo.media_capabilities.runtime.configuration import (
+        load_runninghub_runtime_configuration, MediaRuntimeConfigurationError,
+    )
+
+    store = get_media_capability_store()
+    policy = store.get_policy(MediaCapability.TTS_VOICE_CLONE)
+    provider_id = "runninghub-main"
+    if policy is not None:
+        implementation = store.get_implementation(policy.default_implementation)
+        if implementation is None or implementation.capability != MediaCapability.TTS_VOICE_CLONE:
+            raise ValueError("configured voice clone implementation is unavailable")
+        provider_id = implementation.provider_account
+        # This adapter implements the shipped IndexTTS2 node contract, not
+        # arbitrary registered workflow profiles.
+        if implementation.workflow_profile:
+            raise ValueError("custom voice clone workflow profile is unsupported by IndexTTS2 dubbing")
+    account = store.get_provider(provider_id)
+    workflow = store.get_runninghub_workflows().tts_indextts2_voice_clone
+    if policy is None and (account is None or not workflow):
+        return None
+    try:
+        runtime = load_runninghub_runtime_configuration(
+            store, get_media_credential_resolver(), provider_id=provider_id,
+        )
+        runtime.workflow_id(MediaCapability.TTS_VOICE_CLONE)
+    except MediaRuntimeConfigurationError as exc:
+        raise ValueError(str(exc)) from exc
+    if not runtime.api_key.strip():
+        raise ValueError("RunningHub credential is unavailable")
+    return runtime
+
+
+def runninghub_index_profile(runtime) -> dict[str, str]:
+    from novelvideo.media_capabilities.models import MediaCapability
+    from novelvideo.media_capabilities.runtime.runninghub_client import RunningHubClient
+
+    identity = [runtime.account.id, runtime.account.base_url or RunningHubClient.DEFAULT_BASE_URL,
+                runtime.workflow_id(MediaCapability.TTS_VOICE_CLONE)]
+    digest = hashlib.sha256(_canonical(identity)).hexdigest()[:16]
+    return {"provider": "runninghub", "provider_id": runtime.account.id,
+            "model": "IndexTTS2", "workflow_version": f"IndexTTS2-v2:runninghub:{digest}"}
+
+
 def configured_index_tts2_profile() -> dict[str, str]:
     """Return the configured v2 Index adapter identity without exposing secrets."""
     from novelvideo import config
 
+    runtime = configured_runninghub_index_runtime()
+    if runtime is not None:
+        return runninghub_index_profile(runtime)
     provider = str(config.INDEXTTS2_PROVIDER or "").strip().lower()
     if provider not in {"newapi", "fal"}:
         raise ValueError(f"IndexTTS2 provider is unsupported: {provider or 'unset'}")

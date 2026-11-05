@@ -22,6 +22,8 @@ _FIELDS = (
     'requested_parameters', 'workflow_definition',
     'cinematography_review_required', 'retry_planning',
     'storyboard_contract_version', 'storyboard_binding', 'reference_contract_version',
+    'video_keyframe_binding',
+    'dialogue_source',
 )
 
 

@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import FrozenInstanceError, replace
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -648,6 +649,80 @@ def test_update_rejects_stale_revision_and_active_video_stage(tmp_path):
                 max_images=10,
             )
         )
+
+
+def test_reference_revision_guard_rejects_a_stale_director_revision_before_materializing(
+    monkeypatch, tmp_path
+):
+    active = SimpleNamespace(revision_id="director-r2")
+    lock_state = {"held": False}
+
+    class FakeDirectorPlanStore:
+        def __init__(self, _project_dir):
+            pass
+
+        @contextmanager
+        def lock_active_revision(self, _episode):
+            lock_state["held"] = True
+            try:
+                yield active
+            finally:
+                lock_state["held"] = False
+
+    def materialize(_project_dir, _episode, selected):
+        assert lock_state["held"] is True
+        assert selected is active
+        return [replace(_group("beat-1"), director_revision_id="director-r2")]
+
+    monkeypatch.setattr(service, "DirectorPlanStore", FakeDirectorPlanStore)
+    monkeypatch.setattr(service, "_materialize_active_groups", materialize)
+
+    with pytest.raises(RuntimeError, match="director plan revision is stale"):
+        service.load_video_reference_group_for_revision(
+            tmp_path, 1, "ng-01", expected_director_revision_id="director-r1"
+        )
+    assert lock_state["held"] is False
+
+
+def test_reference_revision_guard_checks_group_binding_and_accepts_legacy_none(
+    monkeypatch, tmp_path
+):
+    active = SimpleNamespace(revision_id="director-r2")
+
+    class FakeDirectorPlanStore:
+        def __init__(self, _project_dir):
+            pass
+
+        @contextmanager
+        def lock_active_revision(self, _episode):
+            yield active
+
+    monkeypatch.setattr(service, "DirectorPlanStore", FakeDirectorPlanStore)
+    monkeypatch.setattr(
+        service,
+        "_materialize_active_groups",
+        lambda *_args: [replace(_group("beat-1"), director_revision_id="director-r1")],
+    )
+    with pytest.raises(RuntimeError, match="group director revision is stale"):
+        service.load_video_reference_group_for_revision(
+            tmp_path, 1, "ng-01", expected_director_revision_id="director-r2"
+        )
+
+    monkeypatch.setattr(service, "DirectorPlanStore", _NoActivePlanStore)
+    legacy_group = _group("beat-1")
+    service.save_groups(tmp_path, 1, [legacy_group])
+    assert service.load_video_reference_group_for_revision(
+        tmp_path, 1, "ng-01", expected_director_revision_id=None
+    ) == legacy_group
+
+
+class _NoActivePlanStore:
+    def __init__(self, _project_dir):
+        pass
+
+    @contextmanager
+    def lock_active_revision(self, _episode):
+        yield None
 
 
 def _saved_group(source_kind, asset_id, description="valid description"):

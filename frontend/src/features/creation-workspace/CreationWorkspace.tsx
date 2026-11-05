@@ -1,19 +1,23 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useBlocker, useNavigate, useRouter, useRouterState } from '@tanstack/react-router';
+import { useQueryClient } from '@tanstack/react-query';
 import { ReactFlowProvider } from '@xyflow/react';
 import type { SupertaleProjectSummary } from '@/api/projects';
+import { deleteCreationCanvas, listCreationCanvases, renameCreationCanvas } from '@/api/creation';
 import { FreezoneShell, type WorkspaceCanvasState } from '@/features/freezone/FreezoneShell';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { flushFreezoneCanvasRuntime } from '@/features/freezone/canvasSyncRuntime';
 import { useCreateWorkspace, useCreationCanvases } from '@/lib/queries/creation';
 import { CanvasWorkspaceSwitcher } from './CanvasWorkspaceSwitcher';
-import { creationErrorDetail, resolveWorkspace, type CreateWorkspaceInput, type WorkspaceKind } from './contracts';
+import { creationErrorDetail, resolveWorkspace, type CreationCanvas, type CreateWorkspaceInput, type WorkspaceKind } from './contracts';
+import type { WorkspaceScope } from '@/features/freezone/WorkspaceScope';
 import { readAssetReturn, clearAssetReturn } from './assetReferenceNavigation';
 import { applyFixedAsset } from './fixedAssets';
 
 export function CreationWorkspace({ project }: { project: SupertaleProjectSummary }) {
   const registry = useCreationCanvases(project.id);
   const creation = useCreateWorkspace(project.id);
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const router = useRouter();
   const mounted = useRef(false);
@@ -23,6 +27,14 @@ export function CreationWorkspace({ project }: { project: SupertaleProjectSummar
   }, []);
   const search = useRouterState({ select: state => state.location.search as Record<string, unknown> });
   const active = resolveWorkspace(registry.data ?? [], search);
+  const workspaceScope = useMemo<WorkspaceScope | null>(() => active ? {
+    projectId: project.id,
+    canvasId: active.canvas_id,
+    kind: active.kind,
+    episodeId: active.episode_id,
+    episodeNumber: active.episode_number,
+    status: active.status,
+  } : null, [active?.canvas_id, active?.kind, active?.episode_id, active?.episode_number, active?.status, project.id]);
   const [leaveError, setLeaveError] = useState<string>();
   const [createError, setCreateError] = useState<string>();
   const request = useRef<CreateWorkspaceInput | null>(null);
@@ -48,6 +60,71 @@ export function CreationWorkspace({ project }: { project: SupertaleProjectSummar
     }).finally(() => { returnFlight.current = false; });
   }, [project.id, router]);
   const select = (id: string, replace = false) => navigate({ to: '/projects/$project/freezone', params: { project: project.id }, search: { workspace: id }, replace, resetScroll: false });
+  const clearSelection = () => navigate({ to: '/projects/$project/freezone', params: { project: project.id }, search: {}, resetScroll: false });
+
+  async function renameCanvas(canvas: CreationCanvas, title: string) {
+    const result = await renameCreationCanvas(project.id, canvas.canvas_id, title);
+    await queryClient.cancelQueries({ queryKey: ['creation', project.id, 'canvases'], exact: true });
+    queryClient.setQueryData(['creation', project.id, 'canvases'], (previous: typeof registry.data) =>
+      previous?.map(item => item.canvas_id === canvas.canvas_id ? { ...item, ...result, title } : item));
+    return true;
+  }
+
+  async function deleteCanvas(canvas: NonNullable<typeof active>) {
+    const deletingCurrent = active?.canvas_id === canvas.canvas_id;
+    let hiddenCurrent = false;
+    if (deletingCurrent) {
+      try {
+        const saved = await flushFreezoneCanvasRuntime(project.id, canvas.canvas_id);
+        if (saved !== true) {
+          setLeaveError(saved === null ? '画布尚未就绪，无法安全删除。请稍后重试。' : '当前画布保存失败，已取消删除。请处理保存错误后重试。');
+          return false;
+        }
+      } catch (error) {
+        setLeaveError(`当前画布保存失败，已取消删除：${error instanceof Error ? error.message : String(error)}`);
+        return false;
+      }
+      setLeaveError(undefined);
+      await queryClient.cancelQueries({ queryKey: ['creation', project.id, 'canvases'], exact: true });
+      const remaining = (registry.data ?? []).filter(item => item.canvas_id !== canvas.canvas_id);
+      queryClient.setQueryData(['creation', project.id, 'canvases'], remaining);
+      hiddenCurrent = true;
+      const next = resolveWorkspace(remaining, {});
+      // Unmount the current sync owner before deleting so a delayed save cannot
+      // recreate the canvas after the server has accepted the deletion.
+      if (next) await select(next.canvas_id);
+      else await clearSelection();
+    }
+    try {
+      const result = await deleteCreationCanvas(project.id, canvas.canvas_id);
+      if (!result.deleted) throw new Error('服务端没有确认画布已删除。');
+      await queryClient.cancelQueries({ queryKey: ['creation', project.id, 'canvases'], exact: true });
+      queryClient.setQueryData(['creation', project.id, 'canvases'], (previous: typeof registry.data) =>
+        previous?.filter(item => item.canvas_id !== canvas.canvas_id));
+      void queryClient.invalidateQueries({ queryKey: ['creation', project.id, 'canvases'], exact: true });
+      return true;
+    } catch (error) {
+      if (hiddenCurrent) {
+        // A transport error is ambiguous: the server may have committed the
+        // deletion before the response was lost. Reconcile before restoring
+        // the previous route so we never reselect a tombstoned canvas.
+        try {
+          const fresh = await listCreationCanvases(project.id);
+          queryClient.setQueryData(['creation', project.id, 'canvases'], fresh);
+          if (fresh.some(item => item.canvas_id === canvas.canvas_id)) await select(canvas.canvas_id);
+          else {
+            const fallback = resolveWorkspace(fresh, {});
+            if (fallback) await select(fallback.canvas_id);
+            else await clearSelection();
+          }
+        } catch {
+          queryClient.setQueryData(['creation', project.id, 'canvases'], registry.data);
+          await select(canvas.canvas_id);
+        }
+      }
+      throw error;
+    }
+  }
 
   useBlocker({
     withResolver: false,
@@ -126,15 +203,17 @@ export function CreationWorkspace({ project }: { project: SupertaleProjectSummar
     </div>;
   }
   const explicit = 'workspace' in search || 'episode' in search;
-  return <div className="relative h-full w-full bg-bg-dark">
+  return <div className="relative flex h-full w-full min-w-0 bg-bg-dark">
     <CanvasWorkspaceSwitcher canvases={registry.data ?? []} selectedId={active?.canvas_id} onSelect={id => { void select(id); }} onCreate={create} pending={creation.isPending}
+      onRename={renameCanvas} onDelete={deleteCanvas}
       error={createError} retry={createError && request.current ? () => request.current ? submit(request.current) : Promise.resolve(false) : undefined}
       registryError={registry.data !== undefined ? registry.error?.message : undefined} onRetryRegistry={() => { void registry.refetch(); }} />
     {leaveError && <div role="alert" className="absolute bottom-5 left-1/2 z-50 -translate-x-1/2 rounded-xl border border-red-400/30 bg-surface px-4 py-3 text-sm text-red-300">{leaveError}<button onClick={() => setLeaveError(undefined)} className="ml-3 underline">继续编辑</button></div>}
-    {active?.status === 'applied' ? <ReactFlowProvider key={`${project.id}:${active.canvas_id}`}><FreezoneShell project={project} canvasId={active.canvas_id} managedWorkspace onWorkspaceState={onWorkspaceState} /></ReactFlowProvider> : <div className="flex h-full flex-col items-center justify-center gap-3 text-text-muted">
+    <div className="relative h-full min-w-0 flex-1">
+    {active?.status === 'applied' ? <ReactFlowProvider key={`${project.id}:${active.canvas_id}`}><FreezoneShell project={project} canvasId={active.canvas_id} canvasTitle={active.title} workspaceScope={workspaceScope} managedWorkspace onWorkspaceState={onWorkspaceState} /></ReactFlowProvider> : <div className="flex h-full flex-col items-center justify-center gap-3 text-text-muted">
       <h2 className="text-lg text-text">{active ? active.status === 'running' ? '画布正在创建' : '画布创建存在冲突' : explicit ? '画布不存在' : '开始你的创作'}</h2>
       <p className="text-sm">{active ? '请等待或刷新列表查看最新状态。' : explicit ? '请选择列表中的画布，或创建新的画布。' : '创建构思、分集或自由画布，无需预先创建分集。'}</p>
       {active && <button type="button" onClick={() => void registry.refetch()} className="text-accent underline">刷新状态</button>}
-    </div>}
+    </div>}</div>
   </div>;
 }

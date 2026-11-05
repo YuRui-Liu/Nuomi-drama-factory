@@ -22,6 +22,7 @@ import {
 import { ViewportLazyImage } from "@/components/viewport-lazy-image";
 import { CanvasesTab } from "./CanvasesTab";
 import { FixedAssetLibrary } from '@/features/creation-workspace/FixedAssetLibrary';
+import { useMediaQuery } from '@/hooks/use-media-query';
 import { ASSET_ORGANIZATION_DRAG_MIME, AssetFolderTree } from "./AssetFolderTree";
 import { type AssetPurpose, useAssetOrganization } from "@/lib/queries/asset-organization";
 import { hasLegacyPresetCanvasMetadata } from "@/features/freezone/projections";
@@ -510,6 +511,7 @@ export function AssetLibraryPanel({
     { id: "props", label: "道具" },
   ];
 
+  const desktop = useMediaQuery('(min-width: 1024px)');
   const [panelTab, setPanelTab] = useState<PanelTab>(managedWorkspace ? "library" : "canvases");
   const [tab, setTab] = useState<AssetTab>("beat");
   const [query, setQuery] = useState("");
@@ -729,7 +731,7 @@ export function AssetLibraryPanel({
     <AssetReplaceContext.Provider value={replaceContextValue}>
       <aside
         className="pointer-events-none absolute inset-y-0 left-0 z-30 overflow-visible"
-        style={managedWorkspace ? { left: 280 } : undefined}
+        style={managedWorkspace && !desktop ? { left: 280 } : undefined}
       >
         {/* 折叠/展开胶囊 — 停在卡片右侧的画布上 */}
         <div

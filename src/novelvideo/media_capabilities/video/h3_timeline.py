@@ -287,6 +287,9 @@ class H3DirectorOutputManifest(BaseModel):
     total_frames: int = Field(default=0, ge=0)
     format_version: int = Field(default=2, gt=0)
     workflow_id: str | None = None
+    # Explicit request-level policy; entry-level values remain authoritative
+    # when a user later chooses audio per span.
+    dialogue_source: DialogueSource | None = None
     provider_workflow_id: str | None = None
     provider_task_id: str | None = None
     reference_settings_revision: int | None = Field(default=None, ge=0)

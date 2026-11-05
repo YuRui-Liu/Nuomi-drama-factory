@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { useEffect, useRef, useState, type ComponentType } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Clock, HelpCircle, Keyboard, Plus } from 'lucide-react';
 import { PRODUCT_MANUAL_URL } from '@/lib/product-manual';
@@ -21,6 +22,10 @@ const HOVER_POPOVER_PANELS: ReadonlySet<QuickPanel> = new Set(['add']);
 const ANCHORED_POPOVER_PANELS: ReadonlySet<QuickPanel> = new Set(['add', 'shortcuts']);
 
 interface CanvasQuickActionBarProps {
+  hidden?: boolean;
+  lightweightMode?: boolean;
+  alignLeft?: boolean;
+  addNodeRequest?: number;
   project?: string | null;
   selectedNodeId?: string | null;
   placement?: 'bottom-right' | 'top-right';
@@ -65,6 +70,10 @@ const ACTIONS: QuickActionDef[] = [
 ];
 
 export function CanvasQuickActionBar({
+  hidden = false,
+  lightweightMode = false,
+  alignLeft = false,
+  addNodeRequest = 0,
   project,
   selectedNodeId,
   placement = 'bottom-right',
@@ -76,6 +85,8 @@ export function CanvasQuickActionBar({
 }: CanvasQuickActionBarProps) {
   const { t } = useTranslation();
   const [openPanel, setOpenPanel] = useState<QuickPanel | null>(null);
+  useEffect(() => { if (hidden) setOpenPanel(null); }, [hidden]);
+  useEffect(() => { if (addNodeRequest > 0) setOpenPanel('add'); }, [addNodeRequest]);
   const popoverCloseTimerRef = useRef<number | null>(null);
   const isTop = placement === 'top-right';
 
@@ -133,6 +144,7 @@ export function CanvasQuickActionBar({
     isTop ? 'slide-in-from-top-1' : 'slide-in-from-bottom-1'
   }`;
 
+  if (hidden) return null;
   return (
     <>
       {/*
@@ -147,7 +159,7 @@ export function CanvasQuickActionBar({
       )}
 
       <div
-        className={`pointer-events-none absolute inset-x-0 z-[41] flex justify-center ${
+        className={`pointer-events-none absolute inset-x-0 z-[41] flex ${alignLeft ? 'justify-start pl-4' : 'justify-center'} ${
           isTop ? 'top-3' : 'bottom-3'
         }`}
       >
@@ -169,6 +181,7 @@ export function CanvasQuickActionBar({
             >
               <div className={popoverEnterClass}>
                 <CanvasAddNodePanel
+                  lightweightMode={lightweightMode}
                   skillItems={skillItems}
                   onSelectNode={onAddNode}
                   onSelectSkill={onAddSkill}
@@ -178,7 +191,8 @@ export function CanvasQuickActionBar({
             </div>
           )}
 
-          {openPanel === 'shortcuts' && (
+          {openPanel === 'shortcuts' && alignLeft && createPortal(<div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/40 p-3 pb-20" onClick={() => setOpenPanel(null)}><div onClick={event => event.stopPropagation()}><CanvasShortcutsPanel onClose={() => setOpenPanel(null)} /></div></div>, document.body)}
+          {openPanel === 'shortcuts' && !alignLeft && (
             <div className={`absolute left-1/2 -translate-x-1/2 ${popoverAnchorClass}`}>
               <div className={popoverEnterClass}>
                 <CanvasShortcutsPanel onClose={() => setOpenPanel(null)} />

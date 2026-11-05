@@ -23,6 +23,30 @@
 .direction-panel fieldset { display: flex; flex-direction: column; gap: 14px; }
 .direction-panel fieldset > * { margin-block: 0; }
 .direction-field { display: flex; flex-direction: column; gap: 8px; font-size: 12px; font-weight: 500; }
+.direction-scopes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.direction-scope-option, .direction-choice-button, .direction-candidate-card { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--background); color: var(--foreground); cursor: pointer; transition: border-color 150ms, background 150ms, color 150ms; }
+.direction-scope-option { min-height: 40px; padding: 8px 6px; font-size: 12px; }
+.direction-scope-option:hover:not(:disabled), .direction-choice-button:hover, .direction-candidate-card:hover:not(:disabled) { border-color: var(--ring); }
+.direction-scope-option.is-selected, .direction-choice-button.is-selected { border-color: var(--ring); background: color-mix(in srgb, var(--accent) 72%, var(--background)); color: var(--foreground); }
+.direction-scope-option:focus-visible, .direction-choice-button:focus-visible, .direction-candidate-card:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.direction-scope-option:disabled, .direction-candidate-card:disabled { cursor: default; opacity: .5; }
+.direction-choice-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.direction-choice-button { min-height: 40px; padding: 9px 10px; text-align: left; font-size: 13px; overflow-wrap: anywhere; }
+.direction-picker-heading { display: flex; align-items: center; justify-content: space-between; }
+.direction-picker-heading span:last-child { color: var(--muted-foreground); font-size: 11px; font-weight: 400; }
+.direction-field input[type='search'] { height: 38px; min-width: 0; padding: 0 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); color: var(--foreground); font-size: 13px; }
+.direction-field input[type='search']:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.direction-candidate-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; max-height: 168px; overflow: auto; padding: 2px; scrollbar-width: thin; }
+.direction-candidate-card { display: flex; min-height: 84px; flex-direction: column; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px; text-align: left; overflow-wrap: anywhere; }
+.direction-candidate-card span { font-size: 13px; font-weight: 600; }
+.direction-candidate-card small { color: var(--muted-foreground); font-size: 11px; font-weight: 400; }
+.direction-candidate-card.is-selected { border-color: var(--ring); background: color-mix(in srgb, var(--accent) 72%, var(--background)); }
+.direction-candidate-card.is-selected small { color: var(--foreground); }
+.direction-node-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 8px; background: var(--muted); }
+.direction-node-summary p:first-child { color: var(--foreground); font-weight: 500; }
+.direction-node-summary p:nth-child(2) { color: var(--muted-foreground); font-size: 12px; }
+.direction-node-summary button, .direction-inline-action { color: var(--foreground); border: 1px solid var(--border); border-radius: 7px; background: var(--background); padding: 7px 10px; font-size: 12px; cursor: pointer; }
+.direction-inline-action { margin-top: 8px; }
 .direction-field select {
   appearance: none;
   width: 100%;
@@ -56,7 +80,7 @@
 .direction-panel fieldset:disabled .direction-node-option { cursor: default; }
 .direction-current { border: 1px solid var(--border); border-radius: 8px; background: var(--muted); padding: 12px 14px; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .direction-current p + p { margin-top: 4px; }
-.direction-actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 18px; border-top: 1px solid var(--border); }
+.direction-actions { position: sticky; bottom: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 0 4px; border-top: 1px solid var(--border); background: var(--popover); box-shadow: 0 -10px 16px color-mix(in srgb, var(--popover) 88%, transparent); }
 .direction-actions button { min-height: 38px; height: auto; padding: 8px 12px; border-radius: 8px; font-size: 12px; }
 .direction-refresh { border: 0; background: transparent; color: var(--muted-foreground); padding: 6px 0; font-size: 12px; cursor: pointer; }
 .direction-refresh:hover { color: var(--foreground); }
@@ -64,6 +88,8 @@
 .direction-refresh:disabled { opacity: .5; cursor: default; }
 @media (max-width: 480px) {
   .direction-dialog { padding: 18px; }
+  .direction-scopes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .direction-choice-grid, .direction-candidate-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .direction-node-list { grid-template-columns: 1fr; }
   .direction-actions button:first-child { width: 100%; }
 }

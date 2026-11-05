@@ -30,6 +30,8 @@ def display_metadata_for_task(task_type: str, payload: dict[str, Any] | None) ->
         "skill_id",
         "reference_snapshot_id",
         "reference_snapshot_digest",
+        "client_mutation_id",
+        "request_fingerprint",
     ):
         value = str(payload.get(key) or "").strip()
         if value:

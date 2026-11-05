@@ -370,7 +370,7 @@ describe("narrative group reference hooks", () => {
     });
     const file = new File(["image"], "ref.png", { type: "image/png" });
 
-    const response = await result.current.mutateAsync({ groupId: "ng-1", file });
+    const response = await result.current.mutateAsync({ groupId: "ng-1", file, expectedDirectorRevisionId: null });
 
     expect(contentType).toContain("multipart/form-data");
     expect(response).toMatchObject({
@@ -383,6 +383,7 @@ describe("narrative group reference hooks", () => {
     );
     const body = post.mock.calls[0][1]?.body as FormData;
     expect(body.get("file")).toMatchObject({ name: "ref.png", type: "image/png", size: 5 });
+    expect(body.get("expected_director_revision_id")).toBe("__none__");
     expect(invalidateQueries).toHaveBeenCalledTimes(1);
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: narrativeGroupVideoReferencePreviewQueryKey("demo", 2, "ng-1"), exact: true,
@@ -395,7 +396,7 @@ describe("narrative group reference hooks", () => {
       "http://localhost:3000/api/v1/projects/demo/episodes/2/narrative-groups/ng-1/video/references",
       async ({ request }) => {
         body = await request.json();
-        return HttpResponse.json({ ok: true, data: { revision: 4, max_images: 5, candidates: [], selected: [], warnings: [] } });
+        return HttpResponse.json({ ok: true, data: { revision: 4, director_revision_id: "director-r1", max_images: 5, candidates: [], selected: [], warnings: [] } });
       },
     ));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -409,6 +410,7 @@ describe("narrative group reference hooks", () => {
     await result.current.mutateAsync({
       groupId: "ng-1",
       expectedRevision: 3,
+      expectedDirectorRevisionId: "director-r1",
       references: [
         { reference_id: "prop-2", subject_description: "brass key" },
         { reference_id: "char-1", subject_description: "Alice in blue" },
@@ -417,6 +419,7 @@ describe("narrative group reference hooks", () => {
 
     expect(body).toEqual({
       expected_revision: 3,
+      expected_director_revision_id: "director-r1",
       references: [
         { reference_id: "prop-2", subject_description: "brass key" },
         { reference_id: "char-1", subject_description: "Alice in blue" },

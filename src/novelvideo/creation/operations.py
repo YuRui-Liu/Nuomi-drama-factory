@@ -38,9 +38,11 @@ def _scope(condition, **details):
 # intentionally absent. Asset references have a separate validated operation.
 DATA_FIELDS = frozenset({'prompt', 'negativePrompt', 'displayName', 'text', 'content',
     'model', 'aspectRatio', 'duration', 'operation', 'seed', 'temperature',
-    'description', 'title', 'width', 'height'})
+    'description', 'title', 'width', 'height', 'styleTemplateId',
+    'referenceImageUrl', 'designBinding', 'cameraSelection', 'size'})
 LAYOUT_FIELDS = frozenset({'position', 'parentId', 'style', 'width', 'height'})
-TEXT_FIELDS = DATA_FIELDS - {'duration', 'seed', 'temperature', 'width', 'height'}
+TEXT_FIELDS = DATA_FIELDS - {
+    'duration', 'seed', 'temperature', 'width', 'height', 'designBinding', 'cameraSelection', 'size'}
 
 
 def _number(value, *, minimum, maximum, integer=False):
@@ -74,6 +76,85 @@ def validate_text_data(data):
     """Shared text-only schema; this helper grants no scope or write authority."""
     _contract(isinstance(data, dict) and bool(data) and set(data) <= {'title', 'text', 'description', 'notes', 'prompt'})
     _contract(all(isinstance(value, str) and len(value) <= 100000 for value in data.values()), '对象文本字段无效')
+
+
+def _validate_design_binding(value):
+    keys = {'design_ref', 'kind', 'name', 'description', 'prompt', 'style_template_id',
+            'base_asset_ref', 'references', 'source_proposal_ref', 'target_canvas_id',
+            'parent_group_id', 'request_id', 'operation_request_id'}
+    _contract(isinstance(value, dict) and set(value) == keys, '资产设计绑定字段无效')
+    _contract(value['kind'] in {'character', 'scene'} and isinstance(value['name'], str)
+              and 0 < len(value['name']) <= 200 and isinstance(value['description'], str)
+              and len(value['description']) <= 12000 and isinstance(value['prompt'], str)
+              and 0 < len(value['prompt']) <= 12000, '资产设计绑定内容无效')
+    _contract(value['style_template_id'] is None or isinstance(value['style_template_id'], str)
+              and len(value['style_template_id']) <= 128, '资产设计风格引用无效')
+    design_ref = value['design_ref']
+    proposal = value['source_proposal_ref']
+    _contract(isinstance(design_ref, dict) and set(design_ref) == {'id', 'revision', 'kind'}
+              and isinstance(design_ref['id'], str) and bool(design_ref['id'])
+              and type(design_ref['revision']) is int and design_ref['revision'] >= 1
+              and design_ref['kind'] == value['kind'], '资产设计对象引用无效')
+    _contract(isinstance(proposal, dict) and set(proposal) == {'id', 'revision', 'kind'}
+              and isinstance(proposal['id'], str) and bool(proposal['id'])
+              and type(proposal['revision']) is int and proposal['revision'] >= 1
+              and proposal['kind'] == 'story_fragment', '来源提案回执无效')
+    _contract(value['base_asset_ref'] is None or isinstance(value['base_asset_ref'], dict)
+              and set(value['base_asset_ref']) == {'base_asset_id', 'variant_id', 'revision'}
+              and isinstance(value['base_asset_ref']['base_asset_id'], str)
+              and bool(value['base_asset_ref']['base_asset_id'])
+              and (value['base_asset_ref']['variant_id'] is None
+                   or isinstance(value['base_asset_ref']['variant_id'], str))
+              and type(value['base_asset_ref']['revision']) is int
+              and value['base_asset_ref']['revision'] >= 1, '基础资产版本引用无效')
+    _contract(isinstance(value['references'], list) and len(value['references']) <= 100,
+              '资产设计参考列表无效')
+    for reference in value['references']:
+        _contract(isinstance(reference, dict), '资产设计参考无效')
+        if reference.get('kind') == 'canvas_node':
+            _contract(set(reference) == {'kind', 'canvas_id', 'node_id', 'node_type', 'input_fingerprint'}
+                      and all(isinstance(reference.get(key), str) and bool(reference[key])
+                              for key in ('canvas_id', 'node_id', 'node_type', 'input_fingerprint')),
+                      '画布参考节点无效')
+        else:
+            allowed = {'kind', 'asset_ref', 'object_kind', 'object_id', 'revision', 'mapping', 'slot_id', 'role'}
+            _contract(reference.get('kind') == 'asset' and set(reference) <= allowed
+                      and {'kind', 'asset_ref', 'object_kind', 'object_id', 'revision', 'mapping'} <= set(reference)
+                      and isinstance(reference['asset_ref'], dict)
+                      and set(reference['asset_ref']) == {'base_asset_id', 'variant_id', 'revision'}
+                      and isinstance(reference['object_id'], str) and bool(reference['object_id'])
+                      and type(reference['revision']) is int and reference['revision'] >= 1
+                      and isinstance(reference['mapping'], dict)
+                      and set(reference['mapping']) == {'object_id', 'kind', 'source_name', 'parent_id'}
+                      and (('slot_id' in reference) == ('role' in reference)), '固定资产参考无效')
+    _contract(isinstance(value['target_canvas_id'], str) and bool(value['target_canvas_id'])
+              and (value['parent_group_id'] is None or isinstance(value['parent_group_id'], str))
+              and isinstance(value['request_id'], str) and bool(value['request_id'])
+              and isinstance(value['operation_request_id'], str) and bool(value['operation_request_id']),
+              '资产设计来源身份无效')
+
+
+def _validate_camera_selection(value):
+    from novelvideo.freezone.image_camera import FREEZONE_IMAGE_CAMERA_OPTIONS
+
+    fields = {'cameraBodyId', 'lensId', 'focalLengthMm', 'aperture'}
+    _contract(isinstance(value, dict) and set(value) <= fields, '摄影机参数字段无效')
+    bodies = {item['id'] for item in FREEZONE_IMAGE_CAMERA_OPTIONS['camera_bodies']}
+    lenses = {item['id'] for item in FREEZONE_IMAGE_CAMERA_OPTIONS['lenses']}
+    if 'cameraBodyId' in value:
+        _contract(isinstance(value['cameraBodyId'], str) and value['cameraBodyId'] in bodies,
+                  '摄影机机身不在可选目录中')
+    if 'lensId' in value:
+        _contract(isinstance(value['lensId'], str) and value['lensId'] in lenses,
+                  '摄影镜头不在可选目录中')
+    if 'focalLengthMm' in value:
+        _contract(type(value['focalLengthMm']) is int
+                  and value['focalLengthMm'] in FREEZONE_IMAGE_CAMERA_OPTIONS['focal_lengths_mm'],
+                  '摄影焦距不在可选目录中')
+    if 'aperture' in value:
+        _contract(isinstance(value['aperture'], str)
+                  and value['aperture'] in FREEZONE_IMAGE_CAMERA_OPTIONS['apertures'],
+                  '摄影光圈不在可选目录中')
 
 
 def create_text_object(conn, actor, *, kind, data, canvas_id, episode_id):
@@ -326,7 +407,7 @@ class OperationService:
                 node = op['node']
                 _contract(set(node) <= {'id', 'type', 'data'} | LAYOUT_FIELDS and isinstance(node.get('id'), str))
                 _scope(node['id'] in scoped and node['id'] not in nodes, node_id=node['id'])
-                self._data(node.get('data', {}))
+                self._data(node.get('data', {}), node_type=node.get('type'))
                 _layout(node)
                 draft['nodes'].append(deepcopy(node))
             elif kind in {'update_node', 'remove_node'}:
@@ -340,7 +421,7 @@ class OperationService:
                     draft['nodes'].remove(nodes[node_id])
                     draft['edges'] = [e for e in draft['edges'] if node_id not in {e['source'], e['target']}]
                 else:
-                    self._data(op.get('data', {}))
+                    self._data(op.get('data', {}), node_type=nodes[node_id].get('type'))
                     _layout(op)
                     nodes[node_id].setdefault('data', {}).update(op.get('data', {}))
                     for field in LAYOUT_FIELDS & op.keys():
@@ -364,11 +445,21 @@ class OperationService:
         return deepcopy(operations)
 
     @staticmethod
-    def _data(data):
+    def _data(data, *, node_type=None):
         _contract(isinstance(data, dict) and set(data) <= DATA_FIELDS)
         for field, value in data.items():
             if field in TEXT_FIELDS:
                 _contract(isinstance(value, str) and len(value) <= 100000)
+            elif field == 'size':
+                _contract(node_type == 'imageGenNode' and isinstance(value, str)
+                          and value in {'1K', '2K', '4K'},
+                          '图片生成分辨率无效')
+            elif field in {'styleTemplateId', 'referenceImageUrl'}:
+                _contract(isinstance(value, str) and len(value) <= 20000)
+            elif field == 'designBinding':
+                _validate_design_binding(value)
+            elif field == 'cameraSelection':
+                _validate_camera_selection(value)
             elif field == 'seed':
                 _number(value, minimum=-1, maximum=2**53 - 1, integer=True)
             elif field == 'temperature':

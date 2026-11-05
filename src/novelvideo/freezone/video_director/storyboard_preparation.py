@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 from copy import deepcopy
 from pathlib import Path
@@ -11,7 +12,7 @@ from novelvideo.freezone.canvas_store import read_canvas, save_canvas, utc_now_i
 from novelvideo.freezone.orchestration.adapters.requests import director_draft
 from novelvideo.freezone.orchestration.models import fingerprint
 from .capabilities import validate_generation
-from .models import DirectorDraft, DirectorImage
+from .models import DirectorContinuityContext, DirectorDraft, DirectorImage
 from .storyboard_adaptation import adapt_image, build_draft
 
 
@@ -74,6 +75,83 @@ def _mode(data):
     return 'ref'
 
 
+def _director_continuity_context(canvas, board, descriptors, frame_pairs=None):
+    """Project explicit director-plan state into a typed batch handoff."""
+    data = board.get('data') or {}
+    plan = data.get('directorPlan')
+    if not isinstance(plan, dict):
+        return None
+    plan_shots = plan.get('shots')
+    if not isinstance(plan_shots, list) or not plan_shots:
+        return None
+    target_start_id = (
+        frame_pairs[0].get('first_frame_id') if frame_pairs
+        else descriptors[0].get('id') if descriptors else None
+    )
+    current_shot = next((shot for shot in plan_shots
+                         if isinstance(shot, dict) and shot.get('id') == target_start_id), None)
+    if current_shot is None:
+        return None
+
+    def text(source, key):
+        value = source.get(key) if isinstance(source, dict) else None
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    objective = text(plan, 'objective')
+    scene_anchor = text(plan, 'scene_anchor')
+    current_start = text(current_shot, 'visible_start_state')
+    scene_id = text(data, 'scene_id')
+    if not objective or not scene_anchor or not current_start:
+        return None
+
+    group_id = text(data, 'group_id') or text(plan, 'id')
+    relation = plan.get('relation_to_previous')
+    previous_end = previous_group = None
+    ordinal = data.get('ordinal')
+    first_plan_shot_id = plan_shots[0].get('id') if isinstance(plan_shots[0], dict) else None
+    if (target_start_id == first_plan_shot_id and scene_id
+            and type(ordinal) is int and ordinal > 0
+            and relation in {'causal', 'progressive'}):
+        previous_nodes = [node for node in canvas.get('nodes', [])
+                          if node.get('type') == 'storyboardGenNode'
+                          and (node.get('data') or {}).get('ordinal') == ordinal - 1
+                          and (node.get('data') or {}).get('scene_id') == scene_id]
+        if len(previous_nodes) == 1:
+            previous_data = previous_nodes[0].get('data') or {}
+            previous_plan = previous_data.get('directorPlan')
+            previous_shots = previous_plan.get('shots') if isinstance(previous_plan, dict) else None
+            if isinstance(previous_shots, list) and previous_shots:
+                previous_end = text(previous_shots[-1], 'visible_end_state')
+                if previous_end:
+                    previous_group = text(previous_data, 'group_id') or text(previous_plan, 'id')
+
+    context = DirectorContinuityContext(
+        director_intent=objective,
+        previous_end_state=previous_end,
+        current_start_state=current_start,
+        shared_space=scene_anchor,
+        spatial_layout=text(plan, 'geo_layout'),
+        scene_id=scene_id,
+        previous_group_id=previous_group,
+        current_group_id=group_id,
+        relation_to_previous=relation,
+    )
+    return context.model_dump(mode='json')
+
+
+def _draft_settings_fingerprint(
+    board_id, source_fingerprint, frames, frame_pairs, aspect_ratio, resolution,
+    model_id, mode, references, bindings, continuity_context,
+):
+    values = [board_id, source_fingerprint, frames, frame_pairs, aspect_ratio,
+              resolution, model_id, mode, references, bindings]
+    # Keep the historic fingerprint byte-for-byte stable for manual and legacy
+    # storyboards that have no structured continuity data.
+    if continuity_context is not None:
+        values.append(continuity_context)
+    return fingerprint(values)
+
+
 def _references(ctx, canvas, node, board, draft, previous):
     """Only identity/asset references; storyboard cells belong to frame slots."""
     from .service import _image_path
@@ -121,13 +199,21 @@ def _references(ctx, canvas, node, board, draft, previous):
 
 
 def prepare_storyboard(ctx, *, canvas_id: str, node_id: str, base_revision: int, request_id: str,
-                       resolution='safe', shots=None, rects=None, reference_limit=5) -> dict:
+                       resolution='safe', shots=None, shot_ids=None, rects=None, reference_limit=5) -> dict:
     if resolution not in {'safe', 'keep_edits', 'replace_generated'}:
         raise ValueError('invalid edit resolution')
+    if shot_ids is not None:
+        if shots is not None:
+            raise ValueError('shot_ids cannot be combined with shots; select persisted storyboard frames')
+        if (not isinstance(shot_ids, list) or not shot_ids
+                or any(not isinstance(value, str) or not value.strip() or value != value.strip()
+                       for value in shot_ids)
+                or len(set(shot_ids)) != len(shot_ids)):
+            raise ValueError('shot_ids must be a nonempty list of unique storyboard frame IDs')
     from novelvideo.api.routes.freezone import _canvas_state_project_dir
     root = Path(ctx.output_dir)
     state_root = _canvas_state_project_dir(ctx, root)
-    request_hash = fingerprint([node_id, resolution, shots, rects])
+    request_hash = fingerprint([node_id, resolution, shots, shot_ids, rects])
     response = {}
 
     def build(existing):
@@ -144,8 +230,8 @@ def prepare_storyboard(ctx, *, canvas_id: str, node_id: str, base_revision: int,
             board['data'].pop('cellRects', None)
         adapted = _adapt(ctx, board, old.get('aspect_ratio', '16:9'), rects)
         existing_frames = board['data'].get('frames', [])
-        descriptors = deepcopy(shots if shots is not None else existing_frames)
-        for index, descriptor in enumerate(descriptors):
+        source_descriptors = deepcopy(shots if shots is not None else existing_frames)
+        for index, descriptor in enumerate(source_descriptors):
             previous_frame = existing_frames[index] if index < len(existing_frames) else {}
             descriptor['id'] = descriptor.get('id') or previous_frame.get('id') or f'{board["id"]}-cell-{index + 1}'
             old_source = previous.get('sourceNodeId')
@@ -156,19 +242,48 @@ def prepare_storyboard(ctx, *, canvas_id: str, node_id: str, base_revision: int,
             if 'static_panel' in previous_frame:
                 descriptor['static_panel'] = deepcopy(previous_frame['static_panel'])
                 descriptor['static_source_description'] = previous_frame.get('static_source_description')
-        duration = previous.get('requestedDurationSeconds') or sum(s.get('duration_seconds', 0) for s in old.get('segments', []))
-        references, bindings = _references(ctx, canvas, node, board, old, previous) if mode == 'ref' else ([], [])
         frame_pairs = board['data'].get('videoFramePairs')
+        if shot_ids is not None and frame_pairs:
+            raise ValueError('shot_ids selection is only supported for one-cell-per-shot storyboards')
+        if shot_ids is None:
+            selected_indexes = list(range(len(source_descriptors)))
+        else:
+            requested_ids = set(shot_ids)
+            selected_indexes = [index for index, shot in enumerate(source_descriptors)
+                                if shot['id'] in requested_ids]
+            if len(selected_indexes) != len(requested_ids):
+                raise ValueError('shot_ids must identify existing storyboard frames')
+        descriptors = [source_descriptors[index] for index in selected_indexes]
+        selected_shot_ids = [descriptor['id'] for descriptor in descriptors]
+        timing_shots = frame_pairs or descriptors
+        explicit_durations = [shot.get('duration_seconds', shot.get('durationSeconds', shot.get('duration')))
+                              for shot in timing_shots]
+        has_explicit_durations = bool(explicit_durations) and all(
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and value > 0 for value in explicit_durations
+        )
+        duration = (sum(explicit_durations) if has_explicit_durations else
+                    previous.get('requestedDurationSeconds') or
+                    sum(s.get('duration_seconds', 0) for s in old.get('segments', [])))
+        references, bindings = _references(ctx, canvas, node, board, old, previous) if mode == 'ref' else ([], [])
         if any(s.get('static_panel') for s in descriptors) and not frame_pairs:
             raise ValueError('尚未选择视频起始画格：请使用 AI 推荐或手动选择首帧；尾帧可选，不能将相邻镜头自动当作首尾帧')
-        settings_hash = fingerprint([board['id'], adapted['fingerprint'], descriptors, frame_pairs, old.get('aspect_ratio'), old.get('resolution'), old.get('model_id'), mode, references, bindings])
+        continuity_context = _director_continuity_context(canvas, board, descriptors, frame_pairs)
+        settings_hash = _draft_settings_fingerprint(
+            board['id'], adapted['fingerprint'], descriptors, frame_pairs,
+            old.get('aspect_ratio'), old.get('resolution'), old.get('model_id'), mode,
+            references, bindings, continuity_context,
+        )
         if (not layout_changed and previous.get('settingsFingerprint') == settings_hash
                 and old.get('references', []) == references):
             validate_generation(DirectorDraft.model_validate(old), reference_limit=reference_limit)
             response.update(canvas=existing, draft=old, preparation=previous)
             return existing
         baseline = previous.get('baselineDraft')
-        changed = baseline is not None and old != baseline
+        old_content = {key: value for key, value in old.items() if key != 'continuity_context'}
+        baseline_content = ({key: value for key, value in baseline.items() if key != 'continuity_context'}
+                            if isinstance(baseline, dict) else baseline)
+        changed = baseline is not None and old_content != baseline_content
         if changed and resolution == 'safe':
             raise ValueError('manual edits conflict with changed storyboard; choose keep_edits or replace_generated')
         from novelvideo.api.deps import make_static_url_for_context
@@ -190,7 +305,11 @@ def prepare_storyboard(ctx, *, canvas_id: str, node_id: str, base_revision: int,
                 stored[key] = make_static_url_for_context(ctx, rel)
             cells.append(stored)
         template = {k: old[k] for k in ('schema_version', 'revision', 'model_id', 'aspect_ratio', 'resolution') if k in old}
-        fresh = build_draft(board['id'], template, [c['imageUrl'] for c in cells], descriptors, duration, frame_pairs=frame_pairs)
+        selected_cells = [{'shotId': descriptor['id'], **cells[index]}
+                          for descriptor, index in zip(descriptors, selected_indexes)]
+        fresh = build_draft(board['id'], template, [cell['imageUrl'] for cell in selected_cells],
+                            descriptors, duration, frame_pairs=frame_pairs,
+                            continuity_context=continuity_context)
         if mode == 'ref':
             fresh['references'] = references
         fresh['revision'] = old.get('revision', 0) + 1
@@ -216,8 +335,9 @@ def prepare_storyboard(ctx, *, canvas_id: str, node_id: str, base_revision: int,
                     'sourceGridRows': board['data'].get('gridRows', 2), 'sourceGridCols': board['data'].get('gridCols', 2),
                     'settingsFingerprint': settings_hash, 'status': 'prepared', 'baselineDraft': generated,
                     'cells': cells, 'requestedDurationSeconds': duration,
+                    'selectedShotIds': selected_shot_ids, 'selectedCells': selected_cells,
                     'actualDurationSeconds': timing.actual_duration_seconds, 'actualTotalFrames': timing.total_frames}
-        board['data'].update(cells=cells, frames=descriptors)
+        board['data'].update(cells=cells, frames=source_descriptors)
         if rects is not None:
             board['data']['cellRects'] = rects
         data.update(draft=browser_draft(fresh), storyboardPreparation=metadata,
@@ -270,9 +390,27 @@ def guard_prepared(ctx, canvas_id, node_id, draft):
     references, bindings = _references(ctx, canvas, node, board, supplied, prepared) if mode == 'ref' else ([], [])
     if supplied.get('references', []) != references:
         raise ValueError('stale storyboard reference bindings; prepare again before generation')
-    settings_hash = fingerprint([board['id'], adapted['fingerprint'], board['data'].get('frames', []),
-                                 board['data'].get('videoFramePairs'),
-                                 supplied.get('aspect_ratio'), supplied.get('resolution'), supplied.get('model_id'), mode, references, bindings])
+    source_frames = board['data'].get('frames', [])
+    selected_ids = prepared.get('selectedShotIds')
+    if selected_ids is None:
+        selected_frames = source_frames
+    else:
+        if (not isinstance(selected_ids, list) or not selected_ids
+                    or any(not isinstance(value, str) or not value.strip() or value != value.strip()
+                           for value in selected_ids)
+                or len(set(selected_ids)) != len(selected_ids)):
+            raise ValueError('stale storyboard preparation; selected shot IDs are invalid')
+        selected_set = set(selected_ids)
+        selected_frames = [frame for frame in source_frames if frame.get('id') in selected_set]
+        if len(selected_frames) != len(selected_set):
+            raise ValueError('stale storyboard preparation; selected storyboard frames changed')
+    frame_pairs = board['data'].get('videoFramePairs')
+    continuity_context = _director_continuity_context(canvas, board, selected_frames, frame_pairs)
+    settings_hash = _draft_settings_fingerprint(
+        board['id'], adapted['fingerprint'], selected_frames, frame_pairs,
+        supplied.get('aspect_ratio'), supplied.get('resolution'), supplied.get('model_id'),
+        mode, references, bindings, continuity_context,
+    )
     if (adapted['fingerprint'] != prepared.get('sourceFingerprint')
             or board['id'] != prepared.get('sourceNodeId')
             or settings_hash != prepared.get('settingsFingerprint')):

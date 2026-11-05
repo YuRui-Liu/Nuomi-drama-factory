@@ -371,6 +371,18 @@ class DubbingStore:
             row = db.execute("SELECT * FROM dubbing_tasks WHERE task_id=?", (task_id,)).fetchone()
         return self._decode_task(row) if row else None
 
+    def get_task_by_request(
+        self, episode: int, group_id: str, request_id: str,
+    ) -> DubbingTask | None:
+        """Read the durable idempotency receipt before production admission."""
+        with self.connection() as db:
+            row = db.execute(
+                """SELECT * FROM dubbing_tasks
+                   WHERE episode=? AND group_id=? AND request_id=?""",
+                (episode, group_id, request_id),
+            ).fetchone()
+        return self._decode_task(row) if row else None
+
     def get_task_by_backend_id(self, backend_task_id: str) -> DubbingTask | None:
         with self.connection() as db:
             row = db.execute(

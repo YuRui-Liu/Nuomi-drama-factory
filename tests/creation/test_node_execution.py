@@ -63,15 +63,17 @@ def _transition(request_id="agent-action-1"):
             "action_id": request_id, "action_index": 0}
 
 
-def _service(project_dir, *, adapter=None, authorize_submission=None, authorize_projection=None):
+def _service(project_dir, *, adapter=None, authorize_submission=None, authorize_projection=None,
+             require_workspace_scope=False, canvas_id='canvas'):
     from novelvideo.creation.node_execution import NodeExecutionService
 
     if authorize_projection is None:
         def authorize_projection(*_):
             return True
-    return NodeExecutionService(project_dir, project_id="p", canvas_id="canvas",
+    return NodeExecutionService(project_dir, project_id="p", canvas_id=canvas_id,
         actor={"id": "alice", "username": "alice"}, adapter=adapter,
-        authorize_submission=authorize_submission, authorize_projection=authorize_projection)
+        authorize_submission=authorize_submission, authorize_projection=authorize_projection,
+        require_workspace_scope=require_workspace_scope)
 
 
 def test_patch_storyboard_lighting_is_scoped_audited_and_idempotent(tmp_path):
@@ -772,6 +774,97 @@ async def test_revoked_grant_blocks_before_reservation_and_submit(tmp_path):
     assert receipt["status"] == "blocked"
     assert adapter.submitted == []
     assert service.store.node_run_count("delegation-1") == 0
+
+
+@pytest.mark.asyncio
+async def test_agent_run_rejects_episode_node_bound_to_another_registered_canvas(tmp_path):
+    from novelvideo.creation.canvas_workspaces import CanvasWorkspace, CanvasCreate
+    from novelvideo.creation.projection import ProjectionService
+    from novelvideo.creation.store import ObjectStore
+    from novelvideo.creation.workspace import EpisodeCreate, EpisodeWorkspace
+    from novelvideo.freezone.orchestration.projection import patch_graph
+
+    state_dir = tmp_path / 'state'
+    objects = ObjectStore(state_dir)
+    episodes = EpisodeWorkspace(objects, project_id='p')
+    e1 = episodes.create('alice', EpisodeCreate(request_id='e1', title='第一集'))
+    episodes.create('alice', EpisodeCreate(request_id='e2', title='第二集'))
+    CanvasWorkspace(objects, project_id='p').create('alice',
+        CanvasCreate(request_id='free', kind='free', title='自由画布'))
+    ProjectionService(objects).apply(e1.operation_id)
+    canvas_id = e1.object_refs[0]['canvas_id']
+    source = {'id': 'source', 'type': 'textAnnotationNode', 'data': {'content': 'a frozen scene'}}
+    board = {'id': 'board', 'type': 'storyboardGenNode', 'data': {'operation': 'generate',
+        'prompt': 'rainy station', 'frames': [{'id': 'frame-1', 'description': 'train arrives',
+            'static_panel': {'id': 'panel-1', 'shot_id': 'frame-1', 'anchor': 'start',
+                'state': 'before the train', 'framing': 'wide', 'subjects': [], 'setting': 'platform',
+                'lighting': 'soft daylight', 'visible_text': []}}]}}
+    forged_episode = {'id': 'director-e02', 'type': 'directorWorkspaceNode',
+        'data': {'episodeNumber': 2}}
+    canvas = patch_graph(state_dir, canvas_id, base_revision=1, request_id='seed', operations=[
+        {'op': 'add_node', 'node': source}, {'op': 'add_node', 'node': board},
+        {'op': 'add_node', 'node': forged_episode},
+        {'op': 'add_edge', 'edge': {'id': 'source-board', 'source': 'source', 'target': 'board'}},
+    ])
+    adapter = _RecordingAdapter()
+    adapter.project_dir = state_dir
+    service = _service(state_dir, adapter=adapter, require_workspace_scope=True, canvas_id=canvas_id)
+    contract = _contract(nodes=('director-e02',), read_nodes=(),
+        operations=[{'node_id': 'director-e02', 'operation': 'inspect'}])
+    contract['canvas_id'] = canvas_id
+    target = next(node for node in canvas['nodes'] if node['id'] == 'director-e02')
+
+    with pytest.raises(OrchestrationError) as rejected:
+        await service.execute_node(request_id='wrong-episode', node_id='director-e02', operation='inspect',
+            expected_revision=canvas['revision'], expected_input_fingerprint=input_fingerprint(target),
+            contract=contract, authorization_id='authorization-1',
+            accepted_transition=_transition('wrong-episode'))
+
+    assert rejected.value.code == 'episode_scope_mismatch'
+    assert adapter.submitted == []
+    assert service.store.find_request(canvas_id, 'agent-' + fingerprint(['delegation-1', 'wrong-episode'])[:64]) is None
+
+
+@pytest.mark.asyncio
+async def test_agent_generic_image_run_ignores_unrelated_readonly_episode_reference_on_concept_canvas(tmp_path):
+    from novelvideo.creation.canvas_workspaces import CanvasCreate, CanvasWorkspace
+    from novelvideo.creation.projection import ProjectionService
+    from novelvideo.creation.store import ObjectStore
+    from novelvideo.freezone.orchestration.projection import patch_graph
+
+    state_dir = tmp_path / 'state'
+    objects = ObjectStore(state_dir)
+    concept = CanvasWorkspace(objects, project_id='p').create('alice',
+        CanvasCreate(request_id='concept', kind='concept', title='全剧构思'))
+    ProjectionService(objects).apply(concept.operation_id)
+    canvas_id = concept.object_refs[0]['canvas_id']
+    image = {'id': 'image', 'type': 'imageGenNode', 'data': {
+        'operation': 'generate', 'prompt': 'A quiet river at dawn', 'aspectRatio': '16:9',
+    }}
+    old_director = {'id': 'old-director', 'type': 'directorWorkspaceNode',
+        'data': {'episodeNumber': 1, 'referenceOnly': True}}
+    canvas = patch_graph(state_dir, canvas_id, base_revision=1, request_id='seed', operations=[
+        {'op': 'add_node', 'node': image}, {'op': 'add_node', 'node': old_director},
+    ])
+    adapter = _RecordingAdapter()
+    adapter.project_dir = state_dir
+    async def authorized(*_):
+        return None
+
+    service = _service(state_dir, adapter=adapter, authorize_submission=authorized,
+        require_workspace_scope=True, canvas_id=canvas_id)
+    contract = _contract(nodes=('image',), read_nodes=(),
+        operations=[{'node_id': 'image', 'operation': 'generate'}])
+    contract['canvas_id'] = canvas_id
+    target = next(node for node in canvas['nodes'] if node['id'] == 'image')
+
+    receipt = await service.execute_node(request_id='concept-image', node_id='image', operation='generate',
+        expected_revision=canvas['revision'], expected_input_fingerprint=input_fingerprint(target),
+        contract=contract, authorization_id='authorization-1',
+        accepted_transition=_transition('concept-image'))
+
+    assert receipt['status'] == 'running'
+    assert [node_id for node_id, _ in adapter.submitted] == ['image']
 
 
 @pytest.mark.asyncio

@@ -47,6 +47,8 @@
 
 ## 任务 1：锁定基线与运行适配边界
 
+执行记录：后端基线 50 passed；ScriptSetter 基线 6 passed。节点类型需登记到前端水合白名单；后端画布保存接受通用 JSON。保存屏障为 `flushFreezoneCanvasRuntime(project, canvas)`，仅返回 true 表示成功。节点运行使用独立 adoption，不调用 main.select；会话解析需独立于侧栏。
+
 - [ ] 运行基线并记录结果：
 
 ```bash
@@ -62,6 +64,8 @@ pnpm --dir frontend test src/features/script-creation/script-setter.test.tsx
 - [ ] 明确立意调用采用已有 `proposal.create`：`text` 存 JSON 文档，`title` 为候选集标题。结构化校验在服务端完成；不得仅靠提示词或浏览器 JSON.parse 声称结果有效。
 
 ## 任务 2：内置立意角色与结构化结果
+
+执行记录：已完成，提交 `dcbb6af`、`6f4e61d`；62 项相关测试通过，修订后的内置角色测试 9 项通过。规格与代码质量审查通过；合计长度的额外回归用例纳入任务 3。
 
 - [ ] 在 `test_ideation.py` 添加纯函数测试，先运行确认导入或断言失败：
 
@@ -88,6 +92,8 @@ def test_three_distinct_candidates():
 
 ## 任务 3：候选查询、编辑与采纳
 
+执行记录：已完成，提交 `0533377`、`189f0e3`；76 项相关测试通过，规格与代码质量审查通过。服务独立于校验器位于 `ideation_service.py`，路由沿用 `creation_library.py`。对外 origin 与 object_ref 统一为 `{object_id, revision}`，编辑正文放在 candidate 对象中。当前采纳可由显式新操作更新，旧回执固定原版本；proof 包含当前采纳和当前引用证据。读预览保留历史来源，所有写入口拒绝 agent_session。
+
 - [ ] 在 `test_ideation.py` 增加集成用例：重复请求返回相同回执；同 ID 不同载荷冲突；跨画布提案拒绝；旧 expected_revision 拒绝；修改后采纳使用新版本；采纳一轮不改写其他轮次。
 - [ ] 在 `ideation.py` 增加服务适配。候选集从现有提案对象版本读取；采纳记录包括候选集对象 ID／版本、候选 ID、来源 run ID、节点 ID、项目与画布、actor 和输入快照签名。编辑使用已有对象版本操作建立新版本，不原地覆盖正文。
 - [ ] 采纳事务验证调用者权限、对象归属、节点仍存在、当前版本和预览证明；记录选中版本。请求幂等键走既有 operation receipt，不另建内存幂等字典。下游只读取已采纳版本；未采纳或过期输入返回明确提示。
@@ -109,6 +115,8 @@ preview 带相同业务字段及 action=edit|adopt，返回 proof 和变更摘�
 - [ ] 运行 `uv run pytest tests/creation/test_ideation.py tests/creation/test_agent_tools_api.py -q`，通过后提交：`feat(ideation): persist candidate edits and adoption`。
 
 ## 任务 4：Agent 节点与添加入口
+
+执行记录：节点与原设定器适配已提交 `bcbcb9b`，保存失败同内容重试修复 `aa70b51`。真实画布验证了三角色入口、立意添加、悬疑推理与喜剧融合、故事种子保存及刷新保留。规格复审通过，质量审查正在修复异步保存乱序确认；16 项前端相关测试通过。API 客户端两处 searchParams 类型问题纳入任务 6。
 
 - [ ] 在节点集成测试中验证：新增入口展示立意、通用主创、文本编剧；选择立意创建一枚节点，角色与设置刷新后保持；添加失败显示错误，不创建虚假可运行节点。
 - [ ] 在节点数据联合加入 `agentNode`，数据包含 displayName、Agent 来源引用、settings（立意时）、运行引用和已采纳对象引用。settings 使用 `defaultSettings()` 创建独立实例，不共享可变默认对象；候选正文不存第二份。
@@ -138,6 +146,8 @@ preview 带相同业务字段及 action=edit|adopt，返回 proof 和变更摘�
 
 ## 任务 6：运行、恢复与结果承接
 
+集成补充：既有 object 输入仅解析 Ontology 对象，不能直接引用 story_fragment。增加 `ideation_selection` 输入引用，字段为 request_id、canvas_id、conversation_id、node_id、object_id、revision、candidate_id，固定到一次已应用采纳回执。底层只读 resolver 在调用方 SQLite 连接内校验 actor/project/domain/action 和固定对象版本，仅返回选定候选；由 agent_context 使用，避免导入 IdeationService 形成循环。新节点运行状态字段须登记至 orchestration.models.RESULT_FIELDS，防止写入 runRefs 等状态使自身委托的输入指纹失效；用户设定仍作为输入证据。下游只在显式引用时解析已采纳版本，不自动执行。
+
 - [ ] 添加集成测试：保存未完成不启动、重复点击只提交一次、运行时修改设置不被旧结果覆盖、切换画布后迟到结果不落到新画布、刷新查询已有运行、提交状态不明先查回执。
 - [ ] `useIdeationRun` 调用现有运行操作。先等待画布保存成功，再捕获 settings 与显式引用；delegation 的目标限定当前节点，goal 包含设定 JSON 和候选输出契约。不要复用会修改主 Agent 绑定的 UI 初始化步骤。
 - [ ] 运行前持久化意图；沿用 requestStep、运行查询和回执恢复。停止使用现有 stop 操作。状态 UI 区分运行中、停止请求、失败、结果不完整、完成；失败重试建立新运行，原结果保留。
@@ -146,6 +156,8 @@ preview 带相同业务字段及 action=edit|adopt，返回 proof 和变更摘�
 - [ ] 运行前端节点集成测试和后端 `test_ideation.py`、`test_agent_runs.py`、`test_agent_tools.py`，通过后提交：`feat(ideation): connect runs and versioned candidate selection`。
 
 ## 任务 7：视觉与真实闭环验收
+
+阶段验证：2026-10-16 后端候选校验、service、API、Agent runs 与 tools 合计 111 passed（10 条既有弃用警告）。验收项目 `ideation_agent_qa_20261016`、画布 `788c5de6b71340b7a9cd005d1094704f`；当前仅完成设置交互实测，尚未将任何模拟结果标为真实生成。
 
 - [ ] 运行 `pnpm --dir frontend build`。若出现无关基线错误，记录具体文件及错误，不静默跳过本次文件的类型检查。
 - [ ] 在实际画布验证：添加立意 → 主题材与融合题材 → 展开原设定器 → 预设／自定义／六项设置 → 保存 → 生成三候选 → 修改一项 → 采纳 → 文本编剧引用该版本。

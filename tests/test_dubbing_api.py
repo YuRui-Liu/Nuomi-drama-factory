@@ -107,6 +107,152 @@ def seed_take(tmp_path: Path, line: DialogueSnapshot) -> tuple[DubbingStore, Dub
     return store, take
 
 
+def _seed_preparation(tmp_path: Path, line: DialogueSnapshot):
+    preparation = DubbingPreparation(
+        preparation_id="prep-generate",
+        episode=1,
+        group_id="group-1",
+        script_revision="script-r1",
+        source_revision="video-r1:source",
+        expected_revision=0,
+        source_snapshot_hash=make_source_snapshot_hash(
+            script_revision="script-r1",
+            source_revision="video-r1:source",
+            dialogues=[line],
+        ),
+        dialogue_ids=(line.dialogue_id,),
+        source_dialogue_ids=(line.dialogue_id,),
+        dialogues=(line,),
+        source_dialogues=(line,),
+    )
+    store = DubbingStore(tmp_path / "data.db", tmp_path)
+    store.save_preparation(preparation)
+    return store, preparation
+
+
+def test_new_group_dubbing_submission_is_gated_before_enqueue(monkeypatch, tmp_path):
+    from novelvideo.freezone.orchestration.models import OrchestrationError
+
+    client, _sqlite, line = make_client(monkeypatch, tmp_path)
+    _store, preparation = _seed_preparation(tmp_path, line)
+
+    def blocked(_state_root, _output_root, episode, stage, **_kwargs):
+        assert episode == 1 and stage == "audio"
+        raise OrchestrationError(
+            "production_stage_blocked", "screenplay required",
+            stage="audio", required_stage="screenplay", status="pending",
+            reason="not_ready",
+        )
+
+    monkeypatch.setattr(dubbing, "admit_registered_episode_stage", blocked)
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/group-1/dubbing/generate",
+        json={"preparation_id": preparation.preparation_id, "expected_revision": 0,
+              "request_id": "dubbing-request-1"},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["required_stage"] == "screenplay"
+
+
+def test_exact_group_dubbing_replay_skips_new_submission_gate(monkeypatch, tmp_path):
+    client, _sqlite, line = make_client(monkeypatch, tmp_path)
+    store, preparation = _seed_preparation(tmp_path, line)
+    store.create_task(
+        episode=1, group_id="group-1", preparation_id=preparation.preparation_id,
+        request_id="dubbing-request-1", payload_hash="a" * 64,
+        dialogue_ids=(line.dialogue_id,),
+    )
+
+    def should_not_gate(*_args, **_kwargs):
+        raise AssertionError("an exact durable request replay must not be gated")
+
+    async def replay(**_kwargs):
+        return {"task_id": "existing", "status": "queued"}
+
+    monkeypatch.setattr(dubbing, "admit_registered_episode_stage", should_not_gate)
+    monkeypatch.setattr(dubbing, "enqueue_group_dubbing", replay)
+    monkeypatch.setattr(dubbing, "get_task_backend", lambda: SimpleNamespace())
+    monkeypatch.setattr(dubbing, "get_task_manager", lambda: SimpleNamespace())
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/group-1/dubbing/generate",
+        json={"preparation_id": preparation.preparation_id, "expected_revision": 0,
+              "request_id": "dubbing-request-1"},
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["data"]["task_id"] == "existing"
+
+
+def test_new_group_dubbing_retry_is_gated_before_enqueue(monkeypatch, tmp_path):
+    from novelvideo.freezone.orchestration.models import OrchestrationError
+
+    client, _sqlite, line = make_client(monkeypatch, tmp_path)
+    store, preparation = _seed_preparation(tmp_path, line)
+    failed, _created = store.create_task(
+        episode=1, group_id="group-1", preparation_id=preparation.preparation_id,
+        request_id="initial-request", payload_hash="b" * 64,
+        dialogue_ids=(line.dialogue_id,),
+    )
+    store.update_task(
+        failed.task_id, status="failed", failed_dialogue_ids=(line.dialogue_id,),
+    )
+
+    def blocked(_state_root, _output_root, episode, stage, **_kwargs):
+        assert episode == 1 and stage == "audio"
+        raise OrchestrationError(
+            "production_stage_blocked", "screenplay required",
+            stage="audio", required_stage="screenplay", status="pending",
+            reason="not_ready",
+        )
+
+    async def should_not_retry(**_kwargs):
+        raise AssertionError("retry must be admitted before re-enqueue")
+
+    monkeypatch.setattr(dubbing, "admit_registered_episode_stage", blocked)
+    monkeypatch.setattr(dubbing, "retry_group_dubbing", should_not_retry)
+    monkeypatch.setattr(dubbing, "get_task_backend", lambda: SimpleNamespace())
+    monkeypatch.setattr(dubbing, "get_task_manager", lambda: SimpleNamespace())
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/group-1/dubbing/retry",
+        json={"task_id": failed.task_id, "failed_dialogue_ids": [line.dialogue_id],
+              "request_id": "retry-request"},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["required_stage"] == "screenplay"
+
+
+def test_exact_group_dubbing_retry_replay_skips_new_submission_gate(monkeypatch, tmp_path):
+    client, _sqlite, line = make_client(monkeypatch, tmp_path)
+    store, preparation = _seed_preparation(tmp_path, line)
+    retry, _created = store.create_task(
+        episode=1, group_id="group-1", preparation_id=preparation.preparation_id,
+        request_id="retry-request", payload_hash="c" * 64,
+        dialogue_ids=(line.dialogue_id,),
+    )
+    store.update_task(retry.task_id, status="queued", backend_task_id="existing")
+
+    def should_not_gate(*_args, **_kwargs):
+        raise AssertionError("an exact durable retry replay must not be gated")
+
+    async def replay(**_kwargs):
+        return {"dubbing_task_id": retry.task_id, "task_id": "existing", "status": "queued"}
+
+    monkeypatch.setattr(dubbing, "admit_registered_episode_stage", should_not_gate)
+    monkeypatch.setattr(dubbing, "retry_group_dubbing", replay)
+    monkeypatch.setattr(dubbing, "get_task_backend", lambda: SimpleNamespace())
+    monkeypatch.setattr(dubbing, "get_task_manager", lambda: SimpleNamespace())
+    response = client.post(
+        "/api/v1/projects/demo/episodes/1/narrative-groups/group-1/dubbing/retry",
+        json={"task_id": "failed-prior", "failed_dialogue_ids": [line.dialogue_id],
+              "request_id": "retry-request"},
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["data"]["task_id"] == "existing"
+
+
 def test_get_dubbing_exposes_group_adoption_and_protected_take_url(monkeypatch, tmp_path):
     client, _sqlite, line = make_client(monkeypatch, tmp_path)
     store, take = seed_take(tmp_path, line)

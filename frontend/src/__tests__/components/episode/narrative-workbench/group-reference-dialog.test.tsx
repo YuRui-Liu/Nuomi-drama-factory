@@ -24,6 +24,44 @@ function renderDialog(overrides: Partial<React.ComponentProps<typeof GroupRefere
 }
 
 describe("GroupReferenceDialog planned references", () => {
+  it("offers a configure-only save mode that returns durable binding IDs without the generation controls", () => {
+    const { onSubmit } = renderDialog({
+      mode: "configure",
+      initialSelectedBindingIds: ["identity:hero:young"],
+      savedReferenceRevision: "director-plan-r7",
+      onResolvePlanning: undefined,
+    });
+
+    expect(screen.getByRole("heading", { name: "组分镜引用配置" })).toBeInTheDocument();
+    expect(screen.getByText(/不会提交分镜生成/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("本次真实模型")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("使用项目风格")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("上传临时参考图")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /石九 \/ 青年时期/ })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "保存 1 张引用到节点" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      selectedBindingIds: ["identity:hero:young"],
+      uploadIds: [],
+      referenceRevision: "director-plan-r7",
+    }));
+  });
+
+  it("warns when a saved storyboard reference revision is stale and rebinds the current revision on save", () => {
+    const { onSubmit } = renderDialog({
+      mode: "configure",
+      initialSelectedBindingIds: ["identity:hero:young"],
+      savedReferenceRevision: "director-plan-r6",
+      onResolvePlanning: undefined,
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("引用版本已变化");
+    fireEvent.click(screen.getByRole("button", { name: "保存 2 张引用到节点" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      selectedBindingIds: ["identity:hero:young", "scene:hall:rain"],
+      referenceRevision: "director-plan-r7",
+    }));
+  });
+
   it("offers binding refresh and displays a failed refresh without submitting generation", async () => {
     const onRefreshBindings = vi.fn().mockRejectedValue(new Error("导演版本已更新，请重新打开"));
     const { onSubmit } = renderDialog({ onRefreshBindings });

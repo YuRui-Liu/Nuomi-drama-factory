@@ -35,6 +35,11 @@ describe("snapToAllowedAspectRatio (image set)", () => {
     expect(snapToAllowedAspectRatio("21:9", IMG, "1:1")).toBe("21:9");
   });
 
+  it("keeps the backend-supported 2:1 image ratio when submitting", () => {
+    expect(IMG).toContain("2:1");
+    expect(snapToAllowedAspectRatio("2:1", IMG, "1:1")).toBe("2:1");
+  });
+
   it("resolves 'auto' / non-ratio input to the fallback", () => {
     expect(snapToAllowedAspectRatio("auto", IMG, "1:1")).toBe("1:1");
     expect(snapToAllowedAspectRatio("", IMG, "1:1")).toBe("1:1");

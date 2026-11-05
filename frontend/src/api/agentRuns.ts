@@ -35,7 +35,12 @@ export interface Delegation {
     goal: string;
     parent_id?: string | null;
     expanded_scope: { nodes: { node_id: string; title?: string }[] };
-    agent: { effective: AgentConfiguration };
+    agent: {
+      effective: AgentConfiguration;
+      fixed?: { source?: { kind?: string; ref?: { id: string; revision: number } } };
+      source?: { kind?: string; ref?: { id: string; revision: number } };
+      [key: string]: unknown;
+    };
     [key: string]: unknown;
   };
 }
@@ -63,8 +68,13 @@ export interface AgentRun {
     after_fingerprint?: string;
     node_run_id?: string;
     status?: string;
+    state?: string;
     revision?: number;
     after_revision?: number;
+    canvas_revision?: number;
+    graph_operation_id?: string;
+    image_node_id?: string;
+    text_node_id?: string;
     member?: { adoption_id: string; revision: number; origin: 'main' | 'adoption' };
     delegation_origin?: { parent_id?: string | null; root_delegation_id?: string };
     projection?: {
@@ -75,7 +85,8 @@ export interface AgentRun {
       fields?: Record<string, unknown>;
     };
     artifacts?: { id?: string; title?: string; url?: string; [key: string]: unknown }[];
-    object?: { payload: { title?: string; text?: string } };
+    object_ref?: { id: string; revision: number };
+    object?: { payload: { title?: string; text?: string; [key: string]: unknown } };
     plan?: {
       title: string;
       intent: string;
@@ -126,6 +137,7 @@ export interface RunStep {
   request: Record<string, unknown> & { request_id: string };
   delegationId?: string;
   runId?: string;
+  meta?: { inputSignature?: string; agentId?: string; agentRevision?: number };
   result?: Record<string, unknown>;
 }
 const root = (p: string) => `projects/${encodeURIComponent(p)}/creation`;
@@ -139,6 +151,8 @@ export const getRuntime = (p: string) =>
   apiCall<RuntimeStatus>(`${root(p)}/agent-runtime`);
 export const listBuiltinAgents = (p: string) =>
   apiCall<BuiltinAgent[]>(`${root(p)}/reusable/agent/builtins`);
+export const getBuiltinAgentRevision = (p: string, id: string, revision: number) =>
+  apiCall<BuiltinAgent>(`${root(p)}/reusable/agent/builtins/${encodeURIComponent(id)}/revisions/${revision}`);
 export const getNodeCapabilities = (p: string) =>
   apiCall<OrchestrationCapabilities>(
     `projects/${encodeURIComponent(p)}/freezone/orchestration/capabilities`,
@@ -157,6 +171,10 @@ export const listRuns = (o: RunOwner, id: string) =>
     `${root(o.project)}/delegations/${encodeURIComponent(id)}/runs`,
     { searchParams: query(o) },
   );
+export const getRun = (o: RunOwner, id: string) =>
+  apiCall<AgentRun>(`${root(o.project)}/agent-runs/${encodeURIComponent(id)}`, {
+    searchParams: query(o),
+  });
 export function requestStep(
   o: RunOwner,
   s: RunStep,

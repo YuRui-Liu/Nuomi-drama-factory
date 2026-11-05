@@ -64,6 +64,7 @@ import {
   readSelectionDelegationDraft,
   writeSelectionDelegationDraft,
 } from '@/features/agent-runtime/selectionDelegation';
+import { runtimeReadiness } from '@/features/agent-runtime/agentReadiness';
 import { useAiAvatarUrl } from "@/features/superchat/ai-avatar";
 import { buildChatTaskLabel } from "@/features/superchat/task-notification-label";
 import { ComposerWaitingStatus } from "@/features/superchat/composer-waiting-status";
@@ -2590,6 +2591,7 @@ function ConversationPanel({
   });
   const isChatInitializing = !chat.historyReady && chat.messages.length === 0 && (chat.connecting || chat.connected);
   const agentRuntime = suppliedRuntime!;
+  const readiness = managedWorkspace ? runtimeReadiness(agentRuntime) : null;
   const managedRecipient = managedWorkspace
     ? agentRuntime.delegateAgentId === 'main'
       ? agentRuntime.main?.current_agent?.effective.name || '项目主创'
@@ -2600,7 +2602,7 @@ function ConversationPanel({
   const composerBusy = managedWorkspace ? agentRuntime.busy : chat.busy;
 
   const hasSendableContent = draft.trim().length > 0 || attachments.length > 0;
-  const canSend = hasSendableContent && (managedWorkspace ? agentRuntime.canSend : chat.connected && !preparingSend);
+  const canSend = hasSendableContent && (managedWorkspace ? agentRuntime.canSend && readiness === 'ready' : chat.connected && !preparingSend);
   const composerWaiting = managedWorkspace ? agentRuntime.working : chat.busy && (!hasSendableContent || !chat.connected || preparingSend);
   const composerBeamActive =
     composerInputFocused
@@ -3076,6 +3078,7 @@ function ConversationPanel({
 
   const submit = () => {
     if (managedWorkspace) {
+      if (!canSend) return;
       const original = draft;
       void agentRuntime.send(original, attachments.length > 0).then(sent => {
         if (sent) setDraft(current => current === original ? '' : current);
@@ -3287,20 +3290,20 @@ function ConversationPanel({
           <div className="flex min-h-9 shrink-0 items-center gap-2 border-b border-white/[0.06] bg-black/[0.16] px-3 py-1 backdrop-blur-xl">
             <div className="flex min-w-0 flex-1 items-center gap-3">
               <div className="truncate text-sm font-medium text-foreground">
-                {t("freezone.chat.title")}
+                {managedWorkspace ? '创作助手' : t("freezone.chat.title")}
               </div>
               <div className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground">
                 <span
                   className={cn(
                     "size-1.5 rounded-full",
                     managedWorkspace
-                      ? agentRuntime.runtime?.available ? "bg-emerald-400" : "bg-amber-300"
+                      ? readiness === 'ready' ? "bg-emerald-400" : "bg-amber-300"
                       : chat.connected ? "bg-emerald-400" : chat.connecting ? "bg-amber-300" : "bg-muted-foreground",
                   )}
                   aria-hidden="true"
                 />
                 <span className="truncate">
-                  {managedWorkspace ? (agentRuntime.runtime?.available ? '受限主创已就绪' : '文本模型待配置') : chat.connected
+                  {managedWorkspace ? agentRuntime.main?.current_agent?.effective.name || '尚未选择' : chat.connected
                     ? t("aiAssistant.connected")
                     : chat.connecting || chat.busy
                       ? t("aiAssistant.reconnecting")
@@ -3380,10 +3383,10 @@ function ConversationPanel({
               </div>
             ) : chat.messages.length === 0 && !chat.streamText && !showWaitingIndicator ? (
               <div className={cn("mx-auto flex h-full w-full max-w-[760px] items-center justify-center text-center", isFreezoneLayout && "max-w-none")}>
-                <div className="max-w-64 text-sm text-muted-foreground">
-                  <div className="mb-2 font-medium text-foreground">{t("aiAssistant.emptyTitle")}</div>
-                  <div className="text-xs leading-5">{t("aiAssistant.emptyDescription")}</div>
-                </div>
+                {(!managedWorkspace || agentRuntime.main?.current_agent) && <div className="max-w-64 text-sm text-muted-foreground">
+                  <div className="mb-2 font-medium text-foreground">{managedWorkspace ? '从一个创作想法开始' : t("aiAssistant.emptyTitle")}</div>
+                  <div className="text-xs leading-5">{managedWorkspace ? '选中画布节点作为参考，告诉助手你想创作或调整什么。' : t("aiAssistant.emptyDescription")}</div>
+                </div>}
               </div>
             ) : (
               <div ref={messageListRef} className={cn("mx-auto w-full max-w-[760px] space-y-5", isFreezoneLayout && "max-w-none space-y-4")}>
@@ -3449,7 +3452,7 @@ function ConversationPanel({
         </div>
 
         <div className={cn("sticky bottom-0 z-40 shrink-0 bg-transparent p-3", isFreezoneLayout && "px-4 pb-4 pt-1")}>
-          <div className={cn("relative mx-auto mb-2.5 h-7 w-full max-w-[760px]", isFreezoneLayout && "max-w-none")}>
+          <div className={cn("relative mx-auto mb-2.5 h-7 w-full max-w-[760px]", isFreezoneLayout && "max-w-none", managedWorkspace && !showWaitingIndicator && "hidden")}>
             <ComposerWaitingStatus
               label={t("aiAssistant.waitingResponse")}
               visible={showWaitingIndicator}
@@ -3608,6 +3611,7 @@ function ConversationPanel({
             />
             <div className="flex items-center justify-between px-3 py-2">
               <div className="flex items-center gap-1">
+                {managedWorkspace && <span className="text-[11px] text-muted-foreground">{agentRuntime.nodes.length ? `${agentRuntime.nodes.length} 个参考节点` : agentRuntime.canvasScope ? '当前画布' : '添加节点作为参考'}</span>}
                 {ENABLE_SUPERCHAT_FILE_UPLOAD && (
                   <Button
                     variant="ghost"
@@ -3644,7 +3648,8 @@ function ConversationPanel({
                   type="button"
                   size="icon"
                   className={cn(
-                    "size-8 rounded-full shadow-none disabled:bg-white/30 disabled:text-black/45",
+                    "size-8 rounded-full shadow-none disabled:bg-white/10 disabled:text-white/30",
+                    managedWorkspace && !composerBusy && "!rounded-lg !bg-accent !text-accent-foreground disabled:!bg-white/10 disabled:!text-white/30",
                     composerBusy
                       ? "bg-white/10 text-white hover:bg-white/15"
                       : "bg-white text-black hover:bg-white/90",

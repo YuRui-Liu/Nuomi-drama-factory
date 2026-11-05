@@ -142,7 +142,7 @@ class DirectorAttemptStore:
                 cache["frozen_techniques"] = previous["frozen_techniques"]
             # The child has a new paid-task identity, but can reuse the exact
             # immutable optimization until its writing rules/profile change.
-            cache.update({key: previous[key] for key in ("optimized", "rules_hash", "techniques_hash")
+            cache.update({key: previous[key] for key in ("optimized", "rules_hash", "techniques_hash", "prepared_by_client")
                           if key in previous})
             db.execute("""INSERT INTO attempts
                 (id,project_id,canvas_id,node_id,request_id,parent_attempt_id,snapshot,stage,detail,created_at,updated_at)

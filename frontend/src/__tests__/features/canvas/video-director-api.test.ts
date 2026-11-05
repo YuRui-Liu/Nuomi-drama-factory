@@ -35,6 +35,18 @@ describe('video director API', () => {
     expect(result.canvas).toEqual(canvas);
     expect(result.draft.segments[0].durationSeconds).toBe(5);
   });
+  it('sends an explicit source-ordered shot selection for a lightweight batch', async () => {
+    let body: unknown;
+    server.use(http.post(`${base}/prepare-storyboard`, async ({ request }) => {
+      body = await request.json();
+      return HttpResponse.json({ ok: true, data: { canvas: { nodes: [], edges: [], revision: 8 },
+        draft: rawAttempt.snapshot, preparation: { sourceNodeId: 'board' } } });
+    }));
+    await prepareDirectorStoryboard('demo', { canvas_id: 'canvas', node_id: 'node', request_id: 'req', base_revision: 7,
+      shot_ids: ['shot-2', 'shot-3'] });
+    expect(body).toMatchObject({ shot_ids: ['shot-2', 'shot-3'] });
+    expect(body).not.toHaveProperty('shots');
+  });
   it('reads the technique catalog and preserves selection and frozen history', async () => {
     server.use(http.get(`${base}/techniques`, () => HttpResponse.json({ ok: true, data: {
       catalog_version: 'v1', techniques: [{ id: 'slow-push-in', version: '1.0.0', title: '缓慢推近',
@@ -56,12 +68,15 @@ describe('video director API', () => {
       http.get(`${base}/capabilities`, () => HttpResponse.json({ ok: true, data: {
         models: [{ id: 'minimax-h3', label: 'MiniMax H3', adapter: 'h3', reference_adapter: 'h3_ref' }],
         reference_limit: 5, effective_reference_limit: 5, configured_reference_limit: 5,
-        fps: 24, frame_step: 17, frame_offset: 5, params: { resolution: ['720p'], aspect_ratio: ['9:16'] }, sizes: [], modes: [] } })),
+        fps: 24, frame_step: 17, frame_offset: 5, max_submission_duration_seconds: 15, max_submission_frames: 360,
+        params: { resolution: ['720p'], aspect_ratio: ['9:16'] }, sizes: [], modes: [] } })),
       http.post(`${base}/attempts`, async ({ request: req }) => { request = await req.json(); return HttpResponse.json({ ok: true, data: { attempt_id: 'a1', task_id: 't1', attempt: rawAttempt } }, { status: 202 }); }),
     );
     const caps = await getDirectorCapabilities('demo');
     expect(caps.models[0].referenceAdapter).toBe('h3_ref');
     expect(caps.frameStep).toBe(17);
+    expect(caps.maxSubmissionDurationSeconds).toBe(15);
+    expect(caps.maxSubmissionFrames).toBe(360);
     const draft = createDirectorDraft('s1');
     draft.revision = 3;
     draft.references = [{ imageId: 'ref', url: '/ref.png' }];

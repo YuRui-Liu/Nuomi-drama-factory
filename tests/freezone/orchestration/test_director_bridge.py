@@ -25,8 +25,70 @@ def test_shared_director_plan_projects_to_five_shots_without_losing_decisions():
     board = next(n['data'] for n in plan['nodes'] if n['id'] == 'board-g1')
     assert [s['id'] for s in board['frames']] == [f's{i}' for i in range(5)]
     assert board['directorPlan']['objective'] == '确认门被锁住'
+    assert board['directorPlan']['scene_anchor'] == 'room'
+    assert board['directorPlan']['shots'][0]['visible_start_state'] == 'door closed'
+    assert board['directorPlan']['shots'][-1]['visible_end_state'] == 'door closed'
     assert board['directorPlan']['shots'][0]['creative']['handoff']['cut_trigger'] == 'wind dies'
     assert 'door closed' in board['frames'][0]['description']
+
+
+def test_projected_director_state_reaches_prepared_video_draft(tmp_path):
+    from types import SimpleNamespace
+    from PIL import Image
+    from novelvideo.freezone.canvas_store import atomic_write_json
+    from novelvideo.freezone.paths import canvas_path
+    from novelvideo.freezone.orchestration.director_bridge import project_draft
+    from novelvideo.freezone.orchestration.planning import compile_plan
+    from novelvideo.freezone.video_director.storyboard_preparation import prepare_storyboard
+
+    source = draft().groups[0]
+    first_shot = source.shots[0].model_copy(update={
+        'source_span_ids': ('line-1', 'line-2'),
+        'visible_end_state': 'The rescuer holds the animal by the doorway',
+    })
+    opening_shot = source.shots[1].model_copy(update={
+        'source_span_ids': ('line-3', 'line-4'),
+        'visible_start_state': 'The rescuer begins by the doorway holding the animal',
+    })
+    first_group = source.model_copy(update={
+        'id': 'group-6', 'ordinal': 1, 'source_span_ids': ('line-1', 'line-2'),
+        'objective': 'Notice the animal is fading', 'relation_to_previous': 'single',
+        'shots': (first_shot,),
+    })
+    opening_group = source.model_copy(update={
+        'id': 'group-7', 'ordinal': 2, 'source_span_ids': ('line-3', 'line-4'),
+        'objective': 'Carry the animal toward help', 'relation_to_previous': 'causal',
+        'shots': (opening_shot,),
+    })
+    script = '第一场 房间 夜\n发现白尾变淡\n准备带兽离开\n【本集完】'
+    blueprint = project_draft(script, DirectorPlanDraft(groups=(first_group, opening_group)))
+    canvas = compile_plan(script, blueprint, duration=8, aspect_ratio='16:9')
+    canvas['revision'] = 1
+    Image.new('RGB', (160, 90), 'blue').save(tmp_path / 'board.png')
+    for node in canvas['nodes']:
+        if node['type'] == 'storyboardGenNode':
+            node['data']['imageUrl'] = 'board.png'
+    atomic_write_json(canvas_path(tmp_path, 'canvas'), canvas)
+    ctx = SimpleNamespace(
+        output_dir=tmp_path, state_dir=tmp_path, project_id='p',
+        owner_username='u', project_name='p',
+    )
+
+    result = prepare_storyboard(
+        ctx, canvas_id='canvas', node_id='video-group-7', base_revision=1,
+        request_id='director-source-handoff',
+    )
+
+    continuity = result['draft']['continuity_context']
+    board_by_group = {
+        node['data']['group_id']: node['data'] for node in canvas['nodes']
+        if node['type'] == 'storyboardGenNode'
+    }
+    assert continuity['director_intent'] == board_by_group['group-7']['directorPlan']['objective']
+    assert continuity['current_start_state'] == board_by_group['group-7']['directorPlan']['shots'][0]['visible_start_state']
+    assert continuity['previous_end_state'] == board_by_group['group-6']['directorPlan']['shots'][-1]['visible_end_state']
+    assert continuity['shared_space'] == board_by_group['group-7']['directorPlan']['scene_anchor']
+    assert continuity['scene_id'] == board_by_group['group-7']['scene_id']
 
 
 def test_explicit_static_decision_survives_director_and_canvas_projection():

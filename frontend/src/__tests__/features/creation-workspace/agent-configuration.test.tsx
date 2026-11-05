@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import * as api from '@/api/reusableAgents';
+import * as runApi from '@/api/agentRuns';
 import { AgentConfigurationPanel } from '@/features/agent-configuration/AgentConfigurationPanel';
 import {
   createAgentOperation,
@@ -34,6 +35,9 @@ vi.mock('@/api/reusableAgents', () => ({
   getAgentReceipt: vi.fn(),
   listAgentStudioResources: vi.fn(async () => []),
 }));
+vi.mock('@/api/agentRuns', () => ({
+  listBuiltinAgents: vi.fn(),
+}));
 vi.mock('@/api/directions', () => ({ listDirectionCatalog: vi.fn(async () => []) }));
 vi.mock('@/features/studios/studio-api', () => ({
   listStudioDocuments: vi.fn(async () => []),
@@ -59,12 +63,16 @@ const adoption = {
   effective: config,
   source: { user_id: 'alice', ref: { id: 'personal', revision: 1 } },
 };
-function show(isCurrent = () => true) {
+function show(isCurrent = () => true, initialUpgradeAdoptionId?: string) {
   return render(
     <QueryClientProvider
       client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
     >
-      <AgentConfigurationPanel owner={owner} isCurrent={isCurrent} />
+      <AgentConfigurationPanel
+        owner={owner}
+        isCurrent={isCurrent}
+        initialUpgradeAdoptionId={initialUpgradeAdoptionId}
+      />
     </QueryClientProvider>,
   );
 }
@@ -79,6 +87,130 @@ it('labels builtin adoptions and never offers a same-ID personal upgrade', async
   expect(screen.getByText('使用固定内置版本，无局部覆盖')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: '比较个人新版 v2' })).not.toBeInTheDocument();
 });
+
+it('previews and explicitly upgrades a pinned builtin to its newer exact source revision', async () => {
+  const oldConfiguration = {
+    ...config,
+    name: '主笔',
+    capabilities: ['context.read', 'proposal.create'],
+  };
+  const newConfiguration = {
+    ...oldConfiguration,
+    capabilities: [...oldConfiguration.capabilities, 'script.document.draft'],
+  };
+  const builtinAdoption = {
+    ...adoption,
+    fixed: {
+      ...fixed,
+      id: 'builtin:text-writer',
+      revision: 3,
+      configuration: oldConfiguration,
+    },
+    effective: oldConfiguration,
+    source: {
+      kind: 'builtin' as const,
+      ref: { id: 'builtin:text-writer', revision: 3 },
+      content_hash: 'pinned-without-script-capability',
+    },
+  };
+  vi.mocked(api.listAgentAdoptions).mockResolvedValue([builtinAdoption] as never);
+  vi.mocked(runApi.listBuiltinAgents).mockResolvedValue([{
+    configuration: newConfiguration,
+    proof: 'latest-proof',
+    source: {
+      kind: 'builtin',
+      ref: { id: 'builtin:text-writer', revision: 4 },
+      content_hash: 'latest-hash',
+    },
+  }] as never);
+  vi.mocked(api.previewAgentUpgrade).mockResolvedValue({
+    adoption_id: builtinAdoption.adoption_id,
+    expected_revision: 1,
+    before: oldConfiguration,
+    after: newConfiguration,
+    overrides: {},
+    conflicts: [],
+    dependencies_before: {},
+    dependencies_after: {},
+    ref: { id: 'builtin:text-writer', revision: 4 },
+    proof: 'upgrade-proof',
+  } as never);
+  vi.mocked(api.postAgentOperation).mockResolvedValue({
+    status: 'applied',
+    operation_id: 'upgrade-operation',
+    request_id: 'upgrade-request',
+    adoption_id: builtinAdoption.adoption_id,
+    revision: 2,
+    effective: newConfiguration,
+  } as never);
+
+  show();
+  fireEvent.click(await screen.findByRole('button', { name: '比较内置新版 v4' }));
+  await waitFor(() => expect(api.previewAgentUpgrade).toHaveBeenCalledWith(
+    'p',
+    builtinAdoption.adoption_id,
+    { id: 'builtin:text-writer', revision: 4 },
+    'builtin',
+  ));
+  expect(await screen.findByRole('region', { name: '升级后生效预览' })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: '确认升级，保留未冲突覆盖' }));
+  await waitFor(() => expect(api.postAgentOperation).toHaveBeenCalledWith(
+    'p',
+    'project',
+    expect.objectContaining({
+      action: 'upgrade',
+      payload: expect.objectContaining({
+        source: 'builtin',
+        adoption_id: builtinAdoption.adoption_id,
+        expected_revision: 1,
+        ref: { id: 'builtin:text-writer', revision: 4 },
+        proof: 'upgrade-proof',
+        resolutions: {},
+      }),
+    }),
+  ));
+});
+
+it('opens directly into a fixed builtin upgrade comparison when launched from the crew entry', async () => {
+  const oldConfiguration = { ...config, name: '主笔 v3', capabilities: ['context.read', 'proposal.create'] };
+  const newConfiguration = { ...oldConfiguration, name: '主笔', capabilities: [...oldConfiguration.capabilities, 'script.document.draft'] };
+  const builtinAdoption = {
+    ...adoption,
+    adoption_id: 'writer-adoption',
+    fixed: { ...fixed, id: 'builtin:text-writer', revision: 3, configuration: oldConfiguration },
+    effective: oldConfiguration,
+    source: { kind: 'builtin' as const, ref: { id: 'builtin:text-writer', revision: 3 }, content_hash: 'pinned-v3' },
+  };
+  vi.mocked(api.listAgentAdoptions).mockResolvedValue([builtinAdoption] as never);
+  vi.mocked(runApi.listBuiltinAgents).mockResolvedValue([{
+    configuration: newConfiguration,
+    proof: 'latest-proof',
+    source: { kind: 'builtin', ref: { id: 'builtin:text-writer', revision: 4 }, content_hash: 'latest-v4' },
+  }] as never);
+  vi.mocked(api.previewAgentUpgrade).mockResolvedValue({
+    adoption_id: builtinAdoption.adoption_id,
+    expected_revision: 1,
+    before: oldConfiguration,
+    after: newConfiguration,
+    overrides: {},
+    conflicts: [],
+    dependencies_before: {},
+    dependencies_after: {},
+    ref: { id: 'builtin:text-writer', revision: 4 },
+    proof: 'upgrade-proof',
+  } as never);
+
+  show(() => true, builtinAdoption.adoption_id);
+
+  expect(await screen.findByRole('heading', { name: '显式升级到内置 v4' })).toBeInTheDocument();
+  expect(api.previewAgentUpgrade).toHaveBeenCalledWith(
+    'p',
+    builtinAdoption.adoption_id,
+    { id: 'builtin:text-writer', revision: 4 },
+    'builtin',
+  );
+});
 beforeEach(() => {
   const held = new Set<string>();
   Object.defineProperty(navigator, 'locks', {configurable:true,value:{request:async(name:string,_options:unknown,callback:(lock:unknown)=>unknown)=>{if(held.has(name))return callback(null);held.add(name);try{return await callback({name});}finally{held.delete(name);}}}});
@@ -87,6 +219,7 @@ beforeEach(() => {
   useAuthStore.setState({ username: 'alice' });
   vi.mocked(captureFreezoneCanvasRuntime).mockReturnValue({ isCurrent: () => true } as never);
   vi.mocked(api.listPersonalAgents).mockResolvedValue([fixed] as never);
+  vi.mocked(runApi.listBuiltinAgents).mockResolvedValue([] as never);
   vi.mocked(api.listAgentAdoptions).mockResolvedValue([adoption] as never);
   vi.mocked(api.getAgentCapabilities).mockResolvedValue({
     items: [{ id: 'proposal.create', title: '提出建议', runtime_permission: 'proposal_only' }],

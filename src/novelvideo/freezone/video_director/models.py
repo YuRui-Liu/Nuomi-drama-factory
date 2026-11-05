@@ -77,6 +77,22 @@ class DirectorSegment(_FrozenModel):
         return value
 
 
+class DirectorContinuityContext(_FrozenModel):
+    """Structured state that crosses a director batch boundary."""
+
+    director_intent: str = Field(min_length=1)
+    previous_end_state: str | None = None
+    current_start_state: str = Field(min_length=1)
+    shared_space: str = Field(min_length=1)
+    spatial_layout: str | None = None
+    scene_id: str | None = None
+    previous_group_id: str | None = None
+    current_group_id: str | None = None
+    relation_to_previous: Literal[
+        "single", "causal", "progressive", "contrast", "montage", "time_jump"
+    ] | None = None
+
+
 class DirectorDraft(_FrozenModel):
     schema_version: Literal[1] = 1
     revision: int = Field(ge=0)
@@ -85,6 +101,9 @@ class DirectorDraft(_FrozenModel):
     resolution: str
     references: tuple[DirectorImage, ...] = ()
     segments: tuple[DirectorSegment, ...] = ()
+    # Absent on legacy drafts; when present it participates in preview and
+    # prepared-input fingerprints and is sent only to the batch-opening shot.
+    continuity_context: DirectorContinuityContext | None = None
 
     @model_validator(mode="after")
     def unique_segment_ids(self) -> "DirectorDraft":
@@ -123,6 +142,9 @@ class OptimizedDirector(_FrozenModel):
     profile_version: int
     optimized_at: datetime
     segments: tuple[OptimizedSegment, ...]
+    # New Codex-prepared inputs bind their wire to the exact frozen draft.
+    # Optional for compatibility with older optimizer caches and attempt rows.
+    draft_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class DirectorAttempt(_FrozenModel):
@@ -140,5 +162,5 @@ class DirectorAttempt(_FrozenModel):
 
 
 __all__ = ["DirectorImage", "TechniqueSelection", "FrozenTechniqueProjection",
-           "FrozenTechnique", "DirectorSegment", "DirectorDraft", "DirectorAttempt",
+           "FrozenTechnique", "DirectorSegment", "DirectorContinuityContext", "DirectorDraft", "DirectorAttempt",
            "CanvasBaseWire", "CanvasReferenceWire", "OptimizedSegment", "OptimizedDirector"]

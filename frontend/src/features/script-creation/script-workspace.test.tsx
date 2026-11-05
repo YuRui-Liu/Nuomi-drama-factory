@@ -39,7 +39,24 @@ beforeEach(() => {
 });
 
 describe("ScriptWorkspace", () => {
+  it("opens the structured longform editor from the existing outline document", async () => {
+    const user = userEvent.setup();
+    const outline = doc("one", "outline", "# 故事大纲");
+    server.use(
+      http.get(base + "/documents", () => HttpResponse.json({ ok: true, data: [outline] })),
+      http.get(base + "/documents/one/outline", () => HttpResponse.json({ ok: true, data: { ...outline, revision: { ...outline.revision, outline_items: [] } } })),
+      http.get(base + "/continuity-context", () => HttpResponse.json({ ok: true, data: { episode_number: 1, facts: [] } })),
+      http.get(base + "/documents/one/continuity-facts", () => HttpResponse.json({ ok: true, data: [] })),
+    );
+    renderWorkspace();
+    await user.click(await screen.findByRole("button", { name: "故事大纲" }));
+    expect(await screen.findByRole("region", { name: "长篇故事大纲" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "结构化大纲" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("尚无层级条目。可添加全剧主线、故事弧和分集；不会从旧 Markdown 推断持久结构。")).toBeInTheDocument();
+  });
+
   it("persists the final generated draft over episode two and retains it after reopening", async () => {
+    const reactErrors = vi.spyOn(console, "error");
     let episode = doc("ep2", "episode_script", "# 第 2 集\n\n本集目标：", 2);
     const markdown = "# 第 2 集\n\n莉娅推开钟楼的门。";
     const run = { id: "run2", mode: "continue", status: "needs_review", episode_number: 2, steps: [{ key: "episode_script:2", kind: "episode_script", title: "第二集", episode_number: 2, status: "needs_review", output: null }] };
@@ -60,6 +77,9 @@ describe("ScriptWorkspace", () => {
     const view = renderWorkspace();
     await userEvent.click(await screen.findByRole("button", { name: "第 2 集" }));
     await userEvent.click(await screen.findByRole("button", { name: "采用最终草稿并覆盖本集正文" }));
+    await waitFor(() => expect(writes).toBe(1));
+    expect(episode.revision.markdown).toBe(markdown);
+    expect(reactErrors.mock.calls.filter(args => args.some(value => String(value).includes("same key")))).toEqual([]);
     expect(await screen.findByText("最终草稿已覆盖本集正文并保存。审查意见仍保留。")).toBeVisible();
     expect(writes).toBe(1);
     expect(episode.revision.markdown).toBe(markdown);
@@ -68,6 +88,7 @@ describe("ScriptWorkspace", () => {
     await userEvent.click(await screen.findByRole("button", { name: "第 2 集" }));
     await userEvent.click(screen.getByRole("button", { name: "编辑 Markdown" }));
     expect(screen.getByRole("textbox", { name: "文档 Markdown" })).toHaveValue(markdown);
+    reactErrors.mockRestore();
   });
   it("keeps a rapid unsaved edit recoverable after leaving, even when the exit save fails", async () => {
     const user = userEvent.setup();
@@ -79,6 +100,7 @@ describe("ScriptWorkspace", () => {
     );
     const view = renderWorkspace();
     await user.click(await screen.findByRole("button", { name: "故事大纲" }));
+    await user.click(screen.getByRole("button", { name: "Markdown 文档" }));
     await user.click(screen.getByRole("button", { name: "编辑 Markdown" }));
     await user.type(screen.getByRole("textbox", { name: "文档 Markdown" }), " 新内容");
     view.unmount();
@@ -206,6 +228,9 @@ describe("ScriptWorkspace", () => {
     let failed = false;
     server.use(
       http.get(base + "/documents", () => HttpResponse.json({ ok: true, data: [outline] })),
+      http.get(base + "/documents/one/outline", () => HttpResponse.json({ ok: true, data: { ...outline, revision: { ...outline.revision, outline_items: [] } } })),
+      http.get(base + "/continuity-context", () => HttpResponse.json({ ok: true, data: { episode_number: 1, facts: [] } })),
+      http.get(base + "/documents/one/continuity-facts", () => HttpResponse.json({ ok: true, data: [] })),
       http.put(base + "/documents/one", async ({ request }) => {
         if (!failed) { failed = true; return HttpResponse.json({ detail: "offline" }, { status: 500 }); }
         const body = await request.json() as { markdown: string };
@@ -214,6 +239,7 @@ describe("ScriptWorkspace", () => {
     );
     renderWorkspace();
     await user.click(await screen.findByRole("button", { name: "故事大纲" }));
+    await user.click(screen.getByRole("button", { name: "Markdown 文档" }));
     await user.click(screen.getByRole("button", { name: "编辑 Markdown" }));
     const editor = screen.getByRole("textbox", { name: "文档 Markdown" });
     await user.type(editor, " 修改{enter}{enter}## 新情节");

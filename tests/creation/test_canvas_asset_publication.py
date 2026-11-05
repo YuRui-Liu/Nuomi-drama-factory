@@ -12,7 +12,7 @@ from PIL import Image
 from novelvideo.api.schemas import PushRequest
 from novelvideo.creation.asset_adapter import AssetAdapter
 from novelvideo.creation.store import ObjectStore
-from novelvideo.models import NovelCharacter,CharacterIdentity,NovelScene
+from novelvideo.models import NovelCharacter,CharacterIdentity,NovelProp,NovelScene
 from novelvideo.sqlite_store import SQLiteStore
 
 
@@ -29,6 +29,7 @@ async def project(tmp_path,monkeypatch):
     await source.add_character_identity('Lin',CharacterIdentity(character_name='Lin',identity_id='stable-id',identity_name='coat'))
     await source.add_scene(NovelScene(name='Hall'))
     await source.add_scene(NovelScene(name='Night',base_scene_id='Hall',variant_id='night'))
+    await source.add_prop(NovelProp(name='Token'))
     ctx=SimpleNamespace(output_dir=Path(source.project_dir),state_dir=source.state_dir,requester_user_id='actor',project_id='test')
     async def resolve(*args,**kwargs):return ctx,'actor','test',ctx.output_dir,str(ctx.output_dir)
     monkeypatch.setattr(freezone,'_resolve_freezone_project',resolve)
@@ -39,10 +40,12 @@ async def project(tmp_path,monkeypatch):
     await source.close()
 
 
-async def push(ctx,kind,content,*,identity='stable-id',scene='Hall',source_path=None,character='Lin'):
+async def push(ctx,kind,content,*,identity='stable-id',scene='Hall',source_path=None,character='Lin',prop='Token'):
     from novelvideo.api.routes import freezone
     target={'kind':kind}
     if kind.startswith('scene_'):target['scene_id']=scene
+    elif kind=='prop_ref':
+        target['prop_id']=prop
     else:
         target['character']=character
         if kind!='portrait':target['identity_id']=identity
@@ -51,6 +54,22 @@ async def push(ctx,kind,content,*,identity='stable-id',scene='Hall',source_path=
         source_path=ctx.output_dir/('freezone/_outputs/input'+suffix)
         source_path.parent.mkdir(parents=True,exist_ok=True);source_path.write_bytes(content)
     return await freezone.freezone_push('test',PushRequest(source_url=source_path.relative_to(ctx.output_dir).as_posix(),target=target,mark_stale=False),{'id':'actor'})
+
+
+async def test_prop_reference_push_materializes_production_workflow_slot(project):
+    from novelvideo.production_workflow import ProductionWorkflowStore
+
+    _source,ctx,_events=project
+    result=await push(ctx,'prop_ref',png('blue'),prop='Token')
+    canonical=ctx.output_dir/'assets/props/Token/reference_3view.png'
+    slot,versions=ProductionWorkflowStore(Path(ctx.state_dir)/'production_workflow.json').get_slot('prop:Token:reference')
+
+    assert result['ok']
+    assert slot.asset_kind=='prop_reference'
+    current=versions[slot.current_version_id]
+    assert current.asset_path==canonical.relative_to(ctx.output_dir).as_posix()
+    assert current.adoption_status.value=='provisional'
+    assert canonical.read_bytes()==png('blue')
 
 
 @pytest.mark.parametrize('registered',[True,False])

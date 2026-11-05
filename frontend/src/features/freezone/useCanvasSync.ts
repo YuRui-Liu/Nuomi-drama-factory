@@ -61,6 +61,7 @@ import {
 import { safeLocalStorageSet } from "@/lib/localStorageQuota";
 import { createExternalCanvasOperation, readPendingCanvasOperation, type ExternalCanvasOperation } from './externalCanvasOperation';
 import { graphReferenceConflicts, mergeCanvasOperation, pinHistoryBindings } from './canvasThreeWayMerge';
+import type { WorkspaceScope } from './WorkspaceScope';
 
 const DEBOUNCE_MS = 800;
 const DRAFT_DEBOUNCE_MS = 300;
@@ -657,6 +658,7 @@ interface CanvasSyncResult {
 export function useCanvasSync(
   project: string,
   canvasId: string,
+  workspaceScope: WorkspaceScope | null = null,
 ): CanvasSyncResult {
   const [status, setStatus] = useState<CanvasSyncStatus>("loading");
   const [error, setError] = useState<string | null>(null);
@@ -994,7 +996,7 @@ export function useCanvasSync(
     };
 
     return registerFreezoneCanvasRuntime(project, canvasId, (remote, merge) => {
-      if (sessionRef.current?.isPaused() || externalBarrierRef.current) { setError('资产操作待确认，暂不能应用其他服务端刷新'); return; }
+      if (sessionRef.current?.isPaused() || externalBarrierRef.current) { setError('资产操作待确认，暂不能应用其他服务端刷新'); return false; }
       if (debounceTimerRef.current != null) {
         window.clearTimeout(debounceTimerRef.current);
         debounceTimerRef.current = null;
@@ -1055,6 +1057,7 @@ export function useCanvasSync(
           void requestSave();
         }, 0);
       }
+      return true;
     }, flush, (projection) => {
       if (!hydratedRef.current || switchingRef.current) {
         return false;
@@ -1095,8 +1098,22 @@ export function useCanvasSync(
       applyCanvasDataEdit(next.nodes, next.edges);
       saveProjectionEditNow();
       return true;
-    }, operation);
-  }, [applyCanvasDataEdit, project, canvasId, setCanvasData, reloadKey]);
+    }, operation, workspaceScope, (message) => {
+      const local = capture();
+      writeConflictSnapshot({
+        canvas_id: canvasId,
+        nodes: local.nodes,
+        edges: local.edges,
+        viewport: local.viewport,
+        metadata: local.metadata ?? null,
+        timestamp: new Date().toISOString(),
+      });
+      setSyncStatus('conflict');
+      setError(message);
+    }, () => serverBaselineRef.current);
+  }, [applyCanvasDataEdit, project, canvasId, setCanvasData, reloadKey,
+    workspaceScope?.projectId, workspaceScope?.canvasId, workspaceScope?.kind,
+    workspaceScope?.episodeId, workspaceScope?.episodeNumber]);
 
   // ---- 1. Hydrate ---- //
   useEffect(() => {
@@ -1462,7 +1479,8 @@ export function useCanvasSync(
   }, [project, canvasId, status]);
 
   const flush = async (): Promise<boolean> => {
-    if (sessionRef.current?.isPaused()) { writeDraftNow(); return false; }
+    const session = sessionRef.current;
+    if (session?.isPaused()) { writeDraftNow(); return false; }
     // A workspace switch unmounts the 300ms viewport writer. Persist the
     // current camera before that timer can be cancelled, including clean
     // canvases that take the fast path below. Never capture a previous
@@ -1471,7 +1489,7 @@ export function useCanvasSync(
       writeStoredViewport(project, canvasId, useCanvasStore.getState().currentViewport);
     }
     if (hydratedRef.current && !switchingRef.current && statusRef.current === "ready" &&
-        !sessionRef.current?.isSaving() && debounceTimerRef.current == null &&
+        !session?.isSaving() && debounceTimerRef.current == null &&
         currentDraftSignature() === lastPersistedDraftSignatureRef.current) {
       return true;
     }
@@ -1480,6 +1498,24 @@ export function useCanvasSync(
       debounceTimerRef.current = null;
     }
     lastSavedViewportRef.current = useCanvasStore.getState().currentViewport;
+    if (session?.isSaving()) {
+      const drained = await session.drainAndPause();
+      if (!drained || sessionRef.current !== session || session.isDisposed()) return false;
+      try {
+        if (hydratedRef.current && !switchingRef.current && statusRef.current === "ready" &&
+            currentDraftSignature() === lastPersistedDraftSignatureRef.current) {
+          return true;
+        }
+        // Queue while the send gate is closed so this version replaces any
+        // autosave request added during the drain, then let one save carry the
+        // latest live store snapshot.
+        const save = session.requestSave();
+        session.resume();
+        return await save;
+      } finally {
+        if (sessionRef.current === session && session.isPaused()) session.resume();
+      }
+    }
     return await requestSave();
   };
 

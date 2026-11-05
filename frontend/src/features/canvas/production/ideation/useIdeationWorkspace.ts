@@ -11,6 +11,7 @@ import type { ScriptDocument, ScriptSettings } from '@/features/script-creation/
 import { creativeWorkflowApi, type IdeaCandidate, type IdeaFields, type IdeationRun } from '../creativeWorkflowApi';
 import { useProductionAction } from '../useProductionAction';
 import { readPlanningSettings } from './planningSettings';
+import { useTaskCenterStore } from '@/task-center/store';
 
 export type IdeationWorkspacePage = 'creative' | 'directions';
 export type BriefSaveStatus = 'unsaved' | 'saving' | 'saved' | 'failed';
@@ -91,9 +92,18 @@ export function useIdeationWorkspace({ project, nodeId, data, registerCloseGuard
       const current = query.state.data as IdeationRun | undefined;
       const runBusy = activeStatuses.includes(current?.status ?? '');
       const redoBusy = Object.values(current?.regenerations ?? {}).some(job => activeStatuses.includes(job.status));
-      return runBusy || redoBusy ? 3000 : false;
+      const taskFailed = current?.task_id && [...useTaskCenterStore.getState().tasks.values()].some(task =>
+        task.task_id === current.task_id && (task.status === 'failed' || task.status === 'cancelled'),
+      );
+      return (runBusy && !taskFailed) || redoBusy ? 3000 : false;
     },
   });
+  const linkedTask = useTaskCenterStore(state => {
+    const taskId = idea.data?.task_id;
+    return taskId ? [...state.tasks.values()].find(task => task.task_id === taskId) : undefined;
+  });
+  const generationFailed = idea.data?.status === 'failed' ||
+    linkedTask?.status === 'failed' || linkedTask?.status === 'cancelled';
 
   const briefId = typeof data.briefId === 'string' ? data.briefId : '';
   const brief = docs.data?.find(document => document.id === briefId);
@@ -297,9 +307,9 @@ export function useIdeationWorkspace({ project, nodeId, data, registerCloseGuard
       generate: true, client_mutation_id: mutation,
     }));
     if (!result.ok || !result.value) return;
-    const created = result.value as { run: IdeationRun };
+    const created = result.value as { run: IdeationRun; task_id?: string };
     const nextKey = ['production-idea', project, origin.canvasId, nodeId, created.run.id] as const;
-    queryClient.setQueryData(nextKey, created.run);
+    queryClient.setQueryData(nextKey, { ...created.run, task_id: created.task_id ?? created.run.task_id });
     if (!writeNode(origin, { workflowId: created.run.id, referenceOnly: false, ideationWorkspacePage: 'directions', ideationSelectedCandidateKey: created.run.candidates[0] ? ideaKey(created.run.candidates[0]) : '' })) return;
     setPage('directions');
     setSelectedKey(created.run.candidates[0] ? ideaKey(created.run.candidates[0]) : '');
@@ -469,6 +479,8 @@ export function useIdeationWorkspace({ project, nodeId, data, registerCloseGuard
     page, settings, manualDraft, manualOpen, busy,
     briefSaveStatus,
     runStatusLabel: runStatusLabels[idea.data?.status ?? ''] ?? '',
+    generationFailed,
+    runError: idea.data?.error || linkedTask?.error || '',
     hasWorkflow: Boolean(workflowId),
     actionError: actionError ? errorMessage(new Error(actionError), '操作失败，请重试。') : '',
     uiError,

@@ -97,10 +97,12 @@ class IdeationService(ProjectDomain):
                 and output_row['delegation_id'] == output.get('delegation_id')
                 and output_row['operation_id'] == output.get('operation_id'),
                 '候选来源不属于当前用户、项目或画布会话', 'scope_violation')
+        legacy_source = {'kind': 'agent', 'owner_id': self.ctx.requester_user_id,
+                         'delegation_id': output_row['delegation_id']}
+        member_source = {**legacy_source, 'member_id': contract['agent'].get('adoption_id')}
         require(output.get('id') == output_row['id']
                 and output.get('operation') == 'proposal.create' and output.get('state') == 'candidate'
-                and output.get('source') == {'kind': 'agent', 'owner_id': self.ctx.requester_user_id,
-                                             'delegation_id': output_row['delegation_id']},
+                and output.get('source') in (legacy_source, member_source),
                 '对象不是有效的提案候选输出', 'scope_violation')
         target_ids = output.get('target_node_ids')
         original_ids = contract.get('expanded_scope', {}).get('node_ids')

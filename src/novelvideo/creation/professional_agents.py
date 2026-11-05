@@ -8,7 +8,7 @@ from copy import deepcopy
 
 
 def _agent(identifier, name, responsibilities, methods, operations, delivery, collaboration,
-           *, patch=False, run=False, media=False, ontology=False):
+           *, patch=False, run=False, media=False, ontology=False, script_draft=False, script_review=False):
     capabilities = ['context.read', 'proposal.create']
     if patch:
         capabilities.append('node.patch')
@@ -18,6 +18,10 @@ def _agent(identifier, name, responsibilities, methods, operations, delivery, co
         capabilities.append('media.propose')
     if ontology:
         capabilities.append('ontology.draft')
+    if script_draft:
+        capabilities.append('script.document.draft')
+    if script_review:
+        capabilities.append('script.document.review')
     collaboration_rules = list(collaboration)
     if run:
         collaboration_rules.append(
@@ -68,20 +72,20 @@ PROFESSIONAL_AGENTS = (
     _agent(
         'builtin:text-writer', '主笔',
         '创作故事圣经、人物弧、分集梗概、逐场剧情与对白，并维护叙事因果。',
-        '先保留已确认剧本和人物事实，再围绕用户目标组织因果、人物动机、场次和对白。把新增文本作为候选，标出来源与未决问题；局部改写只处理指定范围。',
+        '先保留已确认剧本和人物事实，再围绕用户目标组织因果、人物动机、场次和对白。把新增文本作为候选，标出来源与未决问题；局部改写只处理指定范围。正式分集草稿通过 script.document.draft 提交，并明确集数、标题和完整正文；草稿不会自动采用。',
         [('screenplayNode', 'plan'), ('scriptNode', 'generate')],
         ['交付场景、节拍、对白及其来源。', '说明哪些内容复用、改写或仍待确认。'],
         ['剧本编辑可提出逐项修订，主笔维护叙事因果。', '不覆盖用户剧本或锁定事实；镜头建议不代表画面已生成。'],
-        patch=True, run=True,
+        patch=True, run=True, script_draft=True,
     ),
     _agent(
         'builtin:script-editor', '剧本编辑',
         '检查动机、节奏、因果和可拍性，提出局部修订候选。',
-        '按指定目标逐项检查场景和对白，指出问题对应的来源文本，提供最小修订及其影响；保留可用原文和不同意见。',
+        '按指定目标逐项检查场景和对白，指出问题对应的来源文本，提供最小修订及其影响；保留可用原文和不同意见。独立审阅者通过 script.document.review 审查固定剧本修订，报告须含可定位证据；不得审阅自己撰写的版本。',
         [('scriptNode', 'generate')],
         ['每项意见定位到场景或对白。', '修订候选附带差异、原因和未确认事实。'],
         ['主笔或用户决定是否采用修订。', '不静默改变锁定事实，不把个人审美偏好设为生产硬门槛。'],
-        patch=True, run=True,
+        patch=True, run=True, script_review=True,
     ),
     _agent(
         'builtin:dialogue-writer', '台词专家',
@@ -314,6 +318,69 @@ def _workflow_operation_revisions(entries):
 
 
 PROFESSIONAL_AGENTS = (*PROFESSIONAL_AGENTS, *_workflow_operation_revisions(PROFESSIONAL_AGENTS))
+
+
+def _production_graph_revisions(entries):
+    """Move fresh role adoptions to canvas group execution; preserve pinned roles."""
+    render = [('narrativeGroupStoryboardNode', op) for op in ('render', 'retry_render')]
+    video = [('narrativeGroupVideoNode', op) for op in ('video', 'retry_video')]
+    compose = [('episodeComposeNode', 'compose')]
+    operations = {
+        'builtin:creative-lead': render + video + compose,
+        'builtin:storyboard-image-operator': render,
+        'builtin:minimax-video-operator': video,
+        'builtin:editor': compose,
+    }
+    retired = {'produce', 'retry_production', 'render_groups', 'retry_render_groups'}
+    latest = {}
+    for entry in entries:
+        if entry['id'] not in latest or entry['revision'] > latest[entry['id']]['revision']:
+            latest[entry['id']] = entry
+    for identifier, additions in operations.items():
+        updated = deepcopy(latest[identifier])
+        updated['revision'] += 1
+        config = updated['configuration']
+        config['required_node_operations'] = [
+            operation for operation in config['required_node_operations']
+            if not (operation['node_type'] == 'directorWorkspaceNode' and operation['operation'] in retired)
+        ] + [{'node_type': node_type, 'operation': operation} for node_type, operation in additions]
+        config['collaboration_rules'].append(
+            '整集制作通过画布的整组分镜、整组视频及整集合成节点执行；固定导演修订与组范围，'
+            '成功组复用，未知提交先恢复回执，不重新提交旧批处理。创建制作图不代表授权执行。'
+        )
+        yield updated
+
+
+PROFESSIONAL_AGENTS = (*PROFESSIONAL_AGENTS, *_production_graph_revisions(PROFESSIONAL_AGENTS))
+
+
+def _formal_script_document_revisions(entries):
+    """Publish formal document operations without rewriting already pinned crews."""
+    latest = {}
+    for entry in entries:
+        if entry['id'] not in latest or entry['revision'] > latest[entry['id']]['revision']:
+            latest[entry['id']] = entry
+    updates = {
+        'builtin:text-writer': (
+            'script.document.draft',
+            '正式剧本文档草稿固定到明确分集与来源；采用升级只影响后续任务，既有会话成员和历史任务继续使用固定版本。',
+        ),
+        'builtin:script-editor': (
+            'script.document.review',
+            '独立剧本审阅固定到文档和精确修订；采用升级只影响后续任务，既有会话成员和历史任务继续使用固定版本。',
+        ),
+    }
+    for identifier, (capability, collaboration_rule) in updates.items():
+        updated = deepcopy(latest[identifier])
+        updated['revision'] += 1
+        config = updated['configuration']
+        if capability not in config['capabilities']:
+            config['capabilities'].append(capability)
+        config['collaboration_rules'].append(collaboration_rule)
+        yield updated
+
+
+PROFESSIONAL_AGENTS = (*PROFESSIONAL_AGENTS, *_formal_script_document_revisions(PROFESSIONAL_AGENTS))
 
 
 def catalog():

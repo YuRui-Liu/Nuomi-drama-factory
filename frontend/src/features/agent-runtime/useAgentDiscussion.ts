@@ -7,11 +7,19 @@ import { ApiError } from "@/api/client";
 import {
   getAgentDiscussion,
   postAgentDiscussion,
+  type AgentDiscussionSelection,
   type AgentDiscussionAvailability,
   type AgentDiscussionMessage,
   type AgentDiscussionStatus,
 } from "@/api/agentDiscussions";
+import { captureFreezoneCanvasRuntime, reportFreezoneCanvasConflict } from "@/features/freezone/canvasSyncRuntime";
+import { refreshAgentCanvasChanges } from "@/features/canvas/infrastructure/orchestrationGateway";
 import { useAuthStore } from "@/stores/auth-store";
+import {
+  associateDiscussionCanvasBaseline,
+  saveDiscussionCanvasBaseline,
+} from "./runOperation";
+import type { RunOwner } from "@/api/agentRuns";
 
 export interface AgentDiscussionOwner {
   project: string;
@@ -25,6 +33,11 @@ export interface AgentDiscussionPendingRequest {
   message: string;
 }
 
+export interface AgentDiscussionSendOptions {
+  targetAdoptionId?: string | null;
+  selection?: AgentDiscussionSelection;
+}
+
 export interface AgentDiscussionState {
   messages: AgentDiscussionMessage[];
   availability: AgentDiscussionAvailability | null;
@@ -33,7 +46,7 @@ export interface AgentDiscussionState {
   error: string;
   pendingRequests: AgentDiscussionPendingRequest[];
   pendingRequest: AgentDiscussionPendingRequest | null;
-  send: (message: string) => Promise<boolean>;
+  send: (message: string, options?: AgentDiscussionSendOptions) => Promise<boolean>;
   refresh: () => Promise<void>;
 }
 
@@ -207,6 +220,57 @@ export function useAgentDiscussion(
   const setCurrentError = (value: string) => {
     if (isCurrent()) setErrorState({ identity, value });
   };
+  const captureDiscussionCanvasBaseline = async (sourceRequestId: string): Promise<boolean> => {
+    const runtime = captureFreezoneCanvasRuntime(owner.project, owner.canvas);
+    if (!runtime || !runtime.isCurrent()) {
+      setCurrentError("当前画布尚未就绪，协作请求未提交；请先打开并保存画布后重试。");
+      return false;
+    }
+    try {
+      if ((await runtime.flush()) !== true || !runtime.isCurrent() || !isCurrent()) {
+        if (isCurrent()) setCurrentError("当前画布尚未保存，协作请求未提交；请处理同步状态后重试。");
+        return false;
+      }
+      const serverBaseline = runtime.serverBaseline();
+      if (!serverBaseline) {
+        setCurrentError("无法确认当前画布的服务端基线，讨论未提交；请刷新画布后重试。");
+        return false;
+      }
+      const refresh = await refreshAgentCanvasChanges(
+        owner.project,
+        owner.canvas,
+        serverBaseline,
+        runtime.isCurrent,
+      );
+      if (!runtime.isCurrent() || !isCurrent()) return false;
+      if (refresh.status === "conflict") {
+        const detail = refresh.paths.length ? `（${refresh.paths.join("、")}）` : "";
+        const message = `协作提交前画布与服务端更新发生冲突${detail}；本地内容已保留，请先处理画布冲突。`;
+        reportFreezoneCanvasConflict(owner.project, owner.canvas, message);
+        setCurrentError(message);
+        return false;
+      }
+      if (refresh.status !== "applied") {
+        setCurrentError("协作提交前未能安全同步最新画布，讨论未提交；请刷新画布后重试。");
+        return false;
+      }
+      const baseline = refresh.baseline;
+      const runOwner: RunOwner = {
+        user: username!,
+        project: owner.project,
+        canvas: owner.canvas,
+        conversation: owner.conversation,
+      };
+      if (!saveDiscussionCanvasBaseline(runOwner, sourceRequestId, baseline)) {
+        setCurrentError("无法保留协作前的完整画布基线，讨论未提交；请检查本地存储后重试。");
+        return false;
+      }
+      return true;
+    } catch {
+      setCurrentError("无法确认当前画布已保存，协作请求未提交；请检查同步状态后重试。");
+      return false;
+    }
+  };
 
   useEffect(() => {
     mounted.current = true;
@@ -257,7 +321,7 @@ export function useAgentDiscussion(
     }
   }
 
-  async function send(rawMessage: string): Promise<boolean> {
+  async function send(rawMessage: string, options: AgentDiscussionSendOptions = {}): Promise<boolean> {
     const normalizedMessage = rawMessage.trim();
     if (!isCurrent() || !username || inFlight.current.has(identity)) return false;
     if (!normalizedMessage || normalizedMessage.length > 12000) {
@@ -287,18 +351,7 @@ export function useAgentDiscussion(
     }
 
     const id = requestId();
-    const intent: SavedIntent = {
-      requestId: id,
-      status: "pending",
-      message: normalizedMessage,
-    };
     inFlight.current.add(identity);
-    const pendingIntents = [...currentIntents, intent];
-    if (!setOwnerIntents(identity, pendingIntents, true)) {
-      inFlight.current.delete(identity);
-      setCurrentError(INTENT_STORAGE_ERROR);
-      return false;
-    }
     setBusyOwners((previous) => new Set(previous).add(identity));
     setCurrentError("");
     let postActive = true;
@@ -312,14 +365,53 @@ export function useAgentDiscussion(
         return next;
       });
     };
+    if (!(await captureDiscussionCanvasBaseline(id)) || !isCurrent()) {
+      finishPost();
+      return false;
+    }
+    const intent: SavedIntent = {
+      requestId: id,
+      status: "pending",
+      message: normalizedMessage,
+    };
+    const pendingIntents = [...currentIntents, intent];
+    if (!setOwnerIntents(identity, pendingIntents, true)) {
+      finishPost();
+      setCurrentError(INTENT_STORAGE_ERROR);
+      return false;
+    }
     try {
       const receipt = await postAgentDiscussion(owner.project, {
         request_id: id,
         canvas_id: owner.canvas,
         conversation_id: owner.conversation,
         message: normalizedMessage,
+        ...(options.targetAdoptionId ? { target_adoption_id: options.targetAdoptionId } : {}),
+        ...(options.selection ? { selection: options.selection } : {}),
       });
       finishPost();
+      const task = receipt.collaboration_task;
+      if (task?.source_request_id === id && task.delegation_id) {
+        associateDiscussionCanvasBaseline({
+          user: username,
+          project: owner.project,
+          canvas: owner.canvas,
+          conversation: owner.conversation,
+        }, {
+          sourceRequestId: id,
+          taskId: task.id,
+          canvasId: task.canvas_id,
+          conversationId: task.conversation_id,
+          delegationId: task.delegation_id,
+          rootDelegationId: task.delegation_id,
+          runId: task.run_id,
+        });
+      }
+      if (useAuthStore.getState().username === username && latest.current.active) {
+        void queryClient.invalidateQueries({
+          queryKey: ["collaboration-tasks", username, owner.project, owner.canvas, owner.conversation],
+        });
+      }
       if (receipt.status === "completed") {
         setOwnerIntents(
           identity,

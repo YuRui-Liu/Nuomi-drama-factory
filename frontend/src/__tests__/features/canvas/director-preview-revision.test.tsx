@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { NodeProps } from '@xyflow/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { DirectorWorkspaceNode } from '@/features/canvas/nodes/DirectorWorkspaceNode';
+import { WorkspaceScopeProvider } from '@/features/freezone/WorkspaceScope';
 
 const revision = { revision_id: 'A', status: 'active', groups: [{ id: 'g1', shots: [{ id: 's1', duration_seconds: 3 }] }] };
 vi.mock('@/lib/url-params', () => ({ readUrl: () => ({ project: 'project' }) }));
@@ -22,7 +23,7 @@ it('rejects another active revision media even when group IDs match', async () =
   vi.mocked(apiCall).mockImplementation(async path => path.endsWith('narrative-groups') ? media : [revision]);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const props = { id: 'node', data: { episodeNumber: 1, directorRevisionId: 'A' } } as unknown as NodeProps;
-  const result = render(<QueryClientProvider client={client}><DirectorWorkspaceNode {...props} /></QueryClientProvider>);
+  const result = render(<WorkspaceScopeProvider value={{ projectId: 'project', canvasId: 'episode-1', kind: 'episode', episodeId: 'ep1', episodeNumber: 1, status: 'applied' }}><QueryClientProvider client={client}><DirectorWorkspaceNode {...props} /></QueryClientProvider></WorkspaceScopeProvider>);
   fireEvent.click(screen.getByRole('button', { name: '时间预演' }));
   await waitFor(() => expect(client.getQueryData(['director-preview-media', 'project', 1, 'A'])).toEqual(media));
   expect(screen.queryByRole('img')).not.toBeInTheDocument();

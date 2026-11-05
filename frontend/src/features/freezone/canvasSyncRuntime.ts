@@ -4,6 +4,7 @@ import type { FreezoneCanvasPayload } from "@/api/canvas";
 import type { CanvasEdge, CanvasNode } from "@/stores/canvasStore";
 import type { AssetBindRequest } from '@/features/creation-workspace/contracts';
 import type { ExternalCanvasOperation, ExternalOperationOutcome } from './externalCanvasOperation';
+import type { WorkspaceScope } from './WorkspaceScope';
 
 export type RemoteCanvasMerge = (
   remoteNodes: CanvasNode[],
@@ -15,9 +16,10 @@ export type RemoteCanvasMerge = (
 type RemoteCanvasApplier = (
   remote: FreezoneCanvasPayload,
   merge?: RemoteCanvasMerge,
-) => void;
+) => boolean | void;
 
 type CanvasFlush = () => Promise<boolean>;
+type CanvasConflictReporter = (message: string) => void;
 
 export interface LocalProjectionPayload {
   projectionKey: string;
@@ -36,9 +38,12 @@ interface RemoteCanvasRuntime {
   canvasId: string;
   apply: RemoteCanvasApplier;
   flush?: CanvasFlush;
+  serverBaseline?: () => FreezoneCanvasPayload;
   applyLocalProjection?: LocalProjectionApplier;
   removeLocalProjection?: LocalProjectionRemover;
   operation?: ExternalCanvasOperation;
+  workspaceScope: WorkspaceScope | null;
+  reportConflict?: CanvasConflictReporter;
 }
 
 let currentRuntime: RemoteCanvasRuntime | null = null;
@@ -56,9 +61,12 @@ export function registerFreezoneCanvasRuntime(
   applyLocalProjection?: LocalProjectionApplier,
   removeLocalProjection?: LocalProjectionRemover,
   operation?: ExternalCanvasOperation,
+  workspaceScope: WorkspaceScope | null = null,
+  reportConflict?: CanvasConflictReporter,
+  serverBaseline?: () => FreezoneCanvasPayload,
 ): () => void {
   currentRuntime?.operation?.dispose();
-  const runtime = { project, canvasId, apply, flush, applyLocalProjection, removeLocalProjection, operation };
+  const runtime = { project, canvasId, apply, flush, serverBaseline, applyLocalProjection, removeLocalProjection, operation, workspaceScope, reportConflict };
   currentRuntime = runtime;
   return () => {
     operation?.dispose();
@@ -66,6 +74,14 @@ export function registerFreezoneCanvasRuntime(
       currentRuntime = null;
     }
   };
+}
+
+/** Send a true remote merge conflict to the live canvas sync owner for stashing and recovery UI. */
+export function reportFreezoneCanvasConflict(project: string, canvasId: string, message: string): boolean {
+  if (!currentRuntime || currentRuntime.project !== project || currentRuntime.canvasId !== canvasId ||
+      !currentRuntime.reportConflict) return false;
+  currentRuntime.reportConflict(message);
+  return true;
 }
 
 export function resolveExternalCanvasConflict(project: string, canvasId: string, revision: number): Promise<ExternalOperationOutcome> {
@@ -82,13 +98,17 @@ export function runExternalCanvasOperation(project: string, canvasId: string, re
 export function captureFreezoneCanvasRuntime(project: string, canvasId: string) {
   const runtime = currentRuntime;
   if (!runtime || runtime.project !== project || runtime.canvasId !== canvasId || !runtime.operation) return null;
-  return { isCurrent: () => currentRuntime === runtime,
+  return { workspaceScope: runtime.workspaceScope, isCurrent: () => currentRuntime === runtime,
     flush: () => currentRuntime === runtime && runtime.flush ? runtime.flush() : Promise.resolve(false),
+    serverBaseline: () => currentRuntime === runtime && runtime.serverBaseline
+      ? structuredClone(runtime.serverBaseline())
+      : null,
     run: (request: AssetBindRequest) => currentRuntime === runtime ? runtime.operation!.run(request) : Promise.resolve<ExternalOperationOutcome>({ status: 'detached' }) };
 }
 
 export function currentFreezoneCanvasScope() {
   return currentRuntime ? {project:currentRuntime.project,canvasId:currentRuntime.canvasId,
+    workspaceScope: currentRuntime.workspaceScope,
     isCurrent: (() => { const captured=currentRuntime; return () => currentRuntime===captured; })()} : null;
 }
 
@@ -101,8 +121,7 @@ export function applyRemoteFreezoneCanvas(
   if (!currentRuntime || currentRuntime.project !== project || currentRuntime.canvasId !== canvasId) {
     return false;
   }
-  currentRuntime.apply(remote, merge);
-  return true;
+  return currentRuntime.apply(remote, merge) !== false;
 }
 
 export async function flushFreezoneCanvasRuntime(
