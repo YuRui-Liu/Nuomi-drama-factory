@@ -31,6 +31,7 @@
 
 ## H3 中文对白与精简审阅
 
+- 提交前逐镜判断生成模式，核对实际首尾帧槽位；判据见 [H3 生成模式](h3Modes.md)。
 - 写 H3 提示词前完整读取官方 Base 或 Ref 指南并按实际模式执行：T2VA 无画面对齐首行；I2VA 首行使用官方 `<Picture 1>` 在 0.00 秒对应 `[Shot 1]` 的完整对齐句；FL2VA 首行明确首图对应 0.00 秒、尾图对应实际有效时长及最终镜头；L2VA 首行明确尾图对应最终镜头与实际有效时长。空行后按 `integrated_multimodal_description`、`overall_soundscape`、`non_diegetic_music` 顺序输出。有效时长取 `effectiveFrames / fps`，尾帧时间保留两位小数，不用请求秒数替代。
 - I2VA 首行直接使用官方模板：`For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.`；其他首尾帧模式从官方 Base 指南逐字取对应首行并填入真实尾帧时间及镜号，不能用中文概述代替。每个镜头使用 `[Shot N]`，按时间写明动作及转换；没有切镜时不虚构切镜。
 - Ref2VA 按 `subject_definitions`、`summary`、`retention_analysis`、`detailed_description`、`overall_soundscape`、`non_diegetic_music` 顺序输出。逐项定义实际使用的 `<Subject N>`、`<Picture N>`、`<Video N>`、`<Audio N>` 和素材角色，同一标签在各字段中始终指向同一内容；不得编造不存在或当前适配器不支持的素材。描述按 `[Shot N]` 和实际播放时间组织动作、说话人、运镜与场内声音，并保证时间线与有效时长一致。
