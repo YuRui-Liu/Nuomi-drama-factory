@@ -1,5 +1,6 @@
 import { lstat, realpath } from "@toonflow/file";
 import { productionExecuteSchema, productionReadSchema } from "@toonflow/node-shared/production/operations";
+import { styleInstruction, h3StyleInstruction, h3TechniqueInstruction } from "@toonflow/node-shared/production/schemas";
 import type { ProductionContent, ProductionManifest, ProductionRecord, ProductionRef } from "@toonflow/node-shared/production/types";
 import { resolveWorkspacePath } from "@/utils/workspace/files";
 import { failure, readManifest, readRecord, saveRecord, updateManifest } from "./store";
@@ -8,15 +9,34 @@ function sameRef(left: ProductionRef | null | undefined, right: ProductionRef | 
   return left?.id === right?.id && left?.revision === right?.revision;
 }
 
+function styleBindings(content: ProductionContent) {
+  if (content.kind === "asset" || content.kind === "imagePlan") return content.style ? [content.style] : [];
+  if (content.kind === "storyboard") return content.shots.flatMap(shot => shot.style ? [shot.style] : []);
+  if (content.kind === "h3Plan") return content.segments.flatMap(segment => segment.style ? [segment.style] : []);
+  return [];
+}
+
+export function referenceMedia(content: ProductionContent, shotId?: string) {
+  if (content.kind === "storyboard") {
+    const image = content.shots.find(shot => shot.id === shotId)?.image;
+    if (!image) failure("H3 分镜参考必须指定存在且已有图片的镜头 ID", 400);
+    return image;
+  }
+  if (shotId || !("media" in content)) failure("H3 参考必须指向媒体成果或具体分镜图", 400);
+  return content.media;
+}
+
 function contentReferences(content: ProductionContent): ProductionRef[] {
+  const styles = styleBindings(content).map(binding => binding.ref);
   switch (content.kind) {
     case "episode": return [content.series];
+    case "storyboard": return [content.script, ...styles];
     case "dialogue": return [content.voice];
     case "clip": return [content.plan];
     case "film": return [...content.entries.map(entry => entry.clip), ...content.dialogue];
     case "acceptance": return [content.film];
-    case "h3Plan": return content.segments.flatMap(segment => segment.references.map(reference => reference.asset));
-    default: return [];
+    case "h3Plan": return [...styles, ...content.segments.flatMap(segment => [...segment.references.map(reference => reference.asset), ...(segment.technique ? [segment.technique.ref] : [])])];
+    default: return styles;
   }
 }
 
@@ -24,10 +44,57 @@ function mediaPaths(content: ProductionContent) {
   const paths = "media" in content ? [content.media.path] : [];
   if (content.kind === "film") paths.push(content.subtitlesPath, ...content.audioPaths);
   if (content.kind === "acceptance") paths.push(...content.checks.flatMap(check => check.evidencePaths));
+  if (content.kind === "storyboard") paths.push(...content.shots.flatMap(shot => [
+    ...shot.image ? [shot.image.path] : [],
+    ...shot.staging.mode === "director" ? [shot.staging.previs.path] : [],
+  ]));
   return paths;
 }
 
 async function validateContent(directory: string, manifest: ProductionManifest, content: ProductionContent) {
+  if (content.kind === "h3Plan") for (const segment of content.segments) {
+    if (!segment.technique) continue;
+    const binding = segment.technique;
+    const record = await readRecord(directory, manifest, binding.ref);
+    if (record.content.kind !== "technique" || JSON.stringify(record.content) !== JSON.stringify(binding.snapshot)) failure("手法快照与引用的修订不一致", 400);
+    if (!sameRef(manifest.adoptions.find(item => item.selected.id === binding.ref.id)?.selected, binding.ref)) failure("手法修订尚未采用或已变化", 400);
+    const mode = { t2va: null, l2va: null, i2va: "i2v", fl2va: "fl2v", ref2va: "ref_only" }[segment.mode];
+    if (!mode || !binding.snapshot.modes.includes(mode as "i2v" | "fl2v" | "ref_only")) failure("手法与 H3 生成模式不兼容", 400);
+    const duration = segment.effectiveFrames / segment.fps;
+    if (duration < binding.snapshot.minSeconds || duration > binding.snapshot.maxSeconds) failure("手法与 H3 生成时长不兼容", 400);
+    const field = segment.mode === "ref2va" ? "detailed_description:" : "integrated_multimodal_description:";
+    const body = segment.prompt.split(field)[1]?.split(/\n(?:overall_soundscape|non_diegetic_music):/)[0] ?? "";
+    if (!segment.techniquePrompt) failure("H3 手法缺少根据当前镜头和案例整理的英文执行描述", 400);
+    if (!body.includes(h3TechniqueInstruction(binding, segment.techniquePrompt)) || [...segment.prompt.matchAll(/Camera direction \(item[a-f0-9]{32}@\d+\):/g)].length !== 1) failure("H3 画面描述必须包含且只包含目标手法的英文执行描述", 400);
+  }
+  if (manifest.defaultStyle) {
+    if ((content.kind === "asset" || content.kind === "imagePlan") && !content.style) failure("作品已有默认风格，正式成果必须记录风格快照", 400);
+    if (content.kind === "storyboard" && content.shots.some(shot => !shot.style)) failure("作品已有默认风格，分镜须逐镜记录风格快照", 400);
+    if (content.kind === "h3Plan" && content.segments.some(segment => !segment.style)) failure("作品已有默认风格，H3 方案须逐段记录风格快照", 400);
+  }
+  for (const binding of styleBindings(content)) {
+    const record = await readRecord(directory, manifest, binding.ref);
+    if (record.content.kind !== "style" || JSON.stringify(record.content) !== JSON.stringify(binding.snapshot)) failure("风格快照与引用的修订不一致", 400);
+    if (!sameRef(manifest.adoptions.find(item => item.selected.id === binding.ref.id)?.selected, binding.ref)) failure("风格修订尚未采用或已变化", 400);
+    if (binding.mode === "default" && !sameRef(manifest.defaultStyle, binding.ref)) failure("作品默认风格已变化", 400);
+  }
+  if (content.kind === "imagePlan" && content.style && (!content.prompt.includes(styleInstruction(content.style)) || [...content.prompt.matchAll(/视觉风格 item[a-f0-9]{32}@\d+：/g)].length !== 1)) failure("图片提示词必须包含且只包含目标风格快照", 400);
+  if (content.kind === "imagePlan" && content.target.kind === "storyboardShot") {
+    const target = content.target;
+    const storyboard = await readRecord(directory, manifest, target.storyboard);
+    if (storyboard.content.kind !== "storyboard") failure("出图目标必须是分镜成果", 400);
+    const shot = storyboard.content.shots.find(item => item.id === target.shotId);
+    if (!shot) failure("出图目标不是该分镜修订中的镜头", 400);
+    if (content.style && !sameRef(shot.style?.ref, content.style.ref)) failure("出图风格与目标镜头风格不一致", 400);
+    if (manifest.objects.find(item => item.id === target.storyboard.id)?.revisions.at(-1)?.revision !== target.storyboard.revision) failure("出图目标分镜已有新修订", 400);
+  }
+  if (content.kind === "h3Plan") for (const segment of content.segments) {
+    if (!segment.style) continue;
+    const field = segment.mode === "ref2va" ? "detailed_description" : "integrated_multimodal_description";
+    const body = segment.prompt.split(`${field}:`)[1]?.split(/\n(?:overall_soundscape|non_diegetic_music):/)[0] ?? "";
+    if (!segment.stylePrompt) failure("H3 风格缺少英文执行描述，请根据风格快照填写");
+    if (!body.includes(h3StyleInstruction(segment.style, segment.stylePrompt)) || [...segment.prompt.matchAll(/Visual style \(item[a-f0-9]{32}@\d+\):/g)].length !== 1) failure("H3 画面描述必须包含且只包含目标风格的英文执行描述", 400);
+  }
   const unique = (values: (string | number)[], label: string) => {
     if (new Set(values).size !== values.length) failure(`${label}不能重复`, 400);
   };
@@ -43,19 +110,35 @@ async function validateContent(directory: string, manifest: ProductionManifest, 
     unique(content.scenes.flatMap(scene => scene.shots.map(shot => shot.id)), "镜头 ID");
     unique(content.scenes.flatMap(scene => scene.shots.flatMap(shot => shot.dialogue.map(line => line.id))), "对白 ID");
   }
+  if (content.kind === "storyboard") {
+    const script = (await readRecord(directory, manifest, content.script)).content;
+    if (script.kind !== "script") failure("分镜必须引用剧本", 400);
+    const sourceShots = script.scenes.flatMap(scene => scene.shots);
+    unique(content.shots.map(shot => shot.id), "分镜 ID");
+    for (const shot of content.shots) {
+      unique(shot.sourceShotIds, "分镜来源 ID");
+      unique(shot.dialogueIds, "分镜对白 ID");
+      if (shot.sourceShotIds.some(id => !sourceShots.some(source => source.id === id))) failure("分镜引用的剧本段落不存在", 400);
+      const dialogueIds = sourceShots.filter(source => shot.sourceShotIds.includes(source.id)).flatMap(source => source.dialogue.map(line => line.id));
+      if (shot.dialogueIds.some(id => !dialogueIds.includes(id))) failure("分镜对白必须来自对应剧本段落", 400);
+      if (shot.staging.mode === "direct" && (shot.complexStaging || !["closeUp", "detail"].includes(shot.framing))) failure("只有简单特写可说明依据后跳过导演台", 400);
+      if (shot.image && !shot.image.mimeType.startsWith("image/")) failure("分镜成果必须是图片", 400);
+      if (shot.staging.mode === "director" && !shot.staging.previs.mimeType.startsWith("image/") && !shot.staging.previs.mimeType.startsWith("video/")) failure("导演依据必须是构图或预演媒体", 400);
+    }
+  }
   if (content.kind === "h3Plan") {
     unique(content.segments.map(item => item.id), "生成段 ID");
     for (const segment of content.segments) {
       const durations = { video: 0, voice: 0 };
       for (const reference of segment.references) {
         const source = (await readRecord(directory, manifest, reference.asset)).content;
-        if (!("media" in source)) failure("H3 参考必须指向媒体成果", 400);
+        const media = referenceMedia(source, reference.shotId);
         const expectedType = reference.role === "video" ? "video/" : reference.role === "voice" ? "audio/" : "image/";
-        if (!source.media.mimeType.startsWith(expectedType)) failure(`H3 ${reference.role} 槽位的媒体类型不匹配`, 400);
-        const target = await resolveWorkspacePath(directory, source.media.path);
+        if (!media.mimeType.startsWith(expectedType)) failure(`H3 ${reference.role} 槽位的媒体类型不匹配`, 400);
+        const target = await resolveWorkspacePath(directory, media.path);
         if (!(await lstat(target.path)).isFile()) failure("H3 参考媒体文件不存在", 400);
         if (reference.role === "video" || reference.role === "voice") {
-          const duration = source.media.durationSeconds;
+          const duration = media.durationSeconds;
           if (duration === undefined || duration < 2 || duration > 15) failure("H3 音视频参考须有 2–15 秒的时长记录；提交前仍须实测媒体", 400);
           durations[reference.role] += duration;
         }
@@ -97,6 +180,11 @@ async function staleDependencies(directory: string, manifest: ProductionManifest
   if (seen.has(key)) return [];
   seen.add(key);
   const stale: ProductionRef[] = [];
+  if (record.content.kind === "imagePlan" && record.content.target.kind === "storyboardShot") {
+    const target = record.content.target.storyboard;
+    if (manifest.objects.find(item => item.id === target.id)?.revisions.at(-1)?.revision !== target.revision) stale.push(target);
+  }
+  for (const binding of styleBindings(record.content)) if (binding.mode === "default" && !sameRef(binding.ref, manifest.defaultStyle)) stale.push(binding.ref);
   for (const dependency of record.dependencies) {
     const adopted = manifest.adoptions.find(item => item.selected.id === dependency.id)?.selected;
     if (!sameRef(adopted, dependency)) stale.push(dependency);
@@ -109,6 +197,10 @@ export async function read(directory: string, input: unknown) {
   const args = productionReadSchema.parse(input);
   const root = await realpath(directory);
   const manifest = await readManifest(root);
+  if (args.action === "readDefaultStyle") {
+    const ref = manifest.defaultStyle;
+    return ref ? { ref, record: await readRecord(root, manifest, ref), adoption: manifest.adoptions.find(item => item.selected.id === ref.id) ?? null } : { ref: null, record: null, adoption: null };
+  }
   if (args.action === "read") {
     const record = await readRecord(root, manifest, args.ref);
     return { record, adoption: manifest.adoptions.find(item => item.selected.id === record.id) ?? null, staleDependencies: await staleDependencies(root, manifest, record) };
@@ -133,7 +225,7 @@ export async function read(directory: string, input: unknown) {
   }
   // ACT: 项目对象上限 10000；用反向依赖队列遍历，避免递归全图重复扫描。
   const dependents = new Map<string, ProductionRecord[]>();
-  for (const record of records) for (const dependency of record.dependencies) {
+  for (const record of records) for (const dependency of [...record.dependencies, ...(record.content.kind === "imagePlan" && record.content.target.kind === "storyboardShot" ? [record.content.target.storyboard] : [])]) {
     const items = dependents.get(dependency.id) ?? [];
     items.push(record);
     dependents.set(dependency.id, items);
@@ -155,12 +247,21 @@ export async function read(directory: string, input: unknown) {
 export async function execute(directory: string, input: unknown) {
   const args = productionExecuteSchema.parse(input);
   return updateManifest(directory, async (manifest, root) => {
+    if (args.action === "setDefaultStyle") {
+      if (!sameRef(manifest.defaultStyle, args.expectedDefault)) failure("作品默认风格已变化，请重新读取");
+      const record = await readRecord(root, manifest, args.ref);
+      if (record.content.kind !== "style") failure("默认风格必须引用风格成果", 400);
+      if (!sameRef(manifest.adoptions.find(item => item.selected.id === args.ref.id)?.selected, args.ref)) failure("请先采用该风格修订", 400);
+      manifest.defaultStyle = args.ref;
+      return { defaultStyle: args.ref };
+    }
     if (args.action === "adopt") {
       const record = await readRecord(root, manifest, args.ref);
       const current = manifest.adoptions.find(item => item.selected.id === record.id);
       if (!sameRef(current?.selected, args.expectedAdoption)) failure("采用结果已变化，请重新读取");
       if ((await staleDependencies(root, manifest, record)).length) failure("依赖尚未采用或已变化，请先确认上游成果");
       await validateContent(root, manifest, record.content);
+      if (record.content.kind === "storyboard" && record.content.shots.some(shot => !shot.image)) failure("分镜图尚未齐全，不能采用正式分镜");
       const adoption = { selected: args.ref, approval: args.approval, adoptedAt: new Date().toISOString() };
       manifest.adoptions = manifest.adoptions.filter(item => item.selected.id !== record.id);
       manifest.adoptions.push(adoption);

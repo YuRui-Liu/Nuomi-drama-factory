@@ -60,7 +60,33 @@ const previewStage = ref<InstanceType<typeof imagePanoramaPreview>>();
 const { saving, saveCapture } = usePanoramaCapture(() => props.src);
 const busy = computed(() => creating.value || saving.value || !!previewStage.value?.capturing);
 
-defineExpose({ open, busy, visible });
+defineExpose({
+  open, busy, visible,
+  async openPreview(value: PanoramaMode) {
+    if (props.disabled || busy.value || !props.src) throw new Error("图片未就绪或正在处理");
+    mode.value = value;
+    visible.value = true;
+    await nextTick();
+    return { mode: mode.value, ...previewStage.value?.readView() };
+  },
+  readView: () => ({ mode: mode.value, visible: visible.value, ...previewStage.value?.readView() }),
+  setView(view: { yaw: number; pitch: number; fov: number }) {
+    if (!visible.value || !previewStage.value) throw new Error("请先打开全景预览");
+    previewStage.value.setView(view);
+    return previewStage.value.readView();
+  },
+  async exportView() {
+    if (!visible.value || !previewStage.value || props.disabled || busy.value) throw new Error("全景未就绪或正在处理");
+    const source = props.source ? { ...props.source } : undefined;
+    const sourceUrl = props.src;
+    const view = previewStage.value.readView();
+    const payload = await previewStage.value.captureForTool();
+    if (!payload) throw new Error("截图已中断，未生成图片");
+    if (sourceUrl !== props.src) throw new Error("全景来源已变化，请重新读取后截图");
+    payload.view = { source: source?.url ?? sourceUrl, mode: mode.value, yaw: view.yaw, pitch: view.pitch, fov: view.fov };
+    return { ...await saveCapture(payload, true), source, view, mode: mode.value };
+  },
+});
 
 watch(() => props.src, () => { visible.value = false; }, { flush: "sync" });
 

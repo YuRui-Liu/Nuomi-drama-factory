@@ -399,7 +399,38 @@ async function createInpaint(input: InpaintDraftInput, signal: AbortSignal) {
   }
 }
 
-defineExpose({ mode, busy, start, cancel, createInpaint });
+async function prepareInpaint(input: InpaintDraftInput & { polygons: Point[][] }, signal: AbortSignal) {
+  if (busy.value || props.disabled || mode.value) throw new Error("请先完成当前图片编辑");
+  await start("inpaint");
+  const canvas = paintCanvas.value;
+  const context = canvas?.getContext("2d");
+  if (!canvas || !context) throw new Error("图片尚未加载完成");
+  try {
+    context.fillStyle = "#ff4545";
+    for (const points of input.polygons) {
+      signal.throwIfAborted();
+      context.beginPath();
+      points.forEach((point, index) => {
+        const x = point.x * canvas.width;
+        const y = point.y * canvas.height;
+        if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+      });
+      context.closePath();
+      context.fill();
+    }
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let selectedPixels = 0;
+    for (let i = 3; i < pixels.length; i += 4) if (pixels[i]) selectedPixels++;
+    if (!selectedPixels || selectedPixels === canvas.width * canvas.height) throw new Error("局部重绘必须保留未选中区域");
+    const width = canvas.width;
+    const height = canvas.height;
+    const result = await createInpaint(input, signal);
+    const created = findNode(result.nodeId);
+    return { ...result, width, height, selectedPixels, inpaint: created?.data.inpaint };
+  } finally { if (!busy.value) cancel(); }
+}
+
+defineExpose({ mode, busy, start, cancel, createInpaint, prepareInpaint });
 </script>
 
 <style scoped lang="scss">

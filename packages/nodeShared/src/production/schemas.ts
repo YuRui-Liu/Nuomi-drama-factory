@@ -3,6 +3,29 @@ import { z } from "zod";
 const text = z.string().trim().min(1).max(100000);
 export const productionIdSchema = z.string().regex(/^item[a-f0-9]{32}$/);
 export const productionRefSchema = z.strictObject({ id: productionIdSchema, revision: z.number().int().positive() });
+export const styleContentSchema = z.strictObject({ kind: z.literal("style"), name: text, positive: text, avoid: text, source: text, sourceVersion: text });
+export const styleBindingSchema = z.strictObject({ ref: productionRefSchema, mode: z.enum(["default", "override"]), snapshot: styleContentSchema });
+export function styleInstruction(binding: z.infer<typeof styleBindingSchema>) {
+  return `视觉风格 ${binding.ref.id}@${binding.ref.revision}：${binding.snapshot.positive}\n避免：${binding.snapshot.avoid}`;
+}
+export function h3StyleInstruction(binding: z.infer<typeof styleBindingSchema>, description: string) {
+  return `Visual style (${binding.ref.id}@${binding.ref.revision}): ${description}`;
+}
+export const techniqueContentSchema = z.strictObject({
+  kind: z.literal("technique"), id: text, title: text, intent: text, actionBeats: z.array(text).min(1),
+  performance: text, camera: text, ending: text, avoid: z.array(text), modes: z.array(z.enum(["i2v", "fl2v", "ref_only"])).min(1),
+  minSeconds: z.number().positive(), maxSeconds: z.number().positive(), source: text,
+  caseId: z.string().max(1000).optional(), caseTitle: z.string().max(10000).optional(), caseSource: z.string().max(10000).optional(),
+  casePrompts: z.array(z.strictObject({ text: text, provenance: z.string().max(1000), source: z.string().max(10000) })).max(20).optional(),
+});
+export const techniqueBindingSchema = z.strictObject({ ref: productionRefSchema, snapshot: techniqueContentSchema });
+export function techniqueInstruction(binding: z.infer<typeof techniqueBindingSchema>) {
+  const item = binding.snapshot;
+  return `镜头手法 ${binding.ref.id}@${binding.ref.revision}：${item.title}\n意图：${item.intent}\n动作节拍：${item.actionBeats.join("；")}\n表演：${item.performance}\n运镜：${item.camera}\n结束构图：${item.ending}\n避免：${item.avoid.join("；")}`;
+}
+export function h3TechniqueInstruction(binding: z.infer<typeof techniqueBindingSchema>, description: string) {
+  return `Camera direction (${binding.ref.id}@${binding.ref.revision}): ${description}`;
+}
 export const productionPathSchema = z.string().min(1).max(2048).refine(
   value => !/^[\\/]|[:\u0000-\u001f]/.test(value) && value.split(/[\\/]/).every(part => part && part !== "." && part !== ".."),
   "必须使用工作区内的相对路径",
@@ -20,14 +43,20 @@ const h3Segment = z.strictObject({
   mode: z.enum(["t2va", "i2va", "fl2va", "l2va", "ref2va"]),
   sourceShotIds: z.array(text).min(1).max(100),
   dialogueIds: z.array(text).max(100),
-  references: z.array(z.strictObject({ role: z.enum(["firstFrame", "lastFrame", "subject", "video", "voice"]), asset: productionRefSchema })).max(12),
+  references: z.array(z.strictObject({ role: z.enum(["firstFrame", "lastFrame", "subject", "video", "voice"]), asset: productionRefSchema, shotId: text.optional() })).max(12),
   requestedSeconds: z.number().min(4).max(15),
   effectiveFrames: z.number().int().min(96).max(360),
   fps: z.literal(24),
   prompt: text,
   description: text,
+  style: styleBindingSchema.optional(),
+  stylePrompt: text.refine(value => !/\p{Script=Han}/u.test(value) && /[a-z]/i.test(value), "H3 风格执行描述须使用英文").optional(),
+  technique: techniqueBindingSchema.optional(),
+  techniquePrompt: text.refine(value => !/\p{Script=Han}/u.test(value) && /[a-z]/i.test(value), "H3 手法执行描述须使用英文").optional(),
 }).superRefine((segment, context) => {
   const issue = (path: string, message: string) => context.addIssue({ code: "custom", path: [path], message });
+  if (segment.stylePrompt && !segment.style) issue("stylePrompt", "风格执行描述必须关联风格快照");
+  if (segment.techniquePrompt && !segment.technique) issue("techniquePrompt", "手法执行描述必须关联手法快照");
   const count = (role: string) => segment.references.filter(reference => reference.role === role).length;
   const first = count("firstFrame");
   const last = count("lastFrame");
@@ -57,11 +86,33 @@ const h3Segment = z.strictObject({
       if (!body.trim()) issue("prompt", `H3 提示词字段 ${heading[1]} 不能为空`);
     }
   }
+  if (segment.technique) {
+    if (segment.mode === "i2va" && !segment.prompt.startsWith("For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n")) issue("prompt", "I2VA 提示词须以官方首帧对齐句和空行开头");
+    if (segment.mode === "fl2va") {
+      const duration = (segment.effectiveFrames / segment.fps).toFixed(2);
+      const firstLine = segment.prompt.split("\n")[0] ?? "";
+      const shots = [...segment.prompt.matchAll(/\[Shot (\d+)\]/g)];
+      const lastShot = shots.at(-1)?.[1];
+      if (!lastShot || firstLine !== `How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot ${lastShot}) aligns with the ${duration}-second mark of the target video.` || !segment.prompt.includes("\n\n")) issue("prompt", "FL2VA 提示词须以官方首尾帧对齐句开头，尾帧时间须为有效时长");
+    }
+    const field = segment.mode === "ref2va" ? "detailed_description:" : "integrated_multimodal_description:";
+    const visual = segment.prompt.split(field)[1]?.split(/\n(?:overall_soundscape|non_diegetic_music):/)[0] ?? "";
+    if (!/\[Shot 1\]/.test(visual)) issue("prompt", "H3 画面描述必须标明 [Shot 1]");
+    if (segment.mode === "ref2va" && !/<(?:Subject|Picture) \d+>/.test(segment.prompt.split("summary:")[0] ?? "")) issue("prompt", "全参考模式须在主体定义中使用实际素材标签");
+    const prose = segment.prompt.replace(/<d>[\s\S]*?<\/d>/g, "").replace(/"[^"\n]*"/g, "");
+    if (/\p{Script=Han}/u.test(prose)) issue("prompt", "H3 描述须使用英文，原文对白和画面可见文字除外");
+  }
 });
 
 export const productionContentSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("brief"), idea: text, constraints: z.string().max(100000) }),
   idea,
+  styleContentSchema,
+  techniqueContentSchema,
+  z.strictObject({ kind: z.literal("imagePlan"), title: text, target: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("asset"), role: z.enum(["character", "scene", "prop"]), identityId: text }),
+    z.strictObject({ kind: z.literal("storyboardShot"), storyboard: productionRefSchema, shotId: text }),
+  ]), prompt: text, style: styleBindingSchema.optional() }),
   z.strictObject({
     kind: z.literal("series"), title: text, premise: text, world: text,
     characters: z.array(z.strictObject({ id: text, name: text, description: text })).min(1).max(500),
@@ -76,7 +127,20 @@ export const productionContentSchema = z.discriminatedUnion("kind", [
       shots: z.array(z.strictObject({ id: text, description: text, dialogue: z.array(dialogue).max(500) })).min(1).max(500),
     })).min(1).max(500),
   }),
-  z.strictObject({ kind: z.literal("asset"), role: z.enum(["character", "scene", "prop"]), identityId: text, description: text, media }),
+  z.strictObject({ kind: z.literal("asset"), role: z.enum(["character", "scene", "prop"]), identityId: text, description: text, media, style: styleBindingSchema.optional() }),
+  z.strictObject({
+    kind: z.literal("storyboard"), title: text, script: productionRefSchema,
+    shots: z.array(z.strictObject({
+      id: text, sourceShotIds: z.array(text).min(1).max(100), dialogueIds: z.array(text).max(100),
+      durationSeconds: z.number().positive().max(15), framing: z.enum(["wide", "medium", "closeUp", "detail"]),
+      description: text, complexStaging: z.boolean(),
+      staging: z.discriminatedUnion("mode", [
+        z.strictObject({ mode: z.literal("director"), planId: text, modelVersion: text, previs: media, description: text }),
+        z.strictObject({ mode: z.literal("direct"), reason: text }),
+      ]),
+      image: media.optional(), style: styleBindingSchema.optional(),
+    })).min(1).max(1000),
+  }),
   z.strictObject({ kind: z.literal("voice"), characterId: text, description: text, source: z.enum(["designed", "imported"]), media }),
   z.strictObject({ kind: z.literal("dialogue"), dialogueId: text, speakerId: text, text, voice: productionRefSchema, media }),
   z.strictObject({ kind: z.literal("h3Plan"), segments: z.array(h3Segment).min(1).max(1000) }),
@@ -104,6 +168,7 @@ export const adoptionSchema = z.strictObject({
 });
 export const productionManifestSchema = z.strictObject({
   version: z.literal(1),
+  defaultStyle: productionRefSchema.optional(),
   objects: z.array(z.strictObject({
     id: productionIdSchema,
     revisions: z.array(z.strictObject({ revision: z.number().int().positive(), path: productionPathSchema })).min(1),

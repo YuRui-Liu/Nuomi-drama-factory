@@ -13,6 +13,18 @@ export const settings = ref<Record<string, unknown>>({});
 let settingsReady = false;
 let saveQueue = Promise.resolve();
 let applyingSettings = false;
+let savedSettings: Record<string, unknown> = {};
+
+function applySettingsChanges(base: Record<string, unknown>, next: Record<string, unknown>, target: Record<string, unknown>, detectConflicts = false) {
+  const result = { ...target };
+  for (const key of new Set([...Object.keys(base), ...Object.keys(next)])) {
+    if (JSON.stringify(base[key]) === JSON.stringify(next[key])) continue;
+    if (detectConflicts && JSON.stringify(target[key]) !== JSON.stringify(base[key]) && JSON.stringify(target[key]) !== JSON.stringify(next[key])) throw new Error(`设置 ${key} 已在其他页面修改，请刷新后重试`);
+    if (Object.hasOwn(next, key)) result[key] = next[key];
+    else delete result[key];
+  }
+  return result;
+}
 
 export const settingsStorage = {
   getItem(key: string) {
@@ -122,6 +134,7 @@ export async function loadSettings() {
     throw new Error("读取设置失败");
   }
   settings.value = data.data;
+  savedSettings = JSON.parse(JSON.stringify(data.data));
   await loadModelReasoning();
   // 等初始化引发的监听执行完，再允许自动保存。
   await nextTick();
@@ -133,17 +146,27 @@ export function saveSettings(update?: (current: Record<string, unknown>) => Reco
   const saving = saveQueue.then(async () => {
     const patch = update?.(settings.value);
     if (update && !patch) return false;
+    const before = JSON.parse(JSON.stringify(settings.value));
+    const desired = JSON.parse(JSON.stringify({ ...before, ...patch }));
+    const latest = await axios.get("/api/settings/get", { headers: { "Cache-Control": "no-cache", "x-toonflow-workspace": "1" } });
+    if (latest.data.code !== 200 || !latest.data.data || typeof latest.data.data !== "object" || Array.isArray(latest.data.data)) throw new Error("读取设置失败");
+    // ACT: 只把本页面发生的顶层变化合入新快照；同一顶层字段并发修改则拒绝，完整覆盖接口保持不变。
+    const submitted = applySettingsChanges(savedSettings, desired, latest.data.data, true);
     const requestedNodeMenu = JSON.stringify(((patch?.general ?? settings.value.general) as { nodeMenu?: unknown } | undefined)?.nodeMenu);
     const { data } = await axios.put<{ code: number; data: { customProviders?: CustomProvider[]; mediaProvider?: { id: string }; modelRefreshErrors?: string[]; nodeMenu?: StoredNodeMenuItem[] | null; aiModels?: ResolvedAiModel[] } | null }>(
-      "/api/settings/save", { settings: { ...settings.value, ...patch } }, { headers: { "x-toonflow-workspace": "1" } },
+      "/api/settings/save", { settings: submitted }, { headers: { "x-toonflow-workspace": "1", "If-Match": latest.headers.etag } },
     );
     if (data.code !== 200) throw new Error("保存设置失败");
+    savedSettings = JSON.parse(JSON.stringify(submitted));
+    applyingSettings = true;
+    try { settings.value = applySettingsChanges(before, settings.value, submitted); }
+    finally { applyingSettings = false; }
     if (data.data?.aiModels) applyModelReasoning(data.data.aiModels);
     const providers = data.data?.customProviders;
     if ((patch && Object.hasOwn(patch, "customProviders")) || providers) invalidateNodeModels("language");
     if (patch || providers) {
       applyingSettings = true;
-      try { settings.value = { ...settings.value, ...patch, ...(providers ? { customProviders: providers } : {}) }; }
+      try { settings.value = { ...settings.value, ...(providers ? { customProviders: providers } : {}) }; }
       finally { applyingSettings = false; }
     }
     if (data.data && Object.hasOwn(data.data, "nodeMenu")

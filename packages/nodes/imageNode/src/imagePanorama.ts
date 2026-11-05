@@ -3,6 +3,7 @@ export type PanoramaCapture = {
   images: { blob: Blob; width: number; height: number; label: string }[];
   columns: number;
   count: number;
+  view?: { source: string; mode: PanoramaMode; yaw: number; pitch: number; fov: number };
 };
 
 export function getPanoramaViews(mode: PanoramaMode, count: 1 | 4 | 12, yaw: number, pitch: number) {

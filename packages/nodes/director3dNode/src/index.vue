@@ -35,7 +35,7 @@ import { createDirectorDraft } from "./agentTools";
 import { directorPrompt } from "./agentPrompt";
 import { anchorSchema, prepareMotion, sampleMotion, type CameraAnchor } from "./motion";
 import { directorPlanSchema, prepareSceneAnimation, type DirectorPlan, type DirectorGeneration } from "./sceneAnimation";
-import { renderImage, renderVideo } from "./renderMedia";
+import { renderImage, renderVideo, renderPanorama } from "./renderMedia";
 
 type PromptModel = NonNullable<InstanceType<typeof promptInput>["$props"]["modelValue"]>;
 const modelDocumentSchema = z.strictObject({
@@ -49,7 +49,7 @@ defineOptions({
   icon: IconCube3dSphere,
   handles: [{ id: "in", type: "target", dataType: ["STRING", "IMAGE", "VIDEO"], label: "文本、图片、视频输入" }] satisfies NodeHandle[],
 });
-const { node, nodeProps, previewReady, ai, files, nodeEvent } = useNode({ label: "3D导演台" });
+const { node, nodeProps, previewReady, ai, files, nodeEvent, nodeTools } = useNode({ label: "3D导演台" });
 const vLoading = ElLoading.directive;
 const { addNodes, findNode, getNodes, nodeTypes, removeNodes } = useVueFlow();
 const mediaFiles = useNodeFiles();
@@ -57,7 +57,7 @@ const exportingVideo = ref(false);
 const exportingImage = ref("");
 const exportProgress = ref(0);
 const exportController = new AbortController();
-nodeEvent.on("delete", () => { if (exportingVideo.value || exportingImage.value) throw new Error("正在导出，请完成后再删除导演节点"); });
+nodeEvent.on("delete", () => { if (savingFromTool.value || exportingVideo.value || exportingImage.value) throw new Error("正在保存或导出，请完成后再删除导演节点"); });
 const data = computed(() => node.data as typeof node.data & {
   modelPath?: string;
   modelSnapshot?: ModelDocument;
@@ -68,7 +68,16 @@ const data = computed(() => node.data as typeof node.data & {
   model?: string;
   anchors?: CameraAnchor[];
   selectedPlanId?: string;
+  videoExport?: {
+    requestId: string;
+    inputKey: string;
+    status: "running" | "completed" | "failed" | "interrupted";
+    result?: { nodeId: string; path: string; mimeType: string; planId: string; sourceVersion: string };
+    message?: string;
+  };
 });
+let videoExportController: AbortController | undefined;
+if (data.value.videoExport?.status === "running") data.value.videoExport = { ...data.value.videoExport, status: "interrupted", message: "页面已重新加载，请检查画布成果；未自动重新导出" };
 const { refList, referenceMentions, setReferencePreview, removeReference } = useNodeReferences();
 const promptModel = computed({ get: () => data.value.promptModel ?? [], set: (value: PromptModel) => { data.value.promptModel = value; } });
 const anchors = computed({ get: () => data.value.anchors ?? [], set: (value: CameraAnchor[]) => { data.value.anchors = value; } });
@@ -91,9 +100,14 @@ let previewVersion = 0;
 const modelLoading = ref(true);
 const modelError = ref("");
 const addingMannequin = ref(false);
+const savingFromTool = ref(false);
 let modelSaving = Promise.resolve();
 let disposed = false;
-onBeforeUnmount(() => { disposed = true; exportController.abort(new Error("导演节点已关闭，导出已停止")); });
+onBeforeUnmount(() => {
+  if (data.value.videoExport?.status === "running") data.value.videoExport = { ...data.value.videoExport, status: "interrupted", message: "导演节点已关闭，导出已停止" };
+  disposed = true;
+  exportController.abort(new Error("导演节点已关闭，导出已停止"));
+});
 
 function getModelPath() {
   if (!node.id || /[\\/]/.test(node.id) || node.id === "." || node.id === "..") throw new Error("节点 ID 不能作为文件夹名称");
@@ -146,7 +160,7 @@ async function openEditor() {
 }
 
 async function addMannequin() {
-  if (modelLoading.value || modelError.value || addingMannequin.value || exportingVideo.value || exportingImage.value || tasks.value.some(task => !task.error)) return;
+  if (modelLoading.value || modelError.value || addingMannequin.value || savingFromTool.value || exportingVideo.value || exportingImage.value || tasks.value.some(task => !task.error)) return;
   addingMannequin.value = true;
   try {
     const workspaceFiles = files.getWorkspaceFiles();
@@ -192,15 +206,23 @@ nodeEvent.on("save", async (reason) => {
     pending = modelSaving;
     await pending;
   } while (pending !== modelSaving);
-  if (reason === "reload" && (exportingVideo.value || exportingImage.value || tasks.value.some(task => !task.error))) {
+  if (reason === "reload" && (savingFromTool.value || exportingVideo.value || exportingImage.value || tasks.value.some(task => !task.error))) {
     throw new Error("导演台正在生成或导出，请完成后再刷新节点");
   }
 });
 
-async function exportToCanvas(kind: "image" | "video", key: string, aspect: number, render: (signal: AbortSignal) => Promise<File>) {
+async function exportToCanvas(kind: "image" | "video", key: string, aspect: number, render: (signal: AbortSignal) => Promise<File>, reportErrors = false) {
+  if (savingFromTool.value) {
+    if (reportErrors) throw new Error("导演方案正在保存，请稍后导出");
+    return;
+  }
   if (kind === "video" ? exportingVideo.value : exportingImage.value) return;
   const type = `remote-${kind}Node`;
-  if (!nodeTypes?.value?.[type]) return void ElMessage.error(`请先启用${kind === "image" ? "图片" : "视频"}节点插件`);
+  if (!nodeTypes?.value?.[type]) {
+    const message = `请先启用${kind === "image" ? "图片" : "视频"}节点插件`;
+    if (reportErrors) throw new Error(message);
+    return void ElMessage.error(message);
+  }
   if (kind === "video") { exportingVideo.value = true; exportProgress.value = 0; }
   else exportingImage.value = key;
   const id = crypto.randomUUID();
@@ -250,9 +272,11 @@ async function exportToCanvas(kind: "image" | "video", key: string, aspect: numb
     committed = true;
     if (kind === "video") exportProgress.value = 100;
     ElMessage.success(`${kind === "image" ? "图片" : "视频"}已导出到画布`);
+    return { nodeId: id, path, mimeType: file.type };
   } catch (error) {
     if (!disposed && !discarded) ElMessage.error(error instanceof Error ? error.message : "导出失败，请重试");
     if (exportNode && findNode(id) === exportNode) removeNodes(id);
+    if (reportErrors) throw error;
   } finally {
     stopWatching();
     if (exportNode) delete exportNode.data.exportProgress;
@@ -336,7 +360,7 @@ function setPrompt(value: string) {
 }
 
 async function generate() {
-  if (modelLoading.value || modelError.value || addingMannequin.value) return;
+  if (modelLoading.value || modelError.value || addingMannequin.value || savingFromTool.value) return;
   const choice = selectedModel.value;
   const requirement = prompt.value.trim();
   if (!choice || !requirement) return;
@@ -407,6 +431,133 @@ async function generate() {
     if (!disposed) tasks.value = tasks.value.map(item => item.id === task.id ? { ...item, error: error instanceof Error ? error.message : "生成失败，请重试" } : item);
   }
 }
+async function modelVersion(value = modelDocument.value) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, "0")).join("");
+}
+
+nodeTools.register({
+  name: "readDirector",
+  description: "读取导演场景、历史方案和当前选中方案；version 用于保存时检测并发修改。不会调用模型。",
+  parameters: z.strictObject({}),
+  async execute() {
+    await modelReady;
+    await modelSaving;
+    if (disposed || modelError.value) throw new Error(modelError.value || "导演节点已关闭");
+    const document: ModelDocument = JSON.parse(JSON.stringify(modelDocument.value));
+    const selectedPlanId = data.value.selectedPlanId ?? null;
+    return { document, version: await modelVersion(document), selectedPlanId };
+  },
+});
+
+nodeTools.register({
+  name: "saveDirectorPlan",
+  description: "保存外部 Agent 编写的场景和完整导演方案，不调用内部模型。expectedVersion 必须来自 readDirector；追加新方案并保留历史，场景变更不得使历史轨道失效。成功后工作台读取同一模型文件。",
+  parameters: z.strictObject({ expectedVersion: z.string().regex(/^[a-f0-9]{64}$/), scene: sceneSchema, plan: directorPlanSchema }),
+  async execute({ expectedVersion, scene: nextScene, plan }, { signal }) {
+    await modelReady;
+    if (disposed || modelError.value) throw new Error(modelError.value || "导演节点已关闭");
+    if (savingFromTool.value || addingMannequin.value || exportingVideo.value || exportingImage.value || tasks.value.some(task => !task.error)) throw new Error("导演台正在处理其他操作，请完成后重读方案");
+    savingFromTool.value = true;
+    try {
+      const workspaceFiles = files.getWorkspaceFiles();
+      const saving = modelSaving.then(async () => {
+        signal?.throwIfAborted();
+        if (disposed) throw new Error("导演节点已关闭");
+        if (await modelVersion() !== expectedVersion) throw new Error("导演模型已变化，请重新读取后保存");
+        const draft = createDirectorDraft(nextScene, plan);
+        const result = draft.read();
+        for (const previous of plans.value) createDirectorDraft(result.scene, {
+          name: previous.name, duration: previous.duration, tracks: previous.tracks, cameraFrames: previous.cameraFrames,
+        }).read();
+        const image = await renderPreview(result.scene, result.plan, { ...getSceneLighting(result.scene), ...data.value.lighting }, sceneSettings.value);
+        signal?.throwIfAborted();
+        if (disposed) throw new Error("导演节点已关闭");
+        const savedPlan = { ...result.plan, id: crypto.randomUUID() };
+        const value: ModelDocument = { version: 1, scene: result.scene, plans: [...plans.value, savedPlan] };
+        const path = await writeModel(workspaceFiles, value);
+        modelDocument.value = value;
+        data.value.modelPath = path;
+        data.value.selectedPlanId = savedPlan.id;
+        preview.value = image;
+        return { path, planId: savedPlan.id, version: await modelVersion() };
+      });
+      modelSaving = saving.then(() => {}, () => {});
+      return await saving;
+    } finally { savingFromTool.value = false; }
+  },
+});
+
+nodeTools.register({
+  name: "exportDirector",
+  description: "把指定方案导出为构图图片、预演视频或全景几何底图。image 提供 camera/time；video 使用方案运镜，长视频提供固定 backgroundRequestId 后立即返回，用 directorVideoExportStatus 查询；panorama 提供固定 camera 位置且 aspect=2，导出完整球面并排除人偶。不生成正式美术资产。",
+  parameters: z.strictObject({
+    kind: z.enum(["image", "video", "panorama"]),
+    planId: z.string().min(1),
+    expectedVersion: z.string().regex(/^[a-f0-9]{64}$/),
+    aspect: z.number().min(0.25).max(4),
+    camera: anchorSchema.optional(),
+    time: z.number().min(0).max(300).optional(),
+    backgroundRequestId: z.string().regex(/^[a-z][a-zA-Z0-9]{0,95}$/).optional(),
+  }),
+  async execute({ kind, planId, expectedVersion, aspect, camera, time, backgroundRequestId }, { signal }) {
+    await modelReady;
+    await modelSaving;
+    signal?.throwIfAborted();
+    if (disposed || modelError.value) throw new Error(modelError.value || "导演节点已关闭");
+    if (backgroundRequestId && kind !== "video") throw new Error("后台导出仅用于预演视频");
+    const inputKey = JSON.stringify({ kind, planId, expectedVersion, aspect, camera, time });
+    if (backgroundRequestId && data.value.videoExport?.requestId === backgroundRequestId) {
+      if (data.value.videoExport.inputKey !== inputKey) throw new Error("此导出请求编号已用于其他输入");
+      return { ...data.value.videoExport, progress: exportProgress.value };
+    }
+    if (await modelVersion() !== expectedVersion) throw new Error("导演模型已变化，请重读后导出");
+    if (savingFromTool.value || addingMannequin.value || exportingImage.value || exportingVideo.value || tasks.value.some(task => !task.error)) throw new Error("导演台正在处理其他操作");
+    const plan = plans.value.find(item => item.id === planId);
+    if (!plan) throw new Error("导演方案不存在");
+    if (kind === "image" && (!camera || time === undefined || time > plan.duration)) throw new Error("图片导出需要 camera 和方案时长内的 time");
+    if (kind === "video" && (camera || time !== undefined)) throw new Error("视频导出使用方案运镜，不接收单帧 camera 或 time");
+    if (kind === "panorama" && (!camera || aspect !== 2 || time !== undefined)) throw new Error("全景底图需要固定 camera、aspect=2，不接收动画 time");
+    const currentScene = scene.value;
+    const light = lighting.value;
+    const settings = sceneSettings.value;
+    const runExport = async (requestSignal?: AbortSignal) => {
+      const result = await exportToCanvas(kind === "panorama" ? "image" : kind, "external", aspect, exportSignal => {
+        const combinedSignal = requestSignal ? AbortSignal.any([requestSignal, exportSignal]) : exportSignal;
+        if (kind === "panorama") return renderPanorama(currentScene, camera!, combinedSignal, light);
+        return kind === "image"
+          ? renderImage(currentScene, camera!, aspect, time!, combinedSignal, plan, light, settings)
+          : renderVideo(currentScene, plan, aspect, combinedSignal, value => { exportProgress.value = value; }, light, settings);
+      }, true);
+      if (!result) throw new Error("导出未完成，未取得成果；请读取画布状态后再决定是否重试");
+      return { ...result, planId, sourceVersion: expectedVersion };
+    };
+    if (!backgroundRequestId) return runExport(signal);
+    const requestId = backgroundRequestId;
+    videoExportController = new AbortController();
+    data.value.videoExport = { requestId, inputKey, status: "running" };
+    // 本地录制可能长于控制命令超时，由节点生命周期与显式取消管理。
+    void runExport(videoExportController.signal).then(result => {
+      if (!disposed) data.value.videoExport = { requestId, inputKey, status: "completed", result };
+    }).catch(error => {
+      if (!disposed) data.value.videoExport = { requestId, inputKey, status: "failed", message: error instanceof Error ? error.message : "导出失败" };
+    }).finally(() => { videoExportController = undefined; });
+    return { ...data.value.videoExport, progress: exportProgress.value };
+  },
+});
+
+nodeTools.register({
+  name: "directorVideoExportStatus",
+  description: "读取或取消当前导演节点的后台预演视频导出；返回实际结果路径，不启动或重试导出。页面关闭会中断录制。",
+  parameters: z.strictObject({ requestId: z.string().min(1), action: z.enum(["read", "cancel"]) }),
+  execute({ requestId, action }) {
+    const task = data.value.videoExport;
+    if (!task || task.requestId !== requestId) throw new Error("未找到此后台导出，请读取节点记录");
+    if (action === "cancel" && task.status === "running") videoExportController?.abort(new Error("用户已取消预演导出"));
+    return { ...task, progress: task.status === "completed" ? 100 : exportProgress.value };
+  },
+});
 </script>
 
 <style scoped lang="scss">

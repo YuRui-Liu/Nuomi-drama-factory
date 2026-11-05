@@ -1,4 +1,5 @@
 import * as assets from "@/utils/assets";
+import * as assetCatalog from "@/utils/assets/catalog";
 import * as production from "@/utils/production/operations";
 import * as productionTasks from "@/utils/production/tasks";
 import * as browser from "@/utils/browser";
@@ -38,6 +39,7 @@ export default {
   production,
   productionTasks,
   assets,
+  assetCatalog,
   browser,
   singleAgent,
   desktop,

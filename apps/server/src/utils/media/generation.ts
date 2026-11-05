@@ -137,7 +137,12 @@ export async function prepareRequest<T>(directory: string | undefined, mediaType
 
 export async function configuredProvider(request: MediaGenerationRequest, mediaType: "image" | "video" | "audio", signal?: AbortSignal, directory?: string) {
   const info = await getMediaProvider(request.providerId);
-  if (!info.models.some(model => model.id === request.modelId && model.type === mediaType)) invalid("所选媒体模型不存在或类型不匹配，请重新选择");
+  const model = info.models.find(model => model.id === request.modelId && model.type === mediaType);
+  if (!model) invalid("所选媒体模型不存在或类型不匹配，请重新选择");
+  if (mediaType === "image") {
+    if (request.size && Array.isArray(model.imageSizes) && model.imageSizes.length && !model.imageSizes.includes(request.size)) invalid("所选图片模型不支持该尺寸，请使用模型列出的尺寸");
+    if (request.ratio && Array.isArray(model.imageRatios) && model.imageRatios.length && !model.imageRatios.includes(request.ratio)) invalid("所选图片模型不支持该画幅");
+  }
   const configurations = record(conf.get("settings", {}).mediaProviderConfigs);
   return loadMediaProviderSource(info.source, record(configurations[info.id]), signal, undefined, directory);
 }

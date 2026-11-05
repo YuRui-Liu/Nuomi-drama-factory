@@ -21,8 +21,11 @@ export function usePanoramaCapture(source: () => string) {
   }], () => operation?.abort(), { flush: "sync" });
   onScopeDispose(() => { disposed = true; operation?.abort(); });
 
-  async function saveCapture(payload: PanoramaCapture) {
-    if (saving.value || disposed) return;
+  async function saveCapture(payload: PanoramaCapture, reportErrors = false) {
+    if (saving.value || disposed) {
+      if (reportErrors) throw new Error("截图正在保存或节点已关闭");
+      return;
+    }
     const controller = operation = new AbortController();
     const pendingIds: string[] = [];
     const createdNodes: Node[] = [];
@@ -48,7 +51,7 @@ export function usePanoramaCapture(source: () => string) {
         controller.signal.throwIfAborted();
         createdNodes.push({
           id, type: "remote-imageNode", position: { x: 0, y: 0 },
-          data: { label: `${node.data.label || "图片"} · ${image.label}`, outputs: { image: { dataType: "IMAGE", value: { url: path, mimeType: "image/png" } } } },
+          data: { label: `${node.data.label || "图片"} · ${image.label}`, ...(payload.view ? { panoramaView: payload.view } : {}), outputs: { image: { dataType: "IMAGE", value: { url: path, mimeType: "image/png" } } } },
         });
       }
       if (findNode(node.id) !== node || !nodeTypes?.value?.["remote-imageNode"] || (grouped && !nodeTypes?.value?.canvasGroup)) {
@@ -94,8 +97,10 @@ export function usePanoramaCapture(source: () => string) {
         }
       });
       ElMessage.success(grouped ? `已创建 ${createdNodes.length} 张截图并成组连线` : "已创建截图并连接原节点");
+      return { nodes: createdNodes.map(item => ({ nodeId: item.id, output: item.data.outputs.image.value })) };
     } catch (error) {
       if (!controller.signal.aborted) showNodeError(error, "全景截图保存失败");
+      if (reportErrors) throw error;
     } finally {
       if (!committed && workspace) {
         const cleanup = await Promise.allSettled(pendingIds.map(id => workspace!.remove(`assets/${id}`, true)));

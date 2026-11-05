@@ -128,6 +128,45 @@ nodeEvent.on("delete", () => {
 });
 
 nodeTools.register({
+  name: "panoramaView",
+  description: "操作固定观察点全景：open 打开球形或柱形预览，read 查询加载与视角，set 设置朝向和视场，export 将当前切片保存为画布图片节点并返回文件。不会移动相机位置、改变灯光或调用出图模型。",
+  parameters: z.strictObject({
+    action: z.enum(["open", "read", "set", "export"]),
+    mode: z.enum(["sphere", "cylinder"]).optional(),
+    yaw: z.number().min(-360).max(360).optional(),
+    pitch: z.number().min(-85).max(85).optional(),
+    fov: z.number().min(1).max(100).optional(),
+  }),
+  async execute(args, { signal }) {
+    signal?.throwIfAborted();
+    if (!panorama.value) throw new Error("全景组件尚未加载");
+    if (args.action === "open") {
+      if (!args.mode) throw new Error("打开全景需要 mode");
+      return panorama.value.openPreview(args.mode);
+    }
+    if (args.action === "read") return panorama.value.readView();
+    if (args.action === "set") {
+      if (args.yaw === undefined || args.pitch === undefined || args.fov === undefined) throw new Error("设置视角需要 yaw、pitch 和 fov");
+      return panorama.value.setView({ yaw: args.yaw, pitch: args.pitch, fov: args.fov });
+    }
+    return panorama.value.exportView();
+  },
+});
+
+nodeTools.register({
+  name: "prepareInpaint",
+  description: "按归一化坐标多边形创建局部重绘草稿、原图、红色引导图和透明蒙版；返回真实文件供检查及制作任务使用，不提交生成、不收费。",
+  parameters: z.strictObject({
+    prompt: z.string().trim().min(1).max(100000),
+    polygons: z.array(z.array(z.strictObject({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) })).min(3).max(100)).min(1).max(20),
+  }),
+  async execute(args, { signal }) {
+    if (!editor.value || uploading.value || panorama.value?.busy || lighting.value?.generating || multiAngle.value?.generating) throw new Error("图片尚未就绪或正在处理");
+    return editor.value.prepareInpaint(args, signal ?? new AbortController().signal);
+  },
+});
+
+nodeTools.register({
   name: "setImage",
   description: "选择工作区内已有的图片文件作为此节点的输出，path 使用工作区相对路径",
   parameters: z.strictObject({

@@ -41,6 +41,8 @@
         <icon-photo-ai :size="48" stroke="1.25" aria-hidden="true" />
       </div>
     </div>
+    <el-button v-if="data.productionTaskId" class="nodrag nopan" text @click="syncProductionTask(data.productionTaskId).catch(error => showNodeError(error, '制作任务读取失败'))">{{ productionTaskLabel }} · 读取结果</el-button>
+    <p v-if="productionStyleLabel" class="productionStyleLabel">{{ productionStyleLabel }}</p>
     <template v-if="editor?.mode !== 'mark'" #bottom>
       <div v-if="lightingVisible" ref="lightingTarget" />
       <div v-else-if="multiAngleVisible" ref="multiAngleTarget" />
@@ -52,6 +54,7 @@
           @preview="setReferencePreview"
           @remove="removeReference" />
         <promptInput v-if="editor?.mode === 'inpaint'" v-model="data.inpaintPromptModel" v-model:text="data.inpaintPrompt" :references="referenceMentions" expandable />
+        <el-input v-else-if="data.productionTaskId" :modelValue="data.prompt" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" readonly aria-label="制作任务提示词" />
         <promptInput v-else v-model="data.promptModel" v-model:text="data.prompt" :references="referenceMentions" expandable />
         <div class="promptFooter">
           <el-select
@@ -60,7 +63,7 @@
             class="modelSelect"
             filterable
             :loading="modelsLoading"
-            :disabled="generating || deleting"
+            :disabled="!!data.productionTaskId || generating || deleting"
             placeholder="选择模型"
             aria-label="生成模型"
             noDataText="请先在设置中添加图片模型"
@@ -81,14 +84,19 @@
             v-model:ratio="data.ratio"
             :sizes="sizeOptions"
             :ratios="ratioOptions"
-            :disabled="generating || deleting || !selectedModel" />
+            :disabled="!!data.productionTaskId || generating || deleting || !selectedModel" />
+          <el-select v-if="editor?.mode !== 'inpaint' && !data.productionTaskId" :modelValue="data.styleSelection?.id || 'none'" class="styleSelect" filterable aria-label="图片风格" :disabled="generating || deleting" @change="(value: string) => setStyle(value).catch(error => showNodeError(error, '风格选择失败'))">
+            <el-option label="不指定风格" value="none" />
+            <el-option label="作品默认风格" value="projectDefault" />
+            <el-option v-for="style in styleLibrary" :key="style.id" :label="style.content.name" :value="style.id" />
+          </el-select>
           <el-button v-if="editor?.mode === 'inpaint'" class="confirmButton" type="primary" :icon="IconCheck" :loading="editor.busy" :disabled="deleting || uploading || !generationPrompt" @click="confirmInpaint().catch(error => showNodeError(error, '重绘节点创建失败'))">确认</el-button>
           <div v-else class="generationActions">
             <mediaPrice v-if="priceInput" :input="{ ...priceInput, mediaType: 'image' }" :supported="selectedModel?.supportsPrice === true" />
             <el-button
               class="sendButton"
               :icon="generating ? IconPlayerStop : IconArrowUp"
-              :disabled="deleting || uploading || (!generating && (editor?.busy || !generationPrompt || !selectedModel))"
+              :disabled="!!data.productionTaskId || deleting || uploading || (!generating && (editor?.busy || !generationPrompt || !selectedModel))"
               :title="generating ? '停止生成' : '生成图片'"
               :aria-label="generating ? '停止生成' : '生成图片'"
               @click="generating ? generationController?.abort() : startGeneration().catch((error) => showNodeError(error, '图片生成失败'))" />
@@ -111,13 +119,16 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onScopeDispose, ref, watch } from "vue";
-import { ElButton, ElCard, ElSelect, ElOption, ElOptionGroup, ElLoading, ElImageViewer } from "element-plus";
+import { ElButton, ElCard, ElSelect, ElOption, ElOptionGroup, ElLoading, ElImageViewer, ElInput } from "element-plus";
 import { IconCheck, IconPhotoAi, IconSparkles, IconArrowUp, IconPlayerStop, IconTransfer, IconLayoutGrid, IconBrush, IconPencil, IconSun, IconCameraRotate, IconPanoramaHorizontal, IconChevronDown } from "@tabler/icons-vue";
 import { nodeSkeleton, nodeTools, useNode, z, type NodeMediaModel, type NodeImageRequest, type NodeHandle } from "@toonflow/nodes-scaffold/runtime";
 import { groupNodeModels } from "@toonflow/node-shared/groupNodeModels";
 import { showNodeError } from "@toonflow/node-shared/showNodeError";
 import { useNodeGeneration } from "@toonflow/node-shared/useNodeGeneration";
 import { useNodeReferences } from "@toonflow/node-shared/useNodeReferences";
+import { productionPathSchema, productionRefSchema, styleContentSchema, styleInstruction } from "@toonflow/node-shared/production/schemas";
+import { styleLibrary } from "@toonflow/node-shared/production/styleLibrary";
+import type { ProductionContent, ProductionRef } from "@toonflow/node-shared/production/types";
 import promptInput from "@toonflow/node-shared/promptInput";
 import referenceItem from "@toonflow/node-shared/referenceItem";
 import mediaHistory from "@toonflow/node-shared/mediaHistory";
@@ -143,7 +154,9 @@ const { id, node, nodeProps, nodeEvent, outputs, files, ai, updateNodeInternals 
   label: "图片生成",
 });
 type PromptModel = NonNullable<InstanceType<typeof promptInput>["$props"]["modelValue"]>;
-const data = computed(() => node.data as { prompt: string; promptModel: PromptModel; inpaintPrompt: string; inpaintPromptModel: PromptModel; model: string; size: string; ratio: string; inpaint?: ImageInpaint });
+type Style = Extract<ProductionContent, { kind: "style" }>;
+type StyleSelection = { id: string; snapshot: Style; ref?: ProductionRef };
+const data = computed(() => node.data as { prompt: string; promptModel: PromptModel; inpaintPrompt: string; inpaintPromptModel: PromptModel; model: string; size: string; ratio: string; styleSelection?: StyleSelection; inpaint?: ImageInpaint; productionTaskId?: string; productionComposite?: { taskId: string; path: string; mimeType: string } });
 data.value.prompt ??= "";
 data.value.promptModel ??= [];
 data.value.inpaintPrompt ??= "";
@@ -169,6 +182,8 @@ const multiAngleVisible = ref(false);
 const panorama = ref<InstanceType<typeof imagePanorama>>();
 let disposed = false;
 const deleting = ref(false);
+const productionTaskLabel = ref("制作任务");
+const productionStyleLabel = ref("");
 const previewVisible = ref(false);
 const inpaintPreviewVisible = ref(false);
 const imageWidth = ref(0);
@@ -177,6 +192,7 @@ const generationState = useNodeGeneration(outputs, () => generationController?.a
 const { generating } = generationState;
 let generation: Promise<void> | undefined;
 let modelsRequest: Promise<void> | undefined;
+let styleRequest = 0;
 const selectedModel = computed(() => models.value.find((item) => JSON.stringify([item.providerId, item.modelId]) === data.value.model));
 const sizeOptions = computed(() => (selectedModel.value?.imageSizes?.length ? selectedModel.value.imageSizes : ["2K"]));
 const ratioOptions = computed(() => (selectedModel.value?.imageRatios?.length ? selectedModel.value.imageRatios : ["16:9"]));
@@ -196,6 +212,9 @@ const modelGroups = computed(() => groupNodeModels(models.value));
 const generationPrompt = computed(() =>
   [
     (editor.value?.mode === "inpaint" ? data.value.inpaintPrompt : data.value.prompt).trim(),
+    ...(editor.value?.mode !== "inpaint" && data.value.styleSelection ? [data.value.styleSelection.ref
+      ? styleInstruction({ ref: data.value.styleSelection.ref, mode: "default", snapshot: data.value.styleSelection.snapshot })
+      : `视觉风格（${data.value.styleSelection.snapshot.name}）：${data.value.styleSelection.snapshot.positive}\n避免：${data.value.styleSelection.snapshot.avoid}`] : []),
     ...refList.value.flatMap((item, index) => (item.dataType === "STRING" && item.value?.trim() ? [`参考 ${index + 1}：\n${item.value.trim()}`] : [])),
   ]
     .filter(Boolean)
@@ -243,6 +262,7 @@ onMounted(() => {
   window.addEventListener("toonflow:plugin-installed", refreshProviderModels);
   window.addEventListener("toonflow:provider-config-changed", refreshProviderModels);
   void loadModels().catch(error => { if (!disposed) showNodeError(error, "模型读取失败"); });
+  if (data.value.productionTaskId) void syncProductionTask(data.value.productionTaskId).catch(error => { if (!disposed) showNodeError(error, "制作任务读取失败"); });
 });
 onScopeDispose(() => {
   disposed = true;
@@ -317,6 +337,7 @@ async function confirmInpaint() {
 }
 
 async function startGeneration() {
+  if (data.value.productionTaskId) throw new Error("此节点绑定可恢复制作任务，请通过制作任务接口提交或查询，避免重复生成");
   const input = generationInput.value;
   if (generating.value) throw new Error("图片正在生成，请等待完成");
   if (panorama.value?.visible) throw new Error("请先关闭全景图，再启动图片生成");
@@ -329,8 +350,16 @@ async function startGeneration() {
   if (!generationPrompt.value) throw new Error("请输入生成提示词");
   const references = refList.value.filter(item => !data.value.inpaint || item.dataType !== "IMAGE" || item.value?.url !== data.value.inpaint.source);
   if (references.some(item => item.value === undefined)) throw new Error("引用节点暂无内容，请先补充引用内容");
+  if (data.value.styleSelection && references.some(item => item.dataType === "STRING" && /^视觉风格 item[a-f0-9]{32}@\d+：/.test(item.value ?? ""))) throw new Error("节点已选择风格，请移除连接的风格节点，避免混合两套风格");
   if (!input) throw new Error("请先选择图片模型");
   const workspace = files.getWorkspaceFiles();
+  if (data.value.styleSelection?.ref) {
+    const selected = structuredClone(data.value.styleSelection);
+    const { directory } = await workspace.list();
+    const current = await readDefaultStyle(directory);
+    if (JSON.stringify(current.ref) !== JSON.stringify(selected.ref) || JSON.stringify(current.content) !== JSON.stringify(selected.snapshot)) throw new Error("作品默认风格已变化，请重新选择风格");
+    if (JSON.stringify(data.value.styleSelection) !== JSON.stringify(selected) || JSON.stringify(generationInput.value) !== JSON.stringify(input) || (await workspace.list()).directory !== directory) throw new Error("作品或生成配置已变化，请重新检查");
+  }
   const controller = new AbortController();
   const inpaintData = data.value.inpaint;
   generationController = controller;
@@ -411,10 +440,43 @@ function getConfig() {
       modelId: selectedModel.value?.modelId ?? "",
       size: data.value.size,
       ratio: data.value.ratio,
+      style: data.value.styleSelection ?? null,
     },
     models: models.value,
+    styles: [{ id: "none", name: "不指定风格" }, { id: "projectDefault", name: "作品默认风格" }, ...styleLibrary.map(item => ({ id: item.id, name: item.content.name }))],
   };
 }
+
+async function readDefaultStyle(directory: string) {
+  const query = new URLSearchParams({ directory, request: JSON.stringify({ action: "readDefaultStyle" }) });
+  const response = await fetch(`/api/production/get?${query}`, { headers: { "x-toonflow-workspace": "1" } });
+  const value = await response.json();
+  if (!response.ok || value.code !== 200) throw new Error(value.message || "读取作品风格失败");
+  const ref = productionRefSchema.safeParse(value.data?.ref);
+  const content = styleContentSchema.safeParse(value.data?.record?.content);
+  if (!ref.success || !content.success) throw new Error("作品尚未采用默认风格");
+  if (JSON.stringify(value.data?.adoption?.selected) !== JSON.stringify(ref.data)) throw new Error("默认风格采用版本已变化，请重新设置");
+  return { ref: ref.data, content: content.data };
+}
+
+async function setStyle(id: string) {
+  if (data.value.productionTaskId) throw new Error("制作任务风格已固定，请修改方案并重新准备任务");
+  if (generating.value || deleting.value) throw new Error("节点正在生成或删除");
+  const requestId = ++styleRequest;
+  if (id === "none") { data.value.styleSelection = undefined; return; }
+  if (id === "projectDefault") {
+    const workspace = files.getWorkspaceFiles(); const { directory } = await workspace.list();
+    const current = await readDefaultStyle(directory);
+    if (disposed || requestId !== styleRequest || (await workspace.list()).directory !== directory) throw new Error("作品或风格选择已变化，请重新选择");
+    data.value.styleSelection = { id, snapshot: current.content, ref: current.ref };
+    return;
+  }
+  const style = styleLibrary.find(item => item.id === id);
+  if (!style) throw new Error("风格不存在，请重新选择");
+  data.value.styleSelection = { id, snapshot: { ...style.content } };
+}
+
+nodeTools.register({ name: "setStyle", description: "选择图片风格或作品默认风格；none 清除选择，不启动生成。", parameters: z.strictObject({ id: z.string().min(1) }), async execute(args) { await setStyle(args.id); return { style: data.value.styleSelection ?? null }; } });
 
 nodeTools.register({
   name: "getConfig",
@@ -439,6 +501,7 @@ nodeTools.register({
   }).refine((args) => (args.providerId === undefined) === (args.modelId === undefined), "providerId 与 modelId 必须同时提供"),
   async execute(args, { signal }) {
     signal?.throwIfAborted();
+    if (data.value.productionTaskId) throw new Error("制作任务输入已固定，请为新方案创建新任务");
     if (generating.value || deleting.value) throw new Error("节点正在生成或删除，请稍后修改配置");
     await loadModels();
     signal?.throwIfAborted();
@@ -462,6 +525,7 @@ nodeTools.register({
   description: "修改此节点的普通图片生成提示词，支持 {{ref 1}} 等参考标记；不修改局部重绘提示词，不启动生成",
   parameters: z.strictObject({ prompt: z.string() }),
   execute({ prompt: value }) {
+    if (data.value.productionTaskId) throw new Error("制作任务输入已固定，请为新方案创建新任务");
     if (deleting.value) throw new Error("节点正在删除，请稍后修改");
     data.value.prompt = value;
     data.value.promptModel = value.split("\n").map((text) => [{ type: "Write", text }]);
@@ -478,9 +542,84 @@ nodeTools.register({
     return startGeneration();
   },
 });
+
+async function syncProductionTask(taskId: string, signal?: AbortSignal) {
+  if (generating.value || uploading.value || deleting.value || editor.value?.busy || panorama.value?.busy) throw new Error("节点正在处理图片");
+  const workspace = files.getWorkspaceFiles();
+  const { directory } = await workspace.list();
+  const previousTaskId = data.value.productionTaskId;
+  const response = await fetch("/api/production/task", {
+    method: "POST", signal, headers: { "Content-Type": "application/json", "x-toonflow-workspace": "1" },
+    body: JSON.stringify({ directory, command: { action: "read", taskId } }),
+  });
+  const result = await response.json();
+  if (!response.ok || result.code !== 200) throw new Error(result.message || "制作任务读取失败");
+  const task = z.object({
+    id: z.literal(taskId), status: z.enum(["prepared", "submitting", "running", "downloading", "completed", "failed", "cancelRequested", "cancelled", "needsReview"]),
+    plan: productionRefSchema,
+    input: z.object({ type: z.literal("image"), request: z.object({ providerId: z.string(), modelId: z.string(), prompt: z.string(), size: z.string(), ratio: z.string(), images: z.array(z.object({ path: productionPathSchema, mimeType: z.string() })).optional() }) }),
+    outputs: z.array(z.object({ path: productionPathSchema, mimeType: z.string().startsWith("image/"), mediaType: z.literal("image") })),
+  }).parse(result.data);
+  const query = new URLSearchParams({ directory, request: JSON.stringify({ action: "read", ref: task.plan }) });
+  const planResponse = await fetch(`/api/production/get?${query}`, { signal });
+  const planResult = await planResponse.json();
+  if (!planResponse.ok || planResult.code !== 200) throw new Error(planResult.message || "出图方案读取失败");
+  const plan = planResult.data.record.content;
+  const label = plan.kind === "imagePlan" ? `${plan.target.kind === "asset" ? plan.target.identityId : plan.target.shotId}${plan.style ? ` · ${plan.style.snapshot.name} v${plan.style.ref.revision}` : ""}` : "";
+  signal?.throwIfAborted();
+  if (disposed || deleting.value || data.value.productionTaskId !== previousTaskId || (await files.getWorkspaceFiles().list()).directory !== directory) throw new Error("作品或节点任务绑定已变化，请重新读取");
+  const request = task.input.request;
+  const inpaint = data.value.inpaint;
+  if (inpaint) {
+    const expected = buildInpaintRequest({ prompt: request.prompt, images: [] }, inpaint);
+    if (JSON.stringify(request.images ?? []) !== JSON.stringify(expected.images)) throw new Error("制作任务参考图与局部重绘原图、引导图不一致");
+  }
+  data.value.productionTaskId = task.id;
+  productionStyleLabel.value = label;
+  data.value.prompt = request.prompt;
+  data.value.promptModel = request.prompt.split("\n").map(text => [{ type: "Write", text }]);
+  data.value.model = JSON.stringify([request.providerId, request.modelId]);
+  data.value.size = request.size;
+  data.value.ratio = request.ratio;
+  if (task.status === "completed") {
+    const output = task.outputs[0];
+    if (!output) throw new Error("已完成任务缺少图片成果");
+    if (inpaint) {
+      const composite = data.value.productionComposite;
+      if (composite?.taskId === task.id) {
+        await workspace.read(composite.path);
+        outputs.value.image = { dataType: "IMAGE", value: { url: composite.path, mimeType: composite.mimeType } };
+      } else {
+        uploading.value = true;
+        try {
+          const [image] = await generateInpaint({ ...request, images: [], directory, outputDirectory: `assets/${id}` }, inpaint, signal ?? new AbortController().signal, output);
+          if (!image) throw new Error("局部合成未返回图片");
+          data.value.productionComposite = { taskId: task.id, path: image.path, mimeType: image.mimeType };
+          outputs.value.image = { dataType: "IMAGE", value: { url: image.path, mimeType: image.mimeType } };
+        } finally { uploading.value = false; }
+      }
+    } else {
+      outputs.value.image = { dataType: "IMAGE", value: { url: output.path, mimeType: output.mimeType } };
+    }
+  }
+  productionTaskLabel.value = { prepared: "待提交", submitting: "正在提交", running: "生成中", downloading: "下载中", completed: "已生成", failed: "生成失败", cancelRequested: "正在取消", cancelled: "已取消", needsReview: "待核对" }[task.status];
+  return task;
+}
+nodeTools.register({
+  name: "bindProductionTask",
+  description: "绑定本作品已存在的图片制作任务并读取其输入、状态和实际成果。不会提交、刷新远端任务或再次付费；绑定后普通生成按钮停用。重复调用可同步原任务结果。",
+  parameters: z.strictObject({ taskId: z.string().regex(/^task[a-f0-9]{32}$/), expectedTaskId: z.string().nullable() }),
+  async execute(args, { signal }) {
+    if ((data.value.productionTaskId ?? null) !== args.expectedTaskId) throw new Error("任务绑定已变化，请重读节点");
+    if (data.value.productionTaskId && data.value.productionTaskId !== args.taskId) throw new Error("已有制作任务请保留，另建节点绑定新任务");
+    if (!data.value.productionTaskId && outputFile.value) throw new Error("此节点已有图片，请新建出图节点绑定制作任务");
+    return syncProductionTask(args.taskId, signal);
+  },
+});
 </script>
 
 <style scoped lang="scss">
+.styleSelect { width: 135px; }
 .panoramaButton {
   &[aria-expanded="true"] .menuChevron { transform: rotate(180deg); }
 }

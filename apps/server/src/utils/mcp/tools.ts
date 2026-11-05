@@ -4,8 +4,8 @@ import { realpath, stat, mkdir, readdir, lstat, rm, rmdir, readFile } from "@too
 import { z } from "zod";
 import { productionExecuteSchema, productionReadSchema } from "@toonflow/node-shared/production/operations";
 import * as production from "@/utils/production/operations";
-import { taskCommandSchema } from "@/utils/production/taskSchema";
-import { executeTask } from "@/utils/production/tasks";
+import { taskCommandSchema, type ProductionTask } from "@/utils/production/taskSchema";
+import { executeTask, markPresented } from "@/utils/production/tasks";
 import { detectMimeType } from "@/utils/media/priceReference";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CanvasContext } from "@toonflow/tools-scaffold/runtime";
@@ -100,6 +100,75 @@ async function assertFileNotOpen(directory: string, path: string) {
   }
 }
 
+type CanvasNodeSummary = { type?: string; label?: string; position?: { x: number; y: number } };
+// ACT: 只读取节点类型、名称和坐标用于分区避让；单次最多翻 20 页，超出时按已读节点避让。
+async function canvasNodeSummaries(connectionId: string, directory: string, signal: AbortSignal) {
+  const ids: string[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < 20; page++) {
+    const result = await callControl(connectionId, "findCanvasNodes", { limit: 100, ...(cursor ? { cursor } : {}) }, signal, directory) as
+      { nodes?: { id?: string }[]; hasMore?: boolean; nextCursor?: string | null } | undefined;
+    for (const node of result?.nodes ?? []) if (node.id) ids.push(node.id);
+    cursor = result?.hasMore ? result.nextCursor ?? undefined : undefined;
+    if (!cursor) break;
+  }
+  const nodes: CanvasNodeSummary[] = [];
+  for (let index = 0; index < ids.length; index += 20) {
+    const result = await callControl(connectionId, "getCanvasNodes", { nodeIds: ids.slice(index, index + 20), fields: ["label", "type", "position"] }, signal, directory) as
+      { nodes?: CanvasNodeSummary[] } | undefined;
+    for (const node of result?.nodes ?? []) {
+      if (typeof node.position?.x === "number" && typeof node.position?.y === "number") nodes.push(node);
+    }
+  }
+  return nodes;
+}
+
+// ACT: 任务完成后自动把视频成果放到当前画布可见位置；重复呈现由任务记录的 presentation 拦住，失败不改变任务结果。
+async function presentTaskVideos(connectionId: string, directory: string, task: ProductionTask, signal: AbortSignal) {
+  if (task.status !== "completed" || task.presentation || task.input.type !== "video") return;
+  const outputs = task.outputs.filter(output => output.mediaType === "video");
+  if (!outputs.length) return;
+  const canvas = await callControl(connectionId, "getCanvas", {}, signal, directory) as
+    { canvasId?: string | null; viewport?: { x: number; y: number; zoom: number } } | undefined;
+  if (!canvas?.canvasId) return;
+  const nodes = await canvasNodeSummaries(connectionId, directory, signal).catch(() => [] as CanvasNodeSummary[]);
+  const shots = nodes.filter(node => node.type === "remote-videoNode" && node.label?.startsWith("视频成片"));
+  // ACT: 成片区沿用已有成片节点的起始位置，没有时放到画布最下方；按镜号每行 4 个，节点实际尺寸未公开，用 520x360 网格估算避免重叠。
+  const baseX = shots.length ? Math.min(...shots.map(node => node.position!.x)) : 20;
+  const baseY = shots.length ? Math.min(...shots.map(node => node.position!.y)) : Math.max(0, ...nodes.map(node => node.position?.y ?? 0)) + 360;
+  const placeShot = (shot: number) => {
+    const column = shot > 0 ? (shot - 1) % 4 : 0;
+    const row = shot > 0 ? Math.floor((shot - 1) / 4) : 0;
+    const position = { x: baseX + column * 520, y: baseY + row * 360 };
+    while (nodes.some(node => Math.abs(node.position!.x - position.x) < 470 && Math.abs(node.position!.y - position.y) < 350)) position.y += 360;
+    nodes.push({ position });
+    return position;
+  };
+  const label = task.input.request.h3SegmentId ?? task.requestId;
+  const shotNumber = Number((task.input.request.h3SegmentId ?? "").match(/s(\d+)$/i)?.[1] ?? 0);
+  const nodeIds: string[] = [];
+  for (const [index, output] of outputs.entries()) {
+    const added = await callControl(connectionId, "addNode", {
+      type: "remote-videoNode",
+      position: placeShot(shotNumber + index),
+      label: `视频成片 · ${label}`,
+    }, signal, directory) as { node?: { id?: string } } | undefined;
+    const nodeId = added?.node?.id;
+    if (!nodeId) continue;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const tools = await callControl(connectionId, "getNodeTools", { nodeIds: [nodeId] }, signal, directory) as
+        { nodeTools?: { name?: string }[] } | undefined;
+      if (tools?.nodeTools?.some(item => item.name === "node:setVideo")) {
+        await callControl(connectionId, "nodeTools", { nodeId, name: "node:setVideo", args: { path: output.path, mimeType: output.mimeType } }, signal, directory);
+        nodeIds.push(nodeId);
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+  }
+  if (nodeIds.length) await markPresented(directory, task.id, { canvasId: canvas.canvasId, nodeIds });
+}
+
 export async function getMcpTools(): Promise<McpTool[]> {
   const authorizationSignal = authorizationController.signal;
   let pluginError: string | undefined;
@@ -112,17 +181,19 @@ export async function getMcpTools(): Promise<McpTool[]> {
       return { connections: listConnections(), workspaceRoot, ...(pluginError ? { pluginError } : {}) };
     },
   }];
-  tools.push(wrapTool("productionRead", "读取版本化制作成果：list 分页返回摘要，read 返回指定修订及采用状态，listAffected 查询下游影响。不会启动生成。", z.toJSONSchema(productionReadSchema, { io: "input" }), async (args, target) => {
+  tools.push(wrapTool("productionRead", "读取版本化制作成果：list 分页返回摘要，read 返回指定修订及采用状态，readDefaultStyle 读取作品默认风格，listAffected 查询下游影响。不会启动生成。", z.toJSONSchema(productionReadSchema, { io: "input" }), async (args, target) => {
     const { directory } = await resolveTarget(target);
     return production.read(directory!, args);
   }));
-  tools.push(wrapTool("productionExecute", "保存制作成果新修订或采用指定修订。保存必须提供 expectedRevision，首次创建为 0；采用必须提供读取到的 expectedAdoption 及真实用户确认或委托依据。只记录成果，不发起媒体生成，不自动替换旧采用。", z.toJSONSchema(productionExecuteSchema, { io: "input" }), async (args, target) => {
+  tools.push(wrapTool("productionExecute", "保存制作成果新修订、采用指定修订，或用 setDefaultStyle 设置已采用的作品默认风格。保存须提供 expectedRevision；采用须提供 expectedAdoption 及真实确认或委托依据；设置默认风格须提供 expectedDefault。只记录成果，不发起媒体生成。", z.toJSONSchema(productionExecuteSchema, { io: "input" }), async (args, target) => {
     const { directory } = await resolveTarget(target);
     return production.execute(directory!, args);
   }));
-  tools.push(wrapTool("productionTask", "持久制作任务：prepare 固定采用方案与素材；submit 在用户授权后提交；read 读取本地记录；refresh 查询原任务并保存结果；cancel 请求取消。仅支持明确提供恢复接口的供应商。needsReview 且无远端编号时禁止重提。", z.toJSONSchema(taskCommandSchema, { io: "input" }), async (args, target) => {
-    const { directory } = await resolveTarget(target);
-    return executeTask(directory!, args);
+  tools.push(wrapTool("productionTask", "持久制作任务：prepare 固定采用方案与素材；submit 在用户授权后提交；read 读取本地记录；refresh 查询原任务并保存结果；cancel 请求取消。仅支持明确提供恢复接口的供应商。needsReview 且无远端编号时禁止重提。视频任务完成后会在当前画布自动生成视频节点并绑定成果。", z.toJSONSchema(taskCommandSchema, { io: "input" }), async (args, target, signal) => {
+    const { connection, directory } = await resolveTarget(target);
+    const task = await executeTask(directory!, args);
+    if (connection) await presentTaskVideos(connection.id, directory!, task, signal).catch(error => console.warn("制作任务成果自动呈现失败", error));
+    return task;
   }));
   const mediaSchema = z.strictObject({ path: z.string().min(1).max(4096) });
   tools.push(wrapTool("productionMedia", "读取工作区实际图片或音频，以 MCP 原生媒体内容返回，供视听检查。单文件最多 10MB；视频须先通过现有 FFmpeg 工具提取帧和音轨。读取成功不代表验收通过；客户端无法感知媒体时必须记录未验证。", z.toJSONSchema(mediaSchema), async (args, target, signal) => {

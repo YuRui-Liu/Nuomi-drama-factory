@@ -25,7 +25,7 @@ export function useImageInpaint() {
   const files = useNodeFiles();
   const ai = useNodeAi();
 
-  return async function generateInpaint(input: NodeImageRequest, inpaint: ImageInpaint, signal: AbortSignal): Promise<NodeImageResult[]> {
+  return async function generateInpaint(input: NodeImageRequest, inpaint: ImageInpaint, signal: AbortSignal, completedResult?: NodeImageResult): Promise<NodeImageResult[]> {
     signal.throwIfAborted();
     if (!inpaint || ![inpaint.original, inpaint.guide, inpaint.mask].every(path => typeof path === "string" && path.trim())
       || !Array.isArray(inpaint.images) || inpaint.images.some(image => !image || typeof image.path !== "string" || !image.path.trim() || typeof image.mimeType !== "string" || !image.mimeType.startsWith("image/"))) {
@@ -37,7 +37,11 @@ export function useImageInpaint() {
     const urls: string[] = [];
     let outputPath = "";
     let committed = false;
-    let requested = false;
+    const request = buildInpaintRequest(input, inpaint);
+    const requestKey = JSON.stringify({ request, mask: inpaint.mask });
+    const recovery = node.data.inpaintRecovery as { requestKey: string; result?: NodeImageResult } | undefined;
+    if (recovery && recovery.requestKey !== requestKey) throw new Error("已有局部重绘请求待恢复，不能改动输入后再次付费；请恢复原输入并核对原任务");
+    if (recovery && !recovery.result && !completedResult) throw new Error("上次局部重绘提交结果尚不明确，请先核对供应商任务，禁止自动重新提交");
 
     async function readImage(path: string, mimeType = "image/png") {
       const content = await workspace.read(path);
@@ -66,15 +70,16 @@ export function useImageInpaint() {
       if (!context.getImageData(0, 0, canvas.width, canvas.height).data.some((value, index) => index % 4 === 3 && value)) throw new Error("局部重绘蒙版为空，请重新涂抹区域");
       const { directory } = await workspace.list();
       signal.throwIfAborted();
-      requested = true;
       // ACT: 供应商尚未统一支持原生 mask；使用涂色参考引导，再按本地蒙版合成，严格保留区域外像素。
-      const [result] = await ai.generateImage(buildInpaintRequest({
-        ...input,
-        directory,
-        outputDirectory: `assets/${temporaryId}`,
-      }, inpaint), signal);
-      signal.throwIfAborted();
+      let result = completedResult ?? recovery?.result;
+      if (!result) {
+        // 先保留提交记录；网络中断不能推断为供应商未执行。
+        node.data.inpaintRecovery = { requestKey };
+        [result] = await ai.generateImage({ ...request, directory, outputDirectory: `assets/${temporaryId}` }, signal);
+        if (result) node.data.inpaintRecovery = { requestKey, result };
+      }
       if (!result) throw new Error("供应商未返回图片");
+      signal.throwIfAborted();
       const generated = await readImage(result.path, result.mimeType);
       context.clearRect(0, 0, canvas.width, canvas.height);
       context.drawImage(generated, 0, 0, canvas.width, canvas.height);
@@ -87,20 +92,15 @@ export function useImageInpaint() {
       outputPath = await uploadNodeFile(workspace, id, new File([blob], "image.png", { type: "image/png" }));
       signal.throwIfAborted();
       if (findNode(id) !== node) throw new Error("重绘节点已移除");
-      await workspace.remove(`assets/${temporaryId}`, true).catch(error => {
-        if (error?.response?.data?.data?.code !== "ENOENT") showNodeError(error, "重绘临时文件清理失败");
-      });
-      requested = false;
       signal.throwIfAborted();
       committed = true;
+      // 保留供应商原图用于溯源；合成失败时同一输入只重做本地合成。
+      delete node.data.inpaintRecovery;
       return [{ path: outputPath, mimeType: "image/png", mediaType: "image" }];
     } finally {
       urls.forEach(url => URL.revokeObjectURL(url));
       canvas.width = canvas.height = 0;
       if (outputPath && !committed) await workspace.remove(outputPath).catch(error => showNodeError(error, "重绘临时文件清理失败"));
-      if (requested) await workspace.remove(`assets/${temporaryId}`, true).catch(error => {
-        if (error?.response?.data?.data?.code !== "ENOENT") showNodeError(error, "重绘临时文件清理失败");
-      });
     }
   };
 }

@@ -36,17 +36,19 @@
         <span class="gridMultiply">×</span>
         <label><span>列数</span><el-input-number v-model="columns" :min="1" :max="10" :precision="0" :disabled="splitting" controlsPosition="right" aria-label="切分列数" /></label>
       </div>
+      <el-button class="detectButton" :loading="detecting" :disabled="splitting || rows < 2" text @click="detectHorizontalGutters">识别横向分隔线</el-button>
+      <label class="cropInset"><span>每格内缩（去边框）</span><el-input-number v-model="insetPercent" :min="0" :max="8" :precision="1" :step="0.5" :disabled="splitting" controlsPosition="right" aria-label="每格内缩百分比" /><small>%</small></label>
       <div v-if="visible" class="previewArea">
         <div class="previewImage">
           <img :src="src" alt="宫格切分预览" @load="readSize" @error="imageSize = { width: 0, height: 0 }" />
-          <div v-if="validGrid" class="previewGrid" :style="{ gridTemplateColumns: `repeat(${columns}, 1fr)`, gridTemplateRows: `repeat(${rows}, 1fr)` }" aria-hidden="true">
+          <div v-if="validGrid" class="previewGrid" :style="{ gridTemplateColumns: `repeat(${columns}, 1fr)`, gridTemplateRows: detectedRowRanges.length ? detectedRowRanges.map(range => `${range.end - range.start + 1}fr`).join(' ') : `repeat(${rows}, 1fr)` }" aria-hidden="true">
             <span v-for="cell in rows * columns" :key="cell"><small>{{ cell }}</small></span>
           </div>
         </div>
       </div>
       <div class="splitSummary" aria-live="polite">
         <span>{{ validGrid ? `共 ${rows * columns} 张图片` : '请设置有效行列数' }}</span>
-        <span>从左到右，逐行切分</span>
+        <span>{{ detectedRowRanges.length ? '已按横向分隔线校正' : '从左到右，逐行切分' }}</span>
       </div>
       <el-button class="splitButton" type="primary" :loading="splitting" :disabled="!canSplit || disabled" @click="splitImage">
         {{ splitting ? `正在切分 ${completed} / ${rows * columns}` : '切分为图片节点' }}
@@ -72,9 +74,12 @@ const visible = ref(false);
 const trigger = ref<HTMLElement>();
 const rows = ref(3);
 const columns = ref(3);
+const insetPercent = ref(2);
 const splitting = ref(false);
+const detecting = ref(false);
 const completed = ref(0);
 const imageSize = ref({ width: 0, height: 0 });
+const detectedRowRanges = ref<Array<{ start: number; end: number }>>([]);
 // ACT: 每轴最多 10 格（100 张），逐张编码上传以控制内存；更大批量需加入分批任务后再放开。
 const validGrid = computed(() => [rows.value, columns.value].every(value => Number.isInteger(value) && value >= 1 && value <= 10));
 const canSplit = computed(() => validGrid.value && rows.value * columns.value > 1 && imageSize.value.width >= columns.value && imageSize.value.height >= rows.value);
@@ -83,7 +88,9 @@ let splitController: AbortController | undefined;
 watch(() => props.src, () => {
   splitController?.abort();
   imageSize.value = { width: 0, height: 0 };
+  detectedRowRanges.value = [];
 }, { flush: "sync" });
+watch([rows, columns], () => { detectedRowRanges.value = []; });
 watch(() => props.disabled, disabled => {
   if (disabled) { splitController?.abort(); visible.value = false; }
 }, { flush: "sync" });
@@ -106,6 +113,62 @@ defineExpose({ open, splitting });
 function readSize(event: Event) {
   const image = event.currentTarget as HTMLImageElement;
   imageSize.value = { width: image.naturalWidth, height: image.naturalHeight };
+}
+
+async function detectHorizontalGutters() {
+  if (detecting.value || splitting.value || rows.value < 2 || !props.src) return;
+  detecting.value = true;
+  const source = new Image();
+  const canvas = document.createElement("canvas");
+  try {
+    source.src = props.src;
+    await source.decode();
+    canvas.width = source.naturalWidth;
+    canvas.height = source.naturalHeight;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) throw new Error("无法读取图片分隔线");
+    context.drawImage(source, 0, 0);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    const darkRows: boolean[] = [];
+    for (let y = 0; y < canvas.height; y++) {
+      let darkPixels = 0;
+      for (let x = 0; x < canvas.width; x += 4) {
+        const offset = (y * canvas.width + x) * 4;
+        if (Math.max(pixels[offset]!, pixels[offset + 1]!, pixels[offset + 2]!) < 45) darkPixels++;
+      }
+      darkRows.push(darkPixels / Math.ceil(canvas.width / 4) >= 0.9);
+    }
+    const gutters: Array<{ start: number; end: number }> = [];
+    let start = -1;
+    for (let y = 0; y <= darkRows.length; y++) {
+      if (darkRows[y] && start < 0) start = y;
+      if (!darkRows[y] && start >= 0) {
+        if (y - start >= 8 && start > canvas.height * 0.04 && y < canvas.height * 0.96) gutters.push({ start, end: y - 1 });
+        start = -1;
+      }
+    }
+    if (gutters.length !== rows.value - 1) {
+      detectedRowRanges.value = [];
+      ElMessage.warning(`检测到 ${gutters.length} 条横向分隔线，当前需要 ${rows.value - 1} 条；请按等分结果检查，暂未启用校正`);
+      return;
+    }
+    const ranges: Array<{ start: number; end: number }> = [];
+    let top = 0;
+    for (const gutter of gutters) {
+      if (gutter.start <= top) throw new Error("检测到重叠的横向分隔线");
+      ranges.push({ start: top, end: gutter.start - 1 });
+      top = gutter.end + 1;
+    }
+    ranges.push({ start: top, end: canvas.height - 1 });
+    detectedRowRanges.value = ranges;
+  } catch (error) {
+    detectedRowRanges.value = [];
+    showNodeError(error, "分隔线识别失败");
+  } finally {
+    source.removeAttribute("src");
+    canvas.width = canvas.height = 0;
+    detecting.value = false;
+  }
 }
 
 async function splitImage() {
@@ -136,10 +199,17 @@ async function splitImage() {
         controller.signal.throwIfAborted();
         // 使用相邻整数边界，不能整除的尺寸也不会丢失或重复边缘像素。
         const left = Math.floor(column * width / columnCount);
-        const top = Math.floor(row * height / rowCount);
-        canvas.width = Math.floor((column + 1) * width / columnCount) - left;
-        canvas.height = Math.floor((row + 1) * height / rowCount) - top;
-        context.drawImage(source, left, top, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+        const rowRange = detectedRowRanges.value[row];
+        const top = rowRange?.start ?? Math.floor(row * height / rowCount);
+        const cellWidth = Math.floor((column + 1) * width / columnCount) - left;
+        const cellHeight = rowRange ? rowRange.end - rowRange.start + 1 : Math.floor((row + 1) * height / rowCount) - top;
+        const insetX = Math.floor(cellWidth * insetPercent.value / 100);
+        const insetY = Math.floor(cellHeight * insetPercent.value / 100);
+        const cropWidth = Math.max(1, cellWidth - insetX * 2);
+        const cropHeight = Math.max(1, cellHeight - insetY * 2);
+        canvas.width = cropWidth;
+        canvas.height = cropHeight;
+        context.drawImage(source, left + insetX, top + insetY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
         const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error("图片切分失败")), "image/png"));
         controller.signal.throwIfAborted();
         const id = crypto.randomUUID();
@@ -264,6 +334,20 @@ async function splitImage() {
 
     .gridMultiply { line-height: 32px; color: var(--el-text-color-secondary); }
   }
+
+  .cropInset {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 96px auto;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+    color: var(--el-text-color-secondary);
+    font-size: 12px;
+
+    small { color: var(--el-text-color-placeholder); }
+  }
+
+  .detectButton { padding: 0; }
 
   .previewArea {
     display: grid;

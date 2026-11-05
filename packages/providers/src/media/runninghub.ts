@@ -19,25 +19,46 @@ async function request(context: ProviderContext, path: string, body: Record<stri
   });
   if (!response.ok) throw new Error(`RunningHub 请求失败：HTTP ${response.status}`);
   const result = object(await response.json());
-  if (result.code != null && ![0, "0", 200, "200"].includes(result.code as string | number)) throw new Error("RunningHub 拒绝请求，请检查账号与工作流权限");
+  if (result.code != null && ![0, "0", 200, "200"].includes(result.code as string | number)) throw new Error(`RunningHub 拒绝请求：${context.tool.errorMessage(result) || "请检查账号与工作流权限"}`);
   return object(result.data ?? result);
 }
 
 async function submitH3(context: ProviderContext, video: VideoRequest) {
-  if (video.model !== "h3RefDirector" || !Array.isArray(video.mode) || video.mode.length !== 1 || !/^imageReference:[1-9]$/.test(video.mode[0] ?? "")) throw new Error("当前 H3 导演台仅开放图片全参考模式");
-  if (!video.prompt.trim() || !video.images?.length || video.images.length > 9 || video.firstFrame || video.lastFrame || video.audios?.length || video.videos?.length) throw new Error("H3 图片全参考需要 1–9 张图片，不接受其他素材槽位");
+  const referenceMode = video.model === "h3RefDirector";
+  if (!referenceMode && video.model !== "h3FrameDirector") throw new Error("未知 H3 导演台模型");
+  if (!video.prompt.trim() || video.audios?.length || video.videos?.length) throw new Error("当前 H3 导演台需要提示词，仅支持图片或首尾帧输入");
+  if (referenceMode) {
+    if (!Array.isArray(video.mode) || video.mode.length !== 1 || !/^imageReference:[1-9]$/.test(video.mode[0] ?? "") || !video.images?.length || video.images.length > 9 || video.firstFrame || video.lastFrame) throw new Error("H3 图片全参考需要 1–9 张图片，不接受首尾帧槽位");
+  } else {
+    const validFrames = video.mode === "text" ? !video.firstFrame && !video.lastFrame
+      : video.mode === "startEndRequired" ? !!video.firstFrame && !!video.lastFrame
+      : video.mode === "endFrameOptional" ? !!video.firstFrame
+      : video.mode === "startFrameOptional" ? !!video.lastFrame : false;
+    if (!validFrames || video.images?.length) throw new Error("H3 首尾帧模式与素材槽位不匹配，不能把参考图代替首尾帧");
+  }
   if (!video.duration || video.duration < 4 || video.duration > 15) throw new Error("H3 时长须在 4–15 秒内");
   const frames = 17 * Math.ceil((video.duration * 24 - 5) / 17) + 5;
   if (frames > 360) throw new Error("H3 帧格对齐后超过 15 秒，请缩短本段，不能截断对白");
   if (video.ratio && video.ratio !== "16:9") throw new Error("当前导演台只开放横屏方案");
-  if (video.resolution && video.resolution !== "736P") throw new Error("当前导演台固定 1280×736 输出");
+  const resolution = video.resolution ?? "1.0";
+  if (resolution !== "0.8" && resolution !== "1.0") throw new Error("H3 导演台分辨率仅支持 0.8 或 1.0 档");
+  const width = resolution === "0.8" ? 1024 : 1280;
+  const height = resolution === "0.8" ? 576 : 736;
   const workflowId = String(context.config.h3Workflow ?? "");
   if (!/^\d+$/.test(workflowId)) throw new Error("H3 工作流编号无效");
   const response = await request(context, "/api/openapi/getJsonApiFormat", { workflowId });
   const graph = object(typeof response.prompt === "string" ? JSON.parse(response.prompt) : response.prompt);
   if (object(graph["12"]).class_type !== "MiniMaxH3Director" || object(graph["7"]).class_type !== "SaveVideo") throw new Error("H3 云端工作流结构已变化");
-  const refs = [];
-  for (const [index, reference] of video.images.entries()) {
+  if (!referenceMode) {
+    const loader = object(graph["1"]);
+    const frameLoader = object(graph["21"]);
+    const frameModel = object(frameLoader.inputs).unet_name;
+    if (loader.class_type !== "UNETLoader" || frameLoader.class_type !== "UNETLoader" || typeof frameModel !== "string" || !frameModel.includes("fl2va")) throw new Error("H3 工作流缺少已配置的首尾帧模型");
+    object(loader.inputs).unet_name = frameModel;
+  }
+  const sourceImages = referenceMode ? video.images! : [video.firstFrame, video.lastFrame].filter((item): item is MediaInput => !!item);
+  const uploaded = [];
+  for (const [index, reference] of sourceImages.entries()) {
     if (reference.type === "url") throw new Error("H3 参考图片必须由工作区读取");
     const bytes = reference.type === "binary" ? Buffer.from(reference.data) : Buffer.from(reference.data.replace(/^data:[^;]+;base64,/, ""), "base64");
     if (!bytes.length || bytes.length > 100 * 1024 * 1024) throw new Error("H3 图片为空或超过 100MB");
@@ -49,20 +70,31 @@ async function submitH3(context: ProviderContext, video: VideoRequest) {
     if (result.code != null && ![0, "0", 200, "200"].includes(result.code as string | number)) throw new Error("H3 素材上传被拒绝");
     const file = object(result.data ?? result).fileName;
     if (typeof file !== "string" || !file) throw new Error("H3 素材上传未返回文件编号");
-    refs.push({ index, imageFile: file, fileName: "", type: "input", subfolder: "" });
+    uploaded.push({ index, imageFile: file, fileName: "", type: "input", subfolder: "" });
   }
   const inputs = object(object(graph["12"]).inputs);
-  const taskType = "r2v — 参考主体生视频(Reference to Video)";
+  const refs = referenceMode ? uploaded : [];
+  const first = !referenceMode && video.firstFrame ? uploaded[0]! : null;
+  const last = !referenceMode && video.lastFrame ? uploaded[video.firstFrame ? 1 : 0]! : null;
+  // ACT: 尾帧单独生成、无锚点文本生成都使用导演台的 FL2V 路径，不虚构 l2v 任务类型。
+  const taskType = referenceMode ? "r2v — 参考主体生视频(Reference to Video)"
+    : first && !last ? "i2v — 首帧生视频(Image-to-Video)" : "fl2v — 首尾帧生视频(First-Last Frame)";
+  const segmentId = String(video.other?.segmentId ?? "segment");
   const timeline = {
-    version: 5, editMode: "segment", timelineMode: "prompt_batch", totalFrames: frames, frameRate: 24,
-    width: 1280, height: 736, refMaxSize: 1280, durationSec: frames / 24,
+    version: 5, editMode: "segment", timelineMode: referenceMode ? "prompt_batch" : first && !last ? "i2v" : "fl2v", totalFrames: frames, frameRate: 24,
+    width, height, refMaxSize: width, durationSec: frames / 24,
     global: { taskType, prompt: "", refs, refAudios: [], refVideos: [], continuousReference: false, commonEnabled: true },
-    output: { mode: "fixed", width: 1280, height: 736, multiple: 32, longEdge: 1280, exportMode: "all", audioMode: "generate", continuityEnabled: false, exportSourceImages: false, exportPreFaceRefine: false, refImageSize: "match" },
-    runSelectEnabled: false, runSelection: [], videoClips: [], keyframes: [], shots: [], batchWorkspaces: [],
+    output: { mode: "fixed", width, height, multiple: 32, longEdge: width, exportMode: "all", audioMode: video.generateAudio === false ? "mute" : "generate", continuityEnabled: false, exportSourceImages: false, exportPreFaceRefine: false, refImageSize: "match" },
+    runSelectEnabled: false, runSelection: [], videoClips: [], keyframes: [],
+    shots: referenceMode ? [] : [{ id: segmentId, durationSec: frames / 24, prompt: video.prompt, negativePrompt: "", startImage: first, endImage: last, continuityFromPrev: false }], batchWorkspaces: [],
     gen: { defaultFrameCount: frames }, liveTaePreview: false, batchDetailMode: "solo",
-    segments: [{ id: String(video.other?.segmentId ?? "segment"), start: 0, length: frames, frameCount: frames, durationSec: frames / 24, prompt: video.prompt, negativePrompt: "", taskType, refs: [], refAudios: [], refVideos: [], genImage: { imageFile: "", fileName: "" }, startImage: null, endImage: null, continuityFromPrev: false, refImageSize: "match", loras: [] }],
+    segments: [{ id: segmentId, start: 0, length: frames, frameCount: frames, durationSec: frames / 24, prompt: video.prompt, negativePrompt: "", taskType, refs: [], refAudios: [], refVideos: [], genImage: first, startImage: first, endImage: last, isStartFrame: !!first, isEndFrame: !!last, continuityFromPrev: false, refImageSize: "match", loras: [] }],
   };
-  Object.assign(inputs, { timeline_data: JSON.stringify(timeline), global_prompt: "", total_frames: frames, frame_rate: 24, task_type: taskType, width: 1280, height: 736, minimax_director_ui: "", cache_name: "", export_source_images: false, export_pre_face_refine: false });
+  if (video.generateAudio === false) {
+    if (object(graph["6"]).class_type !== "CreateVideo") throw new Error("H3 工作流的视频封装节点已变化，无法保证独立配音");
+    delete object(object(graph["6"]).inputs).audio;
+  }
+  Object.assign(inputs, { timeline_data: JSON.stringify(timeline), global_prompt: "", total_frames: frames, frame_rate: 24, task_type: taskType, width, height, minimax_director_ui: "", cache_name: "", export_source_images: false, export_pre_face_refine: false });
   const data = await request(context, "/task/openapi/create", { workflowId, nodeInfoList: [], workflow: JSON.stringify(graph) });
   if (typeof data.taskId !== "string" || !/^\d+$/.test(data.taskId)) throw new Error("H3 未返回有效任务编号，禁止自动重提");
   return { taskId: data.taskId };
@@ -71,13 +103,14 @@ async function submitH3(context: ProviderContext, video: VideoRequest) {
 export default {
   id: "runninghub",
   label: "RunningHub",
-  version: "2.0.0",
+  version: "2.1.0",
   readme: "通过持久制作任务执行音色设计与独立配音，查询和取消均使用原任务编号。克隆配音需要一段已采用的参考音频。",
   rules,
   models: [
     { id: "qwenVoiceDesign", label: "Qwen3 音色设计", type: "audio" },
     { id: "indexVoiceClone", label: "IndexTTS2 独立配音", type: "audio" },
-    { id: "h3RefDirector", label: "MiniMax H3 导演台·图片全参考", type: "video", mode: [["imageReference:9"]], audio: true, durationResolutionMap: [{ duration: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], resolution: ["736P"] }] },
+    { id: "h3RefDirector", label: "MiniMax H3 导演台·图片全参考", type: "video", mode: [["imageReference:9"]], audio: "optional", durationResolutionMap: [{ duration: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], resolution: ["1.0", "0.8"] }] },
+    { id: "h3FrameDirector", label: "MiniMax H3 导演台·首帧／首尾帧／尾帧／文本", type: "video", mode: ["endFrameOptional", "startEndRequired", "startFrameOptional", "text"], audio: "optional", durationResolutionMap: [{ duration: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], resolution: ["1.0", "0.8"] }] },
   ] satisfies ProviderModel[],
   async submitMediaTask(input: MediaTaskRequest): Promise<{ taskId: string }> {
     if (input.type === "video") return submitH3(this, input.request);

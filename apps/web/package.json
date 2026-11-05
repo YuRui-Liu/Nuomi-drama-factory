@@ -12,6 +12,7 @@
     "typecheck": "vue-tsc"
   },
   "dependencies": {
+    "@toonflow/node-shared": "workspace:*",
     "@dagrejs/dagre": "^3.1.1",
     "@earendil-works/pi-agent-core": "0.85.1",
     "@earendil-works/pi-ai": "0.85.1",

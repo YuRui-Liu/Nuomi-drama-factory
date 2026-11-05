@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./production/assetCatalog": "./src/production/assetCatalog.ts",
     "./production/schemas": "./src/production/schemas.ts",
+    "./production/styleLibrary": "./src/production/styleLibrary.ts",
+    "./production/techniqueLibrary": "./src/production/techniqueLibrary.ts",
     "./production/types": "./src/production/types.ts",
     "./production/operations": "./src/production/operations.ts",
     "./promptInput": "./src/components/promptInput.vue",

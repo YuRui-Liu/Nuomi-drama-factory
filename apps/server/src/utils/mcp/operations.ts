@@ -1,5 +1,6 @@
 import { getLocale, t, validationOptions } from "@/lib/i18n";
 import { z } from "zod";
+import { assetCatalogCommandSchema } from "@toonflow/node-shared/production/assetCatalog";
 import { toolNameSchema } from "@toonflow/tools-scaffold/runtime";
 import { mediaModelsSchema, mediaProviderFileSchema } from "@/utils/media/provider";
 import { getAppRequestHeaders, getMcpRuntime } from "@/utils/mcp/runtime";
@@ -108,6 +109,12 @@ export const appOperations: {
   {
     name: "deleteMediaProvider", description: "删除指定媒体供应商及其保存的配置；必须提供当前 revision。", method: "DELETE", path: "/api/providers/media/delete",
     parameters: z.strictObject({ fileName: mediaProviderFileSchema, revision }), refresh: { type: "provider", nameField: "fileName" },
+  },
+  {
+    name: "listAssetCatalog", description: "读取作品、资产不可变版本、采用状态、本体关系和固定版本复用记录。", method: "GET", path: "/api/assets/catalog/get", parameters: z.strictObject({}),
+  },
+  {
+    name: "executeAssetCatalog", description: "管理当前作品及其资产版本；新增版本不自动采用，复用必须指定已采用版本。expectedRevision 防止覆盖并发修改。", method: "POST", path: "/api/assets/catalog/execute", parameters: z.strictObject({ directory, command: assetCatalogCommandSchema }),
   },
   {
     name: "listAssets", description: "列出全局素材库的文件和文件夹树；与工作区 assets 目录不同。", method: "GET", path: "/api/assets/list", parameters: z.strictObject({}),

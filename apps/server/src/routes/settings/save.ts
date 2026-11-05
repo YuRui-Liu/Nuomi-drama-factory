@@ -2,7 +2,8 @@ import u from "@/utils";
 import { Router } from "express";
 import { z } from "zod";
 import { validateFields } from "@/lib/middleware";
-import { success } from "@/lib/responseFormat";
+import { success, error } from "@/lib/responseFormat";
+import { createHash } from "node:crypto";
 import { maxSystemPromptLength } from "@/agent/runtime/prompt";
 import { t } from "@/lib/i18n";
 import { providerSchema } from "@/utils/ai";
@@ -24,6 +25,12 @@ export default router.put("/", validateFields({ settings: z.record(z.string(), z
   u.removeLegacySettings(settings);
   u.cleanNodeMenuSettings(settings);
   const previousSettings = u.conf.get("settings", {});
+  const expected = req.get("If-Match");
+  const revision = `"${createHash("sha256").update(JSON.stringify(previousSettings)).digest("hex")}"`;
+  if (expected && expected !== revision) {
+    res.status(409).json(error("设置已被其他页面或 Agent 修改，请重新读取后保存", null, 409));
+    return;
+  }
   u.conf.set("settings", settings);
   const [models] = await Promise.all([u.ai.refreshProviderModels(previousSettings), u.mcpRuntime.reloadMcpRuntime()]);
   res.json(success({ ...models, aiModels: u.ai.listAiModels(), nodeMenu: u.conf.get("settings.general.nodeMenu") ?? null }, "设置已保存"));

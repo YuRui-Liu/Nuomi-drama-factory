@@ -23,6 +23,8 @@ export const taskSchema = z.strictObject({
   approval: adoptionSchema.shape.approval.optional(),
   references: z.array(z.strictObject({ path: productionPathSchema, hash: z.string() })),
   outputs: z.array(z.strictObject({ path: productionPathSchema, mimeType: z.string(), mediaType: z.enum(["image", "video", "audio"]) })),
+  // ACT: 只记录一次画布呈现，避免重复 refresh 反复添加节点。
+  presentation: z.strictObject({ canvasId: z.string().min(1).max(256), nodeIds: z.array(z.string().min(1).max(256)).max(100) }).optional(),
   createdAt: z.iso.datetime(), updatedAt: z.iso.datetime(), message: z.string().optional(),
 });
 export type ProductionTask = z.infer<typeof taskSchema>;

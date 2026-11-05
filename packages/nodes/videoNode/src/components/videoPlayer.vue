@@ -277,6 +277,8 @@ async function captureFrame(command: "current" | "first" | "last") {
 
   &:active { cursor: grabbing; }
   .videoPreview {
+    position: relative;
+    z-index: 0;
     display: block;
     width: 100%;
     max-height: 240px;

@@ -1,6 +1,38 @@
 import { createStage, disposeStage, type LightingSettings, type SceneDocument, type SceneSettings } from "./scene";
 import { applyCamera, prepareMotion, sampleMotion, type CameraAnchor } from "./motion";
 import { prepareSceneAnimation, type DirectorPlan } from "./sceneAnimation";
+import { CubeCamera, WebGLCubeRenderTarget, Scene, Mesh, PlaneGeometry, ShaderMaterial, OrthographicCamera } from "three";
+
+export async function renderPanorama(scene: SceneDocument, anchor: CameraAnchor, signal: AbortSignal, lighting?: LightingSettings) {
+  signal.throwIfAborted();
+  const background = { ...scene, objectList: scene.objectList.filter(object => object.objType !== "mannequin") };
+  const runtime = await createStage(document.createElement("canvas"), background, undefined, 2, lighting, { gridVisible: false, skyVisible: true });
+  const cube = new WebGLCubeRenderTarget(512);
+  const geometry = new PlaneGeometry(2, 2);
+  const material = new ShaderMaterial({
+    uniforms: { panorama: { value: cube.texture } },
+    vertexShader: "varying vec2 uvPosition; void main() { uvPosition = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
+    fragmentShader: "uniform samplerCube panorama; varying vec2 uvPosition; void main() { float yaw = (uvPosition.x - 0.5) * 6.28318530718; float pitch = (uvPosition.y - 0.5) * 3.14159265359; vec3 direction = vec3(sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch)); gl_FragColor = textureCube(panorama, direction);\n#include <tonemapping_fragment>\n#include <colorspace_fragment>\n}",
+    depthTest: false, depthWrite: false,
+  });
+  try {
+    signal.throwIfAborted();
+    const camera = new CubeCamera(anchor.camera.near, anchor.camera.far, cube);
+    const { x, y, z } = anchor.camera.position;
+    camera.position.set(x, y, z);
+    camera.update(runtime.renderer, runtime.scene);
+    const projection = new Scene();
+    projection.add(new Mesh(geometry, material));
+    runtime.renderer.setRenderTarget(null);
+    runtime.renderer.setSize(2048, 1024, false);
+    runtime.renderer.render(projection, new OrthographicCamera(-1, 1, 1, -1, 0, 1));
+    const blob = await new Promise<Blob>((resolve, reject) => runtime.renderer.domElement.toBlob(
+      value => value ? resolve(value) : reject(new Error("全景投影导出失败")), "image/png",
+    ));
+    signal.throwIfAborted();
+    return new File([blob], "全景几何底图.png", { type: "image/png" });
+  } finally { cube.dispose(); geometry.dispose(); material.dispose(); disposeStage(runtime); }
+}
 
 export async function renderImage(scene: SceneDocument, anchor: CameraAnchor, aspect: number, time: number, signal: AbortSignal, plan?: DirectorPlan, lighting?: LightingSettings, settings?: SceneSettings) {
   signal.throwIfAborted();

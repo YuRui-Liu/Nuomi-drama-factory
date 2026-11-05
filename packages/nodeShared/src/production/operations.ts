@@ -5,6 +5,7 @@ export const productionReadSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("list"), offset: z.number().int().nonnegative().default(0), limit: z.number().int().min(1).max(100).default(20) }),
   z.strictObject({ action: z.literal("read"), ref: productionRefSchema }),
   z.strictObject({ action: z.literal("listAffected"), id: productionIdSchema }),
+  z.strictObject({ action: z.literal("readDefaultStyle") }),
 ]);
 
 export const productionExecuteSchema = z.discriminatedUnion("action", [
@@ -16,6 +17,7 @@ export const productionExecuteSchema = z.discriminatedUnion("action", [
     action: z.literal("adopt"), ref: productionRefSchema,
     expectedAdoption: productionRefSchema.nullable(), approval: adoptionSchema.shape.approval,
   }),
+  z.strictObject({ action: z.literal("setDefaultStyle"), ref: productionRefSchema, expectedDefault: productionRefSchema.nullable() }),
 ]);
 
 export type ProductionRead = z.infer<typeof productionReadSchema>;

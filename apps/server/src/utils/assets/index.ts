@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, opendir, readFile, realpath, rmdir, unlink } from "@toonflow/file";
-import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, normalize, relative, resolve, sep } from "node:path";
 import conf from "@/utils/conf";
 import { isWithin, lockWorkspaceFiles, protectWorkspaceRoot, renameWorkspaceFile, resolveWorkspacePath, writeWorkspaceFile } from "@/utils/workspace/files";
 import { mentionAssetType, type MentionAsset, type MentionQuery } from "@/agent/mentionSources";
 
 const maxAssetBytes = 100 * 1024 * 1024;
+const isManagedPath = (value: string) => normalize(value.replaceAll("\\", "/")).split(/[\\/]/)[0]?.toLowerCase() === "managed";
 type AssetSearch = { key: string; directory: string; offset: number; touched: number; busy: boolean; iterator: AsyncGenerator<MentionAsset>;
   timer: ReturnType<typeof setTimeout>; closing?: Promise<void> };
 const assetSearches = new Map<string, AssetSearch>();
@@ -48,8 +49,10 @@ export async function readAssetFile(path: string, signal?: AbortSignal) {
 }
 
 export async function writeAssetFile(path: string, content: string | Uint8Array, revision?: string) {
+  if (isManagedPath(path)) throw new Error("版本资产由资产管理维护，不能覆盖文件");
   if (Buffer.byteLength(content) > maxAssetBytes) throw new Error("素材文件不能超过 100 MB");
   const target = await resolveAssetPath(path);
+  if (isManagedPath(relative(target.directory, target.path))) throw new Error("版本资产由资产管理维护，不能覆盖文件");
   const release = lockWorkspaceFiles([target.path]);
   try {
     if (revision !== undefined) {
@@ -62,15 +65,19 @@ export async function writeAssetFile(path: string, content: string | Uint8Array,
 }
 
 export async function createAssetDirectory(path: string) {
+  if (isManagedPath(path)) throw new Error("版本资产目录由资产管理维护");
   const target = await resolveAssetPath(path);
+  if (isManagedPath(relative(target.directory, target.path))) throw new Error("版本资产目录由资产管理维护");
   const release = lockWorkspaceFiles([target.path]);
   try { await mkdir(target.path); }
   finally { release(); }
 }
 
 export async function moveAsset(path: string, target: string) {
+  if ([path, target].some(isManagedPath)) throw new Error("版本资产不能通过文件改名移动");
   const source = await resolveAssetPath(path);
   const destination = await resolveAssetPath(target);
+  if ([source, destination].some(item => isManagedPath(relative(item.directory, item.path)))) throw new Error("版本资产不能通过文件改名移动");
   destination.path = resolve(dirname(destination.path), basename(resolve(destination.directory, target)));
   const release = lockWorkspaceFiles([source.path, destination.path]);
   try {
@@ -86,7 +93,9 @@ export async function moveAsset(path: string, target: string) {
 }
 
 export async function removeAsset(path: string) {
+  if (isManagedPath(path)) throw new Error("版本资产不能通过文件删除");
   const target = await resolveAssetPath(path);
+  if (isManagedPath(relative(target.directory, target.path))) throw new Error("版本资产不能通过文件删除");
   const release = lockWorkspaceFiles([target.path]);
   try {
     const info = await lstat(target.path);

@@ -238,7 +238,21 @@ let imageVersion = 0;
 let renderFrame = 0;
 let disposed = false;
 
-defineExpose({ capturing });
+defineExpose({
+  capturing,
+  readView: () => ({ ready: ready.value, loading: loading.value, error: imageError.value, yaw: yaw.value, pitch: pitch.value, fov: fov.value, minFov: minFov.value, maxFov: maxFov.value }),
+  setView: (view: { yaw: number; pitch: number; fov: number }) => {
+    if (!ready.value || busy.value) throw new Error("全景尚未就绪或正在处理");
+    if (view.fov < minFov.value || view.fov > maxFov.value || (props.mode === "cylinder" && view.pitch !== 0)) throw new Error("视角超出当前全景模式支持范围");
+    yaw.value = view.yaw;
+    pitch.value = view.pitch;
+    fov.value = view.fov;
+    captureCount.value = 1;
+    setCamera();
+    scheduleRender();
+  },
+  captureForTool: () => { captureCount.value = 1; return capture({ external: true }); },
+});
 
 function setCamera(viewYaw = yaw.value, viewPitch = pitch.value) {
   const horizontal = three.MathUtils.degToRad(viewYaw);
@@ -409,8 +423,12 @@ function adjustView(event: KeyboardEvent) {
   setView(yaw.value + (event.key === "ArrowRight" ? step : event.key === "ArrowLeft" ? -step : 0), pitch.value + (event.key === "ArrowUp" ? step : event.key === "ArrowDown" ? -step : 0));
 }
 
-async function capture() {
-  if (busy.value || !ready.value || !renderer || !texture) return;
+async function capture(options?: { external?: boolean } | Event) {
+  const external = options && "external" in options && options.external;
+  if (busy.value || !ready.value || !renderer || !texture) {
+    if (external) throw new Error("全景尚未就绪或正在处理");
+    return;
+  }
   capturing.value = true;
   captureError.value = "";
   finishDrag();
@@ -460,9 +478,12 @@ async function capture() {
     }
     if (disposed) return;
     if (version !== imageVersion || mode !== props.mode) throw new Error("图片已更新，请重新截图");
-    emit("capture", { images, columns, count });
+    const result: PanoramaCapture = { images, columns, count };
+    if (external) return result;
+    emit("capture", result);
   } catch (error) {
     if (!disposed) captureError.value = error instanceof Error ? error.message : "截图失败，请重试";
+    if (external) throw error;
   } finally {
     for (const output of outputs) output.canvas.width = output.canvas.height = 1;
     capturing.value = false;
